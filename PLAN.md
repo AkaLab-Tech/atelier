@@ -37,9 +37,10 @@ The operator runs **one command** and answers at most **two prompts** (Claude lo
 ### Phase A — Preparation (no interaction)
 1. Detect OS (macOS/Linux) and architecture.
 2. Verify / install base dependencies via Homebrew (mac) or apt (linux):
-   - `git`, `gh`, `fnm`, `pnpm`, `jq`, `playwright`.
+   - `git`, `gh`, `fnm`, `pnpm`, `jq`, `fzf`, `playwright`.
    - **Node** is managed by `fnm` (Rust-based, fast startup, native `.nvmrc` support). Each project pins its Node version in a `.nvmrc` file at its root; `fnm` auto-switches on `cd` via `eval "$(fnm env --use-on-cd)"` (added to the operator's shellrc in Phase C). If a project has no `.nvmrc`, `fnm` falls back to the latest LTS installed at provisioning time.
    - **`pnpm`** is the package manager of choice — never fall back to `npm`. Installed via `corepack enable` once Node is available.
+   - **`fzf`** enables the interactive picker for `git wt switch` (see Phase C, `git-wt` install).
 3. Install Claude Code if not present (official installer).
 
 ### Phase B — Authentication (only human interaction)
@@ -60,19 +61,26 @@ The operator runs **one command** and answers at most **two prompts** (Claude lo
    - `settings.template.json` — base template for per-project instantiation.
    - `hooks/` — `block-env-commit`, `safe-commit`, etc.
    - `CLAUDE.md` — global operator rules.
-7. Install global `.npmrc` guardrails:
+7. Install **`git-wt`** (external package, maintained at [Miguelslo27/git-wt](https://github.com/Miguelslo27/git-wt)). Clone to a temporary directory and run its installer non-interactively, targeting Claude only:
+   ```bash
+   git clone https://github.com/Miguelslo27/git-wt.git /tmp/git-wt
+   /tmp/git-wt/install.sh --skill-for=claude
+   ```
+   That installer takes care of everything end-to-end: copies the `git-wt` binary to `~/.local/bin/git-wt`, injects the shell wrapper into `~/.zshrc`/`~/.bashrc` (delimited by its own `# >>> git-wt >>>` markers, idempotent), and copies the Claude skill to `~/.claude/skills/git-wt/`. The temp clone can be discarded after install — updates are reapplied by re-running the same command.
+
+8. Install global `.npmrc` guardrails:
    ```ini
    ignore-scripts=true          # block postinstall/preinstall scripts
    minimum-release-age=10080    # 7 days in minutes — anti supply-chain
    audit-level=moderate         # pnpm audit fails on moderate+ vulns
    ```
-8. Ensure `.env*` is in git's global excludes (`core.excludesFile`).
-9. Configure git identity (prompt only if missing).
-10. Add shell hooks and aliases to `~/.zshrc`/`~/.bashrc`:
+9. Ensure `.env*` is in git's global excludes (`core.excludesFile`).
+10. Configure git identity (prompt only if missing).
+11. Add shell hooks and aliases to `~/.zshrc`/`~/.bashrc`:
     - `eval "$(fnm env --use-on-cd)"` → auto-switch Node version per project's `.nvmrc`.
     - `task` → opens a Claude session that auto-invokes `/next-task` for the current project (detected from cwd).
     - `task-status` → shows the operator's open PRs.
-11. Final verification: `claude --version`, `gh auth status`, list loaded agents/skills, print ✅/❌ per check.
+12. Final verification: `claude --version`, `gh auth status`, `git wt help`, list loaded agents/skills, print ✅/❌ per check.
 
 ---
 
@@ -217,7 +225,7 @@ Auto-merge when:
 ### Skills (global)
 
 - `task-discovery` — parse `ROADMAP.md`, pick next task.
-- `git-wt` — worktree per task.
+- `git-wt` — worktree per task. **Sourced externally** from [Miguelslo27/git-wt](https://github.com/Miguelslo27/git-wt); installed in Phase C step 7. Not maintained in this repo.
 - `pr-flow` — branch → commit → push → PR.
 - `visual-validation` — Playwright screenshots.
 - `safe-commit` — lint + typecheck + tests before commit.
