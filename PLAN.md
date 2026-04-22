@@ -9,7 +9,7 @@
 
 Enable a non-technical operator to deliver software work end-to-end (features, tests, bug fixes, e2e validation, PRs) by only talking to Claude. The operator never needs to know what a branch, a test, or a PR is. They open a session, ask "what's next?", and the AI executes autonomously.
 
-This repo (`dotfiles`) is the single artifact the operator clones. `install.sh` leaves the machine fully configured.
+This repo (`atelier`) is the single artifact the operator clones. `install.sh` leaves the machine fully configured.
 
 **Separation of concerns:** the install configures the machine for an **operator profile**. It does NOT overwrite the developer's personal `~/.claude/CLAUDE.md`. The operator's Claude environment is intentionally more permissive (autonomous pushes, dependency installs under guardrails) than a typical developer's, because the goal is zero-intervention task execution.
 
@@ -37,8 +37,9 @@ The operator runs **one command** and answers at most **two prompts** (Claude lo
 ### Phase A — Preparation (no interaction)
 1. Detect OS (macOS/Linux) and architecture.
 2. Verify / install base dependencies via Homebrew (mac) or apt (linux):
-   - `git`, `gh`, `node`, `pnpm`, `jq`, `playwright`.
-   - `pnpm` is the package manager of choice — never fall back to `npm`.
+   - `git`, `gh`, `fnm`, `pnpm`, `jq`, `playwright`.
+   - **Node** is managed by `fnm` (Rust-based, fast startup, native `.nvmrc` support). Each project pins its Node version in a `.nvmrc` file at its root; `fnm` auto-switches on `cd` via `eval "$(fnm env --use-on-cd)"` (added to the operator's shellrc in Phase C). If a project has no `.nvmrc`, `fnm` falls back to the latest LTS installed at provisioning time.
+   - **`pnpm`** is the package manager of choice — never fall back to `npm`. Installed via `corepack enable` once Node is available.
 3. Install Claude Code if not present (official installer).
 
 ### Phase B — Authentication (only human interaction)
@@ -67,7 +68,8 @@ The operator runs **one command** and answers at most **two prompts** (Claude lo
    ```
 8. Ensure `.env*` is in git's global excludes (`core.excludesFile`).
 9. Configure git identity (prompt only if missing).
-10. Add shell aliases to `~/.zshrc`/`~/.bashrc`:
+10. Add shell hooks and aliases to `~/.zshrc`/`~/.bashrc`:
+    - `eval "$(fnm env --use-on-cd)"` → auto-switch Node version per project's `.nvmrc`.
     - `task` → opens a Claude session that auto-invokes `/next-task` for the current project (detected from cwd).
     - `task-status` → shows the operator's open PRs.
 11. Final verification: `claude --version`, `gh auth status`, list loaded agents/skills, print ✅/❌ per check.
@@ -251,7 +253,7 @@ On successful merge, logs are attached to the PR as an artifact.
 
 ## 9. Update flow (`update.sh`) ✅
 
-1. `git pull` inside the `dotfiles` repo.
+1. `git pull` inside the `atelier` repo.
 2. Detect changed files since last pull.
 3. Apply only the deltas (re-symlink changed files, patch `.npmrc` if changed, etc.).
 4. **If `settings.template.json` changed**, prompt the operator with a detailed permission diff:
