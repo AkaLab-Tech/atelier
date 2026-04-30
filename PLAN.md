@@ -19,14 +19,19 @@ This repo (`atelier`) is the single artifact the operator clones. `install.sh` l
 
 ### Two-layer configuration
 
-- **Global** (installed once by `install.sh`): base agents, skills, slash commands, hooks, global `.npmrc`, `.gitignore` entries, `task` alias. Lives in `~/.claude/`.
-- **Per project** (created by `/setup-project <path>`): `ROADMAP.md`, `.claude/settings.json` (generated from template), `.claude/CLAUDE.md` with project-specific rules, optional project-specific agents/skills that override globals.
+- **Global** — distributed as a **Claude Code native plugin**. This repo ships `.claude-plugin/plugin.json` + `marketplace.json` so the operator installs everything with `/plugin marketplace add` + `/plugin install atelier`. Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/` and `CLAUDE.md` from the plugin root. Hooks and scripts reference files via `$CLAUDE_PLUGIN_ROOT` — never hardcoded paths.
+- **Host-OS layer** (handled by `install.sh` before the plugin is installed): things that can't live inside a Claude plugin — base deps, Claude Code itself, GitHub auth, `git-wt` external package, global `.npmrc`, `.env*` in git excludes, `fnm`/alias shellrc hooks, git identity.
+- **Per project** (created by `/setup-project <path>`): `ROADMAP.md`, `.claude/settings.json` (generated from `settings.template.json`), `.claude/CLAUDE.md` with project-specific rules, optional project-specific agents/skills that override globals.
 
 ### Isolation guarantees
 
 - Each `task` invocation anchors to the current working directory's project.
 - Agents in project A do not see context or permissions of project B.
 - All edits happen inside the task's **worktree**. The slash command `/next-task` instantiates a fresh `.claude/settings.json` from `settings.template.json`, injecting the worktree path into `additionalDirectories` and `Edit`/`Write` patterns. On task close the settings revert to the base (no editable paths).
+
+### Why a plugin and not symlinks
+
+The native plugin system gives us: (a) one-liner install/update via `/plugin marketplace update atelier`, (b) semver via `plugin.json`, (c) `$CLAUDE_PLUGIN_ROOT` for clean multi-checkout support, (d) auto-discovery by convention. It does **not** increase lock-in vs symlinks — both depend on Claude Code loading skills/agents/hooks; the manifest just formalizes the same contract. Reference: [Yeachan-Heo/oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) validated this pattern at scale.
 
 ---
 
@@ -53,34 +58,44 @@ The operator runs **one command** and answers at most **two prompts** (Claude lo
    ```
    Token stored in OS keychain. All slash commands must clone via HTTPS (`gh repo clone` or `https://github.com/...`).
 
-### Phase C — Claude environment configuration (no interaction)
-6. **Symlink** (not copy) the repo's contents into `~/.claude/`:
-   - `agents/` — global subagent definitions.
-   - `skills/` — reusable skills.
-   - `commands/` — slash commands.
-   - `settings.template.json` — base template for per-project instantiation.
-   - `hooks/` — `block-env-commit`, `safe-commit`, etc.
-   - `CLAUDE.md` — global operator rules.
-7. Install **`git-wt`** (external package, maintained at [Miguelslo27/git-wt](https://github.com/Miguelslo27/git-wt)). Clone to a temporary directory and run its installer non-interactively, targeting Claude only:
+### Phase C — Host-OS configuration + plugin install
+
+Phase C is split in two: **C.1** handles what can't live inside a Claude Code plugin (host binaries, shell, git config, external tools). **C.2** installs the atelier plugin itself via Claude Code's native plugin system.
+
+#### C.1 — Host-OS configuration (no interaction)
+
+6. Install **`git-wt`** (external, [Miguelslo27/git-wt](https://github.com/Miguelslo27/git-wt)) non-interactively for Claude:
    ```bash
    git clone https://github.com/Miguelslo27/git-wt.git /tmp/git-wt
    /tmp/git-wt/install.sh --skill-for=claude
    ```
-   That installer takes care of everything end-to-end: copies the `git-wt` binary to `~/.local/bin/git-wt`, injects the shell wrapper into `~/.zshrc`/`~/.bashrc` (delimited by its own `# >>> git-wt >>>` markers, idempotent), and copies the Claude skill to `~/.claude/skills/git-wt/`. The temp clone can be discarded after install — updates are reapplied by re-running the same command.
-
-8. Install global `.npmrc` guardrails:
+   Installs the binary to `~/.local/bin/git-wt`, injects the shell wrapper into `~/.zshrc`/`~/.bashrc`, and drops the Claude skill at `~/.claude/skills/git-wt/`.
+7. Install global `.npmrc` guardrails:
    ```ini
    ignore-scripts=true          # block postinstall/preinstall scripts
    minimum-release-age=10080    # 7 days in minutes — anti supply-chain
    audit-level=moderate         # pnpm audit fails on moderate+ vulns
    ```
-9. Ensure `.env*` is in git's global excludes (`core.excludesFile`).
-10. Configure git identity (prompt only if missing).
-11. Add shell hooks and aliases to `~/.zshrc`/`~/.bashrc`:
+8. Ensure `.env*` is in git's global excludes (`core.excludesFile`).
+9. Configure git identity (prompt only if missing).
+10. Add shell hooks and aliases to `~/.zshrc`/`~/.bashrc`:
     - `eval "$(fnm env --use-on-cd)"` → auto-switch Node version per project's `.nvmrc`.
     - `task` → opens a Claude session that auto-invokes `/next-task` for the current project (detected from cwd).
     - `task-status` → shows the operator's open PRs.
-12. Final verification: `claude --version`, `gh auth status`, `git wt help`, list loaded agents/skills, print ✅/❌ per check.
+
+#### C.2 — Claude Code plugin install (last step)
+
+11. Install the `atelier` plugin from this repo's marketplace manifest. This replaces the old symlink-into-`~/.claude/` approach. Two delivery options (implementation detail, tested during Phase 1):
+    - **Preferred** — `install.sh` drives Claude Code non-interactively to run:
+      ```
+      /plugin marketplace add AkaLab-Tech/atelier
+      /plugin install atelier@atelier
+      ```
+    - **Fallback** — `install.sh` prints the two commands for the operator to paste into their next `claude` session.
+
+    Once installed, Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/` and `CLAUDE.md` from `$CLAUDE_PLUGIN_ROOT`. Subsequent updates use `/plugin marketplace update atelier` — no re-symlinking.
+
+12. Final verification: `claude --version`, `gh auth status`, `git wt help`, presence of the `atelier` plugin in `~/.claude/plugins/` (or Claude's equivalent cache), and a call to the bundled `/doctor` slash command (see §7) to sanity-check the plugin surface. Print ✅/❌ per check.
 
 ---
 
@@ -224,8 +239,10 @@ Auto-merge when:
 
 ### Skills (global)
 
+Auto-discovered by Claude Code from the plugin's `./skills/` directory (no explicit manifest entries needed).
+
 - `task-discovery` — parse `ROADMAP.md`, pick next task.
-- `git-wt` — worktree per task. **Sourced externally** from [Miguelslo27/git-wt](https://github.com/Miguelslo27/git-wt); installed in Phase C step 7. Not maintained in this repo.
+- `git-wt` — worktree per task. **Sourced externally** from [Miguelslo27/git-wt](https://github.com/Miguelslo27/git-wt); installed in Phase C step 6. Not maintained in this repo.
 - `pr-flow` — branch → commit → push → PR.
 - `visual-validation` — Playwright screenshots.
 - `safe-commit` — lint + typecheck + tests before commit.
@@ -237,7 +254,8 @@ Auto-merge when:
 - `/resume-task <id>` — continue after interruption.
 - `/finish-task` — finalize PR.
 - `/status` — what's in progress, blocked, awaiting review.
-- `/setup-project <path>` — initialize a new project with `.claude/settings.json`, `ROADMAP.md`, `.gitignore` entries.
+- `/setup-project <path>` — initialize a new project with `.claude/settings.json`, `ROADMAP.md`, `.gitignore` entries. **Idempotent**: writes `~/.claude/.atelier-config.json` with `setupCompleted` (ISO timestamp) + `setupVersion`. Re-running on a configured project skips the wizard and offers a "reconfigure" flow instead. Pattern borrowed from [`omc-setup`](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/main/skills/omc-setup/SKILL.md).
+- `/doctor` — health check. Verifies: plugin version vs. latest, no legacy hooks leaking into `~/.claude/settings.json`, `git-wt` binary present, `fnm` hook active in shellrc, `.npmrc` guardrails in place, per-project `.atelier-config.json` consistency. Borrowed from [`omc-doctor`](https://github.com/Yeachan-Heo/oh-my-claudecode/tree/main/skills/omc-doctor).
 
 ---
 
@@ -295,13 +313,28 @@ Apply? [y/N]
 
 ---
 
-## 11. Out of scope (v1)
+## 11. Out of scope (v1) and deferred to v2
+
+### Out of scope (v1)
 
 - Multi-repo coordination in a single task.
 - Deployment / release management.
 - Cost monitoring / per-task budget caps.
 - Visual regression (baseline diff) — v2. v1 uses raw screenshots.
 - Bidirectional ROADMAP ↔ GitHub Issues sync.
+
+### Deferred to v2 — borrowed patterns from OMC
+
+Concrete ideas to revisit once v1 is stable. All sourced from [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode).
+
+| # | Idea | OMC reference | Value for atelier |
+|---|---|---|---|
+| v2.1 | **Skill auto-injector hook** (`UserPromptSubmit`) that picks skills by context signals so agents load only what they need | [`scripts/skill-injector.mjs`](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/main/scripts/skill-injector.mjs) | Smaller context per turn, lower cost |
+| v2.2 | **Router skill with subcommands** (`/atelier setup\|doctor\|update\|reconfigure`) | [`skills/oh-my-claudecode`](https://github.com/Yeachan-Heo/oh-my-claudecode/tree/main/skills/oh-my-claudecode) | Single entry point, less command clutter |
+| v2.3 | **`PermissionRequest` Bash hook** that decides permissions dynamically based on the current worktree/state, replacing the static `settings.template.json` instantiation | [`scripts/permission-handler.mjs`](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/main/scripts/permission-handler.mjs) | More precise than static patterns; reacts to runtime state |
+| v2.4 | **Project-memory hooks** (`SessionStart` + `PostToolUse`) that auto-detect project state and persist learnings per project | [`scripts/project-memory-session.mjs`](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/main/scripts/project-memory-session.mjs) + [`scripts/project-memory-posttool.mjs`](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/main/scripts/project-memory-posttool.mjs) | Replaces manual registry writes with automatic observation |
+| v2.5 | **`/learner` + `/skillify`** — extract reusable patterns from successful tasks into new skills | [`skills/learner`](https://github.com/Yeachan-Heo/oh-my-claudecode/tree/main/skills) family | The reviewer loop becomes a learning loop |
+| v2.6 | **Node.js hook dispatcher** (`scripts/run.cjs`): all hooks call a wrapper that handles timeouts, fail-open, Node binary resolution, Windows compatibility | [`scripts/run.cjs`](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/main/scripts/run.cjs) | Robustness + portability; required if we add the v2 hooks above |
 
 ---
 
@@ -311,18 +344,19 @@ Phases are sequential. Each phase ends with a verifiable milestone.
 
 ### Phase 1 — Foundation
 **Deliverables:**
-- M1.1 Repo skeleton: `agents/`, `skills/`, `commands/`, `hooks/`, `templates/`, `scripts/`.
-- M1.2 `install.sh` with Phase A (deps) + Phase B (auth) + Phase C (symlinks + `.npmrc` + aliases + verification).
-- M1.3 `settings.template.json` with the full allow/deny/ask matrix from §3.
-- M1.4 Global operator `CLAUDE.md` with the rules agents must follow (dep install §4, push/PR/merge §6).
+- M1.1 Repo skeleton: `.claude-plugin/`, `agents/`, `skills/`, `commands/`, `hooks/`, `templates/`, `scripts/`.
+- M1.2 Plugin manifest: `.claude-plugin/plugin.json` (name, version, description, `skills: "./skills/"`) and `.claude-plugin/marketplace.json`. Validate the plugin loads in a clean Claude Code install via `/plugin marketplace add <local-path>` → `/plugin install atelier@atelier`.
+- M1.3 `install.sh` doing **only** Phase A (deps) + Phase B (auth) + Phase C.1 (host-OS: git-wt, `.npmrc`, `.env*` excludes, git identity, shell hooks) + Phase C.2 (drive Claude Code to install the plugin, or print the paste-in commands).
+- M1.4 `settings.template.json` with the full allow/deny/ask matrix from §3 (stays as a template; per-task instantiation is a Phase 2 skill).
+- M1.5 Global operator `CLAUDE.md` at repo root with the rules agents must follow (dep install §4, push/PR/merge §6).
 
-**Done when:** a fresh Mac runs `install.sh`, logs into both services, and the verification output is all ✅.
+**Done when:** a fresh Mac runs `install.sh`, logs into both services, finishes with the `atelier` plugin installed and verifiable via `/doctor` showing all ✅.
 
 ### Phase 2 — Single-project workflow
 **Deliverables:**
 - M2.1 Agents: `task-orchestrator`, `implementer`, `tester`, `pr-author`.
-- M2.2 Skills: `task-discovery` (parses ROADMAP §5), `git-wt`, `pr-flow`, `safe-commit`, `safe-install`.
-- M2.3 Slash commands: `/next-task`, `/status`, `/finish-task`, `/setup-project`.
+- M2.2 Skills: `task-discovery` (parses ROADMAP §5), `pr-flow`, `safe-commit`, `safe-install`. (`git-wt` skill ships from the external package.)
+- M2.3 Slash commands: `/next-task`, `/status`, `/finish-task`, `/setup-project` (idempotent via `.atelier-config.json`), `/doctor`.
 - M2.4 Hooks: `block-env-commit`, `safe-commit` (lint+test pre-commit).
 
 **Done when:** in a toy repo with 3 tasks in ROADMAP.md, `task` picks the first one, implements it, opens a PR, and reports back — without any operator intervention after the initial `task`.
