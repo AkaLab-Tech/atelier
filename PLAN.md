@@ -89,7 +89,7 @@ Phase C is split in two: **C.1** handles what can't live inside a Claude Code pl
     - **Preferred** — `install.sh` drives Claude Code non-interactively to run:
       ```
       /plugin marketplace add AkaLab-Tech/atelier
-      /plugin install atelier@atelier
+      /plugin install atelier@akalab-tech
       ```
     - **Fallback** — `install.sh` prints the two commands for the operator to paste into their next `claude` session.
 
@@ -345,7 +345,7 @@ Phases are sequential. Each phase ends with a verifiable milestone.
 ### Phase 1 — Foundation
 **Deliverables:**
 - M1.1 Repo skeleton: `.claude-plugin/`, `agents/`, `skills/`, `commands/`, `hooks/`, `templates/`, `scripts/`.
-- M1.2 Plugin manifest: `.claude-plugin/plugin.json` (name, version, description, `skills: "./skills/"`) and `.claude-plugin/marketplace.json`. Validate the plugin loads in a clean Claude Code install via `/plugin marketplace add <local-path>` → `/plugin install atelier@atelier`.
+- M1.2 Plugin manifest: `.claude-plugin/plugin.json` (name `atelier`, version, description, author) and `.claude-plugin/marketplace.json` (marketplace name `akalab-tech` — vendor-scoped, distinct from the plugin name to avoid `atelier@atelier` resolver collision observed during M1.2; plugin entry uses `source: "./"`). The `skills/` directory at the plugin root is auto-discovered by Claude Code, so the `skills` field is intentionally omitted. Validate the plugin loads in a clean Claude Code install via `/plugin marketplace add <local-path>` → `/plugin install atelier@akalab-tech`.
 - M1.3 `install.sh` doing **only** Phase A (deps) + Phase B (auth) + Phase C.1 (host-OS: git-wt, `.npmrc`, `.env*` excludes, git identity, shell hooks) + Phase C.2 (drive Claude Code to install the plugin, or print the paste-in commands).
 - M1.4 `settings.template.json` with the full allow/deny/ask matrix from §3 (stays as a template; per-task instantiation is a Phase 2 skill).
 - M1.5 Global operator `CLAUDE.md` at repo root with the rules agents must follow (dep install §4, push/PR/merge §6).
