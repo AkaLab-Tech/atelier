@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "atelier",
+  "version": "0.1.0",
+  "description": "An atelier of AI agents for autonomous software delivery",
+  "author": {
+    "name": "AkaLab-Tech",
+    "url": "https://github.com/AkaLab-Tech"
+  },
+  "homepage": "https://github.com/AkaLab-Tech/atelier",
+  "repository": "https://github.com/AkaLab-Tech/atelier",
+  "keywords": [
+    "agents",
+    "automation",
+    "claude-code",
+    "workstation"
+  ]
+}

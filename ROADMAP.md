@@ -12,16 +12,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phase 1 — Foundation.** Blocks everything else. A fresh Mac must be able to run `install.sh`, log in to Claude + GitHub, and end with the `atelier` plugin installed and `/doctor` ✅.
 
-### M1.2 — Plugin manifest and marketplace
-
-Author `.claude-plugin/plugin.json` (name `atelier`, version, description, author, `skills: "./skills/"`) and `.claude-plugin/marketplace.json` so the plugin can be installed via `/plugin marketplace add <local-path>` → `/plugin install atelier@atelier`.
-
-- [ ] Write `plugin.json` with semver and required fields.
-- [ ] Write `marketplace.json` exposing this repo as a marketplace entry.
-- [ ] Validate end-to-end in a clean Claude Code install: marketplace add → install → `/doctor` (or any bundled command) loads.
-
-**Acceptance:** a new Claude Code session can install the plugin from a local checkout without errors and the plugin appears in `~/.claude/plugins/` (or equivalent cache).
-
 ### M1.3 — `install.sh` (Phases A + B + C.1 + C.2)
 
 Single entry-point installer. **Splits into four sub-phases per PLAN.md §2** — keep them in one script with clear sections, not four scripts.
@@ -29,7 +19,7 @@ Single entry-point installer. **Splits into four sub-phases per PLAN.md §2** �
 - [ ] **Phase A** — detect OS/arch; install base deps via brew/apt: `git`, `gh`, `fnm`, `pnpm` (via `corepack enable`), `jq`, `fzf`, `playwright`. Install Claude Code if missing.
 - [ ] **Phase B** — drive `claude /login` (browser) and `gh auth login --hostname github.com --git-protocol https --web --scopes "repo,workflow,project,read:org"` + `gh auth setup-git`. **HTTPS only — never SSH.**
 - [ ] **Phase C.1** — install external `git-wt` non-interactively (`/tmp/git-wt/install.sh --skill-for=claude`); write global `.npmrc` (`ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate`); add `.env*` to `core.excludesFile`; configure git identity (prompt only if missing); inject shellrc hooks (`fnm env --use-on-cd`, `task`, `task-status` aliases).
-- [ ] **Phase C.2** — drive Claude Code to run `/plugin marketplace add AkaLab-Tech/atelier` + `/plugin install atelier@atelier`. Fallback: print the two commands for the operator to paste.
+- [ ] **Phase C.2** — drive Claude Code to run `/plugin marketplace add AkaLab-Tech/atelier` + `/plugin install atelier@akalab-tech`. Fallback: print the two commands for the operator to paste.
 - [ ] Final verification block: `claude --version`, `gh auth status`, `git wt help`, plugin presence, `/doctor` invocation; print ✅/❌ per check.
 - [ ] Idempotency: re-running on an already-configured machine must not break anything and must surface a clear status.
 
