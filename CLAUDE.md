@@ -24,8 +24,8 @@ Note: the **operator-facing** ROADMAP format defined in PLAN.md §5 (P0/P1/P2 wi
 Three layers, each with a different delivery mechanism:
 
 1. **Plugin layer** — the bulk of atelier ships as a Claude Code native plugin (`.claude-plugin/plugin.json` + `marketplace.json`). Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/`, `CLAUDE.md` from the plugin root. **Plugin scripts and hooks must reference paths via `$CLAUDE_PLUGIN_ROOT`** — never hardcode absolute paths or assume `~/.claude/...`.
-2. **Host-OS layer** — `install.sh` Phase C.1 handles what cannot live inside a plugin: base deps, Claude Code itself, GitHub HTTPS auth, the external `git-wt` package, global `.npmrc` guardrails, `.env*` in git's global excludes, `fnm` shellrc hooks, git identity.
-3. **Per-project layer** — `/setup-project <path>` creates `.claude/settings.json` (instantiated from `settings.template.json` with the worktree path injected), project `ROADMAP.md`, project `.claude/CLAUDE.md`.
+2. **Host-OS layer** — `install.sh` Phase C.1 handles what cannot live inside a plugin: base deps, Claude Code itself, GitHub HTTPS auth, the external `git-wt` package, `.env*` in git's global excludes, `fnm` shellrc hooks, git identity. (Note: pnpm supply-chain guardrails live in each project's `.npmrc`, not in `~/.npmrc` — see §3.)
+3. **Per-project layer** — `/setup-project <path>` creates `.claude/settings.json` (instantiated from `settings.template.json` with the worktree path injected), project `ROADMAP.md`, project `.claude/CLAUDE.md`, project `.npmrc` (pnpm guardrails from PLAN.md §4).
 
 Isolation: every task runs inside its own git worktree (managed via the external `git-wt` skill, sourced from [Miguelslo27/git-wt](https://github.com/Miguelslo27/git-wt) — **not** maintained here). `Edit`/`Write` permissions are scoped to that worktree per task.
 
@@ -36,7 +36,7 @@ These are binding rules an implementer must respect:
 - **Package manager**: `pnpm` only. Never fall back to `npm` (PLAN.md §2 step 2).
 - **Node**: managed by `fnm` with per-project `.nvmrc`. No `nvm`, no system Node assumptions.
 - **GitHub auth**: HTTPS only. **Never** generate, reference, or rely on SSH keys. Cloning is `gh repo clone` or `https://github.com/...` (PLAN.md §2 step 5).
-- **Dependency installs** (PLAN.md §4): self-question if stdlib suffices → compare ≥2 alternatives → justify in commit/PR → reject packages <7 days old (`.npmrc minimum-release-age=10080`) → reject moderate+ vulnerabilities (`.npmrc audit-level=moderate`). Use `/safe-install` once it exists.
+- **Dependency installs** (PLAN.md §4): self-question if stdlib suffices → compare ≥2 alternatives → justify in commit/PR → reject packages <7 days old (per-project `.npmrc minimum-release-age=10080` written by `/setup-project`) → reject moderate+ vulnerabilities (per-project `.npmrc audit-level=moderate`). Use `/safe-install` once it exists.
 - **Git push** is restricted to `origin task/<id>-<slug>`. Pushing to `main`/`master`/`develop`/`staging` or any `--force` push is in the absolute deny list (PLAN.md §3).
 - **`package.json` and `pnpm-lock.yaml`** are not edited directly — always go through `pnpm add/remove/update`.
 - **Workflows under `.github/workflows/**`** are not edited by agents.

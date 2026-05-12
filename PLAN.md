@@ -20,8 +20,8 @@ This repo (`atelier`) is the single artifact the operator clones. `install.sh` l
 ### Two-layer configuration
 
 - **Global** — distributed as a **Claude Code native plugin**. This repo ships `.claude-plugin/plugin.json` + `marketplace.json` so the operator installs everything with `/plugin marketplace add` + `/plugin install atelier`. Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/` and `CLAUDE.md` from the plugin root. Hooks and scripts reference files via `$CLAUDE_PLUGIN_ROOT` — never hardcoded paths.
-- **Host-OS layer** (handled by `install.sh` before the plugin is installed): things that can't live inside a Claude plugin — base deps, Claude Code itself, GitHub auth, `git-wt` external package, global `.npmrc`, `.env*` in git excludes, `fnm`/alias shellrc hooks, git identity.
-- **Per project** (created by `/setup-project <path>`): `ROADMAP.md`, `.claude/settings.json` (generated from `settings.template.json`), `.claude/CLAUDE.md` with project-specific rules, optional project-specific agents/skills that override globals.
+- **Host-OS layer** (handled by `install.sh` before the plugin is installed): things that can't live inside a Claude plugin — base deps, Claude Code itself, GitHub auth, `git-wt` external package, `.env*` in git excludes, `fnm`/alias shellrc hooks, git identity.
+- **Per project** (created by `/setup-project <path>`): `ROADMAP.md`, `.claude/settings.json` (generated from `settings.template.json`), `.claude/CLAUDE.md` with project-specific rules, `.npmrc` (pnpm supply-chain guardrails — see §4), optional project-specific agents/skills that override globals.
 
 ### Isolation guarantees
 
@@ -70,12 +70,13 @@ Phase C is split in two: **C.1** handles what can't live inside a Claude Code pl
    /tmp/git-wt/install.sh --skill-for=claude
    ```
    Installs the binary to `~/.local/bin/git-wt`, injects the shell wrapper into `~/.zshrc`/`~/.bashrc`, and drops the Claude skill at `~/.claude/skills/git-wt/`.
-7. Install global `.npmrc` guardrails:
+7. **pnpm supply-chain guardrails are per-project, not global.** `install.sh` no longer touches `~/.npmrc`. The `.npmrc` file with
    ```ini
    ignore-scripts=true          # block postinstall/preinstall scripts
    minimum-release-age=10080    # 7 days in minutes — anti supply-chain
    audit-level=moderate         # pnpm audit fails on moderate+ vulns
    ```
+   is written by `/setup-project` (M2.3) into each atelier-managed project. **Rationale:** writing the guardrail globally during `install.sh` broke unrelated host-level tooling on the maintainer's machine (Claude Code's own native-binary postinstall). Per-project scope keeps the guardrail close to where atelier actually executes `pnpm add`, while leaving the operator's host pnpm/npm usage untouched.
 8. Ensure `.env*` is in git's global excludes (`core.excludesFile`).
 9. Configure git identity (prompt only if missing).
 10. Add shell hooks and aliases to `~/.zshrc`/`~/.bashrc`:
@@ -149,8 +150,8 @@ The agent must follow these before any `pnpm add`:
 1. **Self-question**: does stdlib / existing utilities already solve this?
 2. **Compare** ≥2 alternatives. Prefer: more downloads, maintained in last 6 months, minimal transitive deps.
 3. **Justify** the choice in commit message / PR description.
-4. **Never** install a package < 7 days old (enforced by `.npmrc minimum-release-age`).
-5. **Never** install with reported vulnerabilities (enforced by `.npmrc audit-level`).
+4. **Never** install a package < 7 days old (enforced by the per-project `.npmrc minimum-release-age=10080` written by `/setup-project`).
+5. **Never** install with reported vulnerabilities (enforced by the per-project `.npmrc audit-level=moderate`).
 6. Use `/safe-install <pkg>` which wraps: `pnpm view` → decision → `pnpm add` → `pnpm audit`.
 
 ---
@@ -254,8 +255,8 @@ Auto-discovered by Claude Code from the plugin's `./skills/` directory (no expli
 - `/resume-task <id>` — continue after interruption.
 - `/finish-task` — finalize PR.
 - `/status` — what's in progress, blocked, awaiting review.
-- `/setup-project <path>` — initialize a new project with `.claude/settings.json`, `ROADMAP.md`, `.gitignore` entries. **Idempotent**: writes `~/.claude/.atelier-config.json` with `setupCompleted` (ISO timestamp) + `setupVersion`. Re-running on a configured project skips the wizard and offers a "reconfigure" flow instead. Pattern borrowed from [`omc-setup`](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/main/skills/omc-setup/SKILL.md).
-- `/doctor` — health check. Verifies: plugin version vs. latest, no legacy hooks leaking into `~/.claude/settings.json`, `git-wt` binary present, `fnm` hook active in shellrc, `.npmrc` guardrails in place, per-project `.atelier-config.json` consistency. Borrowed from [`omc-doctor`](https://github.com/Yeachan-Heo/oh-my-claudecode/tree/main/skills/omc-doctor).
+- `/setup-project <path>` — initialize a new project with `.claude/settings.json`, `ROADMAP.md`, `.npmrc` (pnpm guardrails — see §4), `.gitignore` entries. **Idempotent**: writes `~/.claude/.atelier-config.json` with `setupCompleted` (ISO timestamp) + `setupVersion`. Re-running on a configured project skips the wizard and offers a "reconfigure" flow instead. Pattern borrowed from [`omc-setup`](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/main/skills/omc-setup/SKILL.md).
+- `/doctor` — health check. Verifies: plugin version vs. latest, no legacy hooks leaking into `~/.claude/settings.json`, `git-wt` binary present, `fnm` hook active in shellrc, current project's `.npmrc` guardrails in place, per-project `.atelier-config.json` consistency. Borrowed from [`omc-doctor`](https://github.com/Yeachan-Heo/oh-my-claudecode/tree/main/skills/omc-doctor).
 
 ---
 
@@ -281,7 +282,7 @@ On successful merge, logs are attached to the PR as an artifact.
 
 1. `git pull` inside the `atelier` repo.
 2. Detect changed files since last pull.
-3. Apply only the deltas (re-symlink changed files, patch `.npmrc` if changed, etc.).
+3. Apply only the deltas (re-symlink changed files, patch the per-project `.npmrc` template if changed, etc.).
 4. **If `settings.template.json` changed**, prompt the operator with a detailed permission diff:
 
 ```
@@ -346,7 +347,7 @@ Phases are sequential. Each phase ends with a verifiable milestone.
 **Deliverables:**
 - M1.1 Repo skeleton: `.claude-plugin/`, `agents/`, `skills/`, `commands/`, `hooks/`, `templates/`, `scripts/`.
 - M1.2 Plugin manifest: `.claude-plugin/plugin.json` (name `atelier`, version, description, author) and `.claude-plugin/marketplace.json` (marketplace name `akalab-tech` — vendor-scoped, distinct from the plugin name to avoid `atelier@atelier` resolver collision observed during M1.2; plugin entry uses `source: "./"`). The `skills/` directory at the plugin root is auto-discovered by Claude Code, so the `skills` field is intentionally omitted. Validate the plugin loads in a clean Claude Code install via `/plugin marketplace add <local-path>` → `/plugin install atelier@akalab-tech`.
-- M1.3 `install.sh` doing **only** Phase A (deps) + Phase B (auth) + Phase C.1 (host-OS: git-wt, `.npmrc`, `.env*` excludes, git identity, shell hooks) + Phase C.2 (drive Claude Code to install the plugin, or print the paste-in commands).
+- M1.3 `install.sh` doing **only** Phase A (deps) + Phase B (auth) + Phase C.1 (host-OS: git-wt, `.env*` excludes, git identity, shell hooks) + Phase C.2 (drive Claude Code to install the plugin, or print the paste-in commands). Note: per-project `.npmrc` guardrails are written by `/setup-project` (M2.3), not by `install.sh`.
 - M1.4 `settings.template.json` with the full allow/deny/ask matrix from §3 (stays as a template; per-task instantiation is a Phase 2 skill).
 - M1.5 Global operator `CLAUDE.md` at repo root with the rules agents must follow (dep install §4, push/PR/merge §6).
 
@@ -356,7 +357,7 @@ Phases are sequential. Each phase ends with a verifiable milestone.
 **Deliverables:**
 - M2.1 Agents: `task-orchestrator`, `implementer`, `tester`, `pr-author`.
 - M2.2 Skills: `task-discovery` (parses ROADMAP §5), `pr-flow`, `safe-commit`, `safe-install`. (`git-wt` skill ships from the external package.)
-- M2.3 Slash commands: `/next-task`, `/status`, `/finish-task`, `/setup-project` (idempotent via `.atelier-config.json`), `/doctor`.
+- M2.3 Slash commands: `/next-task`, `/status`, `/finish-task`, `/setup-project` (idempotent via `.atelier-config.json`; writes the project's `.npmrc` guardrails per §4), `/doctor`.
 - M2.4 Hooks: `block-env-commit`, `safe-commit` (lint+test pre-commit).
 
 **Done when:** in a toy repo with 3 tasks in ROADMAP.md, `task` picks the first one, implements it, opens a PR, and reports back — without any operator intervention after the initial `task`.
@@ -380,7 +381,7 @@ Phases are sequential. Each phase ends with a verifiable milestone.
 ### Phase 5 — Multi-project
 **Deliverables:**
 - M5.1 Project registry at `~/.claude-work/projects.json`.
-- M5.2 `/setup-project` bootstraps a new project.
+- M5.2 `/setup-project` bootstraps a new project end-to-end: `.claude/settings.json`, `ROADMAP.md`, `.claude/CLAUDE.md`, `.npmrc` (pnpm guardrails), `.gitignore`, and registry entry.
 - M5.3 `task` alias resolves current project from cwd (fallback to menu if not inside one).
 
 **Done when:** two toy projects coexist, `task` in each picks from its own ROADMAP.md, agents don't cross-pollinate.

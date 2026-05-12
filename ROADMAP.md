@@ -16,10 +16,10 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 Single entry-point installer. **Splits into four sub-phases per PLAN.md §2** — keep them in one script with clear sections, not four scripts.
 
-- [ ] **Decide npmrc strategy** before Phase C.1 writes the guardrail. M1.2 confirmed that `ignore-scripts=true` in `~/.npmrc` breaks the `claude` CLI native-binary postinstall. Pick between: (A) install Claude Code via a non-npm channel (brew/curl) so the global guardrail is safe; (B) order Phase A to install Claude Code *before* Phase C.1 writes the npmrc; or (C) scope the guardrail to project-level `.npmrc` via `/setup-project` instead of global. See [HISTORY.md](HISTORY.md) M1.2 follow-up for context.
+- [x] **npmrc strategy decided: scope to per-project (option C).** The `.npmrc` guardrail (`ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate`) is written by `/setup-project` (M2.3) into each atelier-managed project, not into global `~/.npmrc`. Avoids breaking unrelated host-level tooling (notably Claude Code's own native-binary postinstall, broken on the maintainer's machine during M1.2) and matches PLAN.md §3's "allowlist-based, grown organically" principle. Phase C.1 below no longer touches `.npmrc`.
 - [ ] **Phase A** — detect OS/arch; install base deps via brew/apt: `git`, `gh`, `fnm`, `pnpm` (via `corepack enable`), `jq`, `fzf`, `playwright`. Install Claude Code if missing.
 - [ ] **Phase B** — drive `claude /login` (browser) and `gh auth login --hostname github.com --git-protocol https --web --scopes "repo,workflow,project,read:org"` + `gh auth setup-git`. **HTTPS only — never SSH.**
-- [ ] **Phase C.1** — install external `git-wt` non-interactively (`/tmp/git-wt/install.sh --skill-for=claude`); write global `.npmrc` (`ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate`); add `.env*` to `core.excludesFile`; configure git identity (prompt only if missing); inject shellrc hooks (`fnm env --use-on-cd`, `task`, `task-status` aliases).
+- [ ] **Phase C.1** — install external `git-wt` non-interactively (`/tmp/git-wt/install.sh --skill-for=claude`); add `.env*` to `core.excludesFile`; configure git identity (prompt only if missing); inject shellrc hooks (`fnm env --use-on-cd`, `task`, `task-status` aliases). Note: per-project `.npmrc` guardrails are written by `/setup-project` in M2.3, not here.
 - [ ] **Phase C.2** — drive Claude Code to run `/plugin marketplace add AkaLab-Tech/atelier` + `/plugin install atelier@akalab-tech`. Fallback: print the two commands for the operator to paste.
 - [ ] Final verification block: `claude --version`, `gh auth status`, `git wt help`, plugin presence, `/doctor` invocation; print ✅/❌ per check.
 - [ ] Idempotency: re-running on an already-configured machine must not break anything and must surface a clear status.
@@ -68,7 +68,7 @@ Author `task-discovery` (parses ROADMAP §5 format), `pr-flow` (branch → commi
 
 ### M2.3 — Phase 2 slash commands
 
-Author `/next-task`, `/status`, `/finish-task`, `/setup-project`, `/doctor`. `/next-task` instantiates the per-task `settings.json` from `settings.template.json` with the worktree path injected. `/setup-project` is idempotent via `~/.claude/.atelier-config.json` (`setupCompleted` ISO timestamp + `setupVersion`); re-running offers a reconfigure flow.
+Author `/next-task`, `/status`, `/finish-task`, `/setup-project`, `/doctor`. `/next-task` instantiates the per-task `settings.json` from `settings.template.json` with the worktree path injected. `/setup-project` writes the project's `.npmrc` guardrails (`ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate`) per PLAN.md §4, and is idempotent via `~/.claude/.atelier-config.json` (`setupCompleted` ISO timestamp + `setupVersion`); re-running offers a reconfigure flow.
 
 **Acceptance:** in a toy repo, `/next-task` runs end-to-end (pick task → worktree → implement → PR draft) without manual intervention.
 
@@ -126,7 +126,7 @@ Continue a task after interruption: re-attach to its worktree, replay context fr
 
 ### M5.2 — `/setup-project` full bootstrap
 
-Extend the Phase 2 command to be the canonical multi-project entry point: registers in `projects.json`, creates `.claude/settings.json`, project `ROADMAP.md`, project `.claude/CLAUDE.md`, `.gitignore` entries.
+Extend the Phase 2 command to be the canonical multi-project entry point: registers in `projects.json`, creates `.claude/settings.json`, project `ROADMAP.md`, project `.claude/CLAUDE.md`, project `.npmrc` (pnpm guardrails), `.gitignore` entries.
 
 ### M5.3 — `task` alias resolves project from cwd
 
