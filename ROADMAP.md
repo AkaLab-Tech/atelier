@@ -12,15 +12,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phase 1 — Foundation.** Blocks everything else. A fresh Mac must be able to run `install.sh`, log in to Claude + GitHub, and end with the `atelier` plugin installed and `/doctor` ✅.
 
-### M1.1 — Repo skeleton
-
-Create the directory layout the rest of the plan assumes: `.claude-plugin/`, `agents/`, `skills/`, `commands/`, `hooks/`, `templates/`, `scripts/`. Empty `.gitkeep` is fine where there is no content yet.
-
-- [ ] Create the seven directories.
-- [ ] Add a one-line `README` inside each that names its purpose.
-
-**Acceptance:** `ls` shows the seven directories at repo root and each is committed.
-
 ### M1.2 — Plugin manifest and marketplace
 
 Author `.claude-plugin/plugin.json` (name `atelier`, version, description, author, `skills: "./skills/"`) and `.claude-plugin/marketplace.json` so the plugin can be installed via `/plugin marketplace add <local-path>` → `/plugin install atelier@atelier`.

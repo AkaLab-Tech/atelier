@@ -8,5 +8,11 @@ When a PR closes a task, the **same PR** must update both `IN_PROGRESS.md` (remo
 
 ---
 
-<!-- Single-file layout: paste the task block from ROADMAP.md here. -->
-<!-- Indexed layout: link to roadmap/TASK_NNN_<slug>.md and write progress notes inside that file, not here. -->
+### M1.1 — Repo skeleton
+
+Create the directory layout the rest of the plan assumes: `.claude-plugin/`, `agents/`, `skills/`, `commands/`, `hooks/`, `templates/`, `scripts/`. Empty `.gitkeep` is fine where there is no content yet.
+
+- [x] Create the seven directories.
+- [x] Add a one-line `README` inside each that names its purpose.
+
+**Acceptance:** `ls` shows the seven directories at repo root and each is committed.
