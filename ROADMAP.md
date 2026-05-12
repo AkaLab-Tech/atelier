@@ -16,6 +16,7 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 Single entry-point installer. **Splits into four sub-phases per PLAN.md §2** — keep them in one script with clear sections, not four scripts.
 
+- [ ] **Decide npmrc strategy** before Phase C.1 writes the guardrail. M1.2 confirmed that `ignore-scripts=true` in `~/.npmrc` breaks the `claude` CLI native-binary postinstall. Pick between: (A) install Claude Code via a non-npm channel (brew/curl) so the global guardrail is safe; (B) order Phase A to install Claude Code *before* Phase C.1 writes the npmrc; or (C) scope the guardrail to project-level `.npmrc` via `/setup-project` instead of global. See [HISTORY.md](HISTORY.md) M1.2 follow-up for context.
 - [ ] **Phase A** — detect OS/arch; install base deps via brew/apt: `git`, `gh`, `fnm`, `pnpm` (via `corepack enable`), `jq`, `fzf`, `playwright`. Install Claude Code if missing.
 - [ ] **Phase B** — drive `claude /login` (browser) and `gh auth login --hostname github.com --git-protocol https --web --scopes "repo,workflow,project,read:org"` + `gh auth setup-git`. **HTTPS only — never SSH.**
 - [ ] **Phase C.1** — install external `git-wt` non-interactively (`/tmp/git-wt/install.sh --skill-for=claude`); write global `.npmrc` (`ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate`); add `.env*` to `core.excludesFile`; configure git identity (prompt only if missing); inject shellrc hooks (`fnm env --use-on-cd`, `task`, `task-status` aliases).
