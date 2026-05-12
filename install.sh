@@ -75,7 +75,8 @@ phase_a_linux_deps() {
   fi
 
   # git, jq, fzf are in default apt repos.
-  local apt_packages=(git jq fzf curl)
+  # `unzip` is required by fnm's official installer below.
+  local apt_packages=(git jq fzf curl unzip)
   local missing_apt=()
   for p in "${apt_packages[@]}"; do
     if has "$p"; then
