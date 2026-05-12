@@ -42,11 +42,11 @@ The operator runs **one command** and answers at most **two prompts** (Claude lo
 ### Phase A — Preparation (no interaction)
 1. Detect OS (macOS/Linux) and architecture.
 2. Verify / install base dependencies via Homebrew (mac) or apt (linux):
-   - `git`, `gh`, `fnm`, `pnpm`, `jq`, `fzf`, `playwright`.
+   - `git`, `gh`, `fnm`, `pnpm`, `jq`, `fzf`. (Playwright moved to M3.1 / `e2e-runner`: only operators running e2e tasks need the ~250 MB browser bundle.)
    - **Node** is managed by `fnm` (Rust-based, fast startup, native `.nvmrc` support). Each project pins its Node version in a `.nvmrc` file at its root; `fnm` auto-switches on `cd` via `eval "$(fnm env --use-on-cd)"` (added to the operator's shellrc in Phase C). If a project has no `.nvmrc`, `fnm` falls back to the latest LTS installed at provisioning time.
    - **`pnpm`** is the package manager of choice — never fall back to `npm`. Installed via `corepack enable` once Node is available.
    - **`fzf`** enables the interactive picker for `git wt switch` (see Phase C, `git-wt` install).
-3. Install Claude Code if not present (official installer).
+3. Install Claude Code if not present via the official native installer: `curl -fsSL https://claude.ai/install.sh | bash`. Lands the signed native binary at `~/.local/bin/claude` and self-updates in the background. The `curl|sh` pattern is in the agent-level deny-list (PLAN.md §3), but `install.sh` runs in the operator's terminal before atelier's agent layer is active, so it is out of that scope.
 
 ### Phase B — Authentication (only human interaction)
 4. Claude Code login: launch `claude /login`, opens browser.
