@@ -48,6 +48,22 @@ Author the `CLAUDE.md` that ships **inside the plugin** — this is read by Clau
 
 **Acceptance:** in a clean Claude Code install with the plugin loaded, a session in any project sees the plugin's rules in context, and the operator's personal `~/.claude/CLAUDE.md` is untouched.
 
+### M1.6 — Extract `claude-roadmap-tools` and integrate it into `install.sh` + `/doctor`
+
+The ROADMAP/IN_PROGRESS/HISTORY tooling that currently lives only in the maintainer's `~/.claude-personal/` (the `roadmap-tracking-flow` skill and the `/create-roadmap`, `/migrate-roadmap` slash commands) must move to a dedicated public repo so it can be reused outside atelier, and atelier's installer must pull it in alongside itself. `/doctor` must also learn to detect updates for the three artefacts the operator depends on (`atelier`, `claude-roadmap-tools`, `git-wt`) — with two different mechanisms because `git-wt` is not a Claude Code plugin.
+
+- [ ] Publish `AkaLab-Tech/claude-roadmap-tools` as a standalone Claude Code plugin: own `.claude-plugin/plugin.json` + `marketplace.json`, `commands/create-roadmap.md`, `commands/migrate-roadmap.md`, `skills/roadmap-tracking-flow/SKILL.md`. Files are **copied** from `~/.claude-personal/` — the maintainer's local copies stay untouched so the existing setup keeps working during the transition.
+- [ ] Extend `install.sh` Phase C.2 with a new step that runs `/plugin marketplace add AkaLab-Tech/claude-roadmap-tools` + `/plugin install claude-roadmap-tools@akalab-tech` (same Preferred / Fallback pattern as the `atelier` install step). See [PLAN.md §2](PLAN.md) updated for M1.6.
+- [ ] Extend `/doctor` ([PLAN.md §7](PLAN.md)) to report version drift for the three artefacts:
+  - `atelier` → compare local `plugin.json:version` vs latest release/tag in `AkaLab-Tech/atelier`; apply with `/plugin marketplace update atelier`.
+  - `claude-roadmap-tools` → idem against `AkaLab-Tech/claude-roadmap-tools`; apply with `/plugin marketplace update claude-roadmap-tools`.
+  - `git-wt` → compare locally installed SHA (recorded by `install.sh` Phase C.1 at install time) vs `gh api repos/Miguelslo27/git-wt/commits/main`; re-run the external `install.sh --skill-for=claude` to update. **Not** a native plugin, so the `/plugin marketplace update` path does not apply.
+- [ ] `/doctor` reports findings and prints the exact commands the operator must run. It does **not** apply updates automatically (consistent with the project rule of asking before any install operation).
+
+**Out of scope (deferred):** migrating `git-wt` itself to the native plugin system, and having atelier's `marketplace.json` "bundle" the other two plugins. Each plugin stays sovereign in its own repo.
+
+**Acceptance:** (a) `AkaLab-Tech/claude-roadmap-tools` is published and `/plugin install` works against it from a clean Claude Code; (b) `install.sh` on a clean Mac VM ends with both `atelier` and `claude-roadmap-tools` installed; (c) `/doctor` reports either "all up to date" or names exactly which artefact has an update and the command to apply it.
+
 ---
 
 ## Medium Priority

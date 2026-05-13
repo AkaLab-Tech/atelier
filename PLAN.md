@@ -96,7 +96,17 @@ Phase C is split in two: **C.1** handles what can't live inside a Claude Code pl
 
     Once installed, Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/` and `CLAUDE.md` from `$CLAUDE_PLUGIN_ROOT`. Subsequent updates use `/plugin marketplace update atelier` — no re-symlinking.
 
-12. Final verification: `claude --version`, `gh auth status`, `git wt help`, presence of the `atelier` plugin in `~/.claude/plugins/` (or Claude's equivalent cache), and a call to the bundled `/doctor` slash command (see §7) to sanity-check the plugin surface. Print ✅/❌ per check.
+12. Install the **`claude-roadmap-tools`** plugin (separate repo, [AkaLab-Tech/claude-roadmap-tools](https://github.com/AkaLab-Tech/claude-roadmap-tools); see ROADMAP.md M1.6). Provides `/create-roadmap`, `/migrate-roadmap` and the `roadmap-tracking-flow` skill — kept sovereign in its own repo so projects that do not use the full atelier stack can install it standalone. Same delivery options as step 11:
+    - **Preferred** — `install.sh` drives Claude Code non-interactively to run:
+      ```
+      /plugin marketplace add AkaLab-Tech/claude-roadmap-tools
+      /plugin install claude-roadmap-tools@akalab-tech
+      ```
+    - **Fallback** — `install.sh` prints the two commands for the operator to paste into their next `claude` session.
+
+    Subsequent updates use `/plugin marketplace update claude-roadmap-tools` and are surfaced by `/doctor` (see §7). atelier's own `marketplace.json` does **not** bundle this plugin — each plugin stays sovereign in its own repo (same model as the external `git-wt`).
+
+13. Final verification: `claude --version`, `gh auth status`, `git wt help`, presence of the `atelier` **and** `claude-roadmap-tools` plugins in `~/.claude/plugins/` (or Claude's equivalent cache), and a call to the bundled `/doctor` slash command (see §7) to sanity-check the plugin surface. Print ✅/❌ per check.
 
 ---
 
@@ -256,7 +266,7 @@ Auto-discovered by Claude Code from the plugin's `./skills/` directory (no expli
 - `/finish-task` — finalize PR.
 - `/status` — what's in progress, blocked, awaiting review.
 - `/setup-project <path>` — initialize a new project with `.claude/settings.json`, `ROADMAP.md`, `.npmrc` (pnpm guardrails — see §4), `.gitignore` entries. **Idempotent**: writes `~/.claude/.atelier-config.json` with `setupCompleted` (ISO timestamp) + `setupVersion`. Re-running on a configured project skips the wizard and offers a "reconfigure" flow instead. Pattern borrowed from [`omc-setup`](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/main/skills/omc-setup/SKILL.md).
-- `/doctor` — health check. Verifies: plugin version vs. latest, no legacy hooks leaking into `~/.claude/settings.json`, `git-wt` binary present, `fnm` hook active in shellrc, current project's `.npmrc` guardrails in place, per-project `.atelier-config.json` consistency. Borrowed from [`omc-doctor`](https://github.com/Yeachan-Heo/oh-my-claudecode/tree/main/skills/omc-doctor).
+- `/doctor` — health check. Verifies: update status for the three artefacts the operator depends on — `atelier` and `claude-roadmap-tools` via local `plugin.json:version` vs latest release/tag (native `/plugin marketplace update <name>` to apply), and `git-wt` via locally installed SHA (recorded by `install.sh` Phase C.1) vs `gh api repos/Miguelslo27/git-wt/commits/main` (re-run external `install.sh --skill-for=claude` to apply, since `git-wt` is **not** a native plugin); no legacy hooks leaking into `~/.claude/settings.json`; `git-wt` binary present; `fnm` hook active in shellrc; current project's `.npmrc` guardrails in place; per-project `.atelier-config.json` consistency. When an update is available, `/doctor` prints the exact command for the operator to apply it — it does **not** apply updates automatically. Borrowed from [`omc-doctor`](https://github.com/Yeachan-Heo/oh-my-claudecode/tree/main/skills/omc-doctor).
 
 ---
 
