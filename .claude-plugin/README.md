@@ -1,1 +1,1 @@
-Plugin manifest (`plugin.json`) and marketplace entry (`marketplace.json`) consumed by Claude Code's native plugin loader.
+Plugin manifest (`plugin.json`) consumed by Claude Code's native plugin loader. The marketplace catalog that lists `atelier` (together with every other AkaLab-Tech plugin) is hosted separately at [AkaLab-Tech/claude-plugins](https://github.com/AkaLab-Tech/claude-plugins).
