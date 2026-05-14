@@ -12,20 +12,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phase 1 — Foundation.** Blocks everything else. A fresh Mac must be able to run `install.sh`, log in to Claude + GitHub, and end with the `atelier` plugin installed and `/doctor` ✅.
 
-### M1.3 — `install.sh` (Phases A + B + C.1 + C.2)
-
-Single entry-point installer. **Splits into four sub-phases per PLAN.md §2** — keep them in one script with clear sections, not four scripts.
-
-- [x] **npmrc strategy decided: scope to per-project (option C).** The `.npmrc` guardrail (`ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate`) is written by `/setup-project` (M2.3) into each atelier-managed project, not into global `~/.npmrc`. Avoids breaking unrelated host-level tooling (notably Claude Code's own native-binary postinstall, broken on the maintainer's machine during M1.2) and matches PLAN.md §3's "allowlist-based, grown organically" principle. Phase C.1 below no longer touches `.npmrc`.
-- [ ] **Phase A** — detect OS/arch; install base deps via brew/apt: `git`, `gh`, `fnm`, `pnpm` (via `corepack enable`), `jq`, `fzf`, `playwright`. Install Claude Code if missing.
-- [ ] **Phase B** — drive `claude /login` (browser) and `gh auth login --hostname github.com --git-protocol https --web --scopes "repo,workflow,project,read:org"` + `gh auth setup-git`. **HTTPS only — never SSH.**
-- [ ] **Phase C.1** — install external `git-wt` non-interactively (`/tmp/git-wt/install.sh --skill-for=claude`); add `.env*` to `core.excludesFile`; configure git identity — always prompt for global `user.name` and `user.email`, showing the currently configured values (from `git config --global --get user.name`/`user.email`) as defaults so the operator can accept with Enter or overwrite; inject shellrc hooks (`fnm env --use-on-cd`, `task`, `task-status` aliases). Note: per-project `.npmrc` guardrails are written by `/setup-project` in M2.3, not here.
-- [ ] **Phase C.2** — drive Claude Code to run `/plugin marketplace add AkaLab-Tech/atelier` + `/plugin install atelier@akalab-tech`. Fallback: print the two commands for the operator to paste.
-- [ ] Final verification block: `claude --version`, `gh auth status`, `git wt help`, plugin presence, `/doctor` invocation; print ✅/❌ per check.
-- [ ] Idempotency: re-running on an already-configured machine must not break anything and must surface a clear status.
-
-**Acceptance:** running `install.sh` on a clean Mac VM finishes with all final checks green.
-
 ### M1.4 — `settings.template.json`
 
 Materialize the full allow / deny / ask matrix from [PLAN.md §3](PLAN.md). Stays as a **template** in this milestone — per-task instantiation (worktree path injected into `Edit`/`Write` patterns and `additionalDirectories`) is built in Phase 2.
@@ -96,7 +82,7 @@ Implement `block-env-commit` (`PreToolUse` on `git add`/`git commit` blocks any 
 
 ### M3.1 — `e2e-runner` agent + `visual-validation` skill
 
-Sonnet agent that drives Playwright and captures screenshots; companion skill that knows how to attach screenshots to a PR description.
+Sonnet agent that drives Playwright and captures screenshots; companion skill that knows how to attach screenshots to a PR description. **Includes installing Playwright + browsers** (chromium/firefox/webkit) on the host — this responsibility moved from `install.sh` M1.3 Phase A into M3.1 so operators who never run e2e tasks don't pay the ~250 MB browser download upfront.
 
 **Acceptance:** a PR opened by the toy-repo flow has Playwright output attached and screenshots embedded in the description.
 
