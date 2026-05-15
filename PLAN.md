@@ -19,7 +19,7 @@ This repo (`atelier`) is the single artifact the operator clones. `install.sh` l
 
 ### Two-layer configuration
 
-- **Global** — distributed as a **Claude Code native plugin**. This repo ships `.claude-plugin/plugin.json` + `marketplace.json` so the operator installs everything with `/plugin marketplace add` + `/plugin install atelier`. Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/` and `CLAUDE.md` from the plugin root. Hooks and scripts reference files via `$CLAUDE_PLUGIN_ROOT` — never hardcoded paths.
+- **Global** — distributed as a **Claude Code native plugin**. This repo ships `.claude-plugin/plugin.json` only; the marketplace catalog (`marketplace.json`) that lists `atelier` lives in a dedicated repo, [AkaLab-Tech/claude-plugins](https://github.com/AkaLab-Tech/claude-plugins), alongside every other AkaLab-Tech plugin. The operator installs everything with `/plugin marketplace add AkaLab-Tech/claude-plugins` + `/plugin install atelier@akalab-tech`. Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/` and `CLAUDE.md` from the plugin root. Hooks and scripts reference files via `$CLAUDE_PLUGIN_ROOT` — never hardcoded paths.
 - **Host-OS layer** (handled by `install.sh` before the plugin is installed): things that can't live inside a Claude plugin — base deps, Claude Code itself, GitHub auth, `git-wt` external package, `.env*` in git excludes, `fnm`/alias shellrc hooks, git identity.
 - **Per project** (created by `/setup-project <path>`): `ROADMAP.md`, `.claude/settings.json` (generated from `settings.template.json`), `.claude/CLAUDE.md` with project-specific rules, `.npmrc` (pnpm supply-chain guardrails — see §4), optional project-specific agents/skills that override globals.
 
@@ -31,7 +31,7 @@ This repo (`atelier`) is the single artifact the operator clones. `install.sh` l
 
 ### Why a plugin and not symlinks
 
-The native plugin system gives us: (a) one-liner install/update via `/plugin marketplace update atelier`, (b) semver via `plugin.json`, (c) `$CLAUDE_PLUGIN_ROOT` for clean multi-checkout support, (d) auto-discovery by convention. It does **not** increase lock-in vs symlinks — both depend on Claude Code loading skills/agents/hooks; the manifest just formalizes the same contract. Reference: [Yeachan-Heo/oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) validated this pattern at scale.
+The native plugin system gives us: (a) one-liner install/update via `/plugin marketplace update akalab-tech` (refreshes every AkaLab-Tech plugin in the catalog), (b) semver via `plugin.json`, (c) `$CLAUDE_PLUGIN_ROOT` for clean multi-checkout support, (d) auto-discovery by convention. It does **not** increase lock-in vs symlinks — both depend on Claude Code loading skills/agents/hooks; the manifest just formalizes the same contract. Reference: [Yeachan-Heo/oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) validated this pattern at scale.
 
 ---
 
@@ -86,25 +86,24 @@ Phase C is split in two: **C.1** handles what can't live inside a Claude Code pl
 
 #### C.2 — Claude Code plugin install (last step)
 
-11. Install the `atelier` plugin from this repo's marketplace manifest. This replaces the old symlink-into-`~/.claude/` approach. Two delivery options (implementation detail, tested during Phase 1):
+11. Install the `atelier` plugin from the central AkaLab-Tech marketplace catalog ([AkaLab-Tech/claude-plugins](https://github.com/AkaLab-Tech/claude-plugins)). This replaces the old symlink-into-`~/.claude/` approach. Two delivery options (implementation detail, tested during Phase 1):
     - **Preferred** — `install.sh` drives Claude Code non-interactively to run:
       ```
-      /plugin marketplace add AkaLab-Tech/atelier
+      /plugin marketplace add AkaLab-Tech/claude-plugins
       /plugin install atelier@akalab-tech
       ```
     - **Fallback** — `install.sh` prints the two commands for the operator to paste into their next `claude` session.
 
-    Once installed, Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/` and `CLAUDE.md` from `$CLAUDE_PLUGIN_ROOT`. Subsequent updates use `/plugin marketplace update atelier` — no re-symlinking.
+    Once installed, Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/` and `CLAUDE.md` from `$CLAUDE_PLUGIN_ROOT`. Subsequent updates use `/plugin marketplace update akalab-tech` followed by `/plugin update atelier@akalab-tech` — no re-symlinking. The same `marketplace add` also exposes the other plugins in the catalog, so step 12 below does not need to add it again.
 
-12. Install the **`claude-roadmap-tools`** plugin (separate repo, [AkaLab-Tech/claude-roadmap-tools](https://github.com/AkaLab-Tech/claude-roadmap-tools); see ROADMAP.md M1.6). Provides `/create-roadmap`, `/migrate-roadmap` and the `roadmap-tracking-flow` skill — kept sovereign in its own repo so projects that do not use the full atelier stack can install it standalone. Same delivery options as step 11:
+12. Install the **`claude-roadmap-tools`** plugin (separate repo, [AkaLab-Tech/claude-roadmap-tools](https://github.com/AkaLab-Tech/claude-roadmap-tools); see ROADMAP.md M1.6). Provides `/create-roadmap`, `/migrate-roadmap` and the `roadmap-tracking-flow` skill — kept sovereign in its own repo so projects that do not use the full atelier stack can install it standalone. Step 11 already added the `akalab-tech` marketplace, so only the install command is needed here:
     - **Preferred** — `install.sh` drives Claude Code non-interactively to run:
       ```
-      /plugin marketplace add AkaLab-Tech/claude-roadmap-tools
       /plugin install claude-roadmap-tools@akalab-tech
       ```
-    - **Fallback** — `install.sh` prints the two commands for the operator to paste into their next `claude` session.
+    - **Fallback** — `install.sh` prints the command for the operator to paste into their next `claude` session.
 
-    Subsequent updates use `/plugin marketplace update claude-roadmap-tools` and are surfaced by `/doctor` (see §7). atelier's own `marketplace.json` does **not** bundle this plugin — each plugin stays sovereign in its own repo (same model as the external `git-wt`).
+    Subsequent updates use `/plugin marketplace update akalab-tech` followed by `/plugin update claude-roadmap-tools@akalab-tech`, and are surfaced by `/doctor` (see §7). The `claude-roadmap-tools` plugin code still lives in its own GitHub repository; the catalog entry in `AkaLab-Tech/claude-plugins` references it via the `github` plugin source so each plugin retains independent versioning and release cadence (same sovereignty model as `atelier` and the external `git-wt`).
 
 13. Final verification: `claude --version`, `gh auth status`, `git wt help`, presence of the `atelier` **and** `claude-roadmap-tools` plugins in `~/.claude/plugins/` (or Claude's equivalent cache), and a call to the bundled `/doctor` slash command (see §7) to sanity-check the plugin surface. Print ✅/❌ per check.
 
@@ -266,7 +265,7 @@ Auto-discovered by Claude Code from the plugin's `./skills/` directory (no expli
 - `/finish-task` — finalize PR.
 - `/status` — what's in progress, blocked, awaiting review.
 - `/setup-project <path>` — initialize a new project with `.claude/settings.json`, `ROADMAP.md`, `.npmrc` (pnpm guardrails — see §4), `.gitignore` entries. **Idempotent**: writes `~/.claude/.atelier-config.json` with `setupCompleted` (ISO timestamp) + `setupVersion`. Re-running on a configured project skips the wizard and offers a "reconfigure" flow instead. Pattern borrowed from [`omc-setup`](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/main/skills/omc-setup/SKILL.md).
-- `/doctor` — health check. Verifies: update status for the three artefacts the operator depends on — `atelier` and `claude-roadmap-tools` via local `plugin.json:version` vs latest release/tag (native `/plugin marketplace update <name>` to apply), and `git-wt` via locally installed SHA (recorded by `install.sh` Phase C.1) vs `gh api repos/Miguelslo27/git-wt/commits/main` (re-run external `install.sh --skill-for=claude` to apply, since `git-wt` is **not** a native plugin); no legacy hooks leaking into `~/.claude/settings.json`; `git-wt` binary present; `fnm` hook active in shellrc; current project's `.npmrc` guardrails in place; per-project `.atelier-config.json` consistency. When an update is available, `/doctor` prints the exact command for the operator to apply it — it does **not** apply updates automatically. Borrowed from [`omc-doctor`](https://github.com/Yeachan-Heo/oh-my-claudecode/tree/main/skills/omc-doctor).
+- `/doctor` — health check. Verifies: update status for the three artefacts the operator depends on — `atelier` and `claude-roadmap-tools` via local `plugin.json:version` vs latest release/tag (both live in the shared `akalab-tech` marketplace, so a single `/plugin marketplace update akalab-tech` followed by `/plugin update <name>@akalab-tech` refreshes whichever is stale), and `git-wt` via locally installed SHA (recorded by `install.sh` Phase C.1) vs `gh api repos/Miguelslo27/git-wt/commits/main` (re-run external `install.sh --skill-for=claude` to apply, since `git-wt` is **not** a native plugin); no legacy hooks leaking into `~/.claude/settings.json`; `git-wt` binary present; `fnm` hook active in shellrc; current project's `.npmrc` guardrails in place; per-project `.atelier-config.json` consistency. When an update is available, `/doctor` prints the exact command for the operator to apply it — it does **not** apply updates automatically. Borrowed from [`omc-doctor`](https://github.com/Yeachan-Heo/oh-my-claudecode/tree/main/skills/omc-doctor).
 
 ---
 
@@ -356,7 +355,7 @@ Phases are sequential. Each phase ends with a verifiable milestone.
 ### Phase 1 — Foundation
 **Deliverables:**
 - M1.1 Repo skeleton: `.claude-plugin/`, `agents/`, `skills/`, `commands/`, `hooks/`, `templates/`, `scripts/`.
-- M1.2 Plugin manifest: `.claude-plugin/plugin.json` (name `atelier`, version, description, author) and `.claude-plugin/marketplace.json` (marketplace name `akalab-tech` — vendor-scoped, distinct from the plugin name to avoid `atelier@atelier` resolver collision observed during M1.2; plugin entry uses `source: "./"`). The `skills/` directory at the plugin root is auto-discovered by Claude Code, so the `skills` field is intentionally omitted. Validate the plugin loads in a clean Claude Code install via `/plugin marketplace add <local-path>` → `/plugin install atelier@akalab-tech`.
+- M1.2 Plugin manifest: `.claude-plugin/plugin.json` (name `atelier`, version, description, author). The marketplace catalog (`marketplace.json`, name `akalab-tech`) initially shipped here too but was subsequently extracted to the dedicated [AkaLab-Tech/claude-plugins](https://github.com/AkaLab-Tech/claude-plugins) repo so a single marketplace can list every AkaLab-Tech plugin (see ROADMAP.md M1.6 architecture refinement). The `skills/` directory at the plugin root is auto-discovered by Claude Code, so the `skills` field is intentionally omitted. Validate the plugin loads in a clean Claude Code install via `/plugin marketplace add AkaLab-Tech/claude-plugins` → `/plugin install atelier@akalab-tech`.
 - M1.3 `install.sh` doing **only** Phase A (deps) + Phase B (auth) + Phase C.1 (host-OS: git-wt, `.env*` excludes, git identity, shell hooks) + Phase C.2 (drive Claude Code to install the plugin, or print the paste-in commands). Note: per-project `.npmrc` guardrails are written by `/setup-project` (M2.3), not by `install.sh`.
 - M1.4 `settings.template.json` with the full allow/deny/ask matrix from §3 (stays as a template; per-task instantiation is a Phase 2 skill).
 - M1.5 Global operator `CLAUDE.md` at repo root with the rules agents must follow (dep install §4, push/PR/merge §6).
