@@ -178,9 +178,66 @@ phase_a() {
   ok "Phase A complete"
 }
 
+# ---------- phase B: authentication ----------
+
+phase_b_claude_login() {
+  # `claude auth status` exits 0 if authenticated, non-0 otherwise. This is
+  # the idempotency hinge — re-runs of install.sh on an already-logged-in
+  # machine short-circuit here without touching the browser.
+  if claude auth status >/dev/null 2>&1; then
+    sublog "Claude Code already authenticated"
+    return
+  fi
+  sublog "starting Claude Code login (a browser tab will open)"
+  claude auth login
+}
+
+phase_b_github_login() {
+  if gh auth status --hostname github.com >/dev/null 2>&1; then
+    sublog "gh already authenticated for github.com"
+  else
+    sublog "starting GitHub login (browser-based OAuth; HTTPS only)"
+    # --web              browser-based OAuth.
+    # --git-protocol https  HTTPS only — atelier never uses SSH (PLAN.md §2 step 5).
+    # --skip-ssh-key     defense-in-depth: even if a future flag combo would
+    #                    suggest an SSH key prompt, skip it.
+    # --scopes           per PLAN.md §2 step 5.
+    gh auth login \
+      --hostname github.com \
+      --git-protocol https \
+      --web \
+      --skip-ssh-key \
+      --scopes "repo,workflow,project,read:org"
+  fi
+  # Register gh as git credential helper for HTTPS. Idempotent.
+  sublog "registering gh as git credential helper (HTTPS, idempotent)"
+  gh auth setup-git
+}
+
+phase_b() {
+  log "Phase B — authentication"
+
+  # Phase B is the only interactive phase: it depends on browser-based OAuth
+  # and a human at the keyboard. When install.sh runs without a TTY (CI, a
+  # piped install, an `ssh host 'bash install.sh'` without -t), skip the
+  # interactive flow with a clear message and let Phases C.1/C.2 continue.
+  # The operator can complete auth later from a real terminal.
+  if [ ! -t 0 ] || [ ! -t 1 ]; then
+    warn "no TTY detected — skipping Phase B (interactive auth)"
+    warn "to complete auth, re-run on a real terminal, or run these by hand:"
+    warn "  claude auth login"
+    warn "  gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key --scopes 'repo,workflow,project,read:org'"
+    warn "  gh auth setup-git"
+    return
+  fi
+
+  phase_b_claude_login
+  phase_b_github_login
+  ok "Phase B complete"
+}
+
 # ---------- phase stubs (implemented in later sub-PRs) ----------
 
-phase_b()   { log "Phase B — authentication";          sublog "(not yet implemented; tracked in M1.3)"; }
 phase_c_1() { log "Phase C.1 — host-OS configuration"; sublog "(not yet implemented; tracked in M1.3)"; }
 phase_c_2() { log "Phase C.2 — plugin install";        sublog "(not yet implemented; tracked in M1.3)"; }
 
