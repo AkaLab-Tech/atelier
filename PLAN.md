@@ -49,14 +49,17 @@ The operator runs **one command** and answers at most **two prompts** (Claude lo
 3. Install Claude Code if not present via the official native installer: `curl -fsSL https://claude.ai/install.sh | bash`. Lands the signed native binary at `~/.local/bin/claude` and self-updates in the background. The `curl|sh` pattern is in the agent-level deny-list (PLAN.md §3), but `install.sh` runs in the operator's terminal before atelier's agent layer is active, so it is out of that scope.
 
 ### Phase B — Authentication (only human interaction)
-4. Claude Code login: launch `claude /login`, opens browser.
+4. Claude Code login: run `claude auth login`, which opens a browser tab for OAuth. (The `/login` slash command — described in earlier drafts — only works inside an interactive `claude` session; the CLI subcommand achieves the same flow from a shell script.) Idempotency: `claude auth status` exits `0` if already authenticated, so the script skips the browser when the operator re-runs `install.sh`.
 5. GitHub login — **HTTPS only, no SSH keys ever**:
    ```bash
    gh auth login --hostname github.com --git-protocol https --web \
+     --skip-ssh-key \
      --scopes "repo,workflow,project,read:org"
    gh auth setup-git   # registers gh as git credential helper (idempotent)
    ```
-   Token stored in OS keychain. All slash commands must clone via HTTPS (`gh repo clone` or `https://github.com/...`).
+   `--skip-ssh-key` is defense-in-depth — `--git-protocol https` already pins HTTPS, but skipping the SSH key prompt prevents any residual SSH affordance. Token stored in OS keychain. All slash commands must clone via HTTPS (`gh repo clone` or `https://github.com/...`). Idempotency: `gh auth status --hostname github.com` exits `0` if already authenticated.
+
+Phase B is the only interactive step in `install.sh`. When the script runs without a TTY (CI, piped install, `ssh host 'bash install.sh'` without `-t`), Phase B auto-skips with a clear message that lists the manual commands the operator should run from a real terminal. Phases C.1/C.2 continue regardless, so the rest of host-OS configuration still lands.
 
 ### Phase C — Host-OS configuration + plugin install
 
