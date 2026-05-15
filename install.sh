@@ -236,9 +236,193 @@ phase_b() {
   ok "Phase B complete"
 }
 
+# ---------- phase C.1: host-OS configuration ----------
+
+# Persistent state directory for atelier (XDG-compliant). /doctor (M1.6) reads
+# the recorded git-wt SHA from here to detect drift against upstream.
+ATELIER_STATE_DIR="${HOME}/.local/state/atelier"
+
+phase_c_1_git_wt() {
+  local sha_file="$ATELIER_STATE_DIR/git-wt.sha"
+
+  # Fully provisioned: git-wt on PATH and a SHA is on file. Skip clone +
+  # install + re-record.
+  if has git-wt && [ -s "$sha_file" ]; then
+    sublog "git-wt already installed (recorded SHA: $(head -c 12 "$sha_file"))"
+    return
+  fi
+
+  # Either git-wt is missing, or the SHA file is missing (operator may have
+  # installed git-wt manually before atelier started tracking it). Clone the
+  # current upstream HEAD; install only when git-wt is not on PATH; always
+  # record the SHA. /doctor (M1.6) compares this value against
+  # `gh api repos/Miguelslo27/git-wt/commits/main`. When recording on a
+  # backfill (git-wt was already installed), the recorded SHA reflects
+  # upstream HEAD at install.sh runtime — close enough for v1 drift
+  # detection; the next install.sh run will refresh it.
+  sublog "cloning Miguelslo27/git-wt into /tmp/git-wt"
+  rm -rf /tmp/git-wt
+  git clone --depth 1 https://github.com/Miguelslo27/git-wt.git /tmp/git-wt
+
+  if ! has git-wt; then
+    sublog "running git-wt installer (--skill-for=claude)"
+    /tmp/git-wt/install.sh --skill-for=claude
+  else
+    sublog "git-wt already on PATH — clone only to backfill SHA"
+  fi
+
+  mkdir -p "$ATELIER_STATE_DIR"
+  git -C /tmp/git-wt rev-parse HEAD > "$sha_file"
+  sublog "recorded git-wt SHA in $sha_file"
+  rm -rf /tmp/git-wt
+}
+
+phase_c_1_env_excludes() {
+  # Ensure `.env*` is in git's global excludes (core.excludesFile). If the
+  # setting is empty, default to the XDG path and create the file.
+  local excludes_file
+  excludes_file="$(git config --global --get core.excludesFile || true)"
+  if [ -z "$excludes_file" ]; then
+    excludes_file="${XDG_CONFIG_HOME:-$HOME/.config}/git/ignore"
+    mkdir -p "$(dirname "$excludes_file")"
+    touch "$excludes_file"
+    git config --global core.excludesFile "$excludes_file"
+    sublog "set core.excludesFile to $excludes_file"
+  fi
+
+  # Expand leading ~ if the configured path uses it.
+  excludes_file="${excludes_file/#\~/$HOME}"
+
+  if [ -f "$excludes_file" ] && grep -qxF '.env*' "$excludes_file"; then
+    sublog ".env* already in $excludes_file"
+  else
+    mkdir -p "$(dirname "$excludes_file")"
+    printf '.env*\n' >> "$excludes_file"
+    sublog "added .env* to $excludes_file"
+  fi
+}
+
+phase_c_1_git_identity() {
+  # Per PR #9: always prompt for user.name / user.email, showing the current
+  # global values as defaults so the operator can accept with Enter or
+  # overwrite. Graceful no-TTY handling: if both are already set and there is
+  # no TTY (CI / piped install), keep silently. If either is missing and no
+  # TTY, print a clear hint and continue (don't block the rest of the script).
+  local name email
+  name="$(git config --global --get user.name || true)"
+  email="$(git config --global --get user.email || true)"
+
+  if [ -n "$name" ] && [ -n "$email" ] && [ ! -t 0 ]; then
+    sublog "git identity already set: $name <$email> (no TTY — keeping)"
+    return
+  fi
+  if { [ -z "$name" ] || [ -z "$email" ]; } && [ ! -t 0 ]; then
+    warn "git identity is incomplete and there is no TTY to prompt"
+    warn "to set it from a real terminal:"
+    warn "  git config --global user.name  'Your Name'"
+    warn "  git config --global user.email 'you@example.com'"
+    return
+  fi
+
+  local new_name new_email
+  if [ -n "$name" ]; then
+    read -r -p "    git user.name [$name]: " new_name
+    new_name="${new_name:-$name}"
+  else
+    read -r -p "    git user.name: " new_name
+    while [ -z "$new_name" ]; do
+      read -r -p "    git user.name (required): " new_name
+    done
+  fi
+  if [ -n "$email" ]; then
+    read -r -p "    git user.email [$email]: " new_email
+    new_email="${new_email:-$email}"
+  else
+    read -r -p "    git user.email: " new_email
+    while [ -z "$new_email" ]; do
+      read -r -p "    git user.email (required): " new_email
+    done
+  fi
+
+  git config --global user.name "$new_name"
+  git config --global user.email "$new_email"
+  sublog "git identity set: $new_name <$new_email>"
+}
+
+phase_c_1_shellrc_hooks() {
+  # Idempotent injection via sentinel comments. On re-run, skip if the start
+  # sentinel is already present. To refresh the block manually, remove
+  # everything between the sentinels (inclusive) and re-run install.sh.
+  local sentinel_start='# >>> atelier hooks (managed by install.sh) >>>'
+
+  # Heredoc is single-quoted: `$(fnm env --use-on-cd)`, `$*`, and the alias
+  # body are written as literal text, expanded later when the shell sources
+  # the rc file (not now, while install.sh runs).
+  local block
+  block=$(cat <<'BLOCK'
+# >>> atelier hooks (managed by install.sh) >>>
+# Auto-switch Node version per-project via .nvmrc.
+if command -v fnm >/dev/null 2>&1; then
+  eval "$(fnm env --use-on-cd)"
+fi
+# `task`: open a Claude session for the next roadmap task in this project.
+# Wired by M2.3 once `/next-task` lands; the alias ships here so the operator
+# does not need to re-run install.sh after M2.3.
+task() { claude "/next-task $*"; }
+# `task-status`: list the operator's open PRs across all repos they own.
+alias task-status='gh pr list --author @me --state open'
+# <<< atelier hooks (managed by install.sh) <<<
+BLOCK
+)
+
+  # Pick which rc file(s) to inject into. Default shell is what `$SHELL`
+  # reports. If neither zsh nor bash, write to both so the operator gets the
+  # hooks no matter which shell they end up using.
+  local files=()
+  case "${SHELL:-}" in
+    */zsh)  files+=("${HOME}/.zshrc") ;;
+    */bash) files+=("${HOME}/.bashrc") ;;
+    *)      files+=("${HOME}/.zshrc" "${HOME}/.bashrc") ;;
+  esac
+
+  for f in "${files[@]}"; do
+    if [ ! -e "$f" ]; then
+      if ! touch "$f" 2>/dev/null; then
+        warn "could not create $f (permission denied) — skipping atelier hooks for this file"
+        warn "to fix, ensure $f is writable by $USER and re-run install.sh"
+        continue
+      fi
+      sublog "created $f"
+    fi
+    if [ ! -w "$f" ]; then
+      # Common cause on macOS: $f is owned by root:wheel (e.g. an earlier
+      # `sudo` accidentally rewrote it). install.sh never tries to chown for
+      # the operator — that requires their password. We point at the fix and
+      # keep going so the rest of Phase C.1 doesn't block.
+      warn "$f is not writable by $USER — skipping atelier hooks for this file"
+      warn "to fix: sudo chown $USER:staff $f && chmod u+w $f, then re-run install.sh"
+      continue
+    fi
+    if grep -qF "$sentinel_start" "$f"; then
+      sublog "atelier hooks already present in $(basename "$f")"
+    else
+      printf '\n%s\n' "$block" >> "$f"
+      sublog "appended atelier hooks to $(basename "$f")"
+    fi
+  done
+}
+
+phase_c_1() {
+  log "Phase C.1 — host-OS configuration"
+  phase_c_1_git_wt
+  phase_c_1_env_excludes
+  phase_c_1_git_identity
+  phase_c_1_shellrc_hooks
+  ok "Phase C.1 complete"
+}
+
 # ---------- phase stubs (implemented in later sub-PRs) ----------
 
-phase_c_1() { log "Phase C.1 — host-OS configuration"; sublog "(not yet implemented; tracked in M1.3)"; }
 phase_c_2() { log "Phase C.2 — plugin install";        sublog "(not yet implemented; tracked in M1.3)"; }
 
 # ---------- entry point ----------

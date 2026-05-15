@@ -81,7 +81,7 @@ Phase C is split in two: **C.1** handles what can't live inside a Claude Code pl
    ```
    is written by `/setup-project` (M2.3) into each atelier-managed project. **Rationale:** writing the guardrail globally during `install.sh` broke unrelated host-level tooling on the maintainer's machine (Claude Code's own native-binary postinstall). Per-project scope keeps the guardrail close to where atelier actually executes `pnpm add`, while leaving the operator's host pnpm/npm usage untouched.
 8. Ensure `.env*` is in git's global excludes (`core.excludesFile`).
-9. Configure git identity (prompt only if missing).
+9. Configure git identity (PR #9 refinement): always prompt for global `user.name` and `user.email`, showing the currently configured values (`git config --global --get user.name`/`user.email`) as defaults so the operator can accept with Enter or overwrite. When there is no TTY (CI / piped install) and both values are already set, keep them silently; when there is no TTY and either is missing, print a clear hint with the manual `git config --global …` commands and continue.
 10. Add shell hooks and aliases to `~/.zshrc`/`~/.bashrc`:
     - `eval "$(fnm env --use-on-cd)"` → auto-switch Node version per project's `.nvmrc`.
     - `task` → opens a Claude session that auto-invokes `/next-task` for the current project (detected from cwd).
