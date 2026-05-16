@@ -421,9 +421,76 @@ phase_c_1() {
   ok "Phase C.1 complete"
 }
 
-# ---------- phase stubs (implemented in later sub-PRs) ----------
+# ---------- phase C.2: plugin install ----------
 
-phase_c_2() { log "Phase C.2 — plugin install";        sublog "(not yet implemented; tracked in M1.3)"; }
+# Plugins atelier installs from the shared AkaLab-Tech catalog. Listed here
+# (not inlined below) so the manual-fallback message and the install loop
+# stay in sync.
+ATELIER_MARKETPLACE_SOURCE="AkaLab-Tech/claude-plugins"
+ATELIER_MARKETPLACE_NAME="akalab-tech"
+ATELIER_PLUGIN_IDS=("atelier@akalab-tech" "claude-roadmap-tools@akalab-tech")
+
+phase_c_2_print_manual_commands() {
+  warn "manual fallback — run these from a Claude Code session or terminal:"
+  warn "  claude plugin marketplace add ${ATELIER_MARKETPLACE_SOURCE}"
+  for id in "${ATELIER_PLUGIN_IDS[@]}"; do
+    warn "  claude plugin install ${id}"
+  done
+}
+
+phase_c_2_marketplace() {
+  # Idempotency: marketplace list (--json) gives an array of registered
+  # marketplaces. Skip if `akalab-tech` is already there. Wrong-repo edge
+  # case (operator has an `akalab-tech` pointing somewhere else, e.g. from
+  # the pre-PR #11 era when each plugin shipped its own marketplace.json) is
+  # not auto-corrected — operator runs `claude plugin marketplace remove
+  # akalab-tech` manually and re-runs install.sh.
+  if claude plugin marketplace list --json 2>/dev/null \
+      | jq -e --arg name "$ATELIER_MARKETPLACE_NAME" '.[] | select(.name == $name)' >/dev/null; then
+    sublog "marketplace $ATELIER_MARKETPLACE_NAME already added"
+  else
+    sublog "adding marketplace $ATELIER_MARKETPLACE_SOURCE"
+    claude plugin marketplace add "$ATELIER_MARKETPLACE_SOURCE"
+  fi
+}
+
+phase_c_2_install_plugin() {
+  local plugin_id="$1"
+  if claude plugin list --json 2>/dev/null \
+      | jq -e --arg id "$plugin_id" '.[] | select(.id == $id)' >/dev/null; then
+    sublog "$plugin_id already installed"
+  else
+    sublog "installing $plugin_id"
+    claude plugin install "$plugin_id"
+  fi
+}
+
+phase_c_2() {
+  log "Phase C.2 — plugin install"
+
+  # Guard: claude CLI must be on PATH (Phase A installs it) and authenticated
+  # (Phase B handles this). If Phase B skipped because no TTY was available,
+  # `claude auth status` will report not authenticated — we warn, print the
+  # manual fallback, and return without installing. Same shape as the no-TTY
+  # skip in Phase B; the rest of install.sh (final summary) still runs.
+  if ! has claude; then
+    warn "claude CLI not on PATH — skipping Phase C.2"
+    phase_c_2_print_manual_commands
+    return
+  fi
+  if ! claude auth status >/dev/null 2>&1; then
+    warn "claude not authenticated — skipping Phase C.2"
+    warn "Phase B should have authenticated; if it skipped (no TTY), re-run install.sh from a real terminal"
+    phase_c_2_print_manual_commands
+    return
+  fi
+
+  phase_c_2_marketplace
+  for id in "${ATELIER_PLUGIN_IDS[@]}"; do
+    phase_c_2_install_plugin "$id"
+  done
+  ok "Phase C.2 complete"
+}
 
 # ---------- entry point ----------
 

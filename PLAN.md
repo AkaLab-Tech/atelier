@@ -89,22 +89,24 @@ Phase C is split in two: **C.1** handles what can't live inside a Claude Code pl
 
 #### C.2 — Claude Code plugin install (last step)
 
-11. Install the `atelier` plugin from the central AkaLab-Tech marketplace catalog ([AkaLab-Tech/claude-plugins](https://github.com/AkaLab-Tech/claude-plugins)). This replaces the old symlink-into-`~/.claude/` approach. Two delivery options (implementation detail, tested during Phase 1):
-    - **Preferred** — `install.sh` drives Claude Code non-interactively to run:
+11. Install the `atelier` plugin from the central AkaLab-Tech marketplace catalog ([AkaLab-Tech/claude-plugins](https://github.com/AkaLab-Tech/claude-plugins)). This replaces the old symlink-into-`~/.claude/` approach. `install.sh` calls the `claude plugin` CLI verbs (the slash-command form `/plugin …` only works inside an interactive `claude` session; the CLI subcommand achieves the same flow from a shell script, same pattern as the `claude auth login` refinement for Phase B):
+    - **Preferred** — `install.sh` runs non-interactively:
+      ```bash
+      claude plugin marketplace add AkaLab-Tech/claude-plugins
+      claude plugin install atelier@akalab-tech
       ```
-      /plugin marketplace add AkaLab-Tech/claude-plugins
-      /plugin install atelier@akalab-tech
-      ```
-    - **Fallback** — `install.sh` prints the two commands for the operator to paste into their next `claude` session.
+      Idempotency: `claude plugin marketplace list --json` is checked for the `akalab-tech` entry before the `add`, and `claude plugin list --json` is checked for `atelier@akalab-tech` before the `install`.
+    - **Fallback** — when `claude` is missing from PATH or `claude auth status` reports unauthenticated (e.g. Phase B skipped due to no TTY), `install.sh` prints both commands and continues so the operator can paste them later from a real session.
 
-    Once installed, Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/` and `CLAUDE.md` from `$CLAUDE_PLUGIN_ROOT`. Subsequent updates use `/plugin marketplace update akalab-tech` followed by `/plugin update atelier@akalab-tech` — no re-symlinking. The same `marketplace add` also exposes the other plugins in the catalog, so step 12 below does not need to add it again.
+    Once installed, Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/` and `CLAUDE.md` from `$CLAUDE_PLUGIN_ROOT`. Subsequent updates use `claude plugin marketplace update akalab-tech` followed by `claude plugin update atelier@akalab-tech` — no re-symlinking. The same `marketplace add` also exposes the other plugins in the catalog, so step 12 below does not need to add it again.
 
 12. Install the **`claude-roadmap-tools`** plugin (separate repo, [AkaLab-Tech/claude-roadmap-tools](https://github.com/AkaLab-Tech/claude-roadmap-tools); see ROADMAP.md M1.6). Provides `/create-roadmap`, `/migrate-roadmap` and the `roadmap-tracking-flow` skill — kept sovereign in its own repo so projects that do not use the full atelier stack can install it standalone. Step 11 already added the `akalab-tech` marketplace, so only the install command is needed here:
-    - **Preferred** — `install.sh` drives Claude Code non-interactively to run:
+    - **Preferred** — `install.sh` runs non-interactively:
+      ```bash
+      claude plugin install claude-roadmap-tools@akalab-tech
       ```
-      /plugin install claude-roadmap-tools@akalab-tech
-      ```
-    - **Fallback** — `install.sh` prints the command for the operator to paste into their next `claude` session.
+      Same idempotency hinge: `claude plugin list --json` is checked for `claude-roadmap-tools@akalab-tech` before the `install`.
+    - **Fallback** — same condition as step 11 (`claude` missing or unauthenticated); `install.sh` prints the command and continues.
 
     Subsequent updates use `/plugin marketplace update akalab-tech` followed by `/plugin update claude-roadmap-tools@akalab-tech`, and are surfaced by `/doctor` (see §7). The `claude-roadmap-tools` plugin code still lives in its own GitHub repository; the catalog entry in `AkaLab-Tech/claude-plugins` references it via the `github` plugin source so each plugin retains independent versioning and release cadence (same sovereignty model as `atelier` and the external `git-wt`).
 
