@@ -492,6 +492,47 @@ phase_c_2() {
   ok "Phase C.2 complete"
 }
 
+# ---------- final verification ----------
+
+# Plain Unicode glyphs (not emojis) — match how `git-wt`'s installer reports.
+VERIFY_OK='\xe2\x9c\x93'   # ✓
+VERIFY_FAIL='\xe2\x9c\x97' # ✗
+
+# verify_cmd <label> <cmd...>
+# Runs `cmd...` quietly; prints ✓ on exit 0, ✗ on non-zero. Never aborts the
+# script — verification only reports state.
+verify_cmd() {
+  local label="$1"; shift
+  if "$@" >/dev/null 2>&1; then
+    printf "    ${VERIFY_OK} %s\n" "$label"
+  else
+    printf "    ${VERIFY_FAIL} %s\n" "$label" >&2
+  fi
+}
+
+# verify_plugin <plugin_id>
+# Checks that the given `<name>@<marketplace>` is in `claude plugin list --json`.
+verify_plugin() {
+  local plugin_id="$1"
+  if claude plugin list --json 2>/dev/null \
+      | jq -e --arg id "$plugin_id" '.[] | select(.id == $id)' >/dev/null; then
+    printf "    ${VERIFY_OK} plugin: %s\n" "$plugin_id"
+  else
+    printf "    ${VERIFY_FAIL} plugin: %s\n" "$plugin_id" >&2
+  fi
+}
+
+phase_verify() {
+  log "Verification"
+  verify_cmd    "claude --version"        claude --version
+  verify_cmd    "claude auth status"      claude auth status
+  verify_cmd    "gh auth status"          gh auth status
+  verify_cmd    "git wt help"             git wt help
+  verify_plugin "atelier@akalab-tech"
+  verify_plugin "claude-roadmap-tools@akalab-tech"
+  sublog "(\`/doctor\` slash command lands with M1.6 / M2.x — not invoked here)"
+}
+
 # ---------- entry point ----------
 
 main() {
@@ -500,7 +541,8 @@ main() {
   phase_b
   phase_c_1
   phase_c_2
-  log "install.sh done. Subsequent phases will ship in follow-up sub-PRs of M1.3."
+  phase_verify
+  log "install.sh done. Open a new terminal (or run \`source ~/.zshrc\`) to use \`task\` and \`task-status\`."
 }
 
 main "$@"
