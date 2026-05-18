@@ -18,12 +18,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 2–4 — Single-project agent flow + robustness.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries.
 
-### M2.1 — Phase 2 agents
-
-Implement the four core agents per [PLAN.md §7](PLAN.md): `task-orchestrator` (Opus), `implementer` (Sonnet), `tester` (Sonnet), `pr-author` (Sonnet). Each gets a definition file under `agents/` with model, tools, and a tight prompt.
-
-**Acceptance:** each agent loads, can be invoked from a slash command, and the orchestrator can route to the other three.
-
 ### M2.2 — Phase 2 skills
 
 Author `task-discovery` (parses ROADMAP §5 format), `pr-flow` (branch → commit → push → PR), `safe-commit` (lint + typecheck + tests pre-commit), `safe-install` (audit + `pnpm view` before `pnpm add`). The `git-wt` skill ships from the external package — do **not** re-implement.
