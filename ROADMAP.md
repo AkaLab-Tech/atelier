@@ -12,23 +12,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phase 1 — Foundation.** Blocks everything else. A fresh Mac must be able to run `install.sh`, log in to Claude + GitHub, and end with the `atelier` plugin installed and `/doctor` ✅.
 
-### M1.6 — Extract `claude-roadmap-tools`, set up the shared marketplace catalog, and integrate both into `install.sh` + `/doctor`
-
-The ROADMAP/IN_PROGRESS/HISTORY tooling that currently lives only in the maintainer's `~/.claude-personal/` (the `roadmap-tracking-flow` skill and the `/create-roadmap`, `/migrate-roadmap` slash commands) must move to a dedicated public repo so it can be reused outside atelier, and atelier's installer must pull it in alongside itself. Because Claude Code identifies marketplaces by their `name` (two repos cannot register a marketplace under the same `name`), the shared `akalab-tech` marketplace must also be promoted to its own catalog repo so every AkaLab-Tech plugin can be listed in one place while each plugin's code stays sovereign in its own repository. `/doctor` must then learn to detect updates for the three artefacts the operator depends on (`atelier`, `claude-roadmap-tools`, `git-wt`) — with two different mechanisms because `git-wt` is not a Claude Code plugin.
-
-- [x] Publish `AkaLab-Tech/claude-roadmap-tools` as a standalone Claude Code plugin: own `.claude-plugin/plugin.json`, `commands/create-roadmap.md`, `commands/migrate-roadmap.md`, `skills/roadmap-tracking-flow/SKILL.md`. Files are **copied** from `~/.claude-personal/` — the maintainer's local copies stay untouched so the existing setup keeps working during the transition. _(Done: [`AkaLab-Tech/claude-roadmap-tools`](https://github.com/AkaLab-Tech/claude-roadmap-tools), [PR #1](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/1).)_
-- [x] Create the shared marketplace catalog repo [`AkaLab-Tech/claude-plugins`](https://github.com/AkaLab-Tech/claude-plugins) with `.claude-plugin/marketplace.json` (`name: "akalab-tech"`) listing every AkaLab-Tech plugin by GitHub source. _(Done: [PR #1](https://github.com/AkaLab-Tech/claude-plugins/pull/1).)_
-- [x] Remove the redundant per-plugin `.claude-plugin/marketplace.json` from `AkaLab-Tech/atelier` and `AkaLab-Tech/claude-roadmap-tools`; update each repo's README to point at the central catalog. _(Done in atelier via this PR; done in claude-roadmap-tools via [PR #2](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/2).)_
-- [ ] Extend `install.sh` Phase C.2 with steps 11–12 per [PLAN.md §2](PLAN.md): step 11 runs `/plugin marketplace add AkaLab-Tech/claude-plugins` + `/plugin install atelier@akalab-tech`; step 12 runs `/plugin install claude-roadmap-tools@akalab-tech` (no extra `marketplace add` since step 11 already registered the `akalab-tech` marketplace). Same Preferred / Fallback pattern as before.
-- [ ] Extend `/doctor` ([PLAN.md §7](PLAN.md)) to report version drift for the three artefacts:
-  - `atelier` and `claude-roadmap-tools` → compare local `plugin.json:version` vs latest release/tag in their respective repositories (`AkaLab-Tech/atelier`, `AkaLab-Tech/claude-roadmap-tools`); apply with `/plugin marketplace update akalab-tech` followed by `/plugin update <name>@akalab-tech` for whichever plugin is stale.
-  - `git-wt` → compare locally installed SHA (recorded by `install.sh` Phase C.1 at install time) vs `gh api repos/Miguelslo27/git-wt/commits/main`; re-run the external `install.sh --skill-for=claude` to update. **Not** a native plugin, so the `/plugin marketplace update` path does not apply.
-- [ ] `/doctor` reports findings and prints the exact commands the operator must run. It does **not** apply updates automatically (consistent with the project rule of asking before any install operation).
-
-**Out of scope (deferred):** migrating `git-wt` itself to the native plugin system.
-
-**Acceptance:** (a) [done] `AkaLab-Tech/claude-roadmap-tools` and `AkaLab-Tech/claude-plugins` are published and `/plugin marketplace add AkaLab-Tech/claude-plugins` + `/plugin install <name>@akalab-tech` work for both `atelier` and `claude-roadmap-tools` from a clean Claude Code; (b) `install.sh` on a clean Mac VM ends with both plugins installed via the central catalog; (c) `/doctor` reports either "all up to date" or names exactly which artefact has an update and the command to apply it.
-
 ---
 
 ## Medium Priority
