@@ -2,17 +2,23 @@
 name: pr-flow
 description: >-
   Drive a green worktree to an open pull request — branch → commit → push → PR
-  — and update the project's `IN_PROGRESS.md` → `HISTORY.md` tracking in the
-  same PR. Use this skill whenever the user wants to ship a change, mentions
-  "open a PR", "finalise the task", invokes `/finish-task`, or you (typically
-  as the `pr-author` agent) need to convert a finished feature/fix into a
-  reviewable PR. Enforces the push and PR gates from PLAN.md §6 — push only to
-  `origin task/<id>-<slug>`, Conventional Commits message, standard PR
-  description shape (roadmap reference + summary + validation checklist +
-  screenshots placeholder). Refuses to push to protected branches and never
-  marks the PR auto-merge-ready (that gate needs the `reviewer` agent from
-  M3.2). Trigger even when the user does not say "PR" explicitly — any
-  phrasing about shipping the change belongs here.
+  — and return the PR URL. ALWAYS load this skill before running any of
+  `git add`, `git commit`, `git push`, or `gh pr create` on an atelier task,
+  including dry-runs and walkthroughs: the `operator-rules.md` SessionStart
+  hook only summarises PLAN.md §6 policy, while this skill carries the
+  executable detail — exact HEREDOC commit-message template, exact `gh pr
+  create` body shape (Summary / Test plan / Tracking), exact ordered command
+  sequence, exhaustive hard-refusal list, and the `IN_PROGRESS.md` →
+  `HISTORY.md` tracking move that must land in the same PR. Use this skill
+  whenever the user wants to ship/finalise/PR a change, invokes
+  `/finish-task`, says "open the PR", "push my work", "ship this", "finish
+  the task", or anywhere the `pr-author` agent needs the recipe. Enforces
+  push and PR gates from PLAN.md §6 (push only to `origin task/<id>-<slug>`,
+  Conventional Commits). Refuses protected-branch pushes, `--force`,
+  `--no-verify`, `Co-Authored-By` attribution, and marking the PR
+  auto-merge-ready (that gate needs the `reviewer` agent from M3.2). Trigger
+  even when the user does not say "PR" explicitly — any phrasing about
+  shipping the change belongs here.
 ---
 
 # pr-flow
