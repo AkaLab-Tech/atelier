@@ -14,7 +14,7 @@ Implement the `PreToolUse` hook suite that complements the **static** permission
 
 - [x] `block-env-commit` (`PreToolUse` on `git add`/`git commit`): blocks any path matching `.env*` with a clear message. **(sub-PR #22)**
 - [x] `safe-commit` (`PreToolUse` on `git commit`): lint + typecheck + tests gate before the commit lands. **(sub-PR #23)**
-- [ ] `scan-edit-write` (`PreToolUse` on `Edit`/`Write`): scan the proposed file contents for security-gap patterns (`eval(` of unsanitised input, hardcoded secrets, SQL-injection-shaped templates, shell-injection-shaped templates, etc.) and block the write when a high-confidence match is found.
+- [x] `scan-edit-write` (`PreToolUse` on `Edit`/`Write`): scan the proposed file contents for security-gap patterns (`eval(` of unsanitised input, hardcoded secrets, SQL-injection-shaped templates, shell-injection-shaped templates, etc.) and block the write when a high-confidence match is found. **(sub-PR #24)**
 - [ ] `scan-git-add` (`PreToolUse` on `git add`): scan the proposed staged contents (resolved via `git diff --cached` on a dry-run) for the same security-gap patterns plus secret detection (entropy heuristics + known credential prefixes).
 - [ ] `safe-package-change` (`PreToolUse` on `pnpm install`/`add`/`update`/`run`): analyse the resulting `package.json` (and any new dependency's published manifest) for malicious lifecycle scripts in the `scripts` field, suspicious `bin` entries, typosquatting names, and `postinstall` hooks that fetch and execute code. Block high-confidence threats; surface a clear message and require operator confirmation for marginal cases. Complements the per-project `.npmrc` guardrails from PLAN.md §4 (which already disable lifecycle scripts wholesale; this hook catches the cases where an operator deliberately re-enables them or pulls in a transitive dep that needs running).
 
@@ -24,7 +24,7 @@ Implement the `PreToolUse` hook suite that complements the **static** permission
 
 **Sub-PR progress:**
 - [x] sub-PR 1 — `block-env-commit` + shared `hooks/lib/log-decision.sh` helper (PR #22, merged).
-- [x] sub-PR 2 — `safe-commit` hook (PR #23, this PR).
-- [ ] sub-PR 3 — `scan-edit-write` + `hooks/patterns/scan-edit-write.json`.
+- [x] sub-PR 2 — `safe-commit` hook (PR #23, merged).
+- [x] sub-PR 3 — `scan-edit-write` + `hooks/patterns/scan-edit-write.json` (PR #24, this PR).
 - [ ] sub-PR 4 — `scan-git-add` + `hooks/patterns/scan-git-add.json`.
 - [ ] sub-PR 5 — `safe-package-change` + `hooks/patterns/safe-package-change.json` + M2.4 closure (this PR moves the block from `IN_PROGRESS.md` to `HISTORY.md`).

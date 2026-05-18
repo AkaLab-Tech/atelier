@@ -28,6 +28,15 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/safe-commit.sh"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scan-edit-write.sh"
+          }
+        ]
       }
     ]
   }

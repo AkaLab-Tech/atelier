@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "hook": "scan-edit-write",
+  "description": "Pattern catalogue for the scan-edit-write PreToolUse hook. Maps 1:1 to PLAN.md §3 threat-model addendum (M1.6, PR #18). Edit this file to add a pattern; you do not need to touch the hook script.",
+  "skips": {
+    "path_substrings": [
+      "/__fixtures__/",
+      "/__snapshots__/",
+      ".fixture.",
+      "docs/",
+      "/docs/"
+    ],
+    "basename_prefixes": ["README"],
+    "content_directive": "scan-edit-write: skip"
+  },
+  "skips_note": "path_substrings is the implementation-level equivalent of the path_globs listed in PLAN.md §3 (**/__fixtures__/**, **/test*/**/*.fixture.*, docs/**). Substring matching avoids a fragile glob-to-regex conversion in bash and catches the same set of files for the patterns in this catalogue.",
+  "patterns": [
+    {
+      "name": "eval-unsanitised-js",
+      "description": "Unsanitised eval() of user input in JS/TS",
+      "match_type": "regex",
+      "pattern": "\\beval[[:space:]]*\\([[:space:]]*(req|input|query|params|stdin|process\\.argv)",
+      "case_insensitive": false,
+      "action": "block",
+      "rationale": "eval() of unsanitised user input is a code-injection vector. Use JSON.parse() for data or a real interpreter for code."
+    },
+    {
+      "name": "exec-unsanitised-node",
+      "description": "Unsanitised exec/execSync/spawnSync of user input in Node",
+      "match_type": "regex",
+      "pattern": "\\b(exec|execSync|spawnSync)[[:space:]]*\\([[:space:]]*\\$?\\{?(req|input|query|params)",
+      "case_insensitive": false,
+      "action": "block",
+      "rationale": "Shell-command injection via exec() of user input. Use execFile() with an arg array instead."
+    },
+    {
+      "name": "hardcoded-secret-generic",
+      "description": "Hardcoded secret assignment (api_key/token/password/secret) with high-entropy literal",
+      "match_type": "regex",
+      "pattern": "(secret|token|api[_-]?key|password)[[:space:]]*[:=][[:space:]]*[\"'`][A-Za-z0-9+/=]{24,}[\"'`]",
+      "case_insensitive": true,
+      "action": "block",
+      "rationale": "Credential committed to source. Move to env vars or a secret manager."
+    },
+    {
+      "name": "hardcoded-secret-known-prefix",
+      "description": "Known credential prefix (sk-, gho_, github_pat_, AKIA, …)",
+      "match_type": "substring_any",
+      "patterns": [
+        "sk-",
+        "gho_",
+        "github_pat_",
+        "ghp_",
+        "xoxb-",
+        "xoxp-",
+        "AKIA",
+        "ASIA",
+        "AIza",
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "-----BEGIN OPENSSH PRIVATE KEY-----"
+      ],
+      "action": "block",
+      "rationale": "Recognised credential prefix detected. These never belong in source."
+    },
+    {
+      "name": "sql-injection-shape",
+      "description": "SQL template string with embedded user input",
+      "match_type": "regex",
+      "pattern": "[\"'`].*SELECT.*\\$\\{(req|input|query|params)",
+      "case_insensitive": true,
+      "action": "warn",
+      "rationale": "Possible SQL injection — use parameterised queries / prepared statements."
+    },
+    {
+      "name": "shell-injection-shape",
+      "description": "Shell exec/spawn with template-string-embedded user input",
+      "match_type": "regex",
+      "pattern": "(exec|spawn).*\\$\\{(req|input|query|params)",
+      "case_insensitive": false,
+      "action": "warn",
+      "rationale": "Possible shell injection — pass arguments as an array (execFile) instead of building a shell string."
+    },
+    {
+      "name": "eval-unsanitised-python",
+      "description": "Unsanitised eval()/exec() of user input in Python",
+      "match_type": "regex",
+      "pattern": "\\b(eval|exec)[[:space:]]*\\([[:space:]]*(request|input|sys\\.argv|stdin)",
+      "case_insensitive": false,
+      "action": "block",
+      "rationale": "Python eval/exec on user input is a code-injection vector. Use ast.literal_eval() or a real parser."
+    },
+    {
+      "name": "csp-unsafe-eval-or-frame-allow-all",
+      "description": "CSP relaxation: unsafe-eval, or X-Frame-Options allow-all",
+      "match_type": "regex",
+      "pattern": "content-security-policy.*unsafe-eval|x-frame-options:?[[:space:]]*allow-all",
+      "case_insensitive": true,
+      "action": "warn",
+      "rationale": "Security header weakened — confirm this is intentional and documented."
+    }
+  ]
+}
