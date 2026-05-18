@@ -18,12 +18,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 2–4 — Single-project agent flow + robustness.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries.
 
-### M2.2 — Phase 2 skills
-
-Author `task-discovery` (parses ROADMAP §5 format), `pr-flow` (branch → commit → push → PR), `safe-commit` (lint + typecheck + tests pre-commit), `safe-install` (audit + `pnpm view` before `pnpm add`). The `git-wt` skill ships from the external package — do **not** re-implement.
-
-**Acceptance:** each skill is auto-discovered from `skills/`, has a SKILL.md with clear triggers, and is exercised by at least one slash command.
-
 ### M2.3 — Phase 2 slash commands
 
 Author `/next-task`, `/status`, `/finish-task`, `/setup-project`, `/doctor`. `/next-task` instantiates the per-task `settings.json` from `settings.template.json` with the worktree path injected. `/setup-project` writes the project's `.npmrc` guardrails (`ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate`) per PLAN.md §4, and is idempotent via `~/.claude/.atelier-config.json` (`setupCompleted` ISO timestamp + `setupVersion`); re-running offers a reconfigure flow.
