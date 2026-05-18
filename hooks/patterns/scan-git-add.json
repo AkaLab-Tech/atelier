@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "hook": "scan-git-add",
+  "description": "Pattern catalogue for the scan-git-add PreToolUse hook. Maps 1:1 to PLAN.md §3 threat-model addendum (M1.6, PR #18). The hook ALSO reuses every pattern from hooks/patterns/scan-edit-write.json — applied to the content of each path being staged. The patterns below are scan-git-add-specific: tuned for diff context (added lines, added paths) and for secret-detection heuristics that only make sense at the index boundary.",
+  "reuses": "scan-edit-write",
+  "skips": {
+    "path_substrings": [
+      "/__snapshots__/",
+      ".snap"
+    ],
+    "lockfile_basenames": [
+      "pnpm-lock.yaml",
+      "package-lock.json",
+      "yarn.lock",
+      "Cargo.lock",
+      "poetry.lock",
+      "Gemfile.lock",
+      "uv.lock",
+      "go.sum"
+    ]
+  },
+  "skips_note": "Snapshot test files (*.snap, /__snapshots__/) and lock files routinely contain high-entropy strings that aren't secrets — entropy + base64-prefix heuristics false-positive on them constantly. file-level path checks (.env*, secrets/, credentials/) still apply to lockfiles; entropy and high-confidence regexes (AKIA, github_pat_) still apply too. Only the entropy/heuristic check is skipped for lockfiles.",
+  "patterns": [
+    {
+      "name": "env-file-added",
+      "description": "Adding a .env* file under any path",
+      "match_type": "path_basename_glob",
+      "patterns": [".env", ".env.*"],
+      "action": "block",
+      "rationale": "Environment files contain secrets and must never enter version control. This duplicates block-env-commit (the hook that intercepts the Bash command directly) as defence-in-depth: even if the operator confirms past that hook somehow, this one re-checks at the index boundary."
+    },
+    {
+      "name": "secrets-directory-added",
+      "description": "Adding a file under a `secrets/` or `credentials/` directory",
+      "match_type": "path_substring_any",
+      "patterns": ["/secrets/", "/credentials/", "secrets/", "credentials/"],
+      "action": "block",
+      "rationale": "Directories named secrets/ or credentials/ are reserved conventions for unversioned material. Stage to a different path if the file is genuinely safe."
+    },
+    {
+      "name": "aws-access-key-added-line",
+      "description": "AWS access key identifier (AKIA / ASIA prefix) in an added line",
+      "match_type": "added_line_regex",
+      "pattern": "\\b(AKIA|ASIA)[0-9A-Z]{16}\\b",
+      "case_insensitive": false,
+      "action": "block",
+      "rationale": "AWS credential leak. Rotate the key immediately if this was a real one, then move credentials to a secret manager."
+    },
+    {
+      "name": "github-fine-grained-pat-added-line",
+      "description": "GitHub fine-grained PAT in an added line",
+      "match_type": "added_line_regex",
+      "pattern": "\\bgithub_pat_[0-9a-zA-Z_]{82}\\b",
+      "case_insensitive": false,
+      "action": "block",
+      "rationale": "GitHub credential leak. Revoke the PAT in the GitHub UI immediately."
+    },
+    {
+      "name": "private-key-block-added-line",
+      "description": "Private key header (RSA/OPENSSH/EC/DSA/PGP/ED25519) in an added line",
+      "match_type": "added_line_substring_any",
+      "patterns": [
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "-----BEGIN EC PRIVATE KEY-----",
+        "-----BEGIN DSA PRIVATE KEY-----",
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+        "-----BEGIN ED25519 PRIVATE KEY-----",
+        "-----BEGIN PRIVATE KEY-----"
+      ],
+      "action": "block",
+      "rationale": "Private key material must not be committed. Move it to a secret manager and load it at runtime."
+    },
+    {
+      "name": "high-entropy-run-added-line",
+      "description": "Run of ≥ 32 base64-ish characters with Shannon entropy ≥ 4.5 on an added line that is not a comment",
+      "match_type": "added_line_entropy",
+      "min_length": 32,
+      "min_entropy": 4.5,
+      "skip_line_prefixes": ["#", "//", "/*", "*", " *", "<!--"],
+      "action": "ask",
+      "rationale": "Looks like an opaque token or generated credential. If it's a legitimate hash/UUID/test fixture, confirm; otherwise refuse and use an env var."
+    }
+  ]
+}
