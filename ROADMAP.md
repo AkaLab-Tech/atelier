@@ -12,17 +12,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phase 1 — Foundation.** Blocks everything else. A fresh Mac must be able to run `install.sh`, log in to Claude + GitHub, and end with the `atelier` plugin installed and `/doctor` ✅.
 
-### M1.5 — Plugin-shipped `CLAUDE.md` (operator rules)
-
-Author the `CLAUDE.md` that ships **inside the plugin** — this is read by Claude when an operator runs a task in any project, and contains the rules agents must follow ([PLAN.md §4](PLAN.md) dep installs, [§6](PLAN.md) push/PR/merge, [§7](PLAN.md) agent contracts).
-
-- **Note:** distinct from the repo-root `CLAUDE.md` already at this repo's root, which guides Claude when *maintaining atelier itself*. Decide where the shipped file lives (likely `.claude-plugin/CLAUDE.md` or a plugin-relative path the manifest declares) and confirm it is auto-loaded by Claude Code when the plugin is installed.
-- [ ] Resolve where the plugin's CLAUDE.md must live for auto-discovery.
-- [ ] Write the operator-facing rules (no maintainer content): dep install rules §4, push/PR/merge gates §6, retry budget §8.
-- [ ] Verify the shipped CLAUDE.md does not collide with or override the user's personal `~/.claude/CLAUDE.md`.
-
-**Acceptance:** in a clean Claude Code install with the plugin loaded, a session in any project sees the plugin's rules in context, and the operator's personal `~/.claude/CLAUDE.md` is untouched.
-
 ### M1.6 — Extract `claude-roadmap-tools`, set up the shared marketplace catalog, and integrate both into `install.sh` + `/doctor`
 
 The ROADMAP/IN_PROGRESS/HISTORY tooling that currently lives only in the maintainer's `~/.claude-personal/` (the `roadmap-tracking-flow` skill and the `/create-roadmap`, `/migrate-roadmap` slash commands) must move to a dedicated public repo so it can be reused outside atelier, and atelier's installer must pull it in alongside itself. Because Claude Code identifies marketplaces by their `name` (two repos cannot register a marketplace under the same `name`), the shared `akalab-tech` marketplace must also be promoted to its own catalog repo so every AkaLab-Tech plugin can be listed in one place while each plugin's code stays sovereign in its own repository. `/doctor` must then learn to detect updates for the three artefacts the operator depends on (`atelier`, `claude-roadmap-tools`, `git-wt`) — with two different mechanisms because `git-wt` is not a Claude Code plugin.
