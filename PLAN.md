@@ -157,6 +157,82 @@ Lives in `settings.template.json`. `/next-task` instantiates a per-task `setting
 - `Edit(Dockerfile)`, `Edit(docker-compose*)` — allowed but must document the change and validate it doesn't break the build.
 - `Bash(gh pr close*)`.
 
+### 🛡️ Threat-model addendum for M2.4 content-scanning hooks
+
+The static matrix above gates *which* tools an agent invokes. The M2.4 `PreToolUse` hook suite gates *what* those allowed tools act on. This subsection enumerates the exact pattern catalogue each content-scanning hook checks, the rationale for each pattern, and the action it takes (block / warn / ask). This is the catalogue an implementer must validate before any matcher code lands.
+
+**Conventions used below:**
+- **Block:** the hook returns non-zero and the tool call is rejected outright with the printed message.
+- **Warn:** the hook returns 0 but prints a visible warning to the operator's terminal; the tool call proceeds.
+- **Ask:** the hook returns 2 (the documented "ask" exit code from the Claude Code hooks reference) so the operator must confirm before the tool call proceeds.
+
+Each hook MUST log its decision (matched pattern, file, action) to `<worktree>/.task-log/hook-decisions.jsonl` for post-mortem auditing. Logs persist across the retry budget (§8) so the `unblocker` agent can see why hooks fired.
+
+#### `scan-edit-write` — `PreToolUse` on `Edit` / `Write`
+
+Scans the **proposed** file contents (the new content the agent wants to write), not the file as it currently is on disk. Runs on every `Edit` and `Write` call inside the worktree.
+
+| Pattern (description) | Match heuristic | Action |
+|---|---|---|
+| Unsanitised `eval(<input>)` in JS/TS | regex: `\beval\s*\(\s*(req|input|query|params|stdin|process\.argv)` | **Block** |
+| Unsanitised `exec` / `execSync` of user input in Node | regex: `\b(exec\|execSync\|spawnSync)\s*\(\s*\$?\{?(req|input|query|params)` | **Block** |
+| Hardcoded secrets — generic high-entropy string assignment | regex: `(secret\|token\|api[_-]?key\|password)\s*[:=]\s*["'`][A-Za-z0-9+/=]{24,}["'`]` AND value Shannon entropy ≥ 4.5 | **Block** |
+| Hardcoded secrets — known credential prefixes | substring match for any of: `sk-`, `gho_`, `github_pat_`, `ghp_`, `xoxb-`, `xoxp-`, `AKIA`, `ASIA`, `AIza`, `-----BEGIN RSA PRIVATE KEY-----`, `-----BEGIN OPENSSH PRIVATE KEY-----` | **Block** |
+| SQL injection shape — string template with user input | regex: `["'`].*SELECT.*\$\{(req\|input\|query\|params)` (case-insensitive) | **Warn** |
+| Shell injection shape — string template into `exec` / `spawn` | regex: `(exec\|spawn).*\$\{(req\|input\|query\|params)` | **Warn** |
+| Python `eval` / `exec` of user input | regex: `\b(eval\|exec)\s*\(\s*(request\|input\|sys\.argv\|stdin)` | **Block** |
+| Disabled security headers / CSP relaxation | regex (case-insensitive): `content-security-policy.*unsafe-eval\|x-frame-options:?\s*allow-all` | **Warn** |
+
+**Known false-positive surfaces (operator/maintainer should be aware before tuning):**
+- Test fixtures intentionally containing planted patterns (e.g. a JS test asserting that `eval(input)` is rejected). Mitigation: skip the scan when the file path matches `**/__fixtures__/**` or `**/test*/**/*.fixture.*` or has a leading `// scan-edit-write: skip` comment in the first 5 lines.
+- Educational / demo code in `docs/**` or `README*`. Mitigation: skip when path matches `docs/**` or basename starts with `README`.
+
+#### `scan-git-add` — `PreToolUse` on `git add`
+
+Scans the **proposed staged contents** — the diff of what would land in the index. Computed via `git diff --cached --no-color` after a synthetic dry-run, then matched line-by-line.
+
+Reuses every pattern from `scan-edit-write` (a `git add` of a file the agent already wrote may include patterns that slipped past the Edit/Write scan — e.g. they were already in the file before atelier started touching it). Adds these secret-detection patterns that are tuned for diff context rather than full-file context:
+
+| Pattern (description) | Match heuristic | Action |
+|---|---|---|
+| Added `.env*` file (any path) | filename match `**/.env*` in the staged paths | **Block** (same outcome as the existing `block-env-commit` hook; this duplicate is intentional defence-in-depth) |
+| Added file under `**/secrets/**` or `**/credentials/**` | filename glob match | **Block** |
+| AWS access key in an added line | regex on added lines: `\b(AKIA\|ASIA)[0-9A-Z]{16}\b` | **Block** |
+| GitHub fine-grained PAT in an added line | regex: `\bgithub_pat_[0-9a-zA-Z_]{82}\b` | **Block** |
+| Generic 32+ char high-entropy added-line content not in a code-fence or comment | Shannon entropy ≥ 4.5 over a run of ≥ 32 base64-ish characters, line not starting with `#`, `//`, `/*`, `*` | **Ask** |
+| Private key block in added lines | substring match for `-----BEGIN (RSA\|OPENSSH\|EC\|DSA\|PGP\|ED25519) PRIVATE KEY-----` | **Block** |
+
+**Known false-positive surfaces:**
+- Snapshot test files (`*.snap`, `__snapshots__/**`) often contain high-entropy strings that aren't secrets. Skip these paths.
+- Lock files (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`) — already in the static matrix deny list (M1.4) for `Edit`, but staged via `git add` if the agent ran `pnpm install` and then naively added everything. Skip the entropy check for lock files.
+
+#### `safe-package-change` — `PreToolUse` on `pnpm install` / `add` / `update` / `run`
+
+Triggers before pnpm modifies dependencies or runs scripts. Analyses (a) the proposed `package.json` (after the agent's prospective change), and (b) for `pnpm add`/`update`, the published `package.json` of each new direct dependency fetched from `https://registry.npmjs.org/<pkg>`.
+
+| Pattern (description) | Match heuristic | Action |
+|---|---|---|
+| `scripts.preinstall` / `scripts.postinstall` / `scripts.prepare` newly added or changed | JSON-diff comparison of the `scripts` object; flag any new or changed entry in these three fields | **Ask** |
+| Lifecycle script that fetches and executes remote code | regex on the script value: `(curl\|wget).*\|\s*(sh\|bash\|zsh\|fish)` or `eval.*\$\(curl` or `node -e ['"]require\(.https` | **Block** |
+| Dependency name with typosquatting shape against known top packages | Levenshtein distance ≤ 2 against a curated list (start with: react, vue, angular, lodash, axios, express, next, vite, typescript, jest, vitest, eslint, prettier, playwright). Exact match is fine; near-match triggers. | **Ask** |
+| Dependency name with non-ASCII characters | regex: `[^\x00-\x7F]` in package name | **Block** (homoglyph-attack defence) |
+| `bin` entry pointing outside the package directory | any `bin` field value containing `../` or starting with `/` (other than published-package-relative paths) | **Block** |
+| Direct dependency with `<` 7 days since first publish on npm | query `npm view <pkg> time --json`, compare oldest version's timestamp to current time | **Block** (mirrors the per-project `.npmrc minimum-release-age=10080` from §4 but applies at the hook level too, defense-in-depth) |
+| `dependencies` / `devDependencies` entry with a git URL or tarball URL outside `https://registry.npmjs.org` | substring check on the version specifier | **Ask** |
+| Removal of an existing lockfile (`pnpm-lock.yaml` not present after the operation) | filesystem check post-dry-run | **Block** |
+
+**Known false-positive surfaces:**
+- Legitimate post-install builds (native modules like `sharp`, `puppeteer`, `playwright`, `node-gyp` consumers). Mitigation: maintain a small allowlist of known-good packages whose lifecycle scripts are expected; the hook downgrades the action from Block to Ask for allowlisted packages.
+- New typosquat-shaped names from packages adopting a brand close to a popular one (false positive). Mitigation: Ask, not Block — the operator decides.
+
+#### Implementation guardrails
+
+- Each hook script lives at `hooks/<name>.sh` and is registered in `hooks/hooks.json` with an explicit `matcher` for the tool it intercepts. No global "PreToolUse on everything" — each matcher is narrow.
+- Scripts MUST be idempotent. Re-running a scan on the same content MUST produce the same decision.
+- Scripts MUST exit within 2 seconds on the median input (10 KB file or 200-line diff). The hook system enforces a 10 s hard timeout; staying well under it leaves room for the operator's slower hardware.
+- Pattern catalogues live in `hooks/patterns/<hook>.json` (one JSON file per hook), so adding a pattern doesn't require touching the hook script. Each pattern entry has `name`, `description`, `regex` (or `match_type`), `action`, and `rationale` fields. The catalogue file is what an operator reviews when triaging a false positive.
+- Every hook decision is appended to `<worktree>/.task-log/hook-decisions.jsonl` with: `timestamp`, `hook`, `tool_call`, `matched_pattern`, `action`, `message`. The `unblocker` agent reads this log when escalating to a blocked issue.
+
 ---
 
 ## 4. Dependency install rules ✅

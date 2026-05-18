@@ -109,7 +109,20 @@
       "Bash(ls*)",
       "Bash(mkdir -p*)",
       "Bash(mv*)",
-      "Bash(cp*)"
+      "Bash(cp*)",
+
+      "Bash(claude plugin list --json)",
+      "Bash(gh api repos/AkaLab-Tech/atelier/releases/latest*)",
+      "Bash(gh api repos/AkaLab-Tech/atelier/tags*)",
+      "Bash(gh api repos/AkaLab-Tech/claude-roadmap-tools/releases/latest*)",
+      "Bash(gh api repos/AkaLab-Tech/claude-roadmap-tools/tags*)",
+      "Bash(gh api repos/Miguelslo27/git-wt/commits/main*)",
+      "Bash(command -v git-wt)",
+      "Read(~/.local/state/atelier/git-wt.sha)",
+      "Read(~/.claude/settings.json)",
+      "Read(~/.zshrc)",
+      "Read(~/.bashrc)",
+      "Read(~/.claude/.atelier-config.json)"
     ]
   }
 }
