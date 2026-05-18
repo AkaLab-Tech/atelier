@@ -1,0 +1,115 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "additionalDirectories": ["<worktree>"],
+
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(rm -fr *)",
+      "Bash(sudo *)",
+
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * main)",
+      "Bash(git push * master)",
+      "Bash(git push * develop)",
+      "Bash(git push * staging)",
+      "Bash(git reset --hard*)",
+      "Bash(git config --global*)",
+
+      "Bash(gh auth logout*)",
+      "Bash(gh auth refresh*)",
+      "Bash(gh repo delete*)",
+      "Bash(gh api -X POST*)",
+      "Bash(gh api -X PATCH*)",
+      "Bash(gh api -X DELETE*)",
+
+      "Bash(pnpm publish*)",
+      "Bash(npm publish*)",
+
+      "Bash(curl * | sh*)",
+      "Bash(curl * | bash*)",
+      "Bash(wget * | sh*)",
+      "Bash(wget * | bash*)",
+
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.config/gh/**)",
+
+      "Edit(~/.zshrc)",
+      "Edit(~/.bashrc)",
+      "Edit(~/.ssh/**)",
+      "Edit(./.github/workflows/**)",
+      "Edit(./package.json)",
+      "Edit(./pnpm-lock.yaml)"
+    ],
+
+    "ask": [
+      "Edit(./.env*)",
+      "Edit(./Dockerfile)",
+      "Edit(./docker-compose*)",
+      "Bash(gh pr close*)"
+    ],
+
+    "allow": [
+      "Read(<worktree>/**)",
+      "Glob",
+      "Grep",
+      "Edit(<worktree>/**)",
+      "Write(<worktree>/**)",
+
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "Bash(git blame*)",
+      "Bash(git fetch*)",
+      "Bash(git ls-files*)",
+
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git checkout -b *)",
+      "Bash(git switch*)",
+      "Bash(git worktree*)",
+      "Bash(git stash*)",
+
+      "Bash(git push origin task/*)",
+
+      "Bash(gh issue *)",
+      "Bash(gh pr create*)",
+      "Bash(gh pr view*)",
+      "Bash(gh pr list*)",
+      "Bash(gh pr comment*)",
+      "Bash(gh pr merge*)",
+      "Bash(gh project *)",
+      "Bash(gh repo clone*)",
+      "Bash(gh repo view*)",
+
+      "Bash(pnpm install*)",
+      "Bash(pnpm add*)",
+      "Bash(pnpm remove*)",
+      "Bash(pnpm update*)",
+      "Bash(pnpm run *)",
+      "Bash(pnpm test*)",
+      "Bash(pnpm exec *)",
+      "Bash(pnpm audit*)",
+      "Bash(pnpm view*)",
+
+      "Bash(vitest*)",
+      "Bash(jest*)",
+      "Bash(pytest*)",
+      "Bash(playwright test*)",
+      "Bash(eslint*)",
+      "Bash(prettier*)",
+      "Bash(tsc*)",
+      "Bash(biome*)",
+
+      "Bash(ls*)",
+      "Bash(mkdir -p*)",
+      "Bash(mv*)",
+      "Bash(cp*)"
+    ]
+  }
+}
