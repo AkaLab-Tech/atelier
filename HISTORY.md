@@ -8,6 +8,35 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M2.3 — Phase 2 slash commands (`/next-task`, `/status`, `/finish-task`, `/setup-project`) — 2026-05-18
+**PR:** [#21](https://github.com/AkaLab-Tech/atelier/pull/21)
+
+Third Phase 2 milestone. Materialises the four operator-facing slash commands that drive an atelier task end-to-end. `/doctor` was already delivered in M1.6 (`commands/doctor.md`), so M2.3 effectively scopes to four new commands. Each command is a pure markdown prompt — no auxiliary scripts — that orchestrates the agents (M2.1) and skills (M2.2) already in place.
+
+**Delivered:**
+- `commands/next-task.md` (argument-hint `[task-id]`) — full pickup-to-PR flow. Sanity-checks worktree state, refuses to start if `IN_PROGRESS.md` is occupied, invokes the `atelier:task-discovery` skill (or honours an explicit `$ARGUMENTS` id), confirms with the operator before claiming, moves `ROADMAP.md → IN_PROGRESS.md`, creates the worktree via `git-wt`, instantiates `<worktree>/.claude/settings.json` by substituting `<worktree>` in `$CLAUDE_PLUGIN_ROOT/templates/settings.template.json` (the placeholder M1.4 left in the matrix), and hands off to the `atelier:task-orchestrator` agent. allowed-tools restricted to read/edit + narrow `Bash(git wt:*)`/`Bash(sed:*)` patterns + `Skill` + `Task`.
+- `commands/status.md` (no args, read-only) — single-screen dashboard for the operator. Sections: in-progress task (from `IN_PROGRESS.md`), worktrees (`git wt list` + dirty-check), open PRs (`gh pr list --json …`) split into `task/*` vs out-of-band, blocked-by tasks in `ROADMAP.md`, orphans (worktree without entry / entry without worktree). Never modifies state. Falls back gracefully when `gh` or `git-wt` is unavailable.
+- `commands/finish-task.md` (argument-hint `[task-id]`) — finalises the in-progress task. Identifies the task from `IN_PROGRESS.md` + the current branch, runs the push gate via the `atelier:safe-commit` skill (stops on `RED`, asks confirm on `PARTIAL`), invokes `atelier:pr-flow` for the branch → commit → push → PR sequence, and returns the PR URL. Includes a partial-recovery path for the rare push-succeeded-but-PR-not-opened case (Ctrl+C between steps).
+- `commands/setup-project.md` (argument-hint `[project-path]`) — initialises a directory for atelier-managed work. Idempotent via `~/.claude/.atelier-config.json` (`projects[<path>] = { setupCompleted, setupVersion }`); if the project is already configured, default is to skip the wizard and offer a reconfigure flow on operator confirmation. Writes `.claude/settings.json` (from `settings.template.json`), creates `ROADMAP.md` + `IN_PROGRESS.md` + `HISTORY.md` if missing (operator-facing template from PLAN.md §5), writes `.claude/CLAUDE.md` that points at the global `operator-rules.md` (no duplication), writes/appends `.npmrc` with the three PLAN.md §4 guardrails (`ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate`), appends `.task-log/`, `.claude/settings.local.json`, `.DS_Store` to `.gitignore`. Refuses dangerous paths (`/`, `$HOME`, the plugin's own dir).
+
+**Tests:**
+- YAML frontmatter parses cleanly for all four commands (Ruby `YAML.safe_load`).
+- `argument-hint` and `allowed-tools` fields well-formed; `allowed-tools` follows least-privilege per command (e.g., `/status` allows only `Bash(git wt list)`, `Bash(gh pr list:*)`, no write tools at all).
+- Plugin loader discovers all five `commands/*.md` (the four new + `doctor.md` from M1.6) via `claude --plugin-dir <worktree> --permission-mode plan -p "..."`. Auto-discovery same as `agents/` (M2.1) and `skills/` (M2.2) — no entry in `plugin.json` needed.
+
+**Decisions captured:**
+- **No auxiliary scripts in `scripts/`.** Each command is a self-contained prompt. `/next-task` uses inline `sed` for the `<worktree>` substitution rather than a `scripts/instantiate-settings.sh` helper — keeps the indirection low and the substitution visible to reviewers. If a command grows complex enough to need a helper, we add it then; not pre-emptively.
+- **`/finish-task` does not run `git wt rm` after merge.** The PR may need follow-up commits during review, so deleting the worktree mid-review corrupts the chain. Worktree cleanup is a manual operator step (or a future `/cleanup-task` command); the post-merge instruction lives in the success report so the operator knows when to run it.
+- **`/setup-project` defaults to skip-when-configured.** First implementation tried the opposite (always offer reconfigure on re-run) and felt noisy — most re-runs are accidental. Default is now `✓ already configured — nothing to do`, with reconfigure available on explicit request.
+- **`/status` is read-only by allowed-tools.** Even surface suggestions (`git wt rm <orphan>`) are printed as text, never executed. This keeps `/status` safe to run reflexively at any moment.
+
+**Acceptance criterion status:** the ROADMAP M2.3 acceptance — *"in a toy repo, `/next-task` runs end-to-end (pick task → worktree → implement → PR draft) without manual intervention"* — is **structurally satisfied** but requires a toy-repo dogfood run to validate end-to-end. Each piece is in place (commands, skills, agents, settings template), so the gap is integration testing, not functionality. Will be exercised during M7.1.
+
+**Follow-ups:**
+- Toy-repo dogfood run (M7.1) — validates the full `/next-task → /finish-task` cycle.
+- `/cleanup-task <id>` command (post-merge worktree removal + branch deletion) — currently a manual operator step; can be split out if friction surfaces.
+- `/resume-task <id>` — referenced by `/next-task` and `/finish-task` but lives in M4.3.
+
 ### M2.2 — Phase 2 skills (`task-discovery`, `pr-flow`, `safe-commit`, `safe-install`) — 2026-05-18
 **PR:** [#20](https://github.com/AkaLab-Tech/atelier/pull/20)
 
