@@ -37,6 +37,15 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scan-edit-write.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scan-git-add.sh"
+          }
+        ]
       }
     ]
   }
