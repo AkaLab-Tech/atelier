@@ -118,6 +118,8 @@ Phase C is split in two: **C.1** handles what can't live inside a Claude Code pl
 
 Lives in `settings.template.json`. `/next-task` instantiates a per-task `settings.json` that injects the current worktree path to scope `Edit`/`Write`.
 
+**Defense-in-depth.** This matrix is the **first** security layer: it gates *which tool* an agent can invoke. It does **not** inspect the *content* the tool would act on — `Edit(<worktree>/**)` is allowed for any file in the worktree regardless of what is being written to it. The **second** layer is the `PreToolUse` hook suite delivered in M2.4 (`scan-edit-write`, `scan-git-add`, `safe-package-change`, `block-env-commit`, `safe-commit`): those hooks intercept allowed tool calls and validate intent (proposed file contents, staged git diff, `package.json` changes before `pnpm install`/`add`/`update`/`run`). Neither layer alone is enough — a leaky static matrix would let through forbidden tools, and a leaky hook layer would miss tools that should never have been invoked. Both must hold for a real attack to land.
+
 **`defaultMode`: `acceptEdits`**
 
 ### 🟢 Allow

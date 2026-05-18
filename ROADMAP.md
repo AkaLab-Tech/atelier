@@ -12,17 +12,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phase 1 — Foundation.** Blocks everything else. A fresh Mac must be able to run `install.sh`, log in to Claude + GitHub, and end with the `atelier` plugin installed and `/doctor` ✅.
 
-### M1.4 — `settings.template.json`
-
-Materialize the full allow / deny / ask matrix from [PLAN.md §3](PLAN.md). Stays as a **template** in this milestone — per-task instantiation (worktree path injected into `Edit`/`Write` patterns and `additionalDirectories`) is built in Phase 2.
-
-- [ ] `defaultMode: acceptEdits`.
-- [ ] Allow list: read/edit/write (placeholder for `<worktree>` patterns), git read/write, `git push origin task/*` only, `gh` subset, `pnpm` subset, test/lint/type tooling.
-- [ ] Deny list (absolute): `rm -rf:*`, `sudo:*`, `git push --force*`, `git push * main|master|develop|staging`, `git reset --hard*` outside task/*, `git config --global*`, `gh auth logout/refresh`, `gh repo delete`, `gh api POST/PATCH/DELETE`, `pnpm publish`, `npm publish`, `curl|sh`, reads of `~/.ssh/.aws/.gnupg/.config/gh`, edits of `~/.zshrc`/`~/.bashrc`/`~/.ssh`/`.github/workflows/**`/`package.json`/`pnpm-lock.yaml`, any edit outside the worktree.
-- [ ] Ask list: `Edit(.env*)`, `Edit(Dockerfile)`, `Edit(docker-compose*)`, `gh pr close*`.
-
-**Acceptance:** the template parses as valid JSON, every entry from PLAN.md §3 is present, and a sample per-task instantiation (manual for now) produces a `settings.json` that Claude Code accepts.
-
 ### M1.5 — Plugin-shipped `CLAUDE.md` (operator rules)
 
 Author the `CLAUDE.md` that ships **inside the plugin** — this is read by Claude when an operator runs a task in any project, and contains the rules agents must follow ([PLAN.md §4](PLAN.md) dep installs, [§6](PLAN.md) push/PR/merge, [§7](PLAN.md) agent contracts).
@@ -75,11 +64,19 @@ Author `/next-task`, `/status`, `/finish-task`, `/setup-project`, `/doctor`. `/n
 
 **Acceptance:** in a toy repo, `/next-task` runs end-to-end (pick task → worktree → implement → PR draft) without manual intervention.
 
-### M2.4 — Phase 2 hooks
+### M2.4 — Phase 2 hooks (dynamic security layer)
 
-Implement `block-env-commit` (`PreToolUse` on `git add`/`git commit` blocks any path matching `.env*`) and `safe-commit` (lint + typecheck + tests gate before commit).
+Implement the `PreToolUse` hook suite that complements the **static** permissions matrix from M1.4 / `settings.template.json`. The static matrix decides *which tool* an agent can invoke; these hooks decide *with what content*. Neither layer alone is enough — see [PLAN.md §3](PLAN.md) "Defense-in-depth".
 
-**Acceptance:** attempting to `git add .env` is blocked with a clear message; `git commit` is blocked when lint or tests fail.
+- [ ] `block-env-commit` (`PreToolUse` on `git add`/`git commit`): blocks any path matching `.env*` with a clear message.
+- [ ] `safe-commit` (`PreToolUse` on `git commit`): lint + typecheck + tests gate before the commit lands.
+- [ ] `scan-edit-write` (`PreToolUse` on `Edit`/`Write`): scan the proposed file contents for security-gap patterns (`eval(` of unsanitised input, hardcoded secrets, SQL-injection-shaped templates, shell-injection-shaped templates, etc.) and block the write when a high-confidence match is found.
+- [ ] `scan-git-add` (`PreToolUse` on `git add`): scan the proposed staged contents (resolved via `git diff --cached` on a dry-run) for the same security-gap patterns plus secret detection (entropy heuristics + known credential prefixes).
+- [ ] `safe-package-change` (`PreToolUse` on `pnpm install`/`add`/`update`/`run`): analyse the resulting `package.json` (and any new dependency's published manifest) for malicious lifecycle scripts in the `scripts` field, suspicious `bin` entries, typosquatting names, and `postinstall` hooks that fetch and execute code. Block high-confidence threats; surface a clear message and require operator confirmation for marginal cases. Complements the per-project `.npmrc` guardrails from PLAN.md §4 (which already disable lifecycle scripts wholesale; this hook catches the cases where an operator deliberately re-enables them or pulls in a transitive dep that needs running).
+
+**Pre-implementation note:** before coding the three new content-scanning hooks above (`scan-edit-write`, `scan-git-add`, `safe-package-change`), produce a short threat-model addendum in `PLAN.md` §3 (or a sibling doc) that lists the exact pattern catalogue each hook checks. The patterns themselves are the security surface and deserve explicit review before any matcher code lands.
+
+**Acceptance:** `git add .env` is blocked with a clear message; `git commit` is blocked when lint or tests fail; the three content-scanning hooks reject deterministic positive cases (planted secret in a test fixture, planted `eval(stdin)` pattern in a test fixture, planted `"postinstall": "curl … | sh"` in a test `package.json`) and pass clean cases.
 
 ### M3.1 — `e2e-runner` agent + `visual-validation` skill
 
