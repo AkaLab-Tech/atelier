@@ -19,20 +19,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 > **Phases 2–4 — Single-project agent flow + robustness.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries.
 
 
-### M2.4 — Phase 2 hooks (dynamic security layer)
-
-Implement the `PreToolUse` hook suite that complements the **static** permissions matrix from M1.4 / `settings.template.json`. The static matrix decides *which tool* an agent can invoke; these hooks decide *with what content*. Neither layer alone is enough — see [PLAN.md §3](PLAN.md) "Defense-in-depth".
-
-- [ ] `block-env-commit` (`PreToolUse` on `git add`/`git commit`): blocks any path matching `.env*` with a clear message.
-- [ ] `safe-commit` (`PreToolUse` on `git commit`): lint + typecheck + tests gate before the commit lands.
-- [ ] `scan-edit-write` (`PreToolUse` on `Edit`/`Write`): scan the proposed file contents for security-gap patterns (`eval(` of unsanitised input, hardcoded secrets, SQL-injection-shaped templates, shell-injection-shaped templates, etc.) and block the write when a high-confidence match is found.
-- [ ] `scan-git-add` (`PreToolUse` on `git add`): scan the proposed staged contents (resolved via `git diff --cached` on a dry-run) for the same security-gap patterns plus secret detection (entropy heuristics + known credential prefixes).
-- [ ] `safe-package-change` (`PreToolUse` on `pnpm install`/`add`/`update`/`run`): analyse the resulting `package.json` (and any new dependency's published manifest) for malicious lifecycle scripts in the `scripts` field, suspicious `bin` entries, typosquatting names, and `postinstall` hooks that fetch and execute code. Block high-confidence threats; surface a clear message and require operator confirmation for marginal cases. Complements the per-project `.npmrc` guardrails from PLAN.md §4 (which already disable lifecycle scripts wholesale; this hook catches the cases where an operator deliberately re-enables them or pulls in a transitive dep that needs running).
-
-**Pre-implementation note:** before coding the three new content-scanning hooks above (`scan-edit-write`, `scan-git-add`, `safe-package-change`), produce a short threat-model addendum in `PLAN.md` §3 (or a sibling doc) that lists the exact pattern catalogue each hook checks. The patterns themselves are the security surface and deserve explicit review before any matcher code lands.
-
-**Acceptance:** `git add .env` is blocked with a clear message; `git commit` is blocked when lint or tests fail; the three content-scanning hooks reject deterministic positive cases (planted secret in a test fixture, planted `eval(stdin)` pattern in a test fixture, planted `"postinstall": "curl … | sh"` in a test `package.json`) and pass clean cases.
-
 ### M3.1 — `e2e-runner` agent + `visual-validation` skill
 
 Sonnet agent that drives Playwright and captures screenshots; companion skill that knows how to attach screenshots to a PR description. **Includes installing Playwright + browsers** (chromium/firefox/webkit) on the host — this responsibility moved from `install.sh` M1.3 Phase A into M3.1 so operators who never run e2e tasks don't pay the ~250 MB browser download upfront.
