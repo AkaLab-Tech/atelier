@@ -76,6 +76,13 @@ The skill uses option 1 unless the orchestrator explicitly says otherwise.
 
 ## How to run
 
+**Invariant — read this once and hold it:** the skill is invoked **after a
+specialist attempt has already failed**. The orchestrator hands you the
+failure. The just-failed attempt is the one whose log you are about to
+write (Step 3). The pre-existing files in `.task-log/` are logs of the
+attempts that failed *before* this one — they do not yet include the
+just-failed attempt.
+
 Apply the steps in order. Stop and report at the first failure.
 
 ### Step 1 — Count existing logs
@@ -84,12 +91,17 @@ Apply the steps in order. Stop and report at the first failure.
 ls -1 "<worktree>/.task-log/" 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}-[0-9]{2}\.md$' | wc -l
 ```
 
-Let `N = count + 1` be the current attempt number. Sanity-check:
+Let `count` be the number returned and `N = count + 1` be the
+**just-failed attempt number** (i.e., the attempt whose log Step 3
+will write). N is in `1..6` for a healthy task; `N > 6` means an
+earlier attempt should already have triggered `hard-stop`.
 
-- If `N > 6`, **refuse** — return `hard-stop` immediately, do not write
-  another log. The orchestrator must hand off to `unblocker` (or, until
-  M4.2 ships, surface the hard stop to the operator with the existing
-  log paths).
+Sanity-check:
+
+- If `N > 6` (i.e., 6 or more logs are already on disk), **refuse** —
+  return `hard-stop` immediately, do not write another log. The
+  orchestrator must hand off to `unblocker` (or, until M4.2 ships,
+  surface the hard stop to the operator with the existing log paths).
 - If `N == 1` and the failing specialist's first invocation has already
   completed (i.e., this is genuinely a *failure*, not a fresh task),
   proceed. If `N == 1` and the specialist has not even started yet, the
@@ -142,26 +154,32 @@ attempt cannot use.
 
 ### Step 4 — Compute the next-action decision
 
-```text
-N == 1, 2 → continue  (specialist retries in same worktree)
-N == 3    → continue  (one more in-worktree retry, then 04 will reset)
-N == 4    → continue  (this attempt already happened in the fresh worktree)
-N == 5    → continue
-N == 6    → hard-stop (this attempt was the last allowed)
-N == 7+   → impossible (Step 1 already refused)
-```
-
-Note the off-by-one: the **reset** happens *between* attempts 03 and 04,
-so the decision returned **after attempt 03 fails** is `reset`. Concretely:
+`N` is the **just-failed attempt** (from Step 1). The decision answers:
+*given that attempt N just failed, what happens next?* The table is the
+single source of truth — if any other phrasing in this document seems
+to disagree, this table wins.
 
 ```text
-After attempt 01 fails → continue
-After attempt 02 fails → continue
-After attempt 03 fails → reset       (the orchestrator runs the wt cycle, then attempt 04 begins)
-After attempt 04 fails → continue
-After attempt 05 fails → continue
-After attempt 06 fails → hard-stop
+Just-failed attempt N == 1 → continue   (next: attempt 02 in same worktree)
+Just-failed attempt N == 2 → continue   (next: attempt 03 in same worktree)
+Just-failed attempt N == 3 → reset      (then: attempt 04 in fresh worktree)
+Just-failed attempt N == 4 → continue   (next: attempt 05 in fresh worktree)
+Just-failed attempt N == 5 → continue   (next: attempt 06 in fresh worktree)
+Just-failed attempt N == 6 → hard-stop  (no further attempt allowed)
+Just-failed attempt N >= 7 → impossible (Step 1 already refused)
 ```
+
+Worked examples to lock the semantics:
+
+| `count` of files in `.task-log/` | `N = count + 1` (just-failed) | Decision |
+| --- | --- | --- |
+| 0 | 1 | `continue` |
+| 1 | 2 | `continue` |
+| 2 | 3 | `reset` |
+| 3 | 4 | `continue` |
+| 4 | 5 | `continue` |
+| 5 | 6 | `hard-stop` |
+| 6 or more | 7+ | `hard-stop` (refused at Step 1) |
 
 ### Step 5 — Report
 
