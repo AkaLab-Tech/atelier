@@ -8,6 +8,52 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M2.4 — Phase 2 hooks (dynamic security layer: `block-env-commit`, `safe-commit`, `scan-edit-write`, `scan-git-add`, `safe-package-change`) — 2026-05-19
+**PRs:** [#22](https://github.com/AkaLab-Tech/atelier/pull/22) (block-env-commit + shared logging) · [#23](https://github.com/AkaLab-Tech/atelier/pull/23) (safe-commit) · [#24](https://github.com/AkaLab-Tech/atelier/pull/24) (scan-edit-write) · [#25](https://github.com/AkaLab-Tech/atelier/pull/25) (scan-git-add) · [#26](https://github.com/AkaLab-Tech/atelier/pull/26) (safe-package-change + this closure)
+
+Final Phase 2 milestone. The five `PreToolUse` hooks that make atelier's defence-in-depth real: the static permissions matrix from M1.4 gates *which* tool an agent can call; this suite gates *with what content* the allowed call may proceed (PLAN.md §3 "Defense-in-depth"). Shipped across five sub-PRs because each hook's pattern catalogue is its own reviewable security surface; the threat-model addendum in PLAN.md §3 (finalised in M1.6) is the authoritative spec each catalogue maps to 1:1.
+
+**Delivered:**
+- `hooks/lib/log-decision.sh` (sub-PR 1) — sourceable helper. `log_decision <hook> <tool> <pattern> <action> <message>` appends one JSON line per decision to `<worktree>/.task-log/hook-decisions.jsonl`. Resolves the log path via `CLAUDE_PROJECT_DIR` (falls back to `$PWD`). Fail-soft: missing `jq`, unwritable log dir, missing path all return 0 — a hook must never abort because of a logging hiccup, and the unblocker agent (M4.2) reads the JSONL to escalate to blocked issues.
+- `hooks/block-env-commit.sh` (sub-PR 1) — `PreToolUse` on Bash. Three detection paths for `.env*` in `git add` / `git commit`: literal path tokens, wildcard adds (`-A`/`.`/`--all`) resolved via `git ls-files --others --exclude-standard`, and already-staged paths via `git diff --cached`. Exit 2 with a precise message; the operator sees the offending path and the recovery hint.
+- `hooks/safe-commit.sh` (sub-PR 2) — `PreToolUse` on Bash for `git commit`. Walks up looking for `package.json`, runs `pnpm run lint → typecheck → test` in order, stops on first red, returns truncated output. Steps without a matching `scripts.<name>` are N/A and continue (mirrors the M2.2 skill's contract). Escape hatch `ATELIER_SKIP_SAFE_COMMIT=1` documented in the script header. Naming collision with `skills/safe-commit/SKILL.md` (M2.2) is intentional: skill = deliberate (invoked by `pr-author`), hook = automatic (every `git commit`); both implement the same PLAN.md §6 rule at different layers.
+- `hooks/scan-edit-write.sh` + `hooks/patterns/scan-edit-write.json` (sub-PR 3) — `PreToolUse` on `Edit | Write | MultiEdit`. Resolves the **proposed** content per tool (`Write.content`, `Edit.new_string`, `MultiEdit.edits[].new_string` concatenated), applies skips (`path_substrings`, `basename_prefixes`, content directive), then walks the externalised 8-pattern catalogue: 6 Block (eval/exec of user input, hardcoded secrets generic + known-prefix, Python eval) and 2 Warn (SQL/shell injection shapes, CSP relaxation).
+- `hooks/scan-git-add.sh` + `hooks/patterns/scan-git-add.json` (sub-PR 4) — `PreToolUse` on Bash for `git add`. Three-phase scan per resolved path: file-level (path patterns: `.env*`, `secrets/`, `credentials/`), added-line-level (regex for AWS access keys, GitHub fine-grained PATs, substring for private-key headers, plus Shannon-entropy heuristic for ≥ 32 base64-ish runs on non-comment lines), and **reused** content scan from the scan-edit-write catalogue. Entropy calculation runs in Python with content passed via tmpfile (early version hit a HEREDOC-vs-stdin conflict — fixed mid-PR). The `Ask` action is implemented as stdout JSON `{"permissionDecision":"ask",...}` per the Claude Code hooks reference.
+- `hooks/safe-package-change.sh` + `hooks/patterns/safe-package-change.json` (sub-PR 5) — `PreToolUse` on Bash for `pnpm install`/`add`/`update`/`run` and any `rm pnpm-lock.yaml`. Eight patterns: non-ASCII package name (Block, homoglyph defence), typosquatting via Levenshtein distance ≤ 2 against a 44-package curated list (Ask), package age < 7 days via `pnpm view <pkg> time` (Block, mirrors `.npmrc minimum-release-age=10080`), lifecycle script with `curl|sh`/`wget|sh`/`eval $(curl`/`node -e require('https` patterns (Block), lifecycle script presence not on the native-build allowlist (`sharp`/`puppeteer`/`playwright`/`node-gyp`/etc.) (Ask), `bin` path traversal `../` or `/` prefix (Block), non-registry version specifier (`git+`/`file:`/non-npmjs URL/tarball) (Ask), and explicit lockfile removal (Block).
+- `hooks/hooks.json` — extended across the five sub-PRs to register every hook with the appropriate matcher. Final state: 1 `SessionStart` (from M1.5) + 5 `PreToolUse` entries (4 Bash + 1 Edit|Write|MultiEdit). Multiple Bash matchers coexist and all fire on every Bash call; each script filters its own subcommand of interest.
+- `.gitignore` — `.task-log/` added (sub-PR 1) so the JSONL never accidentally enters version control.
+
+**Tests:** every hook smoke-tested with synthetic stdin payloads covering its Block / Warn / Ask / Allow / Skip branches.
+- sub-PR 1: 6 scenarios (`git add .env`, wildcards, chained commands).
+- sub-PR 2: 7 scenarios (no package.json / empty scripts / passing lint / failing lint with truncated output / `ATELIER_SKIP_SAFE_COMMIT`).
+- sub-PR 3: 20 scenarios (one positive per Block + Warn pattern, three negatives, five skips, Edit + MultiEdit variants).
+- sub-PR 4: 13 scenarios across path-level, added-line, Ask (high-entropy with realistic 4.75-bit base64-ish string), reused scan-edit-write patterns, skips (snapshot files, lockfiles), wildcard catch.
+- sub-PR 5: 17 scenarios across all 8 patterns (with mocked `pnpm view` for the four that need remote queries).
+
+`shellcheck` clean on every script (only the expected `SC1091` info about the `source` directive). `jq empty` clean on every JSON.
+
+**Decisions captured across the five PRs:**
+- **`path_globs` from threat-model implemented as `path_substrings`** in both content-scanning catalogues. Bash glob-to-regex is fragile (especially `**`); the substring set covers the same files for these patterns. JSON `skips_note` field explains the mapping.
+- **Pattern catalogues externalised in `hooks/patterns/<hook>.json`**, not inlined in bash. The patterns are the security surface and deserve to be reviewable independently.
+- **`Ask` exit shape uses Claude Code's documented JSON output** (`{"permissionDecision":"ask",...}` on stdout) rather than a bash exit code, because the bash convention for hooks is exit 0 (allow) or 2 (block) only.
+- **Naming collision `safe-commit` skill vs hook is intentional.** Skill is deliberate, hook is automatic; both implement PLAN.md §6 push gate at different layers. Documented inline in both files.
+- **HEREDOC + pipe stdin compete in bash.** Bit me in scan-git-add's first version where `python3 - <<'PY' ... PY` ate the content the script was piping. Fixed with a tmpfile passed as arg 2.
+- **`*"git add ."*` glob is too greedy** (matches `git add .env`). Replaced with a regex word-bounded matcher in scan-git-add after smoke test caught it.
+- **BSD `date %3N` and BSD grep `\xNN` don't expand on macOS.** Both bit the implementation; log-decision falls back to second precision for the timestamp, scan-edit-write/safe-package-change use `[^ -~]` (printable-ASCII complement) instead of `\x` ranges.
+- **`jq -e ... /dev/null` returns rc=4** (no JSON input); use `jq -en` (null-input mode) when only `--arg`/`--argjson` provide the data. Cost: one false-positive ask on every allowlisted package in safe-package-change before the fix.
+
+**Acceptance criteria from the ROADMAP entry, all satisfied:**
+- `git add .env` is blocked with a clear message → ✓ (block-env-commit + scan-git-add env-file-added, double defence).
+- `git commit` is blocked when lint or tests fail → ✓ (safe-commit hook).
+- Three content-scanning hooks reject deterministic positive cases (planted secret, planted `eval(stdin)`, planted `"postinstall": "curl … | sh"`) and pass clean cases → ✓ (all three smoke-tested with the canonical fixture shapes from the addendum).
+
+**Phase 2 (Single-project agent flow) closed with this PR.** All four M2.x milestones merged: M2.1 (#19), M2.2 (#20), M2.3 (#21), M2.4 (#22 → #26). Next phase: M3.1 (`e2e-runner` agent + `visual-validation` skill — includes installing Playwright + browsers, which was deferred here from M1.3 to keep the install lean for operators who don't run e2e tasks).
+
+**Follow-ups (carried forward into Phase 3+):**
+- Dogfood the full chain on a real (non-toy) project (M7.1). All five hooks have been smoke-tested synthetically; a live `pnpm add` against the real npm registry is the missing end-to-end check.
+- The `safe-package-change` typosquat list is intentionally minimal (44 entries). It will grow organically as M7.1 surfaces real false positives / true negatives.
+- The `safe-commit` hook's default 60s Claude Code timeout will hit on projects with long test suites. The `ATELIER_SKIP_SAFE_COMMIT=1` env-var escape hatch is enough for v1; a more graceful resolution (per-project `hooks/hooks.json` override or progressive gate that runs lint/typecheck first and tests in the background) is a v2 idea.
+
 ### M2.3 — Phase 2 slash commands (`/next-task`, `/status`, `/finish-task`, `/setup-project`) — 2026-05-18
 **PR:** [#21](https://github.com/AkaLab-Tech/atelier/pull/21)
 

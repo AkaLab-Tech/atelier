@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "hook": "safe-package-change",
+  "description": "Pattern catalogue for the safe-package-change PreToolUse hook. Maps 1:1 to PLAN.md §3 threat-model addendum (M1.6, PR #18). Defence in depth with the per-project .npmrc that /setup-project writes (ignore-scripts=true, minimum-release-age=10080, audit-level=moderate from PLAN.md §4) — npmrc is the silent baseline; this hook surfaces explicit decisions and catches the cases where the operator (or a transitive dep) deliberately re-enables what npmrc forbids.",
+  "typosquat_known_packages": [
+    "react",
+    "react-dom",
+    "vue",
+    "angular",
+    "@angular/core",
+    "svelte",
+    "next",
+    "nuxt",
+    "vite",
+    "webpack",
+    "rollup",
+    "esbuild",
+    "typescript",
+    "lodash",
+    "underscore",
+    "axios",
+    "got",
+    "node-fetch",
+    "express",
+    "fastify",
+    "koa",
+    "jest",
+    "vitest",
+    "mocha",
+    "chai",
+    "playwright",
+    "@playwright/test",
+    "puppeteer",
+    "cypress",
+    "eslint",
+    "prettier",
+    "biome",
+    "@biomejs/biome",
+    "dotenv",
+    "zod",
+    "yup",
+    "joi",
+    "chalk",
+    "kleur",
+    "commander",
+    "yargs",
+    "minimist",
+    "uuid"
+  ],
+  "lifecycle_script_allowlist": [
+    "sharp",
+    "puppeteer",
+    "playwright",
+    "@playwright/test",
+    "node-gyp",
+    "node-sass",
+    "bcrypt",
+    "node-pty",
+    "better-sqlite3",
+    "canvas",
+    "esbuild"
+  ],
+  "patterns": [
+    {
+      "name": "non-ascii-package-name",
+      "description": "Package name contains non-ASCII characters (homoglyph attack)",
+      "match_type": "name_regex",
+      "pattern": "[^ -~]",
+      "pattern_note": "Negated range of printable ASCII (0x20–0x7E). Equivalent to [^\\x00-\\x7F] modulo control characters, which are not valid in npm package names anyway. We use the printable form because BSD grep on macOS does not expand \\xNN.",
+      "action": "block",
+      "rationale": "Homoglyph-attack defence — `lodash` and `lоdash` (Cyrillic о) look identical but are different packages. Never install a non-ASCII-named package without explicit operator review."
+    },
+    {
+      "name": "typosquatting-suspect",
+      "description": "Package name within Levenshtein distance ≤ 2 of a well-known package (but not an exact match)",
+      "match_type": "typosquat",
+      "max_distance": 2,
+      "action": "ask",
+      "rationale": "Looks one or two character edits away from a popular package. Could be a deliberate brand-adjacent fork, could be a typosquat. Operator decides."
+    },
+    {
+      "name": "package-age-under-7-days",
+      "description": "Direct dependency younger than 7 days (first publish to npm)",
+      "match_type": "package_age",
+      "min_age_days": 7,
+      "action": "block",
+      "rationale": "PLAN.md §4: never install a package younger than 7 days. Mirrors the per-project .npmrc minimum-release-age guardrail at the runtime layer."
+    },
+    {
+      "name": "lifecycle-script-fetch-execute",
+      "description": "preinstall/postinstall/prepare/install script that fetches and executes remote code",
+      "match_type": "lifecycle_script_regex",
+      "scripts": ["preinstall", "postinstall", "prepare", "install"],
+      "pattern": "(curl|wget|fetch)[^|]*\\|[[:space:]]*(sh|bash|zsh|fish|sudo)|eval[[:space:]]*\\$\\(curl|node[[:space:]]+-e[[:space:]]+['\\\"]require\\(['\\\"]https",
+      "case_insensitive": false,
+      "action": "block",
+      "rationale": "Lifecycle script downloads and executes remote code at install time — the textbook supply-chain-attack shape. Block unconditionally."
+    },
+    {
+      "name": "lifecycle-script-added",
+      "description": "Adding/changing a preinstall/postinstall/prepare/install lifecycle script (any content)",
+      "match_type": "lifecycle_script_present",
+      "scripts": ["preinstall", "postinstall", "prepare", "install"],
+      "action": "ask",
+      "rationale": "Any lifecycle script runs code at install time. Allowlisted native-build packages (sharp, puppeteer, playwright, node-gyp, etc.) get a pass; everything else requires operator confirmation."
+    },
+    {
+      "name": "bin-path-traversal",
+      "description": "`bin` field value contains `../` or starts with `/`",
+      "match_type": "bin_path",
+      "action": "block",
+      "rationale": "A bin entry escaping the package directory can plant an arbitrary executable on PATH at install time."
+    },
+    {
+      "name": "non-registry-version-specifier",
+      "description": "Dependency declared with a git URL, tarball URL, or `file:` path (anything not `https://registry.npmjs.org`)",
+      "match_type": "version_spec_regex",
+      "pattern": "^(git\\+|git:|file:|https?://(?!registry\\.npmjs\\.org))",
+      "case_insensitive": false,
+      "action": "ask",
+      "rationale": "Bypasses npm's audit, integrity check, and minimum-release-age. Valid for genuine private forks, but the operator should confirm intent."
+    },
+    {
+      "name": "lockfile-removal",
+      "description": "Command explicitly removes or invalidates `pnpm-lock.yaml`",
+      "match_type": "command_regex",
+      "pattern": "(\\brm[[:space:]]+([^|]*)?pnpm-lock\\.ya?ml\\b)|(\\bgit[[:space:]]+rm[[:space:]]+[^|]*pnpm-lock\\.ya?ml\\b)",
+      "case_insensitive": false,
+      "action": "block",
+      "rationale": "Removing the lockfile means the next install resolves fresh, defeating reproducibility and audit. Use `pnpm install` to update intentionally."
+    }
+  ]
+}
