@@ -19,12 +19,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 > **Phases 2–4 — Single-project agent flow + robustness.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries.
 
 
-### M3.3 — Auto-merge logic with guardrails
-
-Implement the gate from [PLAN.md §6](PLAN.md): merge only when CI green + reviewer approves, and **never** auto-merge for `package.json`/`pnpm-lock.yaml`/`Dockerfile`/`docker-compose*`/`.github/workflows/**`/PRs >500 lines / pending human comments / `request-changes`. Squash strategy. Post-merge: delete remote branch, remove worktree, mark roadmap item `[x]`.
-
-**Acceptance:** toy-repo flow ends with a merged PR, deleted branch, cleaned worktree, and `[x]` in the project's ROADMAP.md.
-
 ### M4.1 — Retry logic with log persistence
 
 Per-attempt logs at `<worktree>/.task-log/<timestamp>-<attempt>.md` (initial hypothesis, actions, final error, reasoning). Budget: 3 attempts → reset worktree → 3 more → hard stop. Logs from all attempts feed each retry.

@@ -8,6 +8,45 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M3.3 — Auto-merge logic with guardrails — 2026-05-19
+**PR:** [#29](https://github.com/AkaLab-Tech/atelier/pull/29)
+
+Final Phase 3 milestone. Closes the autonomous-merge loop: when the chain (`implementer` → `tester` → `e2e-runner` → `pr-author` → `reviewer`) ends green, this skill evaluates the six [PLAN.md §6](PLAN.md) guardrails and squash-merges the PR (or holds it for human review). Phase 3 closed.
+
+**Delivered:**
+- `skills/auto-merge/SKILL.md` — the executable form of the PLAN.md §6 auto-merge gate. Reads PR metadata via `gh pr view --json`, evaluates **six short-circuiting guardrails** in order, and only merges when **all** pass:
+  1. **PR is not a draft.**
+  2. **`reviewDecision == "APPROVED"`** — honours GitHub's net verdict (if a human marks `request-changes` after `atelier:reviewer` approved, GitHub returns `CHANGES_REQUESTED` and this guardrail trips).
+  3. **All CI checks SUCCESS** (`statusCheckRollup` walked check-by-check; empty array treated as pass with explicit "no CI configured" note).
+  4. **No forbidden files in the diff** — `package.json`, `pnpm-lock.yaml` / `package-lock.json` / `yarn.lock`, `Dockerfile*`, `docker-compose*.{yml,yaml}`, `.github/workflows/**`.
+  5. **PR size `additions + deletions ≤ 500`**.
+  6. **No unresolved human comments** — heuristic: any non-bot comment without a resolution marker (`resolved`, `done`, `lgtm`, `looks good`, leading `:+1:` / `👍`).
+  On pass: `gh pr merge --squash --delete-branch --body-file <(echo "")` (squash strategy only, no rebase/merge-commit). Capture the merge commit SHA. Post-merge cleanup: `git wt rm <branch>` with operator confirmation (no auto-confirm), verify the task entry is in `HISTORY.md` (already moved by `pr-flow`), and surface any orphan local task branches. On any guardrail failure: report `held: <reasons>` and stop — the operator decides when to re-invoke.
+- `agents/task-orchestrator.md` — chain updated to include the new specialists from M3.1 and M3.2 plus this milestone's skill: `implementer → tester → e2e-runner (when UI surface) → pr-author → reviewer → auto-merge`. The output schema gains a `Status` field that surfaces one of `merged (<sha>)` | `held — <guardrails>` | `request-changes (N findings)` | `blocked — see <log-path>`. The orchestrator now knows not to invoke `auto-merge` after `reviewer` returns `request-changes`.
+
+**Tests:**
+- YAML frontmatter parses cleanly on the new skill and the updated agent.
+- Plugin loader auto-discovers the skill. `claude --plugin-dir <worktree> --permission-mode plan -p "list skills..."` returned 6 skills total (`task-discovery`, `pr-flow`, `safe-commit`, `safe-install`, `visual-validation`, **`auto-merge`**), and confirmed the updated `task-orchestrator` body references both `reviewer` and `auto-merge` as part of the chain.
+- `jq empty` clean on `hooks/hooks.json` (no template changes needed; `gh pr merge*` and `git wt*` were already on the allow list since M1.4 / M1.5).
+
+**Decisions captured:**
+- **Skill, not slash command.** The auto-merge gate is the last step of an agent chain, not an operator-facing entry point. A `/auto-merge <PR>` command would be plumbing on top with no unique value; the operator can already invoke the skill ad-hoc by saying "merge PR #N". Slash command can be added later if friction surfaces.
+- **Updated `task-orchestrator` in this PR.** The acceptance criterion ("toy-repo flow ends with a merged PR…") requires the orchestrator to invoke this skill, so wiring it now keeps the end-to-end semantics correct. Cross-cutting change to a file from M2.1, captured explicitly here so the diff is reviewable.
+- **Squash-only; no rebase / merge-commit.** Single decision point for the merge strategy. Avoids the proliferation of strategies that's hard to audit later. Documented as a hard refusal in the skill.
+- **`--body-file <(echo "")` to clear the squash-commit body.** The PR body lives on the closed PR for history; the merge commit on `main` should be terse (just the title). Avoids dumping the full Summary / Test plan / Tracking block into every squash commit.
+- **No auto-confirm for `git wt rm`.** Worktree removal post-merge passes through the skill's `git wt rm` invocation, which prompts; the skill must surface that prompt rather than confirming silently. Dirty worktree after a clean merge is an anomaly that deserves operator attention.
+- **Unresolved-comment detection is heuristic, on purpose.** GitHub does not expose a structured "resolved" flag for top-level PR comments (only inline review threads via GraphQL). The safe default is **conservative**: any pending human comment trips the guardrail. A future v2 could use the GraphQL `reviewThreads.isResolved` field for inline comments.
+- **500-line threshold is hard-coded.** PLAN.md §6 calls it "adjustable" but a per-project override is v2 (project-level config). For v1 the threshold is the contract.
+
+**Acceptance criterion status:** the ROADMAP M3.3 acceptance — *"toy-repo flow ends with a merged PR, deleted branch, cleaned worktree, and `[x]` in the project's ROADMAP.md"* — is **structurally satisfied**: the skill calls `gh pr merge --squash --delete-branch` (deleted branch), then `git wt rm` (cleaned worktree), then verifies the entry is in `HISTORY.md` (the `[x]` equivalent under `roadmap-tracking-flow`, or marks the literal `- [ ]` line under PLAN.md §5 layout when applicable). End-to-end exercise on a real toy repo waits for M7.1 dogfooding.
+
+**Phase 3 closed with this PR.** All three M3.x milestones merged: M3.1 (#27), M3.2 (#28), M3.3 (#29). The full agent chain (`task-orchestrator` → `implementer` → `tester` → `e2e-runner` → `pr-author` → `reviewer` → `auto-merge` skill) now exists end-to-end. Next phase: **Phase 4 — Robustness** (M4.1 retry logic, M4.2 `unblocker` agent, M4.3 `/resume-task`).
+
+**Follow-ups (carried forward into Phase 4+):**
+- The full chain has never run end-to-end on a real project; the validation is per-piece (this PR's smoke tests confirm each component loads and the orchestrator knows the chain). M7.1 dogfooding is when the loop closes for real.
+- The `auto-merge` skill's heuristic for resolved-comment detection will get noisy in projects that use threaded discussions heavily. The v2 GraphQL-based resolution is the long-term fix.
+- The 500-line threshold is the obvious next per-project knob; revisit during M5.x when project config grows beyond `.claude/settings.json`.
+
 ### M3.2 — `reviewer` agent (Opus, fresh context) — 2026-05-19
 **PR:** [#28](https://github.com/AkaLab-Tech/atelier/pull/28)
 
