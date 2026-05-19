@@ -81,6 +81,8 @@
       "Bash(gh pr create*)",
       "Bash(gh pr view*)",
       "Bash(gh pr list*)",
+      "Bash(gh pr diff*)",
+      "Bash(gh pr review*)",
       "Bash(gh pr comment*)",
       "Bash(gh pr merge*)",
       "Bash(gh project *)",
