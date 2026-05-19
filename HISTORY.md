@@ -8,6 +8,40 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M3.1 — `e2e-runner` agent + `visual-validation` skill — 2026-05-19
+**PR:** [#27](https://github.com/AkaLab-Tech/atelier/pull/27)
+
+First Phase 3 milestone. Adds the Playwright end-to-end validation step to the agent chain (`implementer` → `tester` → **`e2e-runner`** → `pr-author`), per [PLAN.md §7](PLAN.md). The browser install was deferred here from `install.sh` M1.3 Phase A so operators who never run e2e tasks never pay the ~250 MB download — the skill handles the lazy install on first invocation.
+
+**Delivered:**
+- `agents/e2e-runner.md` (sonnet, color `magenta`, tools `Read`, `Grep`, `Glob`, `Edit`, `Bash`, `TodoWrite`, `Skill`). Detects whether the task's diff has a UI surface (skips when not), delegates the install / run / screenshot dance to `visual-validation`, and assembles the structured markdown block (`## E2E validation` with suite results + failures + screenshot list) that `pr-author` pastes verbatim into the PR description. Surfaces `installed @playwright/test@<version> + browsers` when the install was first-time so `pr-author` knows the PR touches `package.json` (and therefore falls into the never-auto-merge guardrail from [PLAN.md §6](PLAN.md)).
+- `skills/visual-validation/SKILL.md` — five-step executable recipe:
+  1. **Lazy install** — detect `@playwright/test` via `pnpm ls --json`. If missing, `pnpm add -D @playwright/test` (passes the M2.4 `safe-package-change` hook because `@playwright/test` is on the lifecycle-script allowlist) → `pnpm exec playwright install` (downloads chromium/firefox/webkit to `~/.cache/ms-playwright`).
+  2. **Config** — detect existing `playwright.config.{ts,js,mjs}`, use as-is. Scaffold a minimal one only when none exists; never overwrite operator-authored config.
+  3. **Run** — `pnpm exec playwright test --reporter=list`, with `--screenshot=on` from config so every test produces a PNG. Output captured to `<worktree>/.task-log/playwright-output.txt`.
+  4. **Upload** — for each PNG, `gh gist create --secret <png>` and capture the raw URL. Always `--secret` (refuses public). When `gh` auth fails, falls back to *paths-only* mode and surfaces the degradation in the markdown block.
+  5. **Assemble** — produces the markdown block in the exact shape `pr-author` expects (suite summary line, optional failures section, embedded `![](raw-url)` screenshots, optional paths-only fallback note).
+- `templates/settings.template.json` — extended with `Bash(gh gist create*)` and `Bash(gh gist view*)` allow entries. Narrow scope (only `create` and `view` subcommands, never `gh gist delete*` or `gh gist list*` which leak history). Allow count: 62 → 64.
+
+**Tests:**
+- YAML frontmatter parses cleanly on both files (Ruby `YAML.safe_load`).
+- `description` length: agent 1339ch, skill 1079ch (both well above the 10-char minimum, below 5000-char ceiling per `skill-creator` guidance).
+- Body length: agent 44 lines, skill 132 lines (both well under 500-line ideal).
+- Plugin loader auto-discovers both: `claude --plugin-dir <worktree> --permission-mode plan -p "list agents and skills..."` reports `e2e-runner` (Sonnet, magenta) and `visual-validation` alongside the existing 4 agents + 4 skills from M2.1/M2.2 — totals 5 of each.
+- `jq empty templates/settings.template.json` clean after the 2 new allow entries.
+
+**Decisions captured (confirmed with the operator before implementation):**
+- **Install is lazy via the skill, not a slash command.** Adding a `/setup-e2e` command would force a manual step before the first e2e task, which breaks the "no manual" promise. Lazy install means the first task that needs e2e pays the cost; subsequent tasks reuse the install. The cost is borne when there is value (a UI surface change to validate), not upfront.
+- **Screenshots embed via `gh gist create --secret`.** Three rejected alternatives: (a) committing screenshots to the repo (engorges the repo, may contain sensitive UI), (b) listing local paths only (fails the acceptance criterion "embedded in the description"), (c) public gists (search-indexed leak). Secret gists are unlisted; the URL is shareable with anyone who has it — adequate for review.
+- **Paths-only fallback when `gh` auth fails.** Rather than aborting, the skill degrades gracefully and surfaces the fallback in the markdown block so the reviewer knows what to expect. The full screenshots stay in `.task-log/screenshots/` for the operator to attach manually.
+- **e2e is conditional, not mandatory.** When `git diff --name-only` shows no UI surface changed (docs-only, infra-only, pure-backend), the agent returns `e2e: skipped (no UI surface)` rather than padding the report with an empty suite. This avoids forcing every PR to install Playwright even when there's nothing to validate.
+
+**Acceptance criterion status:** the ROADMAP M3.1 acceptance — *"a PR opened by the toy-repo flow has Playwright output attached and screenshots embedded in the description"* — is **structurally satisfied**. End-to-end validation on a real toy repo requires M3.3 (auto-merge gate, currently not yet shipped) to close the chain and is deferred to M7.1 dogfooding.
+
+**Follow-ups:**
+- Real toy-repo dogfood run (M7.1) — first time Playwright actually downloads + runs against a UI change, first gist upload happens for real.
+- The current scaffolded `playwright.config.ts` uses chromium only. If projects need cross-browser coverage, the operator extends the config; the skill detects existing config and uses it as-is.
+
 ### M2.4 — Phase 2 hooks (dynamic security layer: `block-env-commit`, `safe-commit`, `scan-edit-write`, `scan-git-add`, `safe-package-change`) — 2026-05-19
 **PRs:** [#22](https://github.com/AkaLab-Tech/atelier/pull/22) (block-env-commit + shared logging) · [#23](https://github.com/AkaLab-Tech/atelier/pull/23) (safe-commit) · [#24](https://github.com/AkaLab-Tech/atelier/pull/24) (scan-edit-write) · [#25](https://github.com/AkaLab-Tech/atelier/pull/25) (scan-git-add) · [#26](https://github.com/AkaLab-Tech/atelier/pull/26) (safe-package-change + this closure)
 
