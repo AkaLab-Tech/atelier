@@ -8,6 +8,34 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M3.2 — `reviewer` agent (Opus, fresh context) — 2026-05-19
+**PR:** [#28](https://github.com/AkaLab-Tech/atelier/pull/28)
+
+Second Phase 3 milestone. The independent reviewer that feeds the auto-merge gate from [PLAN.md §6](PLAN.md). Six of the seven full-chain agents now exist (`task-orchestrator`, `implementer`, `tester`, `e2e-runner`, `pr-author`, **`reviewer`**); only `unblocker` (M4.2) remains.
+
+**Delivered:**
+- `agents/reviewer.md` (opus, color `red`, tools `Read`, `Grep`, `Glob`, `Bash`, `TodoWrite`). The first opus agent after `task-orchestrator`. Deliberately omits `Edit`, `Write`, `Task`, and `Skill`: the reviewer evaluates, never modifies; never delegates to other agents; and reads everything directly via `Bash(gh pr view/diff)` rather than via skills (the skill `pr-flow` is for opening PRs, not reviewing). 1701-char description with three triggering examples; 177-line body covering: fresh-context contract, inputs, seven-step checklist (scope, correctness, tests, code quality, security, dependencies, PR shape), confidence-based filtering at ≥ 80%, auto-merge guardrails from PLAN.md §6, structured output, hard refusals.
+- `templates/settings.template.json` — extended with `Bash(gh pr diff*)` and `Bash(gh pr review*)` allow entries. Both are review operations the reviewer needs and that no previous agent needed. `gh pr review` is a write op to GitHub (posts an approve / request-changes), but is exactly the reviewer's purpose; the operator can revoke a misfired review post-hoc. Allow count: 64 → 66.
+
+**Tests:**
+- YAML frontmatter parses cleanly (Ruby `YAML.safe_load`).
+- `jq empty templates/settings.template.json` clean after the 2 new allow entries.
+- Plugin loader auto-discovers the agent. `claude --plugin-dir <worktree> --permission-mode plan -p "list agents..."` returned `reviewer` alongside the 5 existing agents from M2.1/M3.1, totalling 6 agents.
+
+**Decisions captured:**
+- **Fresh context = sub-agent invocation pattern.** Claude Code's `Task` tool launches sub-agents with prompt-only input, no parent-session history. That is exactly the fresh-context property PLAN.md §6 demands. The agent's body re-states this explicitly so no future caller is tempted to "warm up" the reviewer with the implementing session's transcript.
+- **No `Edit` / `Write` in tools list.** Mechanical guarantee that the reviewer cannot rewrite the diff it is reviewing. Least privilege.
+- **No `Task` in tools list.** Reviewer does not delegate. If it cannot decide on its own, that itself is signal — surface to the operator, do not chain into another agent.
+- **`gh pr review` allowed, `gh pr merge` denied for this agent's invocation.** The reviewer posts the verdict; the **auto-merge gate** (M3.3) reads the verdict + CI + guardrails and decides whether to merge. Conceptual separation: review decision ≠ merge decision; the same PR can be `approved` and still not auto-mergeable.
+- **Confidence threshold ≥ 80%.** Hand-tuned to match the canonical `code-reviewer` agent from `claude-plugins-official`. Lower thresholds train the operator to dismiss findings; the few real ones get lost in noise.
+- **`approve` ≠ `auto-mergeable`.** Two separate fields in the structured output. PRs that touch `package.json`, lockfile, Dockerfile, workflows, or exceed 500 lines can be approved by the reviewer **and** flagged as not auto-mergeable. The auto-merge gate (M3.3) consumes both.
+
+**Acceptance criterion status:** the ROADMAP M3.2 acceptance — *"reviewer can `approve` or `request-changes` on a PR, and its decision feeds the auto-merge gate"* — is **structurally satisfied**. The agent posts via `gh pr review`; its output includes the `auto-merge: yes | no — <blockers>` line that M3.3 will read. End-to-end validation requires M3.3 (auto-merge logic) to land and a real PR to flow through; deferred to M7.1 dogfood.
+
+**Follow-ups:**
+- M3.3 will define the gate that reads `(reviewDecision, statusCheckRollup, files changed)` and decides whether to call `gh pr merge --squash --delete-branch`.
+- The seven-step checklist is intentionally lean. Each check has a known false-positive surface; if dogfood (M7.1) surfaces a recurring false positive, the fix is to either tighten the confidence rule for that bucket or remove the check entirely — never to "add a heuristic to skip the false positive", which is how reviewers calcify into rubber stamps.
+
 ### M3.1 — `e2e-runner` agent + `visual-validation` skill — 2026-05-19
 **PR:** [#27](https://github.com/AkaLab-Tech/atelier/pull/27)
 
