@@ -19,12 +19,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 > **Phases 2–4 — Single-project agent flow + robustness.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries.
 
 
-### M3.1 — `e2e-runner` agent + `visual-validation` skill
-
-Sonnet agent that drives Playwright and captures screenshots; companion skill that knows how to attach screenshots to a PR description. **Includes installing Playwright + browsers** (chromium/firefox/webkit) on the host — this responsibility moved from `install.sh` M1.3 Phase A into M3.1 so operators who never run e2e tasks don't pay the ~250 MB browser download upfront.
-
-**Acceptance:** a PR opened by the toy-repo flow has Playwright output attached and screenshots embedded in the description.
-
 ### M3.2 — `reviewer` agent (Opus, fresh context)
 
 Independent reviewer with explicit checklist per [PLAN.md §6](PLAN.md). Must run with no carry-over from the implementing session.

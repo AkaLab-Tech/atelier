@@ -86,6 +86,8 @@
       "Bash(gh project *)",
       "Bash(gh repo clone*)",
       "Bash(gh repo view*)",
+      "Bash(gh gist create*)",
+      "Bash(gh gist view*)",
 
       "Bash(pnpm install*)",
       "Bash(pnpm add*)",
