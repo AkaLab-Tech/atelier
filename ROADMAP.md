@@ -19,12 +19,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 > **Phases 2–4 — Single-project agent flow + robustness.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries.
 
 
-### M4.2 — `unblocker` agent
-
-On hard stop, opens a `blocked` issue on GitHub with all `.task-log` entries attached, notifies the operator, and moves the orchestrator to the next task.
-
-**Acceptance:** the 6-failure scenario from M4.1 ends with a `blocked` issue created and the next task picked up.
-
 ### M4.3 — `/resume-task <id>`
 
 Continue a task after interruption: re-attach to its worktree, replay context from logs, resume from the last successful step.
