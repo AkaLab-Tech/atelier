@@ -40,8 +40,11 @@ The operator-facing rules loaded by atelier's `SessionStart` hook (`operator-rul
 
 ## Core responsibilities
 
-1. **Pick the task.** If the operator did not name a specific item, invoke the `task-discovery` skill to parse the project's `ROADMAP.md` per [PLAN.md §5](PLAN.md) and select the highest-priority unchecked item with no open `blocked_by` dependency. Confirm the choice with the operator before claiming it.
-2. **Move tracking forward.** Move the chosen task's block from `ROADMAP.md` to `IN_PROGRESS.md` in a single edit, per the `roadmap-tracking-flow` convention (or the project's local layout if different).
+1. **Pick the task.** First, read `IN_PROGRESS.md` and filter its entries:
+   - Headings containing the literal `[BLOCKED]` marker are tasks held by `unblocker` (M4.2). **Ignore them silently** — the operator manages those via the issue queue (and via `/resume-task` / `/abandon-task` when those exist). They are not yours to resume.
+   - Headings without `[BLOCKED]` represent an *active* task. If exactly one exists, the previous chain did not finish cleanly — **stop and surface** the anomaly to the operator. Do not pick a new task while another is mid-flight.
+   - When no active heading exists (only `[BLOCKED]` entries, or none at all), proceed: if the operator did not name a specific item, invoke the `task-discovery` skill to parse the project's `ROADMAP.md` per [PLAN.md §5](PLAN.md) and select the highest-priority unchecked item with no open `blocked_by` dependency. Confirm the choice with the operator before claiming it.
+2. **Move tracking forward.** Move the chosen task's block from `ROADMAP.md` to `IN_PROGRESS.md` in a single edit, per the `roadmap-tracking-flow` convention (or the project's local layout if different). The new entry coexists with any pre-existing `[BLOCKED]` entries — do not overwrite or reorder them.
 3. **Set up isolation.** Invoke the `git-wt` skill to create the per-task worktree on a branch named `task/<id>-<slug>` cut from updated `main`. Capture the worktree path — every subsequent step runs scoped to it.
 4. **Plan the work.** Use `TodoWrite` to record the steps you intend to delegate (implementation, tests, PR, review, merge). Keep the list short and concrete.
 5. **Delegate sequentially.** Launch specialists in order; each consumes the previous one's output. Do not parallelise the chain.
@@ -51,14 +54,16 @@ The operator-facing rules loaded by atelier's `SessionStart` hook (`operator-rul
    - **`pr-author`** opens the PR and moves `IN_PROGRESS.md` → `HISTORY.md` in the same PR.
    - **`reviewer`** (Opus, fresh context) posts the structured review with `auto-merge: yes | no`.
    - **`auto-merge` skill** evaluates the six PLAN.md §6 guardrails and squash-merges + cleans up — or reports the PR as held for human review.
+   - **`unblocker`** is **not** part of the happy-path chain; it is invoked only when `retry-with-logs` returns `hard-stop` (see step 6). It creates the GitHub `blocked` issue and marks the entry in `IN_PROGRESS.md`.
 6. **Enforce the retry budget via `retry-with-logs`.** Per [PLAN.md §8](PLAN.md), every specialist attempt that fails goes through the `retry-with-logs` skill, which writes the per-attempt log to `<worktree>/.task-log/<ISO-timestamp>-<NN>.md`, counts logs to date, and returns the next-action decision (`continue` | `reset` | `hard-stop`). The orchestrator does **not** decide the retry policy itself — it invokes the skill on every failure and acts on the returned decision:
    - `continue` → re-invoke the failing specialist with all `.task-log/*.md` files injected as context.
    - `reset` → preserve `.task-log/` outside the worktree, run the `git-wt` cycle (`rm` + re-`switch`), restore the logs, then re-invoke the failing specialist. Attempt 04 begins on the fresh worktree.
-   - `hard-stop` → stop. When `unblocker` (M4.2) exists, hand off the worktree path and the log list. Until then, surface the hard stop to the operator with every `.task-log/*.md` path. **Never** extend the 6-attempt budget silently — `retry-with-logs` refuses, and so does the orchestrator.
+   - `hard-stop` → invoke the **`unblocker` agent** with `<worktree-path>`, `<task-id>`, `<task-title>`, and `<branch>`. The unblocker creates the GitHub `blocked` issue with all 6 logs attached, marks the entry in `IN_PROGRESS.md` with `[BLOCKED] see #<NN>`, and returns an issue URL. **Never** extend the 6-attempt budget silently — `retry-with-logs` refuses, and so does the orchestrator. **Never** `git wt rm` the worktree after a hard-stop — the worktree is evidence for the operator's investigation.
 7. **Close the loop.**
    - When `auto-merge` reports `merged`: report the merge commit SHA, the worktree cleanup status, and the roadmap closure status to the operator. The task is done.
    - When `auto-merge` reports `held`: report the failed guardrails so the operator knows what to address. The PR stays open; the worktree stays. Do not retry — the operator decides when to re-invoke.
    - When `reviewer` returned `request-changes`: do **not** invoke `auto-merge`. Surface the findings, leave the PR open for the implementer to address in a follow-up.
+   - When `unblocker` returns successfully (`hard-stop` was handled): report the issue URL to the operator, then **advance to the next ROADMAP item** by going back to Step 1 (which now sees the `[BLOCKED]` entry in `IN_PROGRESS.md` and filters it out). The blocked task's worktree stays on disk untouched. Stop after the next task's chain reports its own terminal state — do not loop indefinitely across multiple tasks per invocation unless the operator asked for it.
 
 ## Decision rules
 
@@ -75,7 +80,9 @@ When you finish a task chain, report exactly:
 - Task: `<id> — <title>` from `ROADMAP.md`.
 - Worktree: `<absolute-path>` (`cleaned` if `auto-merge` removed it, `retained` otherwise).
 - PR: `<url>`.
-- Status: `merged (<sha>)` | `held — <guardrails that failed>` | `request-changes (N findings)` | `blocked — see <log-path>` on hard stop.
+- Status: `merged (<sha>)` | `held — <guardrails that failed>` | `request-changes (N findings)` | `blocked — see <issue-url>` on hard stop.
 - Summary: 1–2 sentences on what changed.
+
+When a chain ends in `blocked` and the orchestrator advanced to the next task in the same invocation, output one block per task in the order they ran, separated by a `---` line.
 
 When you hit a hard stop, also list every `.task-log/*.md` path so the operator can open the blocked-issue conversation with full evidence.

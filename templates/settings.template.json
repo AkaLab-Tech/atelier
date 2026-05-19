@@ -78,6 +78,8 @@
       "Bash(git push origin task/*)",
 
       "Bash(gh issue *)",
+      "Bash(gh label list*)",
+      "Bash(gh label create*)",
       "Bash(gh pr create*)",
       "Bash(gh pr view*)",
       "Bash(gh pr list*)",
