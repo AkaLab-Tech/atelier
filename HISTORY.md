@@ -8,6 +8,37 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M4.1 — Retry logic with log persistence — 2026-05-19
+**PR:** _pending_
+
+First Phase 4 milestone. Materializes the fixed retry budget from [PLAN.md §8](PLAN.md) (3 attempts → reset → 3 attempts → hard stop) as an executable skill the `task-orchestrator` invokes on every specialist failure. Removes the orchestrator's freedom to interpret the policy and replaces it with a finite-state machine: count logs, pick the decision from a table, write a structured per-attempt log.
+
+**Delivered:**
+- `templates/task-log/attempt.md` — the per-attempt log template. Five mandatory sections per [PLAN.md §8](PLAN.md): `Initial hypothesis`, `Actions taken`, `Final error` (verbatim, never paraphrased), `Reasoning on what went wrong`, plus a `Next attempt should` block that seeds the following attempt's hypothesis. Filename convention is `<YYYY-MM-DDTHHMMSS-UTC>-<NN>.md` (lexicographically sortable, FS-safe, attempt number zero-padded so `01..06` sort naturally).
+- `skills/retry-with-logs/SKILL.md` — the executable form of [PLAN.md §8](PLAN.md). On every specialist failure: counts existing `.task-log/*.md` files, computes the next attempt number `N`, refuses to continue past `N=6`, writes the log from the template at `$CLAUDE_PLUGIN_ROOT/templates/task-log/attempt.md`, and returns one of three decisions: `continue` (retry in same worktree), `reset` (preserve `.task-log/` outside the worktree, run `git wt rm` + `git wt switch` to recreate from updated base, restore the logs, then retry — happens only after attempt 03 fails), `hard-stop` (after attempt 06, hand off to `unblocker` when M4.2 ships; surface to operator until then). The `.task-log/` directory MUST survive the reset between attempts 03 and 04 — the skill copies it to `/tmp/atelier-task-log-<branch>/` before `git wt rm` and restores it after `git wt switch`, otherwise attempts 04..06 lose the prior history and the retry loop is amnesic.
+- `agents/task-orchestrator.md` — core-responsibility #6 ("Enforce the retry budget") rewritten to delegate to the skill instead of interpreting the policy inline. Three explicit branches per returned decision: `continue` → re-invoke specialist with all `.task-log/*.md` as context; `reset` → preserve logs, run wt cycle, restore logs, retry; `hard-stop` → stop, hand off to `unblocker` (M4.2) or surface to operator.
+
+**Tests:**
+- YAML frontmatter parses cleanly on the new skill (`name=retry-with-logs`) and the updated agent (`name=task-orchestrator`).
+- Plugin loader auto-discovers the skill. `claude --plugin-dir <worktree> --permission-mode plan -p "list skills..."` returned 7 atelier skills (`task-discovery`, `pr-flow`, `safe-commit`, `safe-install`, `visual-validation`, `auto-merge`, **`retry-with-logs`**).
+- Agent loader still discovers all 6 agents (`task-orchestrator`, `implementer`, `tester`, `e2e-runner`, `pr-author`, `reviewer`) after the orchestrator edit.
+- `python3 -m json.tool` clean on `hooks/hooks.json` (no template changes needed; no new permissions required because the skill only reads/writes files inside the worktree and the existing `Edit`/`Write` patterns already cover `.task-log/`).
+
+**Decisions captured:**
+- **Skill, not standalone agent.** The retry policy is invoked from inside `task-orchestrator` on every failure, not as a top-level entry point. A `retry-with-logs` agent would mean spawning a sub-conversation just to count files, which is more cost and context than the procedure warrants.
+- **Skill describes; orchestrator executes.** Matches the `auto-merge` and `safe-install` patterns. The skill is the procedure document + decision table; the orchestrator runs the `ls`, the `cp`, the `git wt` calls. This keeps the skill stateless and the orchestrator in charge of the worktree.
+- **`.task-log/` survives the reset via temp-copy.** Considered (a) committing logs to the branch, (b) keeping them in `.task-log/` and relying on `git wt rm` to preserve files via stash, (c) temp-copy out and back. Option (c) is the only one that works regardless of project gitignore conventions; (a) requires `.task-log/` to not be gitignored, which conflicts with `<worktree>/.task-log/` being intentionally local-only; (b) does not work because `git wt rm` removes the directory entirely.
+- **UTC timestamps, zero-padded attempt number.** Reset-and-retry can span hours and timezones; UTC + lexicographic sort + zero-padded attempt number means `ls -1 .task-log/` always returns the logs in chronological order, no parsing required.
+- **No retry-budget guardrail hook in this milestone.** Considered a `PreToolUse` hook that counts `.task-log/*.md` files and blocks if `> 6`, as a mechanical backstop on the orchestrator's discipline. Decided to defer to M4.2 — the `unblocker` agent owns the hard-stop semantics end-to-end, so the guardrail belongs in its skill or hook, not as a free-floating PreToolUse rule whose tool-match is hard to scope correctly.
+- **Off-by-one explicit in the skill.** PLAN.md §8 says "3 attempts → reset → 3 more". The decision returned **after attempt 03 fails** is `reset`, not `continue`; the decision returned **after attempt 06 fails** is `hard-stop`. Encoded as a table in the skill so the orchestrator does not have to derive it on the fly.
+
+**Acceptance criterion status:** the ROADMAP M4.1 acceptance — *"injecting a deterministic failing test triggers exactly 3 retries, then a reset, then 3 more, then escalation"* — is **structurally satisfied**: the skill enforces the 3+3 split via the decision table, the orchestrator delegates the retry-budget logic to the skill, and the hard-stop is wired to the future `unblocker` hand-off. End-to-end exercise (deterministic failing test → 6 attempts → blocked issue) waits for M4.2 (`unblocker` agent) and M7.1 (real-project dogfooding).
+
+**Follow-ups (carried forward into Phase 4 / 5):**
+- M4.2 (`unblocker` agent) consumes the `hard-stop` decision from this skill: opens the `blocked` GitHub issue, attaches every `.task-log/*.md`, notifies the operator, advances the orchestrator to the next ROADMAP item.
+- M4.3 (`/resume-task <id>`) re-attaches to an existing worktree, reads `.task-log/` to determine the last successful step, and resumes from there. The fixed filename convention from this milestone is the contract `/resume-task` depends on.
+- The retry-budget PreToolUse guardrail hook (deferred above) can be reconsidered after M4.2 ships, once we know whether the orchestrator + skill discipline is sufficient in practice.
+
 ### M3.3 — Auto-merge logic with guardrails — 2026-05-19
 **PR:** [#29](https://github.com/AkaLab-Tech/atelier/pull/29)
 

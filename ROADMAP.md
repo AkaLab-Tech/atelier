@@ -19,12 +19,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 > **Phases 2–4 — Single-project agent flow + robustness.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries.
 
 
-### M4.1 — Retry logic with log persistence
-
-Per-attempt logs at `<worktree>/.task-log/<timestamp>-<attempt>.md` (initial hypothesis, actions, final error, reasoning). Budget: 3 attempts → reset worktree → 3 more → hard stop. Logs from all attempts feed each retry.
-
-**Acceptance:** injecting a deterministic failing test triggers exactly 3 retries, then a reset, then 3 more, then escalation.
-
 ### M4.2 — `unblocker` agent
 
 On hard stop, opens a `blocked` issue on GitHub with all `.task-log` entries attached, notifies the operator, and moves the orchestrator to the next task.
