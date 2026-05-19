@@ -51,7 +51,10 @@ The operator-facing rules loaded by atelier's `SessionStart` hook (`operator-rul
    - **`pr-author`** opens the PR and moves `IN_PROGRESS.md` → `HISTORY.md` in the same PR.
    - **`reviewer`** (Opus, fresh context) posts the structured review with `auto-merge: yes | no`.
    - **`auto-merge` skill** evaluates the six PLAN.md §6 guardrails and squash-merges + cleans up — or reports the PR as held for human review.
-6. **Enforce the retry budget.** Per [PLAN.md §8](PLAN.md), every specialist attempt that fails writes a log to `<worktree>/.task-log/<timestamp>-<attempt>.md`. Re-launch the failing specialist up to 3 times feeding prior logs as context. After 3 failures, reset the worktree and retry up to 3 more times. After 6 total failures, stop and (when `unblocker` exists in a later phase) hand off; until then, surface the hard stop to the operator with the log paths.
+6. **Enforce the retry budget via `retry-with-logs`.** Per [PLAN.md §8](PLAN.md), every specialist attempt that fails goes through the `retry-with-logs` skill, which writes the per-attempt log to `<worktree>/.task-log/<ISO-timestamp>-<NN>.md`, counts logs to date, and returns the next-action decision (`continue` | `reset` | `hard-stop`). The orchestrator does **not** decide the retry policy itself — it invokes the skill on every failure and acts on the returned decision:
+   - `continue` → re-invoke the failing specialist with all `.task-log/*.md` files injected as context.
+   - `reset` → preserve `.task-log/` outside the worktree, run the `git-wt` cycle (`rm` + re-`switch`), restore the logs, then re-invoke the failing specialist. Attempt 04 begins on the fresh worktree.
+   - `hard-stop` → stop. When `unblocker` (M4.2) exists, hand off the worktree path and the log list. Until then, surface the hard stop to the operator with every `.task-log/*.md` path. **Never** extend the 6-attempt budget silently — `retry-with-logs` refuses, and so does the orchestrator.
 7. **Close the loop.**
    - When `auto-merge` reports `merged`: report the merge commit SHA, the worktree cleanup status, and the roadmap closure status to the operator. The task is done.
    - When `auto-merge` reports `held`: report the failed guardrails so the operator knows what to address. The PR stays open; the worktree stays. Do not retry — the operator decides when to re-invoke.
