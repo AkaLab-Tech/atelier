@@ -45,12 +45,6 @@ A slash command for the Camino C of the blocked-task lifecycle (operator decides
 
 **Trigger to revisit:** after M4.2 + M4.3 land and the operator hits a real "I'm not retrying this" situation. Identified while designing M4.2 — deferred because the manual workaround (close issue + edit two markdown files) works fine for the rare case where a task is genuinely abandoned.
 
-### M4.7 — Per-worktree `.claude/settings.json` instantiation
-
-The `/next-task` slash command spec says step 7 instantiates a per-worktree `.claude/settings.json` with the worktree path injected, but the dogfood-1 run actually skipped that step (the sandbox blocked categorical writes to `.claude/` inside the new worktree). The chain still worked because sub-agents inherited the main session's permission scope, but if the operator ever runs Claude directly inside a per-task worktree (rather than the main worktree), the inherited scope is lost and the agents see a stale settings file. Identified in dogfood-1 (Finding #12).
-
-**Acceptance:** after `/atelier:next-task`, `<worktree>/.claude/settings.json` exists, parses with `jq empty`, and has `<worktree>` substituted with the per-task worktree path (not the main repo path).
-
 ### M4.8 — Enforce `pr-author` `IN_PROGRESS.md → HISTORY.md` move
 
 The `pr-author` agent's spec says its step 5 must remove the task block from `IN_PROGRESS.md` and append it to `HISTORY.md` in the same PR. In the dogfood-1 happy-path run, `pr-author` moved `ROADMAP.md → IN_PROGRESS.md` (the orchestrator's job) but did NOT do its own `IN_PROGRESS.md → HISTORY.md` move. Decide between (a) hardening the agent's prompt so it always does the move, or (b) reassigning the move to the `auto-merge` skill as part of post-merge cleanup. Identified in dogfood-1 (Finding #13).
