@@ -45,12 +45,6 @@ A slash command for the Camino C of the blocked-task lifecycle (operator decides
 
 **Trigger to revisit:** after M4.2 + M4.3 land and the operator hits a real "I'm not retrying this" situation. Identified while designing M4.2 — deferred because the manual workaround (close issue + edit two markdown files) works fine for the rare case where a task is genuinely abandoned.
 
-### M4.8 — Enforce `pr-author` `IN_PROGRESS.md → HISTORY.md` move
-
-The `pr-author` agent's spec says its step 5 must remove the task block from `IN_PROGRESS.md` and append it to `HISTORY.md` in the same PR. In the dogfood-1 happy-path run, `pr-author` moved `ROADMAP.md → IN_PROGRESS.md` (the orchestrator's job) but did NOT do its own `IN_PROGRESS.md → HISTORY.md` move. Decide between (a) hardening the agent's prompt so it always does the move, or (b) reassigning the move to the `auto-merge` skill as part of post-merge cleanup. Identified in dogfood-1 (Finding #13).
-
-**Acceptance:** after a merged task PR, `IN_PROGRESS.md` no longer contains the task entry and `HISTORY.md` does (under the correct month / date heading).
-
 ### M5.1 — Project registry
 
 `~/.claude-work/projects.json` tracks every project the operator has set up. Fields per project: path, name, last-task timestamp, setup version.
