@@ -1,19 +1,29 @@
 ---
 description: Initialise a project so the operator can run atelier tasks in it — writes `.claude/settings.json` (from the plugin template), creates a starter `ROADMAP.md`, writes `.npmrc` supply-chain guardrails, adds `.gitignore` entries, and records the setup in `~/.claude/.atelier-config.json`. Idempotent — re-running offers a reconfigure flow.
-argument-hint: "[project-path]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(mkdir:*), Bash(sed:*), Bash(jq:*), Bash(test:*), Bash(ls:*), Bash(date:*)
+argument-hint: "[project-path] [--yes|-y]"
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(mkdir:*), Bash(sed:*), Bash(jq:*), Bash(test:*), Bash(ls:*), Bash(date:*), Bash(env:*)
 ---
 
 You are running the `/setup-project` slash command. Bootstrap a directory so atelier can manage tasks in it.
 
-User input: `$ARGUMENTS` (optional — absolute or relative path to the project root). If empty, default to the current working directory (`.`).
+User input: `$ARGUMENTS` (optional — absolute or relative path to the project root). If empty, default to the current working directory (`.`). May also carry the `--yes` / `-y` flag described below.
+
+## Interaction mode (read once at the start)
+
+Same contract as `/atelier:next-task` (M4.6). You are **non-interactive** if any of:
+
+- `$ARGUMENTS` contains the literal token `--yes` (whitespace-bounded).
+- `$ARGUMENTS` contains the literal token `-y` (whitespace-bounded).
+- The environment variable `ATELIER_AUTO` is set to a non-empty value.
+
+Otherwise you are **interactive**. In non-interactive mode, every "ask the operator" step below auto-resolves with the **safe default**, which for `/setup-project` means: **never overwrite, never weaken, never widen**. When the safe default is "do not overwrite", the command continues and reports what was preserved. When the safe default is "do not proceed" (e.g., reconfigure of a configured project), the command stops with a clear error and instructs the operator to re-run interactively. Strip `--yes` / `-y` from `$ARGUMENTS` before parsing the project path.
 
 ## Idempotence — check first, ask before overwriting
 
 ### 1. Resolve the project path
 
-Take `$ARGUMENTS` (or `.` if empty). Resolve to an absolute path. **Refuse** if the path:
-- Does not exist (offer to create it after explicit confirmation — `mkdir -p` only, never `rm`-style cleanup).
+Take `$ARGUMENTS` (or `.` if empty, after stripping any `--yes` / `-y` flag). Resolve to an absolute path. **Refuse** if the path:
+- Does not exist. Interactive: offer to create it after explicit confirmation (`mkdir -p` only, never `rm`-style cleanup). Non-interactive: stop with error — refuse to create a directory under `--yes` / `ATELIER_AUTO` because the operator's intent (which path they really meant) is ambiguous.
 - Is `$HOME`, `/`, or any system directory (`/etc`, `/usr`, `/var`, `/opt`, `/Applications`).
 - Is the atelier plugin's own directory (`$CLAUDE_PLUGIN_ROOT`). The plugin is not a project.
 
@@ -35,9 +45,16 @@ If the file exists, parse it as JSON and look for an entry with `"path": "<resol
 If the project is **already configured**:
 
 - **Default action: skip the wizard.** Report `✓ <path> already configured (setupCompleted: <ISO>, setupVersion: <version>) — nothing to do.`
-- **Offer reconfigure.** Ask the operator: *"Re-run setup? This will rewrite `.claude/settings.json` from the latest template, regenerate `.npmrc`, and re-record the setup timestamp. Project files like `ROADMAP.md` and `.claude/CLAUDE.md` will be preserved unless missing."* Wait for an explicit yes/no.
+- **Interactive mode — offer reconfigure.** Ask the operator: *"Re-run setup? This will rewrite `.claude/settings.json` from the latest template, regenerate `.npmrc`, and re-record the setup timestamp. Project files like `ROADMAP.md` and `.claude/CLAUDE.md` will be preserved unless missing."* Wait for an explicit yes/no.
+- **Non-interactive mode — refuse reconfigure (safe default).** A re-run on a configured project under `--yes` / `ATELIER_AUTO` would silently overwrite the existing `.claude/settings.json` with whatever the current plugin's template says, which may have changed in subtle ways. Refuse instead, with this error:
+  ```text
+  ✗ /setup-project: <path> is already configured (since <ISO>, version <version>).
+     Reconfigure is not allowed in non-interactive mode because it overwrites
+     .claude/settings.json with the current plugin template. Re-run interactively
+     (without --yes / ATELIER_AUTO) if you genuinely want to reconfigure.
+  ```
 
-If the project is **not yet configured**, proceed to the setup steps directly (no reconfirm needed for first-time setup — the command is the confirmation).
+If the project is **not yet configured**, proceed to the setup steps directly (no reconfirm needed for first-time setup — the command is the confirmation). This branch is identical in both interaction modes.
 
 ## Setup steps
 
@@ -78,7 +95,7 @@ sed "s|<worktree>|<resolved-project-path>|g" \
     > <path>/.claude/settings.json
 ```
 
-Confirm the result parses with `jq empty`. If the file already exists and you are in reconfigure mode, **diff** it against the new content and ask before overwriting if there are local edits.
+Confirm the result parses with `jq empty`. If the file already exists and you are in reconfigure mode, **diff** it against the new content. If there are local edits, the behaviour depends on interaction mode: **interactive** — ask the operator before overwriting; **non-interactive** — preserve the existing file (do not overwrite) and report `⚠ <path>/.claude/settings.json preserved (local edits detected, non-interactive)`. The reconfigure-on-configured-project case is already refused upstream in step 2 for non-interactive mode, so this branch only fires when the operator deliberately reconfigured interactively, then re-ran with `--yes`.
 
 **Hard refusal:** if `sed` returns non-zero, `jq empty` returns non-zero, or the output file size is 0 bytes, **delete the failed output and stop** with the same actionable error above. Do not advance to step 4 with a corrupt or missing settings.json — Finding #3 from dogfood-1 showed that silently skipping this step left the project in a half-configured state.
 
@@ -134,7 +151,7 @@ Behaviour:
 
 - **No `.npmrc` exists** → create it with exactly those three lines plus a leading comment `# atelier supply-chain guardrails (PLAN.md §4) — managed by /setup-project`.
 - **`.npmrc` exists, all three lines present** → report `✓` and leave it.
-- **`.npmrc` exists, some/all guardrails missing or weaker** (e.g., `audit-level=high`) → ask the operator. The default offer: **append** the missing ones at the bottom under a clearly-marked atelier section. Do **not** rewrite existing operator-authored lines.
+- **`.npmrc` exists, some/all guardrails missing or weaker** (e.g., `audit-level=high`) → behaviour depends on interaction mode. **Interactive:** ask the operator; the default offer is "append the missing ones at the bottom under a clearly-marked atelier section". **Non-interactive:** apply the default automatically (append the missing lines) and log `⚠ <path>/.npmrc had weaker/missing guardrails — appended atelier section (non-interactive default)`. In **both** modes, do **not** rewrite existing operator-authored lines — only append; weakening (e.g., lowering `audit-level=moderate` to `high`) is never auto-applied.
 
 ### 7. `<path>/.gitignore`
 
