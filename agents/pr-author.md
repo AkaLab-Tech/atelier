@@ -42,7 +42,16 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
    - **Summary:** 1–3 bullets of what changed and why.
    - **Validation checklist:** what `tester` ran (lint / typecheck / unit / integration), with their pass/fail state.
    - **Screenshots:** if the change has a UI surface, embed Playwright screenshots from `e2e-runner` (when M3.1 ships). Until then, note "UI surface — e2e screenshots pending M3.1" so reviewers know it is a known gap, not an oversight.
-5. **Move the tracking forward.** In the same commit set, remove the task's block from `IN_PROGRESS.md` and append it to `HISTORY.md` with the PR number once known. The `roadmap-tracking-flow` skill / convention requires `IN_PROGRESS.md` and `HISTORY.md` to be updated by the **same PR**, not in a follow-up commit on the protected branch.
+5. **Move the tracking forward — non-negotiable.** In the same commit set as the task's code changes, remove the task's block from `IN_PROGRESS.md` and append it to `HISTORY.md` with the PR number once known. The `roadmap-tracking-flow` convention requires `IN_PROGRESS.md` and `HISTORY.md` to be updated by the **same PR**, not in a follow-up commit on the protected branch.
+
+   **Scope rule (M4.8 / Findings #13 + #17):** edit the `IN_PROGRESS.md` and `HISTORY.md` that live **inside the per-task worktree** you are operating in — never the copies in the main worktree. The `task-orchestrator`'s step 3 already moved the task block into the per-task worktree's `IN_PROGRESS.md` (on the `task/<id>-<slug>` branch), so the entry you remove here is on the same branch and the squash-merge brings both moves to `main` together.
+
+   **Verification before opening the PR** (PR is the operator-visible artifact — it must be correct):
+   - `IN_PROGRESS.md` no longer contains the task's `#<id>` heading line.
+   - `HISTORY.md` does contain a new entry for the task under the correct month / date heading.
+   - Both files are staged in the same commit that finalises the task (chained with the code commit, or a dedicated `chore(tracking): move #<id> IN_PROGRESS → HISTORY` commit on the same `task/<id>-<slug>` branch).
+
+   If any check fails, **stop and fix** before invoking `gh pr create`. Re-issuing the move after the PR is open splits the bookkeeping across two commits-on-different-PRs and violates `roadmap-tracking-flow`.
 6. **Report the PR URL back.** Final output is the URL the operator opens to review.
 
 ## Decision rules
@@ -51,6 +60,8 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
 - **Never** skip pre-commit hooks (`--no-verify`) or signing (`--no-gpg-sign`) unless the operator explicitly asks. If a hook fails, fix the underlying issue and try again.
 - **Never** add `Co-Authored-By: Claude` (or any agent attribution) to the commit message or PR body. The user has explicitly opted out of agent self-attribution.
 - **Never** mark the PR ready for auto-merge yourself. The auto-merge gate ([PLAN.md §6](PLAN.md)) requires `reviewer` approval — that's a separate agent in M3.2. Always open a normal PR.
+- **Never** skip step 5 (the `IN_PROGRESS.md → HISTORY.md` move). It is part of the PR — not an afterthought, not the auto-merge skill's job, not a follow-up commit on `main`. A PR opened without the move is malformed and must be amended before the reviewer agent runs. Identified in dogfood-1 (Finding #13).
+- **Never** edit the **main** worktree's copy of `IN_PROGRESS.md` / `HISTORY.md`. You are always operating in the per-task worktree (`task/<id>-<slug>` branch). The edits live on that branch; the squash-merge brings them to `main`. Editing the main worktree copy would leave uncommitted bookkeeping on the protected branch that no agent is allowed to push. Identified in dogfood-1 (Finding #17, same shape as the `unblocker` worktree-mismatch bug fixed in PR #32).
 - If the change touches `package.json`, `pnpm-lock.yaml`, `Dockerfile`, `docker-compose*`, or `.github/workflows/**`, **say so explicitly in the PR description** so reviewers and the (eventual) auto-merge gate know this PR must go through a human.
 - Use a HEREDOC for the commit message and the PR body to preserve formatting:
 
@@ -70,4 +81,4 @@ End your turn with:
 - **Commit:** `<sha> <subject>`.
 - **Branch pushed:** `origin task/<id>-<slug>`.
 - **PR:** `<url>` (or "blocked — push gate red, handed back to tester").
-- **Tracking:** "`IN_PROGRESS.md` → `HISTORY.md` updated in this PR" (or the reason it was skipped).
+- **Tracking:** "`IN_PROGRESS.md` → `HISTORY.md` updated in this PR" — this line should always read exactly that. There is no "skipped" path post-M4.8; a skip means the PR is malformed and you should have stopped before invoking `gh pr create`.
