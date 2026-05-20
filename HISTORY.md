@@ -8,6 +8,41 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M4.12 — Codify "no commits to protected branches" + fix M4.10 migration recipe — 2026-05-20
+**PR:** _pending_
+
+Atelier shipped [M4.10](#m410--gitignore-claudesettingsjson-in-atelier-setup-project--2026-05-20) with a documented migration recipe that ran `git commit` directly on `main` (no branch, no PR). When the maintainer executed that recipe on the dogfood-3 repo the day M4.10 merged, they noticed the violation against the operator's global CLAUDE.md rule ("NUNCA realices un commit en ramas protegidas") — and realized atelier's own operator-facing rules never stated this principle explicitly. The permission template only blocks **pushes** to `main` / `master` / `develop` / `staging` (`Bash(git push * main)`); the commit-level rule was carried implicitly by `/next-task`'s branching flow, but had no force outside that flow.
+
+M4.12 closes the gap.
+
+**Delivered:**
+
+- [operator-rules.md](operator-rules.md) — new sub-section "### Never commit to protected branches" under §"Push, PR, and merge gates", placed before "### Before pushing". States the rule explicitly, lists the four branch-name conventions (`task/<id>-<slug>`, `chore/<short>`, `docs/<topic>`, `fix/<short>`), notes that **no exception applies to throwaway target projects**, and references the permission-model push-block as the layered defence. Closes with a forward-pointer to a future `PreToolUse` hook that could enforce this at commit time.
+
+- [HISTORY.md](HISTORY.md) M4.10 entry — migration recipe rewritten to use a `chore/atelier-m4.10-migration` branch + PR flow. A "Note (added retroactively by M4.12)" annotation explains why the recipe changed and links to operator-rules.md.
+
+- This HISTORY entry — documents the surfacing event, the fix shape, and the related dogfood-3 [PR #1](https://github.com/AkaLab-Tech/atelier-dogfood-3/pull/1) which is the corrected execution of the M4.10 migration on dogfood-3.
+
+**Tests:**
+
+- No code changes — pure doc + rule additions.
+- The corrected migration recipe is being executed in [dogfood-3 PR #1](https://github.com/AkaLab-Tech/atelier-dogfood-3/pull/1) and serves as the empirical demonstration that the new recipe works.
+
+**Decisions captured:**
+
+- **Codify the rule, don't (yet) enforce it.** Considered adding a `PreToolUse` hook on `Bash(git commit*)` that aborts when `git symbolic-ref HEAD` resolves to a protected branch. Decided to start with a prompt-level rule for two reasons: (a) the hook infrastructure isn't materialized yet (see PLAN.md §1 — hooks are planned but not built), and (b) one violation in the dogfood-3 day is a small enough signal to validate the prompt-level approach first. A follow-up milestone will track the hook idea if the rule alone proves insufficient.
+- **Update the M4.10 entry in-place rather than appending a "correction" entry.** HISTORY is normally append-only, but a documented recipe that the reader is meant to copy-paste must be correct at the point of reading. Both options were considered; chose in-place fix plus an inline retro-note that points at this M4.12 entry, so the audit trail (what was wrong, who fixed it, when) is preserved.
+- **No M-number for the dogfood-3 PR #1.** The cleanup of dogfood-3 itself is operational, not a milestone — it's the execution of the M4.10 migration, not a deliverable. The atelier-side fix is M4.12; the target-project work is just a chore PR.
+- **No exception for throwaway target projects.** Considered carving out "OK to commit to `main` directly on dogfood/throwaway repos". Decided against: every "throwaway" repo eventually outlives its planned lifetime, every operator who learns the wrong pattern once will reach for it again, and the audit-trail value of a PR is independent of who's reviewing.
+
+**Acceptance criterion status:** the rule is codified; the broken recipe is fixed; the dogfood-3 violation is being remedied through the corrected recipe in a separate PR. **Structurally satisfied.**
+
+**Follow-ups (not in scope here):**
+
+- A `PreToolUse` hook that enforces this at commit time (a small piece of M4.x or M5.x territory, after the hook infrastructure lands).
+- A `/atelier:doctor` check that fails when the user is currently on `main` / `master` / `develop` / `staging` in a project under atelier's management.
+- Reviewing all other documented recipes in atelier (CLAUDE.md, agent prompts, command specs) to ensure none of them prescribe a direct `git commit` on a protected branch. This M4.12 PR touched only the M4.10 recipe; a sweep is worth doing once.
+
 ### M4.10 — Gitignore `.claude/settings.json` in `atelier-setup-project` — 2026-05-20
 **PR:** _pending_
 
@@ -31,15 +66,21 @@ The fix is **idempotent** by design: `step_gitignore` already short-circuits whe
 - **No version bump in `.claude-plugin/plugin.json`.** Pre-1.0, the plugin's recorded `setupVersion` advances together with `plugin.json`'s `version` field. We are not bumping for every fix — the change is tracked through `HISTORY.md`, which is the canonical source. A bump can ride the next user-visible feature change.
 - **No migration code in the script.** Projects bootstrapped pre-M4.10 keep a tracked-but-mispathed `settings.json` until the operator runs `git rm --cached .claude/settings.json` (preserving the local file). Auto-detecting and silently removing a tracked file would be too magical for a setup helper. The migration steps are documented in the M4.10 ROADMAP entry (now removed from ROADMAP by this PR — preserved in this HISTORY entry's "Migration" line below).
 
-**Migration for projects bootstrapped pre-M4.10:**
+**Migration for projects bootstrapped pre-M4.10** (corrected by [M4.12](#m412--codify-no-commits-to-protected-branches--fix-m410-migration-recipe--2026-05-20) to honour the never-commit-to-protected-branches rule):
 
 ```sh
+git checkout -b chore/atelier-m4.10-migration
 git rm --cached .claude/settings.json
 echo '.claude/settings.json' >> .gitignore   # only if not already present
-git commit -m "chore: untrack .claude/settings.json (per-operator absolute path, per atelier M4.10)"
+git commit -m "chore: untrack .claude/settings.json (per atelier M4.10)"
+git push -u origin chore/atelier-m4.10-migration
+gh pr create --title "chore: untrack .claude/settings.json (per atelier M4.10)" --fill
+# review, then squash-merge via `gh pr merge` (or the project's normal flow)
 ```
 
 The operator's local `.claude/settings.json` is preserved (`git rm --cached` only updates the index). The dogfood-3 GitHub repo needs this before any dogfood-4 attempt, and is documented as the next housekeeping step after M4.10 lands.
+
+**Note (added retroactively by M4.12):** the original version of this recipe ran `git commit` directly on `main` without a branch + PR loop, which violates the rule now codified in [operator-rules.md → "Never commit to protected branches"](operator-rules.md). When the maintainer executed this recipe on the dogfood-3 repo the day M4.10 shipped, the violation surfaced immediately. M4.12 corrects the recipe here and adds the rule explicitly to operator-rules.md.
 
 **Acceptance criterion status:** the ROADMAP M4.10 acceptance — *"running `atelier-setup-project <fresh-dir>` produces a `.gitignore` that includes `.claude/settings.json`"* — is **structurally satisfied** and **empirically validated** by the tmpdir smoke test above.
 
