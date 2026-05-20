@@ -8,8 +8,48 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M4.3 — `/resume-task <id>` — 2026-05-19
+**PR:** _pending_
+
+Third and final Phase 4 milestone. Implements the "operator's recovery action" half of the blocked-task lifecycle whose contract was set in M4.2, and additionally handles the simpler interrupted-resume case (operator's previous session was killed mid-task). With this PR, Phase 4 (Robustness) is **closed**: retry budget (M4.1), hard-stop handoff (M4.2), and recovery (M4.3) together implement [PLAN.md §8](PLAN.md) end-to-end.
+
+**Delivered:**
+
+- `commands/resume-task.md` — new slash command (auto-discovered as `atelier:resume-task`). Required argument `<task-id>`. Auto-detects the resume mode from `IN_PROGRESS.md` state: heading with `[BLOCKED]` marker → **blocked-resume**; heading without it → **interrupted-resume**. Two distinct flows behind one operator-facing command:
+  - **Blocked-resume preflight** verifies the GitHub issue referenced in the metadata block is **`CLOSED`** (M4.2 contract: the close is the unambiguous "ready to retry" signal — refuses with an actionable error if still open or 404). Then wipes `<wt>/.task-log/` (per-file `rm` plus `rmdir`, no recursive `-r`/`-f` — the 6 logs survive in the closed issue's body), unmarks the `[BLOCKED]` heading and removes the metadata block, and commits + pushes the unmark on a dedicated `docs/resume-<id>` branch (mirrors the `unblocker` `docs/blocked-<id>` pattern so the marker round-trip is symmetric and auditable). A pair-PR is auto-opened.
+  - **Interrupted-resume** keeps `.task-log/` intact (the budget continues — `retry-with-logs` Step 1 picks up at attempt N+1 on the next specialist failure) and skips all the unmark/commit cleanup.
+  - **Both modes** hand off to `atelier:task-orchestrator` with an explicit `resume_mode: interrupted | blocked` flag in the briefing so the orchestrator's Step 1 jumps directly to the specialist chain.
+
+- `agents/task-orchestrator.md` — Step 1 gains a `resume mode` branch at the top. When the briefing carries `task_id`, `worktree_path`, `branch`, and `resume_mode`, the orchestrator skips the `IN_PROGRESS.md` anomaly check, skips `task-discovery`, and jumps directly to the planning step (4). Steps 2 ("Move tracking forward") and 3 ("Set up isolation") are also skipped in resume mode since the entry is already in `IN_PROGRESS.md` and the worktree already exists. When invoked in standard mode (no `resume_mode` in the briefing), the existing anomaly-detection branch fires — and the surface message now suggests `/atelier:resume-task <id>` as the recommended recovery path (instead of just "stop and surface").
+
+**Tests:**
+
+- YAML frontmatter parses cleanly on both files.
+- Plugin loader auto-discovers the new command. `claude --plugin-dir <worktree> --permission-mode plan -p "list commands..."` returned 6 atelier commands (`doctor`, `finish-task`, `next-task`, `setup-project`, `status`, **`resume-task`**).
+- Agent loader still discovers all 7 atelier agents (`task-orchestrator`, `implementer`, `tester`, `e2e-runner`, `pr-author`, `reviewer`, `unblocker`).
+- Skill loader still discovers all 7 atelier skills.
+- End-to-end exercise of `/resume-task` deferred to dogfood-2 (a future run after M4.6 lands so non-interactive mode no longer traps the orchestrator's confirmation step) — the on-disk validation here is per-piece consistency between command, agent, and `unblocker`'s state mutations.
+
+**Decisions captured:**
+
+- **Auto-detect mode, do not let the operator pick.** Two flags (`--interrupted` vs `--blocked`) would have been a foot-gun: the operator typically doesn't know which mode applies, and getting it wrong would either silently extend the retry budget (interrupted on a really-blocked task) or destroy useful context (blocked on a really-interrupted task). The `[BLOCKED]` marker in `IN_PROGRESS.md` is unambiguous and authoritative — if it is there, it is there; if not, not. Auto-detection is safer than asking.
+- **Symmetric `docs/<resume|blocked>-<id>` branch pattern.** Both `unblocker` and `resume-task` mutate `IN_PROGRESS.md` on `main` via a dedicated docs branch + auto-PR rather than direct push (which would require lifting the `git push * main` deny invariant). The pair of branches makes the audit trail trivial: each `[BLOCKED]` cycle gets a `docs/blocked-<id>` PR and a `docs/resume-<id>` PR if it was ever resumed; a search by branch prefix tells the operator the full history.
+- **Wipe `.task-log/` on blocked-resume; preserve on interrupted-resume.** Documented in two layers (hard refusal section + per-step instructions) because reversing one of these by mistake either silently extends the budget past 6 (interrupted that should have wiped) or throws away in-flight context (blocked that should have preserved). The two modes have opposite invariants and the command refuses to mix them.
+- **Per-file `rm` + `rmdir`, never `rm -r`.** The deny list in `settings.template.json` already covers `rm -rf` and `rm -fr` exact-arg forms, but the per-command `allowed-tools` in `resume-task.md` was scoped to `Bash(rm:*)` for `.task-log/` cleanup. The hard refusal makes explicit that the allowance is for per-file deletion only — a recursive `rm -r .task-log/` would technically pass the per-command filter but creates a generic foot-gun. Belt and braces.
+- **Resume mode is signalled via the briefing, not via a separate command on the orchestrator.** The orchestrator agent definition has no new tools or skill calls; the only change is one branch at the start of Step 1 that reads the briefing for `resume_mode`. Same agent, two entry points (`/next-task` vs `/resume-task`), one specialist chain.
+
+**Phase 4 closed with this PR.** The three M4.x milestones now compose the full failure-recovery contract from [PLAN.md §8](PLAN.md):
+- M4.1 — the retry budget mechanics + per-attempt log persistence ([PR #30](https://github.com/AkaLab-Tech/atelier/pull/30)).
+- M4.2 — the hard-stop handoff: turn a 6-fail outcome into operator-visible state (GitHub `blocked` issue + `[BLOCKED]` marker) and advance to the next task ([PR #31](https://github.com/AkaLab-Tech/atelier/pull/31)).
+- M4.3 — the operator's recovery action: close the issue → resume → fresh attempt. Also handles plain session-killed-mid-task interruptions. (this PR).
+
+**Follow-ups (already documented in ROADMAP from dogfood-1):**
+- M4.6 (non-interactive mode for `/next-task` and orchestrator) becomes especially load-bearing for `/resume-task` too — both commands trap on confirmation prompts under `claude -p`.
+- M4.7 (per-worktree `.claude/settings.json` instantiation) is what makes a Claude session opened *directly inside* a per-task worktree (e.g., after `/resume-task` writes to that worktree's branch) work without inheriting an unrelated permission scope.
+- M4.8 (`pr-author` HISTORY move enforcement) and the dogfood-2 end-to-end exercise both wait until the above land.
+
 ### Dogfood-1 — first end-to-end run on a real GitHub repo — 2026-05-19
-**PR:** _pending_ (this PR)
+**PR:** [#32](https://github.com/AkaLab-Tech/atelier/pull/32)
 
 First real end-to-end exercise of the full atelier chain on a real GitHub repo (`AkaLab-Tech/atelier-dogfood-1`, private). Pre-implementation milestones M1.x–M4.2 had only been validated piece-by-piece; this is the first time the orchestrator + 6 specialists + retry/unblocker loop ran on a real project, end-to-end, against a forced-failure task. Surfaced **14 atelier findings** and **2 distinct deny-list bypass vulnerabilities** that pre-existed in the auto-merge guardrails but had never been exercised by a sub-agent.
 
