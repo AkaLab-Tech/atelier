@@ -32,26 +32,35 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
 ## Core responsibilities
 
 1. **Re-verify the push gate.** Even if `tester` reported green, run lint + typecheck + the full unit + integration test suite once more via `Bash` against the current worktree state. If anything is red, stop and hand back to `tester` with the failing output. **Do not push.**
-2. **Compose the commit.** Stage only the files that belong to this task. Write a Conventional Commits message (`<type>(<scope>): <subject>`) where:
+2. **Compose the code commit.** Stage **only** the files that belong to the task's implementation (production code + tests). **Do NOT include `IN_PROGRESS.md` / `HISTORY.md` in this commit** — they go in their own commit at step 3. Write a Conventional Commits message (`<type>(<scope>): <subject>`) where:
    - `type` is one of `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`.
    - `subject` is the task title in imperative mood.
    - The body cites the ROADMAP reference, the acceptance criteria, and any [PLAN.md §4](PLAN.md) dependency justification (when applicable).
-3. **Push to the right place.** Push the branch to `origin task/<id>-<slug>` only. Pushing to `main`, `master`, `develop`, `staging`, or any other branch is denied — surface a clear error if the current branch does not match `task/*`.
-4. **Open the PR with `gh pr create`.** Title under 70 characters. Body must include, in this order:
-   - **Roadmap reference:** link to the moved-to-`IN_PROGRESS.md` block (or the task identifier).
+3. **Move the tracking forward as a separate commit — non-negotiable.** **After** the code commit lands and **before** push + PR, create a second commit on the same `task/<id>-<slug>` branch that removes the task's block from `IN_PROGRESS.md` and appends it to `HISTORY.md`. The `roadmap-tracking-flow` convention requires `IN_PROGRESS.md` and `HISTORY.md` to be updated by the **same PR** — but the operator convention (followed across every M4.x PR) is that **implementation and state-sync live in separate commits within that PR**, so reviewers can read code-only changes without bookkeeping noise.
+
+   **Scope rule (M4.8 / Findings #13 + #17):** edit the `IN_PROGRESS.md` and `HISTORY.md` that live **inside the per-task worktree** you are operating in — never the copies in the main worktree. The `task-orchestrator`'s step 3 already moved the task block into the per-task worktree's `IN_PROGRESS.md` (on the `task/<id>-<slug>` branch as its own commit), so the entry you remove here is on the same branch and the eventual squash-merge brings both moves to `main` together.
+
+   **Commit message convention:**
+
+   ```text
+   chore(tracking): move #<id> IN_PROGRESS → HISTORY
+
+   <one-line note pointing at the PR this closes, if known>
+   ```
+
+   **Verification BEFORE push + PR** (the branch's tip must be correct before it becomes operator-visible):
+   - `IN_PROGRESS.md` no longer contains the task's `#<id>` heading line.
+   - `HISTORY.md` contains a new entry for the task under the correct month / date heading.
+   - `git log --oneline -2` on the task branch shows two distinct commits at the tip: the code commit (step 2), then the `chore(tracking)` commit (step 3) — in that order.
+
+   If any check fails, **stop and fix** before pushing. A tracking move pushed in a follow-up commit on the protected branch (or in a separate PR opened later) splits the bookkeeping and violates the convention.
+4. **Push to the right place.** Push the branch to `origin task/<id>-<slug>` only. Pushing to `main`, `master`, `develop`, `staging`, or any other branch is denied — surface a clear error if the current branch does not match `task/*`. By this point the branch carries both the code commit and the tracking commit.
+5. **Open the PR with `gh pr create`.** Title under 70 characters. Body must include, in this order:
+   - **Roadmap reference:** link to the (now moved-to-`HISTORY.md`) block or the task identifier.
    - **Summary:** 1–3 bullets of what changed and why.
    - **Validation checklist:** what `tester` ran (lint / typecheck / unit / integration), with their pass/fail state.
-   - **Screenshots:** if the change has a UI surface, embed Playwright screenshots from `e2e-runner` (when M3.1 ships). Until then, note "UI surface — e2e screenshots pending M3.1" so reviewers know it is a known gap, not an oversight.
-5. **Move the tracking forward — non-negotiable.** In the same commit set as the task's code changes, remove the task's block from `IN_PROGRESS.md` and append it to `HISTORY.md` with the PR number once known. The `roadmap-tracking-flow` convention requires `IN_PROGRESS.md` and `HISTORY.md` to be updated by the **same PR**, not in a follow-up commit on the protected branch.
-
-   **Scope rule (M4.8 / Findings #13 + #17):** edit the `IN_PROGRESS.md` and `HISTORY.md` that live **inside the per-task worktree** you are operating in — never the copies in the main worktree. The `task-orchestrator`'s step 3 already moved the task block into the per-task worktree's `IN_PROGRESS.md` (on the `task/<id>-<slug>` branch), so the entry you remove here is on the same branch and the squash-merge brings both moves to `main` together.
-
-   **Verification before opening the PR** (PR is the operator-visible artifact — it must be correct):
-   - `IN_PROGRESS.md` no longer contains the task's `#<id>` heading line.
-   - `HISTORY.md` does contain a new entry for the task under the correct month / date heading.
-   - Both files are staged in the same commit that finalises the task (chained with the code commit, or a dedicated `chore(tracking): move #<id> IN_PROGRESS → HISTORY` commit on the same `task/<id>-<slug>` branch).
-
-   If any check fails, **stop and fix** before invoking `gh pr create`. Re-issuing the move after the PR is open splits the bookkeeping across two commits-on-different-PRs and violates `roadmap-tracking-flow`.
+   - **Screenshots:** if the change has a UI surface, embed Playwright screenshots from `e2e-runner`. For docs/infra/backend-only changes, note "no UI surface — e2e skipped per `e2e-runner`".
+   - **Tracking:** an explicit `<commit-sha>` line for the `chore(tracking)` commit so reviewers can see the bookkeeping change at a glance.
 6. **Report the PR URL back.** Final output is the URL the operator opens to review.
 
 ## Decision rules
@@ -78,7 +87,8 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
 
 End your turn with:
 
-- **Commit:** `<sha> <subject>`.
-- **Branch pushed:** `origin task/<id>-<slug>`.
+- **Code commit:** `<sha> <subject>` (step 2).
+- **Tracking commit:** `<sha> chore(tracking): move #<id> IN_PROGRESS → HISTORY` (step 3).
+- **Branch pushed:** `origin task/<id>-<slug>` (carries both commits above).
 - **PR:** `<url>` (or "blocked — push gate red, handed back to tester").
-- **Tracking:** "`IN_PROGRESS.md` → `HISTORY.md` updated in this PR" — this line should always read exactly that. There is no "skipped" path post-M4.8; a skip means the PR is malformed and you should have stopped before invoking `gh pr create`.
+- **Tracking:** "`IN_PROGRESS.md` → `HISTORY.md` updated in this PR (commit `<sha>`)" — this line should always read exactly that. There is no "skipped" path post-M4.8; a skip means the PR is malformed and you should have stopped before invoking `gh pr create`.
