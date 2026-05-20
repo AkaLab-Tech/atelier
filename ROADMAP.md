@@ -18,27 +18,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 2–4 — Single-project agent flow + robustness.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries.
 
-### M4.10 — Gitignore `.claude/settings.json` in `atelier-setup-project`
-
-`atelier-setup-project` writes the project's `.claude/settings.json` with the operator's absolute path substituted via `sed s|<worktree>|<abs-path>|g`. It also writes a `.gitignore` that includes `.task-log/`, `.claude/settings.local.json`, and `.DS_Store` — but **not** `.claude/settings.json` itself. When the operator commits `settings.json` (which the current `.gitignore` does not exclude), every clone inherits the **original operator's absolute path** in `additionalDirectories`. Other operators (or the same operator on a different machine) running `claude` in the clone get an `additionalDirectories` that points nowhere useful for them — the agents' Edit/Write scope is silently broken.
-
-Surfaced during dogfood-3 (HISTORY → dogfood-3 entry, Finding D3-3): a `git add .claude` for the initial commit baked `/Users/mike/Work/atelier-dogfood-3` into the committed file, and `git wt switch` then propagated that mispathed file into every task worktree before `/next-task` step 7 had a chance to regenerate it.
-
-**Fix:** one-line change in [scripts/atelier-setup-project](scripts/atelier-setup-project)'s `.gitignore` step, plus the matching line in [commands/setup-project.md](commands/setup-project.md) §7. New entry list:
-
-```text
-.task-log/
-.claude/settings.json          # NEW — per-operator absolute path
-.claude/settings.local.json
-.DS_Store
-```
-
-**Acceptance:** running `atelier-setup-project <fresh-dir>` produces a `.gitignore` that includes `.claude/settings.json`. A subsequent `git status` after the bootstrap shows `.claude/settings.json` as untracked (or absent from the diff if pre-existing). Re-running on an already-bootstrapped project does not re-add the entry (the helper's append-when-missing logic is idempotent).
-
-**Migration for projects already bootstrapped pre-M4.10:** `git rm --cached .claude/settings.json && echo .claude/settings.json >> .gitignore && git commit`. The operator's local file is preserved (`--cached` only removes from the index).
-
-**Trigger to revisit:** before re-running dogfood-3 (the existing repo's initial commit has the bug baked in — needs a cleanup commit or a fresh `atelier-dogfood-4`).
-
 ### M4.11 — Investigate the M4.7 thesis under `claude --plugin-dir` ad-hoc CLI mode
 
 M4.7 documented that `Bash > <wt>/.claude/settings.json` bypasses the harness's `.claude/**` `Write`/`Edit` interactive guard *when the path is in `additionalDirectories`*. The probe at M4.7 design time confirmed this empirically. The empirical test of M4.9 (PR [#39](https://github.com/AkaLab-Tech/atelier/pull/39) comment) also showed `Bash(atelier-setup-project:*)` running clean from inside `claude -p`.

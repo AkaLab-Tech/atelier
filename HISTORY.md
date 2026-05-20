@@ -8,8 +8,48 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M4.10 — Gitignore `.claude/settings.json` in `atelier-setup-project` — 2026-05-20
+**PR:** _pending_
+
+Fix for the dogfood-3 Finding D3-3 captured in PR [#41](https://github.com/AkaLab-Tech/atelier/pull/41). The bash helper substitutes `<worktree>` with the operator's absolute path when it writes `<project>/.claude/settings.json`, so that file is **per-operator** and must not be committed. The helper's `step_gitignore` was only listing `.task-log/`, `.claude/settings.local.json`, and `.DS_Store` — `settings.json` itself was missing, which is exactly how dogfood-3's initial commit baked `/Users/mike/Work/atelier-dogfood-3` into the version-controlled file.
+
+**Delivered:**
+
+- [scripts/atelier-setup-project](scripts/atelier-setup-project) step 7: one-element addition to the `needed` array — `.claude/settings.json` slotted between `.task-log/` and `.claude/settings.local.json`. Inline comment captures the *why* (per-operator absolute path) and links to the dogfood-3 D3-3 finding so a future reader can see the historical pretext without digging through git blame.
+- [commands/setup-project.md](commands/setup-project.md) §7: the four-entry list now reads `.task-log/`, `.claude/settings.json`, `.claude/settings.local.json`, `.DS_Store`, plus a one-sentence note that `settings.json` is gitignored because it has the operator's absolute path baked in.
+
+The fix is **idempotent** by design: `step_gitignore` already short-circuits when all `needed` entries are present, and appends only the truly-missing ones under a clearly-marked atelier section when the file pre-exists. Re-running the helper on a project bootstrapped pre-M4.10 will correctly append `.claude/settings.json` without duplicating the other three entries.
+
+**Tests:**
+
+- `bash -n` clean on the modified script.
+- Smoke test in a tmpdir with isolated `$HOME`: `atelier-setup-project --yes <fresh-dir>` produces `.gitignore` with all four lines. Re-running is a no-op (`.gitignore: preserved`). Running on a project where `.gitignore` pre-exists with the three old entries appends only the new `.claude/settings.json` line under the atelier section. Running on a project where `.gitignore` already has all four entries reports `preserved` and makes no edit.
+
+**Decisions captured:**
+
+- **Add the inline comment + the "why" in the slash command spec, not just the bash array.** The reason for gitignoring `.claude/settings.json` is non-obvious (it's a peer of `settings.local.json`; most setups gitignore *only* the `.local.json` variant). The comment is the artifact that prevents a future maintainer from "simplifying" the array back to three entries without realizing why the fourth one exists.
+- **No version bump in `.claude-plugin/plugin.json`.** Pre-1.0, the plugin's recorded `setupVersion` advances together with `plugin.json`'s `version` field. We are not bumping for every fix — the change is tracked through `HISTORY.md`, which is the canonical source. A bump can ride the next user-visible feature change.
+- **No migration code in the script.** Projects bootstrapped pre-M4.10 keep a tracked-but-mispathed `settings.json` until the operator runs `git rm --cached .claude/settings.json` (preserving the local file). Auto-detecting and silently removing a tracked file would be too magical for a setup helper. The migration steps are documented in the M4.10 ROADMAP entry (now removed from ROADMAP by this PR — preserved in this HISTORY entry's "Migration" line below).
+
+**Migration for projects bootstrapped pre-M4.10:**
+
+```sh
+git rm --cached .claude/settings.json
+echo '.claude/settings.json' >> .gitignore   # only if not already present
+git commit -m "chore: untrack .claude/settings.json (per-operator absolute path, per atelier M4.10)"
+```
+
+The operator's local `.claude/settings.json` is preserved (`git rm --cached` only updates the index). The dogfood-3 GitHub repo needs this before any dogfood-4 attempt, and is documented as the next housekeeping step after M4.10 lands.
+
+**Acceptance criterion status:** the ROADMAP M4.10 acceptance — *"running `atelier-setup-project <fresh-dir>` produces a `.gitignore` that includes `.claude/settings.json`"* — is **structurally satisfied** and **empirically validated** by the tmpdir smoke test above.
+
+**Follow-ups:**
+
+- M4.11 — investigate the M4.7 thesis under `claude --plugin-dir` mode (the blocking D3-2 from dogfood-3). Independent of M4.10.
+- Pre-dogfood-4 housekeeping: cleanup commit on `atelier-dogfood-3` to untrack its pre-existing `.claude/settings.json` per the migration steps above.
+
 ### Dogfood-3 (blocked at `/next-task` step 7) — 2026-05-20
-**PR:** _pending_ (this entry's PR)
+**PR:** [#41](https://github.com/AkaLab-Tech/atelier/pull/41)
 
 Third dogfood run on a real GitHub repo ([`AkaLab-Tech/atelier-dogfood-3`](https://github.com/AkaLab-Tech/atelier-dogfood-3), private). Designed to validate **M4.6 + M4.7 + M4.8 + M4.9 end-to-end together** via two tasks: (#1) happy path adding `src/greet.ts` + matching vitest, (#2) forced-failure bumping `package.json` version to exercise the deny-list + `retry-with-logs` → `unblocker` loop.
 
