@@ -8,8 +8,50 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### Dogfood-3 (blocked at `/next-task` step 7) — 2026-05-20
+**PR:** _pending_ (this entry's PR)
+
+Third dogfood run on a real GitHub repo ([`AkaLab-Tech/atelier-dogfood-3`](https://github.com/AkaLab-Tech/atelier-dogfood-3), private). Designed to validate **M4.6 + M4.7 + M4.8 + M4.9 end-to-end together** via two tasks: (#1) happy path adding `src/greet.ts` + matching vitest, (#2) forced-failure bumping `package.json` version to exercise the deny-list + `retry-with-logs` → `unblocker` loop.
+
+**Result: blocked before the agent chain ran.** `/next-task` died at step 7 (per-task `.claude/settings.json` instantiation) on the first task. Three findings — one already known, two new:
+
+**D3-1 (known): `claude --plugin-dir` does not export `$CLAUDE_PLUGIN_ROOT`.** Already captured in PR [#39](https://github.com/AkaLab-Tech/atelier/pull/39#issuecomment-4501626480)'s M4.9 empirical comment. Workaround: explicit `CLAUDE_PLUGIN_ROOT=/abs/path/to/atelier claude -p ...`. Applied here. `/next-task` step 7's sed command (`"$CLAUDE_PLUGIN_ROOT/templates/..."`) has the same vulnerability — the workaround is required for *any* slash command that references the var, not just `/setup-project`.
+
+**D3-2 (new, blocking dogfood-3): Bash redirect to `.claude/**` is denied by the harness in `claude --plugin-dir` mode, contradicting the M4.7 thesis.** The sub-claude reported both `mkdir -p <wt>/.claude/` and `sed > <wt>/.claude/settings.json` were blocked despite `<wt>-worktrees/**` being in `additionalDirectories`. Step 7's hard-refusal ("do NOT advance to step 8 with a missing / corrupt / unmodified settings file") correctly stopped the chain. M4.7's probe and M4.9's empirical both succeeded — but M4.9's case is `Bash(atelier-setup-project:*)` (a *binary invocation*, not an inline shell redirect inside a slash command). The thesis "Bash redirect bypasses the `.claude/**` guard when the path is in `additionalDirectories`" is therefore **mode-dependent**, not universally true. Captured for investigation as **M4.11** (added to ROADMAP in this PR).
+
+**D3-3 (new, simple fix): `atelier-setup-project` doesn't gitignore the project's `.claude/settings.json`.** The helper only adds `.task-log/`, `.claude/settings.local.json`, and `.DS_Store` to `.gitignore`. The `settings.json` it writes has the operator's *absolute* path baked in via `sed`, so when the operator commits it (no `.gitignore` rule prevents this), every clone inherits a useless `additionalDirectories`. Concretely surfaced here: my `git add .claude` for dogfood-3's initial commit captured a `settings.json` pointing at `/Users/mike/Work/atelier-dogfood-3`. Then `git wt switch task/1-add-greet-module` checked that mispathed file into the task worktree before `/next-task` step 7 had a chance to regenerate it. Captured as **M4.10** (added to ROADMAP in this PR), one-line fix path documented.
+
+**Setup work that succeeded (partial validation of M4.9 in practice):**
+
+- `gh repo create AkaLab-Tech/atelier-dogfood-3 --private`, cloned to `/Users/mike/Work/atelier-dogfood-3`.
+- Node/TS scaffolding: `pnpm init` (version pinned to 0.1.0 for task #2's bump scenario), `pnpm add -D vitest typescript @types/node`, `tsconfig.json`, `test/sanity.test.ts` (passes).
+- `atelier-setup-project --yes <dogfood-3>` ran clean from the operator's terminal — second confirmation that M4.9's harness-bypass-via-subprocess thesis holds for the bootstrap step (separate from M4.7's per-task-settings thesis which has the D3-2 wrinkle).
+- Initial commit + push to origin main with the 2 tasks in `ROADMAP.md`.
+- `claude -p "/atelier:next-task --yes" --plugin-dir <atelier-checkout>` with `CLAUDE_PLUGIN_ROOT` exported: steps 1–6 of `/next-task` succeeded (worktree clean, IN_PROGRESS empty, task #1 picked via `task-discovery`, auto-claimed, ROADMAP→IN_PROGRESS moved, `task/1-add-greet-module` worktree created at the canonical path). Step 7 failed → chain aborted before `task-orchestrator` ever ran.
+
+**Cleanup performed:** `git restore IN_PROGRESS.md ROADMAP.md` on dogfood-3 main (revert the claim of task #1), `git wt rm task/1-add-greet-module` + `git branch -D task/1-add-greet-module` (remove worktree and orphan branch). dogfood-3 main is back to its initial-commit state; the GitHub repo remains in place for the next attempt.
+
+**What is still unvalidated end-to-end** (deferred to a future dogfood-4 after M4.10 + M4.11 land):
+
+- M4.6 beyond step 6 of `/next-task` — the orchestrator and the rest of the chain never ran.
+- M4.7's runtime behavior of per-task settings instantiation (step 7 itself, which is what M4.11 is about).
+- M4.8's tracking move on the task branch (`pr-author`'s step 5).
+- Finding [#18](https://github.com/AkaLab-Tech/atelier/pull/35) (deny-list absolute-path engagement on `package.json`) — task #2 was never attempted.
+- Finding [#19](https://github.com/AkaLab-Tech/atelier/pull/36) (orchestrator delegating to `unblocker` via Task tool) — depends on task #2's forced-failure path.
+- Auto-merge gate + reviewer Opus call + same-identity self-approval limitation (Finding #11).
+
+**Cost summary:** one failed `claude -p` invocation (the second attempt — first was killed before it produced output due to a wrong-cwd mistake), plus the model calls from `/next-task` steps 1–6. Approximate spend: <$1.
+
+**Why this is in its own PR (not bundled with the M4.10 fix):** D3-3's fix is a one-line bash change but the dogfood-3 finding-summary and the new ROADMAP entries (M4.10 + M4.11) constitute the audit-trail of *why* the fix is needed. Shipping the doc first, then the fix in a follow-up PR, keeps the M4.10 PR small and reviewable.
+
+**Follow-ups (now in ROADMAP):**
+
+- M4.10 — gitignore `.claude/settings.json` (the D3-3 fix).
+- M4.11 — investigate the M4.7 thesis under `claude --plugin-dir` ad-hoc mode (the D3-2 investigation).
+- After both land: dogfood-4 with the same task-#1/task-#2 design, either on a fresh repo or after a cleanup commit to `atelier-dogfood-3`.
+
 ### M4.9 — `atelier-setup-project` bash helper script — 2026-05-20
-**PR:** _pending_
+**PR:** [#39](https://github.com/AkaLab-Tech/atelier/pull/39)
 
 Fourth post-Phase-4 follow-up. Closes the `/setup-project` parallel of the `.claude/**` harness-guard problem. M4.7 solved it for the per-task `<task-wt>/.claude/settings.json` by using `Bash` + shell redirect (`sed > file`) instead of `Write` (the harness gates `Write`/`Edit` on `.claude/**` with an interactive approval prompt that fatally hangs `claude -p` mode). But `/setup-project` also has to write a brand-new prose file at `<project>/.claude/CLAUDE.md` — there is no template-substitution form for that, so the Bash-redirect trick alone is not enough.
 
@@ -68,7 +110,7 @@ This PR moves the whole `/setup-project` bootstrap out of the Claude session ent
 - **Maintenance tax to close:** `commands/setup-project.md` and `scripts/atelier-setup-project` now implement the same flow in two languages. They have to be hand-synced when either changes. Future task picks one of: (i) bash script is source of truth, slash spec reduces to "see `atelier-setup-project --help`"; (ii) slash spec is canonical contract, CI smoke check asserts the script honours it. Captured in the M4.9 IN_PROGRESS block before merge and noted again in the slash command's own spec for visibility.
 
 ### M4.8 — Tracking move on the right worktree, enforced (Findings #13 + #17) — 2026-05-20
-**PR:** _pending_
+**PR:** [#38](https://github.com/AkaLab-Tech/atelier/pull/38)
 
 Third post-Phase-4 follow-up. The ROADMAP framed M4.8 as "harden `pr-author` so it always does its `IN_PROGRESS.md → HISTORY.md` move". Inspection of the dogfood-2 happy-path run showed the issue was deeper: the `task-orchestrator`'s **step 2** edited the **main** worktree's `IN_PROGRESS.md` (uncommitted, because no agent is allowed to push to `main`), then **step 3** created the per-task worktree from `main`-committed — so the per-task worktree's `IN_PROGRESS.md` had no entry to remove, and `pr-author` correctly observed "nothing to move". The two findings (#13 missing move, #17 wrong worktree) were the same root cause: the move was happening in the wrong place. This PR fixes both by reordering the orchestrator's steps so the move lives entirely on the task branch.
 
