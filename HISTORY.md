@@ -8,8 +8,27 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### Dogfood-2 (partial) + Finding #18 fix — deny list absolute-path variants — 2026-05-20
+### Finding #19 fix — orchestrator must invoke `unblocker` via `Task`, never inline — 2026-05-20
 **PR:** _pending_
+
+Tiny follow-up to dogfood-2's PR #35 validation run. On the validating re-run, the `task-orchestrator` reached `hard-stop` correctly, then **absorbed the four `unblocker` responsibilities inline** (create the `blocked` label, open the GitHub issue with the 6 logs, mark `IN_PROGRESS.md` with `[BLOCKED]`, open the docs companion PR) instead of delegating via the `Task` tool. The outcome was identical to what `unblocker` would have produced, but the audit-trail value of a discrete `unblocker` invocation was lost — operator post-mortem and any future analysis tooling read the per-agent boundaries to reconstruct what happened.
+
+**Delivered:**
+- `agents/task-orchestrator.md` — adds one explicit hard refusal to the Decision rules section: *"Never absorb `unblocker`'s responsibilities inline. On `hard-stop` from `retry-with-logs`, you must invoke `atelier:unblocker` via the `Task` tool — even when you believe you could do the work yourself."* with a one-paragraph rationale about audit-trail value, per-agent safety scope, and the fact that inline simulation makes the chain harder to trace.
+
+**Tests:**
+- YAML frontmatter parses cleanly.
+- No new permissions, no other agent edits — single hard-refusal addition.
+- End-to-end exercise (a future dogfood-3 / dogfood-2 re-run after this lands) is what confirms the model honours the new refusal in practice. Behavioural rules in prompts are not 100% deterministic; if the model still simulates inline after this fix, the next escalation is converting the chain to multi-step `Task` invocations with structured outputs the orchestrator parses, which is significantly more work.
+
+**Why this is in its own PR:**
+- PR #35 (Finding #18 deny-list fix) was a critical security fix and was already validated end-to-end. Mixing in this prompt-tuning would have made the PR less reviewable.
+- Finding #19 is informational from PR #35's validation run, not a regression of #35 itself. Cleaner audit trail to ship it as a separate follow-up.
+
+**Acceptance criterion:** the next dogfood (whenever it happens) should show the orchestrator producing a `Task(subagent_type="atelier:unblocker", ...)` call at the moment of `hard-stop`, instead of inlining the four steps. The structural fix is in this PR; the empirical validation belongs to that future dogfood.
+
+### Dogfood-2 (partial) + Finding #18 fix — deny list absolute-path variants — 2026-05-20
+**PR:** [#35](https://github.com/AkaLab-Tech/atelier/pull/35)
 
 Second dogfood run on a real GitHub repo (`AkaLab-Tech/atelier-dogfood-2`, private) surfaced **one critical security finding** that PR #32's sandbox fix had inadvertently exposed and that dogfood-1 had hidden by accident. Also confirmed **two known findings** (operator-CLAUDE-vs-atelier push consent + `pr-author` editing the wrong worktree's `IN_PROGRESS.md`). Task #1 (happy path) completed end-to-end with the same manual operator confirmation pattern as dogfood-1; **Task #2 (forced-failure) could not validate the hard-stop loop** because the guardrail it depended on was broken, and the `task-orchestrator` correctly refused to fabricate fake failures.
 
