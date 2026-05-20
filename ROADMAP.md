@@ -25,6 +25,27 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 5–7 + deferred v2 patterns.** Multi-project, docs, end-to-end validation, and the OMC-borrowed ideas from PLAN.md §11.
 
+### M1.7 — Self-CI for atelier (structural validations only)
+
+Atelier's own development has zero CI: PRs to this repo (M4.6 / M4.7 / M4.8 / M4.9) rely on manual review plus the "Tests:" section in HISTORY entries. That works for the single-maintainer case but has already missed simple structural defects (a `bash` heredoc-in-cmdsub typo was caught at the last minute during M4.9 implementation). M1.7 closes that gap with a tiny, fast GitHub Actions workflow.
+
+**Deliverables:** a single `.github/workflows/structural.yml` that, on every PR against `main`, runs:
+
+1. `bash -n` over `install.sh` and every file in `scripts/*` — catches shell-syntax typos.
+2. `python3 -m json.tool` over every `*.json` in the repo (`templates/settings.template.json`, `.claude-plugin/plugin.json`, `marketplace.json` if/when it lands) — catches corrupt JSON before it ships to a target project.
+3. YAML frontmatter parse over `agents/*.md`, `commands/*.md`, `skills/**/SKILL.md` (or whatever the skills convention settles on) — catches frontmatter that Claude Code would silently reject at plugin-load time.
+4. `scripts/atelier-setup-project --help` exits 0 — minimal smoke that the binary still loads after any change.
+
+Run-time target: <30 seconds on a free-tier GH Actions runner. Workflow file size target: <80 lines.
+
+**Out of scope (explicitly deferred to M3.x):** any behavioral / end-to-end testing of the agent chain, dogfood-style automated runs, anything that requires the `claude` CLI authenticated inside CI. Those depend on solving Claude Code auth in GH Actions, are weeks of work, and belong in Phase 3 next to `auto-merge` and `reviewer`. Mixing them into M1.7 would balloon the scope from "1-day infrastructure chore" to "multi-week Phase 3 milestone".
+
+**Acceptance:** opening a PR against `main` with a deliberately broken `install.sh` (e.g., unbalanced quote), a deliberately invalid `templates/settings.template.json`, or a deliberately malformed YAML frontmatter on any agent fails the workflow with a clear error pointing at the offending file. A clean PR passes within 30 seconds.
+
+**Note on workflow editing.** PLAN.md §3 lists `Edit(.github/workflows/**)` in the agent deny list. M1.7 creates this file once via the operator (or via an explicit one-off carve-out for this milestone); after that, all future agent-led PRs will be blocked from touching it, which is the intended posture.
+
+**Trigger to revisit:** ideally before **dogfood-3** runs (so any structural regression introduced by M4.6/M4.7/M4.8/M4.9 surfaces on a future PR rather than during the dogfood itself), or before the first external contributor opens a PR — whichever comes first. Identified during M4.9's PR (#39) review when the operator asked why PRs had no CI status checks; turned out atelier's own development never had any.
+
 ### M4.4 — Blocked-task visibility in `/status`
 
 Extend the existing `/status` command so it also lists tasks currently marked `[BLOCKED]` in `IN_PROGRESS.md`, with their issue URL and the count of attached `.task-log/*.md` entries. Today the operator only sees blocked tasks by filtering GitHub Issues by label `blocked` or by reading `IN_PROGRESS.md` manually — neither is discoverable from inside a Claude session.
