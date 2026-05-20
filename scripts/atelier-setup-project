@@ -371,7 +371,10 @@ step_npmrc() {
 # ---------- step 7: .gitignore ----------
 step_gitignore() {
   local target="$PROJECT/.gitignore"
-  local needed=(".task-log/" ".claude/settings.local.json" ".DS_Store")
+  # `.claude/settings.json` is per-operator: the helper substitutes <worktree>
+  # with the operator's absolute path, so committing it would propagate that
+  # path to every clone (HISTORY → dogfood-3, Finding D3-3). Gitignore it.
+  local needed=(".task-log/" ".claude/settings.json" ".claude/settings.local.json" ".DS_Store")
 
   if [ ! -f "$target" ]; then
     printf '%s\n' "${needed[@]}" > "$target"

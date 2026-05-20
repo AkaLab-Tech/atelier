@@ -22,7 +22,7 @@ That single command does **all** of the work:
 4. Writes `<path>/.claude/settings.json` from `$CLAUDE_PLUGIN_ROOT/templates/settings.template.json` with the project path substituted. Validates the result parses with `jq empty` and that no literal `<worktree>` token remains.
 5. Creates `<path>/ROADMAP.md`, `<path>/IN_PROGRESS.md`, `<path>/HISTORY.md`, `<path>/.claude/CLAUDE.md` only when missing (the latter from `$CLAUDE_PLUGIN_ROOT/templates/project-claude.md.template`).
 6. Creates or appends to `<path>/.npmrc` the three PLAN.md §4 guardrails (`ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate`); never weakens existing values.
-7. Creates or appends to `<path>/.gitignore` the three required entries (`.task-log/`, `.claude/settings.local.json`, `.DS_Store`).
+7. Creates or appends to `<path>/.gitignore` the four required entries (`.task-log/`, `.claude/settings.json`, `.claude/settings.local.json`, `.DS_Store`). `.claude/settings.json` is gitignored because the helper substitutes `<worktree>` with the operator's absolute path; committing it would propagate that path to every clone.
 8. Records the setup in `~/.claude/.atelier-config.json` with `setupCompleted` and `setupVersion`.
 
 The helper prints its own progress and final summary to stdout. Relay its output back to the operator verbatim — do not paraphrase. If the helper exits non-zero, surface the error and stop; do not try to "fix forward".
