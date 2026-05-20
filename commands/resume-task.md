@@ -1,7 +1,7 @@
 ---
 description: Continue a task after interruption or unblocking. Auto-detects the resume mode from `IN_PROGRESS.md` state — "interrupted" (active entry, partial progress) vs "blocked-resumed" (entry has the `[BLOCKED]` marker and the GitHub issue has been closed by the operator). Runs the mode-specific cleanup, then hands off to `task-orchestrator`.
-argument-hint: "<task-id>"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git wt:*), Bash(git add:*), Bash(git commit:*), Bash(git push:*), Bash(git checkout:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(gh issue view:*), Bash(gh pr create:*), Skill, Task
+argument-hint: "<task-id> [--yes|-y]"
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git wt:*), Bash(git add:*), Bash(git commit:*), Bash(git push:*), Bash(git checkout:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(env:*), Bash(gh issue view:*), Bash(gh pr create:*), Skill, Task
 ---
 
 You are running the `/resume-task` slash command. Two distinct entry points lead here — both end with the same orchestrator hand-off, but they require different pre-flight cleanup:
@@ -13,13 +13,27 @@ The command **auto-detects** which mode applies from the state of `IN_PROGRESS.m
 
 ## User input
 
-`$ARGUMENTS` is the task id (e.g. `#42` or `42` — strip a leading `#` if present). **Required** — refuse if empty with: `Usage: /atelier:resume-task <task-id>`. Do not auto-pick a task.
+`$ARGUMENTS` must include the task id (e.g. `#42` or `42` — strip a leading `#` if present). **Required** — refuse if empty with: `Usage: /atelier:resume-task <task-id> [--yes|-y]`. Do not auto-pick a task. May additionally carry the `--yes` / `-y` flag described in the Interaction mode section below.
+
+## Interaction mode (read once at the start)
+
+Same contract as `/atelier:next-task` (M4.6). You are **non-interactive** if any of:
+
+- `$ARGUMENTS` contains the literal token `--yes` (whitespace-bounded).
+- `$ARGUMENTS` contains the literal token `-y` (whitespace-bounded).
+- The environment variable `ATELIER_AUTO` is set to a non-empty value.
+
+Otherwise you are **interactive**. In non-interactive mode, never use `AskUserQuestion` — auto-resolve per the inline rule for each step (or stop with a clear error when no safe default exists). Pass the mode through to `task-orchestrator` in the briefing at step 5.
 
 ## Steps
 
 ### 1. Sanity-check the worktree
 
-Run `git status --short` and `git branch --show-current` in the main worktree. If the working tree is dirty, **stop**: the resume flow needs to commit a 1-line bookkeeping change to `IN_PROGRESS.md` (blocked-resume) or just re-launch the orchestrator (interrupted-resume), and either way an unrelated dirty tree corrupts the audit trail. Surface the dirty state and ask the operator to stash or commit before proceeding.
+Run `git status --short` and `git branch --show-current` in the main worktree.
+
+- **Working tree clean** → proceed to step 2.
+- **Working tree dirty, interactive mode** → surface the state and ask the operator to stash or commit before proceeding. The resume flow needs to commit a 1-line bookkeeping change to `IN_PROGRESS.md` (blocked-resume) and an unrelated dirty tree corrupts the audit trail.
+- **Working tree dirty, non-interactive mode** → **stop with error** pointing at the dirty state and the resolution (`git stash` or commit). Do NOT auto-stash.
 
 ### 2. Locate the task entry in `IN_PROGRESS.md`
 
@@ -104,6 +118,7 @@ Launch the `atelier:task-orchestrator` agent with these inputs:
 - `worktree_path`: `<wt>` (the absolute path captured in step 4b for blocked-resume, or resolved from `git wt list` matching `task/<id>-*` for interrupted-resume)
 - `branch`: `task/<id>-<slug>` (from `git branch --show-current` inside `<wt>`, or from `git wt list`)
 - **`resume_mode`**: `interrupted` | `blocked` — pass this **explicitly** in the agent prompt. The orchestrator's Step 1 ("Pick the task") has special handling for this flag: it does **not** treat the active `IN_PROGRESS.md` entry as an anomaly and does **not** invoke `task-discovery`. It jumps directly to the specialist chain starting from `implementer`.
+- **`interactive`**: `true` | `false` — propagate the interaction mode from the section above. The orchestrator does not have its own confirmation step in resume mode, so this is mostly forward-looking (specialists that may add prompts in the future inherit the flag).
 
 For **blocked-resume**, also tell the orchestrator that `.task-log/` was wiped and the budget is a fresh 6.
 

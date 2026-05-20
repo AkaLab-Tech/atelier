@@ -1,37 +1,66 @@
 ---
 description: Pick the next task from `ROADMAP.md`, set up its worktree, and hand it to the `task-orchestrator` agent end-to-end.
-argument-hint: "[task-id]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git wt:*), Bash(sed:*), Skill, Task
+argument-hint: "[task-id] [--yes|-y]"
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git wt:*), Bash(sed:*), Bash(env:*), Skill, Task
 ---
 
 You are running the `/next-task` slash command. Drive the full pickup-to-PR flow for one task from the project's `ROADMAP.md`, exactly as [PLAN.md §7](PLAN.md) prescribes.
 
-User input: `$ARGUMENTS` (optional — if non-empty, treat it as a specific task id like `#42` to claim instead of auto-picking).
+User input: `$ARGUMENTS` (optional — may carry a specific task id like `#42` to claim instead of auto-picking, and/or the `--yes` / `-y` flag described below). The two can appear in any order.
+
+## Interaction mode (read once at the start)
+
+Before doing anything that would otherwise pause for operator input, decide whether you are running in **non-interactive** mode. You are non-interactive if **any** of these is true:
+
+- `$ARGUMENTS` contains the literal token `--yes` (surrounded by whitespace or string boundaries).
+- `$ARGUMENTS` contains the literal token `-y` (surrounded by whitespace or string boundaries — not embedded in another flag).
+- The environment variable `ATELIER_AUTO` is set to any non-empty value. Probe with `env | grep -E '^ATELIER_AUTO='`.
+
+If none of those is true, you are **interactive**.
+
+**Rule for every "ask the operator" step below:** in interactive mode, ask as written. In non-interactive mode, **never** use `AskUserQuestion` or any other prompt — auto-resolve per the per-step rule documented inline (typically: proceed with the safe default, or stop with a clear error if no safe default exists). Prefer **stop with error** over a silent guess when in doubt — a clear refusal is recoverable, a wrong assumption may corrupt the chain.
 
 ## Steps
 
 ### 1. Sanity-check the worktree
 
-Run `git status --short` and `git branch --show-current`. If the working tree is dirty or the branch is anything other than `main` / `master` / a base branch, **stop**: surface the state and ask the operator whether to stash, continue on the current branch, or abort. Picking a new task on top of unrelated uncommitted work corrupts the chain.
+Run `git status --short` and `git branch --show-current`.
+
+- **Working tree clean and branch is `main` / `master` / a base branch** → proceed to step 2.
+- **Working tree dirty or non-base branch, interactive mode** → surface the state and ask the operator whether to stash, continue on the current branch, or abort. Picking a new task on top of unrelated uncommitted work corrupts the chain.
+- **Working tree dirty or non-base branch, non-interactive mode** → **stop with error**:
+  ```text
+  ✗ /next-task: working tree is dirty or current branch is not a base branch.
+     status: <one-line summary>
+     branch: <name>
+     In non-interactive mode, the command refuses rather than guess.
+     Resolve manually (commit, stash, or `git checkout main`) and re-run.
+  ```
+  Do NOT auto-stash or auto-checkout — that hides operator-in-progress work.
 
 ### 2. Refuse to start if `IN_PROGRESS.md` is occupied
 
-Read `IN_PROGRESS.md`. If it contains anything other than the placeholder HTML comments, a task is already in progress. **Do not silently override it.** Report the existing entry and offer two options:
+Read `IN_PROGRESS.md`. If it contains anything other than the placeholder HTML comments, a task is already in progress. **Do not silently override it** — this applies in both interactive and non-interactive mode; an occupied `IN_PROGRESS.md` is never overridden by `/next-task`.
 
-- Resume the in-progress task with `/resume-task` (M4.3 — once it ships).
-- Explicitly close out the existing task first (move to `HISTORY.md` or back to `ROADMAP.md`) before picking a new one.
-
-Stop until the operator chooses.
+- **Interactive mode:** report the existing entry and offer two options:
+  - Resume the in-progress task with `/atelier:resume-task <id>` (M4.3).
+  - Explicitly close out the existing task first (move to `HISTORY.md` or back to `ROADMAP.md`) before picking a new one.
+- **Non-interactive mode:** stop with a clear error pointing at the same two options. The operator must rerun manually after resolving.
 
 ### 3. Pick the task — `task-discovery` skill
 
-If `$ARGUMENTS` is empty: invoke the `atelier:task-discovery` skill on the project's `ROADMAP.md`. It returns the structured record (`id`, `title`, `type`, `priority`, `estimate`, `blocked_by`, `worktree`, `acceptance`, `context`) per PLAN.md §5.
+Strip the `--yes` / `-y` flag from `$ARGUMENTS` before parsing the task id (so `#42 --yes` still resolves to id `#42`).
+
+If the remaining `$ARGUMENTS` is empty: invoke the `atelier:task-discovery` skill on the project's `ROADMAP.md`. It returns the structured record (`id`, `title`, `type`, `priority`, `estimate`, `blocked_by`, `worktree`, `acceptance`, `context`) per PLAN.md §5.
 
 If `$ARGUMENTS` names a specific id: find that block in `ROADMAP.md` directly, parse it into the same shape, and **validate** it is unchecked and has no open `blocked_by` — surface the violation and stop if either fails.
 
 ### 4. Confirm with the operator
 
-Display the chosen task in a short summary (`id`, `title`, `priority`, `estimate`). Ask explicitly: *"Claim this task?"*. Wait for a yes/no. If no, stop — do not move tracking or create a worktree.
+Display the chosen task in a short summary (`id`, `title`, `priority`, `estimate`).
+
+- **Interactive mode:** ask explicitly: *"Claim this task?"*. Wait for a yes/no. If no, stop — do not move tracking or create a worktree.
+- **Non-interactive mode:** log a single line `auto-claiming task <id> (non-interactive)` and proceed to step 5. No prompt. The operator's `--yes` / `-y` flag (or `ATELIER_AUTO=1`) **is** the consent.
 
 ### 5. Move `ROADMAP.md` → `IN_PROGRESS.md` in a single edit
 
@@ -55,7 +84,7 @@ Make sure `<worktree>/.claude/` exists first (`mkdir -p`). Confirm the resulting
 
 ### 8. Hand off to `task-orchestrator`
 
-Launch the `atelier:task-orchestrator` agent (Opus) with the worktree path and the structured task record from step 3 as its briefing. From this point the chain (`implementer` → `tester` → `pr-author`) is the orchestrator's responsibility — `/next-task`'s job ends here.
+Launch the `atelier:task-orchestrator` agent (Opus) with the worktree path and the structured task record from step 3 as its briefing. **Include the interaction mode in the briefing** — when non-interactive, pass `interactive: false` (or equivalent prose) so the orchestrator's Step 1 standard-mode branch skips its own confirmation prompt (Step 1 also reads `ATELIER_AUTO` as a fallback, but the briefing is the authoritative signal when set). From this point the chain (`implementer` → `tester` → `pr-author`) is the orchestrator's responsibility — `/next-task`'s job ends here.
 
 ## Output
 
