@@ -43,7 +43,7 @@ Run `git status --short` and `git branch --show-current`.
 Read `IN_PROGRESS.md`. If it contains anything other than the placeholder HTML comments, a task is already in progress. **Do not silently override it** — this applies in both interactive and non-interactive mode; an occupied `IN_PROGRESS.md` is never overridden by `/next-task`.
 
 - **Interactive mode:** report the existing entry and offer two options:
-  - Resume the in-progress task with `/atelier:resume-task <id>` (M4.3).
+  - Resume the in-progress task with `/atelier:resume-task <id>`.
   - Explicitly close out the existing task first (move to `HISTORY.md` or back to `ROADMAP.md`) before picking a new one.
 - **Non-interactive mode:** stop with a clear error pointing at the same two options. The operator must rerun manually after resolving.
 
@@ -74,7 +74,7 @@ Invoke the external `git-wt` skill (or `git wt switch <branch>` directly) to cre
 
 Read `$CLAUDE_PLUGIN_ROOT/templates/settings.template.json`. The template contains the literal placeholder `<worktree>` (in `additionalDirectories` and in some `Read(...)`/`Edit(...)`/`Write(...)` patterns) that must be substituted with the **absolute path of the per-task worktree** (from step 6), NOT the main repo path.
 
-**Critical implementation detail (Finding #12 / dogfood-1):** the Claude Code harness has a built-in guard that requires explicit operator approval for the `Write` and `Edit` tools when the target path is under `.claude/**`. That guard hangs the chain in non-interactive (`-p`) mode. The atelier convention is therefore to write `.claude/settings.json` **via Bash shell redirection** (`sed > file`), never via the `Write` / `Edit` tools — the redirect is a `Bash` tool operation, which the per-path matchers handle via the standard allow / deny matrix and which is not subject to the harness's `.claude/**` interactive guard. Post-PR #32 the path `<worktree>-worktrees/**` is in `additionalDirectories`, so the `Bash` redirect to `<task-worktree>/.claude/settings.json` is permitted.
+**Critical implementation detail:** the Claude Code harness has a built-in guard that requires explicit operator approval for the `Write` and `Edit` tools when the target path is under `.claude/**`. That guard hangs the chain in non-interactive (`-p`) mode. The atelier convention is therefore to write `.claude/settings.json` **via Bash shell redirection** (`sed > file`), never via the `Write` / `Edit` tools — the redirect is a `Bash` tool operation, which the per-path matchers handle via the standard allow / deny matrix and which is not subject to the harness's `.claude/**` interactive guard. The path `<worktree>-worktrees/**` is in `additionalDirectories`, so the `Bash` redirect to `<task-worktree>/.claude/settings.json` is permitted.
 
 Run **as a single Bash command** (this command's frontmatter allows the four pieces — `mkdir`, `sed`, `jq`, `test`):
 
@@ -87,10 +87,10 @@ mkdir -p <absolute-worktree-path>/.claude && \
   test "$(jq -r '.permissions.additionalDirectories[0]' <absolute-worktree-path>/.claude/settings.json)" = "<absolute-worktree-path>"
 ```
 
-The five guards in order: directory exists; sed succeeded; output parses as JSON; `<worktree>` placeholder was actually substituted (no literal `<worktree>` left); and the substitution landed in the canonical first slot of `additionalDirectories`. Any of them failing → **stop and report** with the exact failure (do NOT advance to step 8 with a missing / corrupt / unmodified settings file — dogfood-1's Finding #12 showed that silently skipping this leaves the task in a half-configured state that only surfaces when the operator later opens a session inside the task worktree).
+The five guards in order: directory exists; sed succeeded; output parses as JSON; `<worktree>` placeholder was actually substituted (no literal `<worktree>` left); and the substitution landed in the canonical first slot of `additionalDirectories`. Any of them failing → **stop and report** with the exact failure (do NOT advance to step 8 with a missing / corrupt / unmodified settings file — silently skipping this leaves the task in a half-configured state that only surfaces when the operator later opens a session inside the task worktree).
 
 **Hard refusals:**
-- **Never** use the `Write` tool to create `<task-worktree>/.claude/settings.json`. The harness blocks it in non-interactive mode (verified empirically in the M4.7 probe). Always Bash + redirect.
+- **Never** use the `Write` tool to create `<task-worktree>/.claude/settings.json`. The harness blocks it in non-interactive mode. Always Bash + redirect.
 - **Never** substitute `<worktree>` with the main-repo path. The whole point of per-task settings is to scope `Edit` / `Write` to the task's worktree.
 - **Never** skip the substitution-verification guard (the last two checks above). A file that exists but still contains the literal `<worktree>` placeholder would silently widen the `additionalDirectories` to `<worktree>/**` (matching nothing useful) and the operator would not notice until much later.
 
@@ -115,5 +115,5 @@ Or, if any step aborted, report exactly which step and why — the operator deci
 
 - **Never** create a worktree if `IN_PROGRESS.md` already has a task — see step 2.
 - **Never** claim a task whose `blocked_by:` references an open item.
-- **Never** edit `settings.template.json` itself from this command (that template is the source of truth — see M1.4); only the **instantiated** `<worktree>/.claude/settings.json` is written here.
+- **Never** edit `settings.template.json` itself from this command — that template is the source of truth shipped with the plugin; only the **instantiated** `<worktree>/.claude/settings.json` is written here.
 - **Never** push or open a PR from this command — that is `pr-author`'s job at the end of the chain.

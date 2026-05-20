@@ -10,7 +10,7 @@ User input: `$ARGUMENTS` (optional — absolute or relative path to the project 
 
 ## Interaction mode (read once at the start)
 
-Same contract as `/atelier:next-task` (M4.6). You are **non-interactive** if any of:
+Same contract as `/atelier:next-task`. You are **non-interactive** if any of:
 
 - `$ARGUMENTS` contains the literal token `--yes` (whitespace-bounded).
 - `$ARGUMENTS` contains the literal token `-y` (whitespace-bounded).
@@ -60,7 +60,7 @@ If the project is **not yet configured**, proceed to the setup steps directly (n
 
 ### 3. `<path>/.claude/settings.json`
 
-**Precondition** — `$CLAUDE_PLUGIN_ROOT` must resolve to a real directory containing `templates/settings.template.json`. Claude Code sets this env var automatically when the plugin is installed via marketplace, but when the plugin is loaded ad-hoc via `claude --plugin-dir <path>` from the CLI the variable is **not** set (Finding from dogfood-1). Before doing anything else in this step, verify:
+**Precondition** — `$CLAUDE_PLUGIN_ROOT` must resolve to a real directory containing `templates/settings.template.json`. Claude Code sets this env var automatically when the plugin is installed via marketplace, but when the plugin is loaded ad-hoc via `claude --plugin-dir <path>` from the CLI the variable is **not** set. Before doing anything else in this step, verify:
 
 ```bash
 test -n "${CLAUDE_PLUGIN_ROOT:-}" && test -f "$CLAUDE_PLUGIN_ROOT/templates/settings.template.json"
@@ -97,7 +97,7 @@ sed "s|<worktree>|<resolved-project-path>|g" \
 
 Confirm the result parses with `jq empty`. If the file already exists and you are in reconfigure mode, **diff** it against the new content. If there are local edits, the behaviour depends on interaction mode: **interactive** — ask the operator before overwriting; **non-interactive** — preserve the existing file (do not overwrite) and report `⚠ <path>/.claude/settings.json preserved (local edits detected, non-interactive)`. The reconfigure-on-configured-project case is already refused upstream in step 2 for non-interactive mode, so this branch only fires when the operator deliberately reconfigured interactively, then re-ran with `--yes`.
 
-**Hard refusal:** if `sed` returns non-zero, `jq empty` returns non-zero, or the output file size is 0 bytes, **delete the failed output and stop** with the same actionable error above. Do not advance to step 4 with a corrupt or missing settings.json — Finding #3 from dogfood-1 showed that silently skipping this step left the project in a half-configured state.
+**Hard refusal:** if `sed` returns non-zero, `jq empty` returns non-zero, or the output file size is 0 bytes, **delete the failed output and stop** with the same actionable error above. Do not advance to step 4 with a corrupt or missing settings.json — silently skipping this step leaves the project in a half-configured state that only surfaces when a later command tries to use the missing settings.
 
 ### 4. `<path>/ROADMAP.md`
 

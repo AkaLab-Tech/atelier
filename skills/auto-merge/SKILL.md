@@ -19,7 +19,7 @@ description: >-
 
 # auto-merge
 
-The executable form of [PLAN.md §6](PLAN.md)'s auto-merge gate. The reviewer agent (M3.2) decides whether the PR is **correct**; this skill decides whether the PR is **mergeable without a human in the loop**. Two separate decisions.
+The executable form of [PLAN.md §6](PLAN.md)'s auto-merge gate. The `reviewer` agent decides whether the PR is **correct**; this skill decides whether the PR is **mergeable without a human in the loop**. Two separate decisions.
 
 ## Preconditions
 
@@ -126,7 +126,7 @@ Once the merge succeeds:
    `git-wt` confirms before removing; the skill must pass that confirmation through to the operator (do not auto-confirm). If the worktree is dirty (unexpected after a clean merge), surface that and **do not** force-remove.
 
 2. **Roadmap item closure**.
-   - When the project uses the `roadmap-tracking-flow` layout (`ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md`), `pr-flow` (M2.2) already moved the entry to `HISTORY.md` in the merged PR's own commits. **Verify** by reading `HISTORY.md` for the task ID; if it's there, the cleanup is already done.
+   - When the project uses the `roadmap-tracking-flow` layout (`ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md`), `pr-flow` already moved the entry to `HISTORY.md` in the merged PR's own commits. **Verify** by reading `HISTORY.md` for the task ID; if it's there, the cleanup is already done.
    - When the project uses the PLAN.md §5 single-file ROADMAP (with `- [ ]` / `- [x]` checkboxes), the skill replaces the matching `- [ ]` line with `- [x]` and commits the change with a Conventional Commits message:
      ```text
      chore(roadmap): mark <#id> done (auto-merge after PR <#NN>)

@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: |
-  Use this agent to review an open pull request against the auto-merge gate from PLAN.md §6 — independently, with no carry-over from whichever session implemented the change. Invoked by `task-orchestrator` after `pr-author` opens the PR, or directly by the operator on any PR they want a second opinion on. Posts a structured `approve` / `request-changes` review via `gh pr review` and feeds its decision to the auto-merge gate (M3.3).
+  Use this agent to review an open pull request against the auto-merge gate from PLAN.md §6 — independently, with no carry-over from whichever session implemented the change. Invoked by `task-orchestrator` after `pr-author` opens the PR, or directly by the operator on any PR they want a second opinion on. Posts a structured `approve` / `request-changes` review via `gh pr review` and feeds its decision to the `auto-merge` skill.
 
   <example>
   Context: pr-author has just opened a PR for an atelier task.
@@ -97,7 +97,7 @@ Specific anti-patterns to flag at high confidence:
 
 ### 5. Security (defence-in-depth backstop)
 
-The M2.4 `PreToolUse` hooks already block most security-gap patterns at write time. Your job here is the **escape hatch** check:
+The `PreToolUse` hooks already block most security-gap patterns at write time. Your job here is the **escape hatch** check:
 - `eval` / `exec` / `child_process.exec` with user input (anywhere not blocked by hooks).
 - Hardcoded credentials in the diff (`sk-…`, `AKIA…`, `github_pat_…`, base64-ish strings ≥ 32 chars in a non-test file).
 - SQL template strings with user input.
@@ -124,7 +124,7 @@ A misshapen PR can still be `approve` if the change itself is right — flag the
 
 ## Auto-merge guardrails (PLAN.md §6)
 
-A PR is **not auto-mergeable** when any of these is true. Surface each one explicitly in your output so the M3.3 auto-merge gate can act on the list:
+A PR is **not auto-mergeable** when any of these is true. Surface each one explicitly in your output so the `auto-merge` skill can act on the list:
 
 - Changes touch `package.json` or `pnpm-lock.yaml`.
 - Changes touch `Dockerfile` or `docker-compose*`.
@@ -207,6 +207,6 @@ Summary: <one-line>
 - **Never** approve a PR with a critical finding.
 - **Never** mark a PR auto-mergeable when any guardrail from "Auto-merge guardrails" is tripped.
 - **Never** edit any file or commit. You evaluate; you do not change. The `Edit` and `Write` tools are not in your tool list for a reason.
-- **Never** `gh pr merge`. The auto-merge gate (M3.3) decides when to merge, and only when both (a) you approved and (b) no guardrails fired and (c) CI is green.
+- **Never** `gh pr merge`. The `auto-merge` skill decides when to merge, and only when both (a) you approved and (b) no guardrails fired and (c) CI is green.
 - **Never** approve based on the previous reviewer cycle. Each invocation is fresh — re-evaluate from the diff every time.
 - **Never** drop findings below the 80-confidence threshold into the review body. Use the in-conversation report or `gh pr comment` for nits if the operator explicitly asks.

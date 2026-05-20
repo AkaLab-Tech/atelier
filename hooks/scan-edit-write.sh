@@ -2,9 +2,9 @@
 #
 # atelier — PreToolUse hook on Edit / Write / MultiEdit. Scans the
 # PROPOSED file contents (not the file currently on disk) for the
-# security-gap patterns catalogued in PLAN.md §3 (M1.6 threat-model
-# addendum). The catalogue lives in hooks/patterns/scan-edit-write.json
-# so adding or tuning a pattern does not require touching this script.
+# security-gap patterns catalogued in PLAN.md §3 threat-model addendum.
+# The catalogue lives in hooks/patterns/scan-edit-write.json so adding
+# or tuning a pattern does not require touching this script.
 #
 # Each pattern has an action:
 #   - "block" → exit 2, the Edit/Write is rejected, Claude sees the
@@ -14,8 +14,8 @@
 #               have legitimate uses (SQL templates, CSP relaxation).
 #
 # Layered defence: this hook is the runtime content-validator. The
-# static permissions matrix (M1.4) decides WHICH paths agents can
-# Edit; this hook decides WHAT can be written into those paths.
+# static permissions matrix decides WHICH paths agents can Edit; this
+# hook decides WHAT can be written into those paths.
 
 set -uo pipefail
 

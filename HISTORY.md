@@ -8,8 +8,66 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M4.7 — Per-worktree `.claude/settings.json` instantiation hardened — 2026-05-20
+### M4.8 — Tracking move on the right worktree, enforced (Findings #13 + #17) — 2026-05-20
 **PR:** _pending_
+
+Third post-Phase-4 follow-up. The ROADMAP framed M4.8 as "harden `pr-author` so it always does its `IN_PROGRESS.md → HISTORY.md` move". Inspection of the dogfood-2 happy-path run showed the issue was deeper: the `task-orchestrator`'s **step 2** edited the **main** worktree's `IN_PROGRESS.md` (uncommitted, because no agent is allowed to push to `main`), then **step 3** created the per-task worktree from `main`-committed — so the per-task worktree's `IN_PROGRESS.md` had no entry to remove, and `pr-author` correctly observed "nothing to move". The two findings (#13 missing move, #17 wrong worktree) were the same root cause: the move was happening in the wrong place. This PR fixes both by reordering the orchestrator's steps so the move lives entirely on the task branch.
+
+**The shape of the fix:**
+
+Before this PR:
+
+```
+orchestrator Step 2:  edit MAIN worktree's IN_PROGRESS.md (uncommitted, can't push to main)
+orchestrator Step 3:  create task worktree from main-committed (no entry visible there)
+pr-author Step 5:     "nothing to move", silently skipped (Finding #13)
+squash-merge to main: main inherits task branch which never had the entry → bookkeeping desynced
+```
+
+After this PR:
+
+```
+orchestrator Step 2:  create task worktree from main-committed
+orchestrator Step 3:  edit TASK worktree's IN_PROGRESS.md (commits to task branch)
+pr-author Step 5:     remove entry from IN_PROGRESS.md, add to HISTORY.md (commits to task branch)
+squash-merge to main: brings both edits in a single commit → roadmap-tracking-flow honoured
+```
+
+The choice between ROADMAP's option (a) and (b) (harden the agent vs. move it to `auto-merge`) is settled by the constraint that **no agent is allowed to push to `main`**. Option (b) would require either `auto-merge` to push the bookkeeping change to `main` post-merge (denied) or to assume the change is already on the task branch (in which case option (a) was always needed). Option (a) it is.
+
+**Delivered:**
+
+- `agents/task-orchestrator.md` —
+  - **Reordered steps 2 ↔ 3:** worktree creation now precedes the tracking-forward move. The resume-mode branch references in step 1 are updated to match (`skip the worktree creation in step 2`, `skip the tracking move in step 3`).
+  - **New scope rule in step 3:** "edit the `ROADMAP.md` and `IN_PROGRESS.md` that live **inside the per-task worktree**, NOT the copies in the main worktree" — with the rationale (squash-merge brings both moves together, honouring `roadmap-tracking-flow`'s "same PR" rule; editing main would leave uncommitted bookkeeping no agent can push).
+
+- `agents/pr-author.md` —
+  - **Step 5 rewritten as "non-negotiable"** with explicit scope rule (edit the per-task worktree, not main), three-point verification before opening the PR (entry gone from `IN_PROGRESS`, entry present in `HISTORY`, both staged in the same commit chain), and an explicit "stop and fix" if any check fails.
+  - **Two new hard refusals** added to Decision rules: never skip step 5 (the move is part of the PR — not an afterthought, not the auto-merge skill's job), and never edit the main worktree's copies (mirrors the `unblocker` fix from PR #32).
+  - **Output line tightened:** the "Tracking:" line should always read exactly the success form. The "or the reason it was skipped" escape hatch was the canonical excuse for Finding #13; removing it from the spec closes that door.
+
+**Tests:**
+
+- YAML frontmatter parses cleanly on both modified files.
+- Plugin loader still discovers all 7 atelier agents.
+- Empirical validation (a real `claude -p "/atelier:next-task --yes"` end-to-end where `pr-author` actually opens a PR that contains the tracking move) is **deferred to the next dogfood**. Reordering the orchestrator and tightening the pr-author prompt are structural — the question of whether the model honours the prompt in practice belongs to the next end-to-end exercise.
+
+**Decisions captured:**
+
+- **Reorder, not duplicate.** A tempting half-fix would have been to leave the orchestrator's step 2 in main and ALSO re-do the move in the task worktree. That would have created two divergent edits to track. Reordering — so there is exactly one place the move happens — keeps the audit trail clean.
+- **Hard refusal in pr-author's Decision rules, not just in the step text.** Dogfood-1 showed the agent will absorb step text it thinks is "covered upstream" (in this case, "the orchestrator probably did this already"). A hard refusal in the Decision rules section is harder to interpret away — it is the same shape as the "never push --force" and "never add Co-Authored-By" rules, both of which the model has consistently honoured.
+- **No change to `auto-merge` skill.** Considered adding a "verify the tracking move is in the PR" guardrail there as belt-and-braces. Decided against — it would mean the auto-merge skill HELDs PRs for a missing move, when the cleaner fix is to prevent the missing-move state from arising at all. Less moving parts, fewer places to keep in sync.
+- **Verification block, not assertion.** Step 5's verification uses three observable checks (heading gone, entry present, both staged) rather than a single "did you do the move" question. The model has shown a pattern of answering yes to high-level questions when it has not done the lower-level work; reading the actual file contents is the only way to be sure.
+
+**Acceptance criterion status:** the M4.8 acceptance — *"after a merged task PR, `IN_PROGRESS.md` no longer contains the task entry and `HISTORY.md` does"* — is **structurally satisfied** by the orchestrator reorder + pr-author hardening. The empirical confirmation belongs to the next dogfood (which will validate M4.3 + M4.6 + M4.7 + M4.8 together).
+
+**Follow-ups (still in ROADMAP):**
+
+- M4.9 — `atelier-setup-project` bash helper script (operator-facing, runs outside the Claude session, sidesteps the harness `.claude/**` guard for the project bootstrap path that M4.7 sidestepped for the per-task settings path).
+- Dogfood-3 (or a dogfood-2 re-run) will validate this PR end-to-end on a real GitHub repo.
+
+### M4.7 — Per-worktree `.claude/settings.json` instantiation hardened — 2026-05-20
+**PR:** [#37](https://github.com/AkaLab-Tech/atelier/pull/37)
 
 Second post-Phase-4 follow-up. Closes [dogfood-1 Finding #12](HISTORY.md): `/atelier:next-task`'s step 7 was supposed to instantiate `<task-worktree>/.claude/settings.json` from the plugin template with the worktree path substituted, but the dogfood-1 run silently skipped it (the harness blocked the write). Sub-agents inherited the main session's permission scope so the chain worked anyway — but if the operator ever opens a Claude Code session **directly inside** a per-task worktree (e.g., to investigate a blocked task, or once `/resume-task` lands a "open here" workflow), that inherited scope is gone and the agents see a stale or absent settings file. This PR hardens step 7 to actually create the file, verifies the substitution landed, and documents the single non-obvious technique the rest of the codebase needs to know about.
 

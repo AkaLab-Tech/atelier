@@ -7,7 +7,7 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branc
 You are running the `/resume-task` slash command. Two distinct entry points lead here — both end with the same orchestrator hand-off, but they require different pre-flight cleanup:
 
 - **Interrupted-resume.** The operator's previous session was killed mid-task (Claude crashed, the laptop slept past the harness timeout, the network dropped during a `git push`, etc.). The task is still active in `IN_PROGRESS.md` (no `[BLOCKED]` marker), `.task-log/` may or may not exist, the worktree is intact. The retry budget continues where it left off — logs are preserved.
-- **Blocked-resume.** The task previously reached hard-stop, `unblocker` opened a GitHub `blocked` issue, `IN_PROGRESS.md` carries the `[BLOCKED] see #<NN>` marker. The operator has now closed the issue (the unambiguous "ready to retry" signal — see [M4.2 contract in HISTORY.md](HISTORY.md)) and wants a fresh attempt. `.task-log/` must be wiped, the budget resets to 6, the marker comes off.
+- **Blocked-resume.** The task previously reached hard-stop, `unblocker` opened a GitHub `blocked` issue, `IN_PROGRESS.md` carries the `[BLOCKED] see #<NN>` marker. The operator has now closed the issue (the unambiguous "ready to retry" signal) and wants a fresh attempt. `.task-log/` must be wiped, the budget resets to 6, the marker comes off.
 
 The command **auto-detects** which mode applies from the state of `IN_PROGRESS.md`. The operator does not pick.
 
@@ -17,7 +17,7 @@ The command **auto-detects** which mode applies from the state of `IN_PROGRESS.m
 
 ## Interaction mode (read once at the start)
 
-Same contract as `/atelier:next-task` (M4.6). You are **non-interactive** if any of:
+Same contract as `/atelier:next-task`. You are **non-interactive** if any of:
 
 - `$ARGUMENTS` contains the literal token `--yes` (whitespace-bounded).
 - `$ARGUMENTS` contains the literal token `-y` (whitespace-bounded).
@@ -64,7 +64,7 @@ Three outcomes:
 - **`OPEN`** → operator has not finished triage. Stop with:
   ```text
   ✗ /resume-task: GitHub issue #<NN> is still OPEN.
-     The close itself is the "ready to retry" signal (M4.2 contract).
+     The close itself is the "ready to retry" signal.
      Investigate the issue, push any fix you decided was needed,
      close the issue, then re-run `/atelier:resume-task <task-id>`.
   ```
@@ -72,7 +72,7 @@ Three outcomes:
 
 ### 4b. Blocked-resume — wipe `.task-log/` and unmark `[BLOCKED]`
 
-The contract from M4.2: closing the issue is the operator's signal. The 6 attempt logs are already preserved in the closed issue's body (the `<details>` blocks added by `unblocker`), so the on-disk copies can be deleted to give the retry budget a clean slate.
+The contract: closing the issue is the operator's signal. The 6 attempt logs are already preserved in the closed issue's body (the `<details>` blocks added by `unblocker`), so the on-disk copies can be deleted to give the retry budget a clean slate.
 
 1. Resolve the worktree path from the heading's metadata block (the `> Worktree (preserved): <path>` line). Call it `<wt>`.
 

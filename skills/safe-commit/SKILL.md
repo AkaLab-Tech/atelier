@@ -15,7 +15,7 @@ Per PLAN.md §6, push to `origin task/<id>-<slug>` is allowed **only** when all 
 2. Type-check.
 3. Unit + integration tests.
 
-(e2e/Playwright belongs to a separate gate — the **PR gate** — and is handled by `e2e-runner` / `visual-validation` in M3.1, not here.)
+(e2e/Playwright belongs to a separate gate — the **PR gate** — and is handled by `e2e-runner` / `visual-validation`, not here.)
 
 When any of the three is red, the commit must not happen. Skipping the gate (`--no-verify`) is denied by the global rules unless the operator explicitly authorises it for a one-off reason.
 

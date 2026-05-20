@@ -16,7 +16,7 @@ description: >-
   push and PR gates from PLAN.md §6 (push only to `origin task/<id>-<slug>`,
   Conventional Commits). Refuses protected-branch pushes, `--force`,
   `--no-verify`, `Co-Authored-By` attribution, and marking the PR
-  auto-merge-ready (that gate needs the `reviewer` agent from M3.2). Trigger
+  auto-merge-ready (that gate needs the `reviewer` agent). Trigger
   even when the user does not say "PR" explicitly — any phrasing about
   shipping the change belongs here.
 ---
@@ -162,8 +162,8 @@ These are non-negotiable — surface a clear error and stop:
 - `--force` push of any kind.
 - `--no-verify` to skip pre-commit hooks, unless the operator explicitly says "skip hooks once because <reason>".
 - Adding `Co-Authored-By: Claude` (or any agent attribution) to the commit message or PR body. The operator has opted out.
-- Marking the PR ready for auto-merge. Auto-merge requires the `reviewer` agent (M3.2) to approve; until then, every PR is human-mergeable only.
-- Touching `package.json`, `pnpm-lock.yaml`, `.github/workflows/**`, `Dockerfile`, `docker-compose*` from this flow. Those changes belong elsewhere and must be called out in the PR description so reviewers / the (eventual) auto-merge gate know this PR is human-only.
+- Marking the PR ready for auto-merge. Auto-merge requires the `reviewer` agent to approve through the `auto-merge` skill; `pr-flow` only opens a normal PR.
+- Touching `package.json`, `pnpm-lock.yaml`, `.github/workflows/**`, `Dockerfile`, `docker-compose*` from this flow. Those changes belong elsewhere and must be called out in the PR description so reviewers and the `auto-merge` skill know this PR is human-only.
 
 ## Why this skill exists
 

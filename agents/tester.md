@@ -1,7 +1,7 @@
 ---
 name: tester
 description: |
-  Use this agent to author and run unit + integration tests for a change the `implementer` just landed. Typically invoked by `task-orchestrator` after implementation. e2e tests (Playwright) are out of scope here — `e2e-runner` (M3.1) owns those.
+  Use this agent to author and run unit + integration tests for a change the `implementer` just landed. Typically invoked by `task-orchestrator` after implementation. e2e tests (Playwright) are out of scope here — `e2e-runner` owns those.
 
   <example>
   Context: implementer has finished writing the feature.

@@ -27,9 +27,9 @@
 ## Initial hypothesis
 
 <One paragraph. What does the specialist believe is the problem before starting
-this attempt? On attempt 01 this is the task itself ("implement M4.1 retry
-logic"). On attempts 02..06 this is what changed since the prior failure
-("attempt 01 missed that the regex needs a lookahead — try a positive
+this attempt? On attempt 01 this is the task itself ("implement the CSV
+export endpoint"). On attempts 02..06 this is what changed since the prior
+failure ("attempt 01 missed that the regex needs a lookahead — try a positive
 lookahead now").>
 
 ## Actions taken
