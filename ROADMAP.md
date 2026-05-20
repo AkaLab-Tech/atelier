@@ -19,12 +19,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 > **Phases 2–4 — Single-project agent flow + robustness.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries.
 
 
-### M4.3 — `/resume-task <id>`
-
-Continue a task after interruption: re-attach to its worktree, replay context from logs, resume from the last successful step.
-
-**Acceptance:** killing a session mid-task and running `/resume-task <id>` continues without re-running already-completed steps.
-
 ---
 
 ## Low Priority / Ideas
