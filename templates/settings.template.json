@@ -40,15 +40,51 @@
       "Edit(~/.zshrc)",
       "Edit(~/.bashrc)",
       "Edit(~/.ssh/**)",
+
       "Edit(./.github/workflows/**)",
+      "Edit(<worktree>/.github/workflows/**)",
+      "Edit(<worktree>-worktrees/**/.github/workflows/**)",
+      "Write(./.github/workflows/**)",
+      "Write(<worktree>/.github/workflows/**)",
+      "Write(<worktree>-worktrees/**/.github/workflows/**)",
+
       "Edit(./package.json)",
-      "Edit(./pnpm-lock.yaml)"
+      "Edit(<worktree>/package.json)",
+      "Edit(<worktree>-worktrees/**/package.json)",
+      "Write(./package.json)",
+      "Write(<worktree>/package.json)",
+      "Write(<worktree>-worktrees/**/package.json)",
+
+      "Edit(./pnpm-lock.yaml)",
+      "Edit(<worktree>/pnpm-lock.yaml)",
+      "Edit(<worktree>-worktrees/**/pnpm-lock.yaml)",
+      "Write(./pnpm-lock.yaml)",
+      "Write(<worktree>/pnpm-lock.yaml)",
+      "Write(<worktree>-worktrees/**/pnpm-lock.yaml)"
     ],
 
     "ask": [
       "Edit(./.env*)",
+      "Edit(<worktree>/.env*)",
+      "Edit(<worktree>-worktrees/**/.env*)",
+      "Write(./.env*)",
+      "Write(<worktree>/.env*)",
+      "Write(<worktree>-worktrees/**/.env*)",
+
       "Edit(./Dockerfile)",
+      "Edit(<worktree>/Dockerfile)",
+      "Edit(<worktree>-worktrees/**/Dockerfile)",
+      "Write(./Dockerfile)",
+      "Write(<worktree>/Dockerfile)",
+      "Write(<worktree>-worktrees/**/Dockerfile)",
+
       "Edit(./docker-compose*)",
+      "Edit(<worktree>/docker-compose*)",
+      "Edit(<worktree>-worktrees/**/docker-compose*)",
+      "Write(./docker-compose*)",
+      "Write(<worktree>/docker-compose*)",
+      "Write(<worktree>-worktrees/**/docker-compose*)",
+
       "Bash(gh pr close*)"
     ],
 
