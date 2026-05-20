@@ -8,8 +8,59 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M4.6 — Non-interactive mode for entry-point commands + `task-orchestrator` — 2026-05-19
+### Dogfood-2 (partial) + Finding #18 fix — deny list absolute-path variants — 2026-05-20
 **PR:** _pending_
+
+Second dogfood run on a real GitHub repo (`AkaLab-Tech/atelier-dogfood-2`, private) surfaced **one critical security finding** that PR #32's sandbox fix had inadvertently exposed and that dogfood-1 had hidden by accident. Also confirmed **two known findings** (operator-CLAUDE-vs-atelier push consent + `pr-author` editing the wrong worktree's `IN_PROGRESS.md`). Task #1 (happy path) completed end-to-end with the same manual operator confirmation pattern as dogfood-1; **Task #2 (forced-failure) could not validate the hard-stop loop** because the guardrail it depended on was broken, and the `task-orchestrator` correctly refused to fabricate fake failures.
+
+**The critical finding (#18):** in `settings.template.json` the deny entries for `package.json`, `pnpm-lock.yaml`, and `.github/workflows/**` used relative paths (`./package.json`, etc.). The claude-code permission matcher treats `./` literally — it does **not** resolve it against CWD — so when the `Edit` / `Write` tool is invoked with an absolute path (e.g. `/Users/.../task-2-…/package.json`), the deny rule does not match. After PR #32 added `Edit(<worktree>-worktrees/**)` to the allow list (M4.2/dogfood-1's sandbox-extension fix), those absolute-path edits were no longer blocked by the absence of any allow rule — and the deny that *should* have blocked them never engaged. Net effect: **every file in the PLAN.md §6 forbidden list (package.json, pnpm-lock.yaml, workflows) was silently editable from any task worktree.**
+
+The bug was masked in dogfood-1 because PR #32's sandbox fix was not yet applied — no `Edit(<absolute-path>)` was ever allowed in the first place, so the broken deny rule never had to engage. The dogfood-2 sequence first applied PR #32 (sandbox extension), then triggered Task #2 (which intentionally requires editing `package.json`), at which point the `task-orchestrator` verified the bypass — `Edit("/Users/.../package.json", "1.0.0" → "2.0.0")` succeeded, and immediately `Edit("…", "2.0.0" → "1.0.0")` succeeded too. Both edits ran without any deny / ask prompt. The orchestrator then refused to advance the chain — fabricating fake failures to drive the retry budget would invalidate `retry-with-logs`'s audit trail.
+
+**The fix:** every relative-path entry in `deny` and `ask` now has matching absolute-path variants that survive `sed`-substitution of the `<worktree>` placeholder:
+
+- For each of `package.json`, `pnpm-lock.yaml`, `.github/workflows/**` (deny): added `Edit(<worktree>/<path>)`, `Edit(<worktree>-worktrees/**/<path>)`, `Write(<worktree>/<path>)`, `Write(<worktree>-worktrees/**/<path>)`. Six entries per file.
+- For each of `.env*`, `Dockerfile`, `docker-compose*` (ask): same six-entry pattern.
+- The original `./` entries are retained for backwards compatibility with any caller that does invoke `Edit` with a relative path.
+
+After the fix, a sample `sed`-substituted template confirms the deny list covers both forms:
+
+```
+"Edit(./package.json)",
+"Edit(/Users/mike/Work/myproj/package.json)",
+"Edit(/Users/mike/Work/myproj-worktrees/**/package.json)",
+"Write(./package.json)",
+"Write(/Users/mike/Work/myproj/package.json)",
+"Write(/Users/mike/Work/myproj-worktrees/**/package.json)",
+```
+
+**Tests:**
+- `python3 -m json.tool templates/settings.template.json` clean after the edit.
+- Sample `sed s|<worktree>|/Users/mike/Work/myproj|g` confirms the substituted paths.
+- End-to-end exercise (re-run Task #2 of dogfood-2 with this fix applied, confirming the deny engages and the retry budget drives 6 attempts → hard-stop → `unblocker`) follows in a separate run — captured here only after that runs cleanly. **Status pending; this PR ships the structural fix first.**
+
+**Two other findings observed in dogfood-2 (documented but not fixed in this PR — separate follow-ups warranted):**
+
+- **Finding #16** — the operator's personal `CLAUDE.md` rule "never push without confirmation" overrides atelier's per-worktree push allow rule for `task/*` branches, even under `--yes`. The `task-orchestrator` correctly halted before pushing. There is no clean fix at the atelier level — the operator-level rule is authoritative by design. **Recommendation:** document this conflict in M6.4 (troubleshooting) so the operator either temporarily lifts the rule for dogfood / autonomous runs or pre-authorizes pushes for atelier explicitly. Did not happen yet.
+- **Finding #17** — `pr-author` edits the failing task's worktree copy of `IN_PROGRESS.md` / `HISTORY.md`, not the **main** worktree's. The squash-merge "fixes" the mismatch accidentally by overwriting `main`'s tracking files with the task worktree's. Same shape as Finding #14 (which we fixed for `unblocker` in PR #32), now applies to `pr-author` too. **Should be folded into M4.8** (already in ROADMAP) when it lands.
+
+**Decisions captured:**
+
+- **Add absolute variants, do not remove the relative ones.** Relative entries still match when `Edit` is invoked with an explicit `./path` argument. Removing them would create a regression for that call shape. Both forms exist; both are denied.
+- **Use the `<worktree>` placeholder twice per file, not a single broader pattern.** A broader `Edit(/Users/**/package.json)` would deny every project's `package.json` system-wide, which is too aggressive — the operator may legitimately edit other projects from the same Claude Code session. The two-pattern approach scopes the deny to the atelier-managed project (`<worktree>`) and its per-task worktrees (`<worktree>-worktrees/**`).
+- **Both `Edit` and `Write`.** The bug was discovered via `Edit`, but `Write` would have the same shape — and `Write` was never in the deny list at all (a second, related gap). Both are now denied.
+- **`ask` rules get the same treatment.** `.env*`, `Dockerfile`, `docker-compose*` were `ask` (operator-confirms), not `deny`. The same absolute-path bypass applies — under `--yes` the operator's pre-authorization would silently let them through with the relative-only ask. Patched the same way.
+
+**Acceptance criterion status:** Finding #18 has no formal ROADMAP entry — it is an emergent dogfood-2 finding. The implicit acceptance is "the deny list actually denies edits to the listed files regardless of how `Edit`/`Write` is invoked". The structural fix here meets that. The end-to-end re-run of dogfood-2 Task #2 (which depends on this fix) is the validating exercise and is deferred to a follow-up run / HISTORY entry.
+
+**Follow-ups (carried forward):**
+
+- Re-run dogfood-2 Task #2 with this fix applied — should reach `hard-stop → unblocker → blocked GitHub issue` end-to-end. The dogfood-2 worktree (`atelier-dogfood-2-worktrees/task-2-…`) is currently preserved on disk for this purpose.
+- Finding #16 — operator-vs-atelier push consent → document in M6.4 (troubleshooting).
+- Finding #17 — `pr-author` worktree-mismatch → fold into M4.8.
+
+### M4.6 — Non-interactive mode for entry-point commands + `task-orchestrator` — 2026-05-19
+**PR:** [#34](https://github.com/AkaLab-Tech/atelier/pull/34)
 
 First post-Phase-4 follow-up. Closes [dogfood-1 Finding #7](HISTORY.md): under `claude -p` (no TTY for the operator to answer), `/atelier:next-task` traps on its Step-4 confirmation prompt — and so does `task-orchestrator`'s standard-mode Step 1 confirm. With this PR every "ask the operator" point in the four entry-point files has a non-interactive branch with a documented safe-default rule.
 
