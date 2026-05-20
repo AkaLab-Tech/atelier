@@ -22,8 +22,10 @@ Steps 4 and 5 are also enforced by the per-project `.npmrc` that
 `audit-level=moderate`) — but you must reason about them explicitly, not
 rely on the npmrc as a silent backstop.
 
-Use `/safe-install <pkg>` when it exists (M2.2). Until then, run the steps
-manually: `pnpm view <pkg>` → decision → `pnpm add <pkg>` → `pnpm audit`.
+Use the `safe-install` skill (invoked automatically by the dependency-install
+slash commands, or directly when an agent proposes `pnpm add`). The skill
+walks the five rules above explicitly: `pnpm view <pkg>` → decision → `pnpm
+add <pkg>` → `pnpm audit`.
 
 ## Push, PR, and merge gates (§6)
 

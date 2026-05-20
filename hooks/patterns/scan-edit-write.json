@@ -1,7 +1,7 @@
 {
   "version": 1,
   "hook": "scan-edit-write",
-  "description": "Pattern catalogue for the scan-edit-write PreToolUse hook. Maps 1:1 to PLAN.md §3 threat-model addendum (M1.6, PR #18). Edit this file to add a pattern; you do not need to touch the hook script.",
+  "description": "Pattern catalogue for the scan-edit-write PreToolUse hook. Maps 1:1 to PLAN.md §3 threat-model addendum. Edit this file to add a pattern; you do not need to touch the hook script.",
   "skips": {
     "path_substrings": [
       "/__fixtures__/",

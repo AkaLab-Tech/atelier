@@ -1,7 +1,7 @@
 {
   "version": 1,
   "hook": "scan-git-add",
-  "description": "Pattern catalogue for the scan-git-add PreToolUse hook. Maps 1:1 to PLAN.md §3 threat-model addendum (M1.6, PR #18). The hook ALSO reuses every pattern from hooks/patterns/scan-edit-write.json — applied to the content of each path being staged. The patterns below are scan-git-add-specific: tuned for diff context (added lines, added paths) and for secret-detection heuristics that only make sense at the index boundary.",
+  "description": "Pattern catalogue for the scan-git-add PreToolUse hook. Maps 1:1 to PLAN.md §3 threat-model addendum. The hook ALSO reuses every pattern from hooks/patterns/scan-edit-write.json — applied to the content of each path being staged. The patterns below are scan-git-add-specific: tuned for diff context (added lines, added paths) and for secret-detection heuristics that only make sense at the index boundary.",
   "reuses": "scan-edit-write",
   "skips": {
     "path_substrings": [

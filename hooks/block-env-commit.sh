@@ -5,7 +5,7 @@
 #
 # Layered defence (PLAN.md §3 "Defense-in-depth"):
 #   - Static permissions matrix denies `Edit(.env*)` writes outside the
-#     worktree allowlist (M1.4).
+#     worktree allowlist.
 #   - install.sh Phase C.1 adds `.env*` to git's GLOBAL excludes.
 #   - This hook is the runtime safety net: even when an agent has a
 #     local `.env` for testing and runs `git add .` reflexively, the

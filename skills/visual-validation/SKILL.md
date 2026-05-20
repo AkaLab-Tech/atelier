@@ -7,7 +7,7 @@ description: >-
   skill when about to run any of `pnpm exec playwright`, `npx playwright`,
   `playwright test`, or `playwright install`, or when the user asks for
   "e2e", "Playwright", "visual tests", "screenshots for the PR", or
-  "browser tests". Also load it when the `e2e-runner` agent (M3.1) is
+  "browser tests". Also load it when the `e2e-runner` agent is
   driving the chain. The skill carries the executable detail
   `operator-rules.md` and other skills cannot — lazy-install recipe for
   `@playwright/test` (so operators who never run e2e never pay the
@@ -47,7 +47,7 @@ pnpm ls @playwright/test --depth 0 --json 2>/dev/null | jq -e '.[].devDependenci
 If not present:
 
 1. Surface to the operator: *"This is the first e2e run in this project. About to install `@playwright/test` (devDep) + browsers (~250 MB cached at `~/.cache/ms-playwright`)."* Wait for confirmation if running interactively.
-2. Run `pnpm add -D @playwright/test`. The `safe-package-change` hook (M2.4) intercepts this; `@playwright/test` is on the lifecycle-script allowlist, so it allows the install (lifecycle scripts of `@playwright/test` are part of legitimate native-build).
+2. Run `pnpm add -D @playwright/test`. The `safe-package-change` hook intercepts this; `@playwright/test` is on the lifecycle-script allowlist, so it allows the install (lifecycle scripts of `@playwright/test` are part of legitimate native-build).
 3. Run `pnpm exec playwright install`. This downloads chromium, firefox, and webkit into `~/.cache/ms-playwright`. Honour any `PLAYWRIGHT_BROWSERS_PATH` the operator has set; do not pass `--with-deps` unless the operator confirms — it can sudo-install OS packages.
 
 If `@playwright/test` is already present, skip both installs and continue with step 2. Surface `existing install reused` in the report.
@@ -150,4 +150,4 @@ Playwright suite: <N passed, M failed, K skipped> (<duration>s).
 
 ## Why this skill exists
 
-`operator-rules.md` (SessionStart hook from M1.5) covers PLAN.md §6 push and PR gates abstractly. Playwright has enough operational surface (config, browsers cache, screenshot dance, gist upload) that inlining it in every agent that needs e2e would be a maintenance burden. One skill, invoked by `e2e-runner`, keeps the e2e recipe authoritative and reviewable in one place.
+`operator-rules.md` (loaded by the SessionStart hook) covers PLAN.md §6 push and PR gates abstractly. Playwright has enough operational surface (config, browsers cache, screenshot dance, gist upload) that inlining it in every agent that needs e2e would be a maintenance burden. One skill, invoked by `e2e-runner`, keeps the e2e recipe authoritative and reviewable in one place.

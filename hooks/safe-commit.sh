@@ -6,7 +6,7 @@
 #
 # Layered defence (PLAN.md §3 "Defense-in-depth", §6 push gate):
 #   - Operators reach the push gate two ways:
-#       1. Deliberately, via the `atelier:safe-commit` skill (M2.2) —
+#       1. Deliberately, via the `atelier:safe-commit` skill —
 #          invoked by `pr-author` agent / `/finish-task` slash command.
 #       2. Reflexively, when an agent just runs `git commit` without
 #          first invoking the skill.
@@ -105,7 +105,7 @@ run_pnpm_step() {
 
 # Walk the three steps in order, stopping (blocking) on the first red.
 # A step is N/A if `scripts.<name>` doesn't exist in package.json — we
-# log it and continue, which mirrors the safe-commit skill from M2.2.
+# log it and continue, which mirrors the `safe-commit` skill.
 for step in lint typecheck test; do
   if ! has_script "$step"; then
     log_decision "$HOOK_NAME" "Bash" "${step}-na" "allow" "scripts.${step} not defined in package.json — step N/A"

@@ -62,11 +62,11 @@ End with:
 - **Never** push if `safe-commit` returns `RED`. The operator must fix the gate first.
 - **Never** open a PR for a branch outside `task/*`. The `pr-flow` skill enforces this too; `/finish-task` provides an early surface.
 - **Never** `git wt rm` from this command. Worktree cleanup belongs **after** merge — and is a manual operator step (or `/cleanup-task` in a future phase, if needed).
-- **Never** mark the PR auto-merge-ready. The auto-merge gate requires the `reviewer` agent (M3.2); until then, every PR is human-mergeable only.
+- **Never** mark the PR auto-merge-ready. The auto-merge gate requires the `reviewer` agent's approval; `/finish-task` opens a normal PR and lets that gate run.
 - **Never** add `Co-Authored-By: Claude` (or any agent attribution) to the commit message or PR body.
 
 ## Edge cases
 
-- **The implementer or tester crashed mid-chain** and there is no clean change to ship → `/finish-task` should detect this from `git diff` being empty + the worktree being on a fresh branch. Surface it and suggest `/resume-task <id>` (M4.3) instead.
+- **The implementer or tester crashed mid-chain** and there is no clean change to ship → `/finish-task` should detect this from `git diff` being empty + the worktree being on a fresh branch. Surface it and suggest `/resume-task <id>` instead.
 - **`IN_PROGRESS.md` is empty** → there is no task to finalise. Surface and stop; the operator should run `/next-task` first.
 - **A previous run already pushed** but didn't open the PR (Ctrl+C between push and `gh pr create`) → detect this via `git status` showing the branch is ahead-of-remote = 0 commits, then **skip steps 1-2 of pr-flow** and call only `gh pr create`. Surface the partial-recovery clearly so the operator knows what happened.

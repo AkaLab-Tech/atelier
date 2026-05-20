@@ -36,9 +36,9 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
    - `type` is one of `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`.
    - `subject` is the task title in imperative mood.
    - The body cites the ROADMAP reference, the acceptance criteria, and any [PLAN.md §4](PLAN.md) dependency justification (when applicable).
-3. **Move the tracking forward as a separate commit — non-negotiable.** **After** the code commit lands and **before** push + PR, create a second commit on the same `task/<id>-<slug>` branch that removes the task's block from `IN_PROGRESS.md` and appends it to `HISTORY.md`. The `roadmap-tracking-flow` convention requires `IN_PROGRESS.md` and `HISTORY.md` to be updated by the **same PR** — but the operator convention (followed across every M4.x PR) is that **implementation and state-sync live in separate commits within that PR**, so reviewers can read code-only changes without bookkeeping noise.
+3. **Move the tracking forward as a separate commit — non-negotiable.** **After** the code commit lands and **before** push + PR, create a second commit on the same `task/<id>-<slug>` branch that removes the task's block from `IN_PROGRESS.md` and appends it to `HISTORY.md`. The `roadmap-tracking-flow` convention requires `IN_PROGRESS.md` and `HISTORY.md` to be updated by the **same PR** — and the operator convention is that **implementation and state-sync live in separate commits within that PR**, so reviewers can read code-only changes without bookkeeping noise.
 
-   **Scope rule (M4.8 / Findings #13 + #17):** edit the `IN_PROGRESS.md` and `HISTORY.md` that live **inside the per-task worktree** you are operating in — never the copies in the main worktree. The `task-orchestrator`'s step 3 already moved the task block into the per-task worktree's `IN_PROGRESS.md` (on the `task/<id>-<slug>` branch as its own commit), so the entry you remove here is on the same branch and the eventual squash-merge brings both moves to `main` together.
+   **Scope rule:** edit the `IN_PROGRESS.md` and `HISTORY.md` that live **inside the per-task worktree** you are operating in — never the copies in the main worktree. The `task-orchestrator`'s step 3 already moved the task block into the per-task worktree's `IN_PROGRESS.md` (on the `task/<id>-<slug>` branch as its own commit), so the entry you remove here is on the same branch and the eventual squash-merge brings both moves to `main` together.
 
    **Commit message convention:**
 
@@ -68,9 +68,9 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
 - **Never** push with `--force` and **never** push to a protected branch (`main`, `master`, `develop`, `staging`). The deny list in [PLAN.md §3](PLAN.md) is absolute.
 - **Never** skip pre-commit hooks (`--no-verify`) or signing (`--no-gpg-sign`) unless the operator explicitly asks. If a hook fails, fix the underlying issue and try again.
 - **Never** add `Co-Authored-By: Claude` (or any agent attribution) to the commit message or PR body. The user has explicitly opted out of agent self-attribution.
-- **Never** mark the PR ready for auto-merge yourself. The auto-merge gate ([PLAN.md §6](PLAN.md)) requires `reviewer` approval — that's a separate agent in M3.2. Always open a normal PR.
-- **Never** skip step 5 (the `IN_PROGRESS.md → HISTORY.md` move). It is part of the PR — not an afterthought, not the auto-merge skill's job, not a follow-up commit on `main`. A PR opened without the move is malformed and must be amended before the reviewer agent runs. Identified in dogfood-1 (Finding #13).
-- **Never** edit the **main** worktree's copy of `IN_PROGRESS.md` / `HISTORY.md`. You are always operating in the per-task worktree (`task/<id>-<slug>` branch). The edits live on that branch; the squash-merge brings them to `main`. Editing the main worktree copy would leave uncommitted bookkeeping on the protected branch that no agent is allowed to push. Identified in dogfood-1 (Finding #17, same shape as the `unblocker` worktree-mismatch bug fixed in PR #32).
+- **Never** mark the PR ready for auto-merge yourself. The auto-merge gate ([PLAN.md §6](PLAN.md)) requires the `reviewer` agent's approval — that is a separate agent. Always open a normal PR.
+- **Never** skip step 3 (the `IN_PROGRESS.md → HISTORY.md` tracking commit). It is part of the PR — not an afterthought, not the `auto-merge` skill's job, not a follow-up commit on `main`. A PR opened without the move is malformed and must be amended before the `reviewer` agent runs.
+- **Never** edit the **main** worktree's copy of `IN_PROGRESS.md` / `HISTORY.md`. You are always operating in the per-task worktree (`task/<id>-<slug>` branch). The edits live on that branch; the squash-merge brings them to `main`. Editing the main worktree copy would leave uncommitted bookkeeping on the protected branch that no agent is allowed to push.
 - If the change touches `package.json`, `pnpm-lock.yaml`, `Dockerfile`, `docker-compose*`, or `.github/workflows/**`, **say so explicitly in the PR description** so reviewers and the (eventual) auto-merge gate know this PR must go through a human.
 - Use a HEREDOC for the commit message and the PR body to preserve formatting:
 
@@ -91,4 +91,4 @@ End your turn with:
 - **Tracking commit:** `<sha> chore(tracking): move #<id> IN_PROGRESS → HISTORY` (step 3).
 - **Branch pushed:** `origin task/<id>-<slug>` (carries both commits above).
 - **PR:** `<url>` (or "blocked — push gate red, handed back to tester").
-- **Tracking:** "`IN_PROGRESS.md` → `HISTORY.md` updated in this PR (commit `<sha>`)" — this line should always read exactly that. There is no "skipped" path post-M4.8; a skip means the PR is malformed and you should have stopped before invoking `gh pr create`.
+- **Tracking:** "`IN_PROGRESS.md` → `HISTORY.md` updated in this PR (commit `<sha>`)" — this line should always read exactly that. There is no "skipped" path; a skip means the PR is malformed and you should have stopped before invoking `gh pr create`.

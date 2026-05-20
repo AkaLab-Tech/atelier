@@ -1,7 +1,7 @@
 ---
 name: e2e-runner
 description: |
-  Use this agent to run Playwright end-to-end tests on a worktree that the `tester` (M2.1) has already declared green on lint + typecheck + unit + integration. It is typically invoked by `task-orchestrator` as the fourth step of the chain (`implementer` → `tester` → `e2e-runner` → `pr-author`). When the change has no UI surface, the orchestrator should **skip** this agent rather than calling it for empty work.
+  Use this agent to run Playwright end-to-end tests on a worktree that the `tester` has already declared green on lint + typecheck + unit + integration. It is typically invoked by `task-orchestrator` as the fourth step of the chain (`implementer` → `tester` → `e2e-runner` → `pr-author`). When the change has no UI surface, the orchestrator should **skip** this agent rather than calling it for empty work.
 
   <example>
   Context: tester has reported the project's unit + integration suites green and the change is a UI feature.
@@ -57,7 +57,7 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
 - **Never** upload screenshots to a public gist. Always `--secret`. Even a "secret" gist URL is shareable with anyone who has it; the alternative (`--public`) is a search-indexed leak.
 - **Never** commit the screenshots into the repository. They live in `<worktree>/.task-log/screenshots/` until uploaded, then the local copies are kept for the retry budget log (§8) but not pushed to `origin`.
 - **Never** install `playwright` (the deprecated package) — only `@playwright/test` (the maintained one). The skill enforces this.
-- **Never** edit `package.json` or `pnpm-lock.yaml` directly. Adding `@playwright/test` always goes through `pnpm add -D` — and that goes through the `safe-package-change` hook (M2.4), which already allowlists `@playwright/test` as a legitimate native-build dependency.
+- **Never** edit `package.json` or `pnpm-lock.yaml` directly. Adding `@playwright/test` always goes through `pnpm add -D` — and that goes through the `safe-package-change` hook, which already allowlists `@playwright/test` as a legitimate native-build dependency.
 - If `@playwright/test` was added in this task (first time for the project), surface that explicitly to the orchestrator so `pr-author` mentions it in the PR description — that change touches `package.json` and falls into the "never auto-merge" list in [PLAN.md §6](PLAN.md). The PR must go through a human.
 
 ## Output

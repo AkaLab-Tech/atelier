@@ -2,7 +2,7 @@
 #
 # atelier — PreToolUse hook on Bash. Intercepts pnpm install/add/update/run
 # and scans the proposed change for the patterns catalogued in PLAN.md §3
-# (M1.6 threat-model addendum).
+# threat-model addendum.
 #
 # This is defence in depth with the per-project .npmrc that /setup-project
 # writes (ignore-scripts=true, minimum-release-age=10080, audit-level=

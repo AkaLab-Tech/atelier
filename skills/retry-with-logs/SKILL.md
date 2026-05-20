@@ -30,7 +30,7 @@ The budget is **hard-coded**: 3 attempts → reset → 3 attempts → hard stop.
 The orchestrator MUST NOT extend it silently. The skill refuses to issue
 a `continue` or `reset` decision past the 6th attempt — at that point the
 only valid next action is `hard-stop`, which hands off to the `unblocker`
-agent (M4.2) once that exists, and surfaces to the operator until then.
+agent.
 
 ## Preconditions
 
@@ -53,7 +53,7 @@ empty log file.
 | **01, 02, 03** | The specialist retries inside the *same* worktree, with all prior `.task-log/*.md` injected as context. | Write attempt log, return `continue`. After attempt 03 fails, the next decision is `reset`. |
 | **(between 03 and 04)** | `git wt rm <branch> --force` (after operator confirmation if the worktree is dirty), then `git wt switch <branch>` to recreate from updated base. Logs survive — they live in `.task-log/`, which is **not** wiped, see below. | N/A — this is a state transition, not an attempt. |
 | **04, 05, 06** | Same specialist retries inside the *fresh* worktree, still seeded with **all** logs (01..03 from the pre-reset attempts + the new ones). | Write attempt log, return `continue`. After attempt 06 fails, the only valid next decision is `hard-stop`. |
-| **07+** | **Forbidden.** The skill refuses to issue any `continue` or `reset` past attempt 06. | Return `hard-stop` and hand off to `unblocker` (M4.2). |
+| **07+** | **Forbidden.** The skill refuses to issue any `continue` or `reset` past attempt 06. | Return `hard-stop` and hand off to `unblocker`. |
 
 ### Why logs survive a reset
 
@@ -100,8 +100,7 @@ Sanity-check:
 
 - If `N > 6` (i.e., 6 or more logs are already on disk), **refuse** —
   return `hard-stop` immediately, do not write another log. The
-  orchestrator must hand off to `unblocker` (or, until M4.2 ships,
-  surface the hard stop to the operator with the existing log paths).
+  orchestrator must hand off to `unblocker`.
 - If `N == 1` and the failing specialist's first invocation has already
   completed (i.e., this is genuinely a *failure*, not a fresh task),
   proceed. If `N == 1` and the specialist has not even started yet, the
@@ -219,9 +218,8 @@ Next step:  preserve .task-log/ outside the worktree (copy to
 </if>
 
 <if hard-stop>
-Next step:  hand off to `unblocker` agent (M4.2). Until M4.2 lands, the
-            orchestrator surfaces this hard-stop to the operator with the
-            full log-path list. Do NOT retry. Do NOT extend the budget.
+Next step:  hand off to the `unblocker` agent. Do NOT retry. Do NOT
+            extend the budget.
 </if>
 ```
 
@@ -244,8 +242,8 @@ Next step:  hand off to `unblocker` agent (M4.2). Until M4.2 lands, the
   confirmation. The dirty state is itself a signal that something
   unexpected happened mid-attempt; surface it.
 - **Never** write the log under any directory other than
-  `<worktree>/.task-log/`. The `unblocker` agent (M4.2) and `/resume-task`
-  (M4.3) both rely on this fixed location.
+  `<worktree>/.task-log/`. The `unblocker` agent and `/resume-task`
+  both rely on this fixed location.
 
 ## Why this skill exists
 
@@ -255,5 +253,5 @@ free interpretation, will drift the first time an attempt is ambiguous
 collapses the rule to a finite-state machine: count files, pick a
 decision from a table, write a log. The orchestrator stops *deciding*
 the retry policy and starts *executing* it. That single move is what
-makes the 6-attempt budget auditable and what lets `unblocker` (M4.2)
+makes the 6-attempt budget auditable and what lets `unblocker`
 trust that the log directory is a complete record.
