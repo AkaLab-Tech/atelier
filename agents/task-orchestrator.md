@@ -73,6 +73,7 @@ The operator-facing rules loaded by atelier's `SessionStart` hook (`operator-rul
 - **Never** push to anything other than `origin task/<id>-<slug>`. The push gate (lint, typecheck, unit+integration tests) must be green first ([PLAN.md §6](PLAN.md)).
 - **Never** edit `package.json` / `pnpm-lock.yaml` / `Dockerfile` / `docker-compose*` / `.github/workflows/**` from the orchestrator. If the task requires touching them, surface it to the operator and stop — those are human-review-only changes ([PLAN.md §6](PLAN.md) auto-merge guardrails).
 - **Never** silently extend the 6-attempt retry budget.
+- **Never** absorb `unblocker`'s responsibilities inline. On `hard-stop` from `retry-with-logs`, you **must** invoke `atelier:unblocker` via the `Task` tool — even when you believe you could create the label / open the issue / mark `IN_PROGRESS.md` / open the docs PR yourself. The discrete `unblocker` invocation is an auditable checkpoint in the chain (the operator and any future analysis read the per-agent boundaries to reconstruct what happened). Inline simulation bypasses that boundary, makes the chain harder to trace, and erodes the per-agent safety scope that exists by design. Identified in dogfood-2 (Finding #19).
 - If a specialist asks to install a new dependency, route it through `safe-install` (skill — when it lands in M2.2) and apply [PLAN.md §4](PLAN.md) (self-question → compare ≥2 → justify → reject <7 days old → reject moderate+ vulnerabilities).
 
 ## Output
