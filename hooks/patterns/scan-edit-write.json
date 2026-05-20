@@ -44,23 +44,12 @@
     },
     {
       "name": "hardcoded-secret-known-prefix",
-      "description": "Known credential prefix (sk-, gho_, github_pat_, AKIA, …)",
-      "match_type": "substring_any",
-      "patterns": [
-        "sk-",
-        "gho_",
-        "github_pat_",
-        "ghp_",
-        "xoxb-",
-        "xoxp-",
-        "AKIA",
-        "ASIA",
-        "AIza",
-        "-----BEGIN RSA PRIVATE KEY-----",
-        "-----BEGIN OPENSSH PRIVATE KEY-----"
-      ],
+      "description": "Known credential prefix followed by a credential-shaped body. Requires (a) the prefix to start at a non-identifier boundary so substrings like `task-` (contains `sk-`) do not match, and (b) the body to be long enough that bare `sk-`/`ghp_` literals do not match.",
+      "match_type": "regex",
+      "pattern": "(^|[^A-Za-z0-9_])(sk-(ant-|proj-)?[A-Za-z0-9_-]{20,}|gho_[A-Za-z0-9_-]{20,}|github_pat_[A-Za-z0-9_]{30,}|ghp_[A-Za-z0-9_]{20,}|xox[bp]-[0-9A-Za-z-]{16,}|AKIA[0-9A-Z]{12,}|ASIA[0-9A-Z]{12,}|AIza[0-9A-Za-z_-]{30,}|-----BEGIN (RSA |OPENSSH )?PRIVATE KEY-----)",
+      "case_insensitive": false,
       "action": "block",
-      "rationale": "Recognised credential prefix detected. These never belong in source."
+      "rationale": "Recognised credential prefix followed by a credential-shaped body. Real Anthropic/OpenAI/GitHub/AWS/Google keys all carry a long alphanumeric body after the prefix and never appear immediately after another identifier character. Atelier worktree paths (e.g. `task-N-slug`, whose dirname contains the substring `sk-`) do not satisfy the boundary condition and are no longer false-positives."
     },
     {
       "name": "sql-injection-shape",

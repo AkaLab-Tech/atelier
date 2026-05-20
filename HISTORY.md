@@ -8,8 +8,43 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### Dogfood-1 — first end-to-end run on a real GitHub repo — 2026-05-19
+**PR:** _pending_ (this PR)
+
+First real end-to-end exercise of the full atelier chain on a real GitHub repo (`AkaLab-Tech/atelier-dogfood-1`, private). Pre-implementation milestones M1.x–M4.2 had only been validated piece-by-piece; this is the first time the orchestrator + 6 specialists + retry/unblocker loop ran on a real project, end-to-end, against a forced-failure task. Surfaced **14 atelier findings** and **2 distinct deny-list bypass vulnerabilities** that pre-existed in the auto-merge guardrails but had never been exercised by a sub-agent.
+
+**Three runs:**
+
+1. **Run 1 (pre-flight blocked, no chain executed)** — `/atelier:next-task` aborted before invoking any specialist. Two systemic blockers: (a) the `scan-edit-write` hook's `hardcoded-secret-known-prefix` pattern was a bare-substring match on `sk-` and triggered on every atelier worktree path (`task-N-slug` contains the substring `sk-`); (b) the per-worktree path `<repo>-worktrees/...` was outside the sandbox `additionalDirectories` from `settings.template.json`, so the orchestrator could not operate inside the worktree it had just created.
+2. **Run 2 (happy-path Task #1, full chain executed)** — after the three Phase-A fixes, the chain ran end-to-end: `task-discovery → task-orchestrator → git-wt switch → implementer → tester → e2e-runner (skipped, no UI) → pr-author → reviewer → auto-merge (held)`. [PR #1](https://github.com/AkaLab-Tech/atelier-dogfood-1/pull/1) opened on the dogfood repo, +24/-9 across 4 files. The `auto-merge` skill correctly held the PR — but for a non-actionable reason: GitHub rejects self-approval when `pr-author` and `reviewer` run under the same identity, so the reviewer's verdict landed as a comment, tripping guardrails #2 (review status) and #6 (pending human comment). The PR was squash-merged manually for dogfood progress.
+3. **Run 3 (forced-failure Task #2, hard-stop validation)** — designed to exercise [PLAN.md §8](PLAN.md)'s retry budget by requesting an `Edit(./package.json)` which is in the per-worktree deny list. The chain ran exactly as the spec promises: 6 attempts written to `<worktree>/.task-log/<ISO-timestamp>-<NN>.md` with the reset between attempt 03 and 04 (and a temp-copy of `.task-log/` preserved at `<repo>-worktrees/.atelier-task-log-2/`), `retry-with-logs` returned `hard-stop` after attempt 06, the `unblocker` agent opened [issue #2](https://github.com/AkaLab-Tech/atelier-dogfood-1/issues/2) on GitHub with the 6 logs verbatim + a structured root-cause synthesis, and applied the `blocked` label (created idempotently since the label didn't exist). **M4.1 + M4.2 are now validated end-to-end on a real GitHub repo.**
+
+**Five fixes landed in this PR:**
+
+- `hooks/patterns/scan-edit-write.json` — `hardcoded-secret-known-prefix` rewritten from a bare substring list (`["sk-", "gho_", ...]`) to a regex requiring (a) a non-identifier boundary before the prefix and (b) a credential-shaped body of 20+/30+ chars after each prefix. Validated 10/10 negatives + 10/10 positives via a bash script. Fixes Findings #4 and #9 (the same regex bug surfaced twice).
+- `templates/settings.template.json` — `additionalDirectories` extended from `["<worktree>"]` to `["<worktree>", "<worktree>-worktrees"]`; `Edit/Write/Read` allow patterns extended with matching `<worktree>-worktrees/**` entries. After `sed` substitution by `/setup-project`, this gives the operator's session pre-authorised access to every per-task worktree the orchestrator may create. Fixes Finding #8.
+- `commands/setup-project.md` — step 3 now asserts `$CLAUDE_PLUGIN_ROOT` resolves to a directory containing `templates/settings.template.json` BEFORE attempting the `sed` instantiation, and stops with an actionable error if either check fails (with explicit recovery instructions: install via marketplace, or `export CLAUDE_PLUGIN_ROOT=…` for a one-off CLI run). Fixes Findings #2 (env var unset under `--plugin-dir`) and #3 (Step 3 had been silently failing without surfacing the error).
+- `agents/unblocker.md` — Step 5 rewritten to mark `[BLOCKED]` in the **main worktree's** `IN_PROGRESS.md` (not the failed task's worktree copy) and **commit+push** the change on a dedicated `docs/blocked-<task-id>` branch so the marker reaches `main`. Without this, the marker stayed local to the failed worktree, `main` never saw it, and the next `/next-task` would re-pick the same task forever. Fixes Finding #14.
+- `templates/settings.template.json` — `Bash(pnpm exec *)` (broad wildcard) replaced with a per-binary allow list (`pnpm exec eslint*`, `pnpm exec prettier*`, `pnpm exec tsc*`, `pnpm exec vitest*`, `pnpm exec jest*`, `pnpm exec playwright*`, `pnpm exec tsx*`). The wildcard allowed `pnpm exec node -e "fs.writeFileSync(...)"` to be used as a side-channel to write to deny-listed paths, which the implementer discovered during attempt 03 of run 3 and reverted as a hard refusal. **Fixes the security finding (Finding A from issue #2 on the dogfood repo).**
+
+**Findings deferred to follow-up milestones (documented in this PR's ROADMAP edits):**
+
+- **M4.6** — `/next-task` and orchestrator must detect non-interactive (`-p`) mode and skip operator-confirmation prompts. (Finding #7 from run 1 — operator confirmation traps a `-p` invocation.)
+- **M4.7** — the orchestrator must instantiate a per-worktree `.claude/settings.json` (currently the sandbox blocks the write and the sub-agents silently inherit the main session's scope). (Finding #12 from run 2.)
+- **M4.8** — `pr-author` must enforce the `IN_PROGRESS.md → HISTORY.md` move (its own prompt says it does, but in run 2 it did not). Alternatively, reassign the move to `auto-merge`'s post-merge cleanup. (Finding #13 from run 2.)
+- **M6.4** — operator troubleshooting doc must call out two non-atelier issues with operator-side mitigations: (a) GitHub same-identity self-approval limitation (Finding #11 from run 2), and (b) Claude Code permission-cache mis-alignment after `git worktree remove --force` + `git worktree add`, which dogfood-1 showed lets two `Edit` calls succeed on a deny-listed path post-reset (Finding B from issue #2).
+
+**Decisions captured:**
+
+- **Hook regex with both word-boundary AND length floor.** Either alone would close some of the false-positive surface; the combination is what makes `task-N-slug` clearly safe (no non-identifier boundary in front of `sk-` once `task-` precedes it) AND `sk-` alone clearly safe (no 20-char body). The two checks compose without weakening real-credential detection.
+- **Hard refusal on Step 3 of `/setup-project` rather than silent skip.** Run 1 showed silent skip leaves the project half-configured (no `.claude/settings.json`, but `.npmrc` and the markdown files written), which is worse than not running setup at all — the operator believes setup succeeded. The hard-refusal recovery message is verbose by design.
+- **`pnpm exec` narrowed by per-binary entries, not by adding `node -e` to deny.** A new deny entry for `node -e` would not have closed the bypass (the attacker can use `bash -c`, `python -c`, etc.); the only sound fix is to drop the wildcard. The seven binaries chosen (`eslint`, `prettier`, `tsc`, `vitest`, `jest`, `playwright`, `tsx`) cover the testing/linting needs of a typical Phase 2 task; new binaries get added explicitly in a future PR with justification.
+- **Unblocker's docs-PR approach over direct push to `main`.** A direct push would require lifting the `Bash(git push * main)` deny rule, which is a load-bearing safety invariant. A docs PR for a 1-line `IN_PROGRESS.md` change is light enough that it could even auto-merge (it touches none of the auto-merge-blocking files), and it preserves the audit trail.
+
+**Acceptance criterion status:** there is no formal ROADMAP entry for "dogfood-1" — this is a friction-discovery exercise, not a planned milestone. The five blockers were the *implicit* acceptance criterion, and all five are now resolved (three in run 1's pre-flight, two more after run 2/3 surfaced them). The remaining four ROADMAP items (M4.6 / M4.7 / M4.8 / M6.4) are the deferred portion that does not block end-to-end runs.
+
 ### M4.2 — `unblocker` agent — 2026-05-19
-**PR:** _pending_
+**PR:** [#31](https://github.com/AkaLab-Tech/atelier/pull/31)
 
 Second Phase 4 milestone. Closes the loop on `retry-with-logs` (M4.1) by turning the `hard-stop` decision into operator-visible state: a GitHub `blocked` issue with all 6 attempt logs attached, a `[BLOCKED]` marker in `IN_PROGRESS.md`, and an automatic handoff back to the orchestrator so the next ROADMAP item is picked up without human intervention.
 

@@ -43,7 +43,34 @@ If the project is **not yet configured**, proceed to the setup steps directly (n
 
 ### 3. `<path>/.claude/settings.json`
 
-`mkdir -p <path>/.claude`. Then instantiate the plugin's template:
+**Precondition** — `$CLAUDE_PLUGIN_ROOT` must resolve to a real directory containing `templates/settings.template.json`. Claude Code sets this env var automatically when the plugin is installed via marketplace, but when the plugin is loaded ad-hoc via `claude --plugin-dir <path>` from the CLI the variable is **not** set (Finding from dogfood-1). Before doing anything else in this step, verify:
+
+```bash
+test -n "${CLAUDE_PLUGIN_ROOT:-}" && test -f "$CLAUDE_PLUGIN_ROOT/templates/settings.template.json"
+```
+
+If either check fails, **stop with an actionable error** — do NOT continue to step 4. Report exactly:
+
+```text
+✗ /setup-project: cannot locate the atelier plugin template.
+
+   $CLAUDE_PLUGIN_ROOT = "<unset or wrong path>"
+   expected file:       <$CLAUDE_PLUGIN_ROOT>/templates/settings.template.json
+
+   This usually means atelier was loaded via `claude --plugin-dir …` (CLI),
+   which does not export CLAUDE_PLUGIN_ROOT. Two ways forward:
+
+   - Recommended: install atelier through its marketplace:
+       /plugin marketplace add AkaLab-Tech/claude-plugins
+       /plugin install atelier@akalab-tech
+     and restart Claude Code. The variable will be set automatically.
+
+   - Quick workaround for a one-off CLI run:
+       export CLAUDE_PLUGIN_ROOT=/abs/path/to/atelier-checkout
+     then re-run `/atelier:setup-project <path>`.
+```
+
+Once the precondition is satisfied, `mkdir -p <path>/.claude` and instantiate the template:
 
 ```bash
 sed "s|<worktree>|<resolved-project-path>|g" \
@@ -52,6 +79,8 @@ sed "s|<worktree>|<resolved-project-path>|g" \
 ```
 
 Confirm the result parses with `jq empty`. If the file already exists and you are in reconfigure mode, **diff** it against the new content and ask before overwriting if there are local edits.
+
+**Hard refusal:** if `sed` returns non-zero, `jq empty` returns non-zero, or the output file size is 0 bytes, **delete the failed output and stop** with the same actionable error above. Do not advance to step 4 with a corrupt or missing settings.json — Finding #3 from dogfood-1 showed that silently skipping this step left the project in a half-configured state.
 
 ### 4. `<path>/ROADMAP.md`
 
