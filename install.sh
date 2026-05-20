@@ -5,7 +5,8 @@
 # Phases (per PLAN.md §2):
 #   A    base deps (git, gh, fnm, pnpm, jq, fzf) + Claude Code
 #   B    Claude + GitHub auth                              [not yet implemented]
-#   C.1  git-wt, .env* excludes, git identity, shellrc     [not yet implemented]
+#   C.1  git-wt, .env* excludes, git identity, shellrc,
+#        atelier-setup-project helper symlink                [not yet implemented]
 #   C.2  drive Claude Code to install the atelier plugin   [not yet implemented]
 #
 # Conventions:
@@ -23,6 +24,13 @@
 
 set -euo pipefail
 IFS=$'\n\t'
+
+# Absolute path of the atelier checkout this install.sh lives in. Phase C.1
+# symlinks scripts/atelier-setup-project from here into ~/.local/bin so the
+# slash command can call it from inside Claude (and the operator from their
+# terminal). Computed once at script load; doesn't follow symlinks because
+# the operator's clone is the canonical source.
+ATELIER_REPO_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ---------- logging ----------
 
@@ -349,6 +357,61 @@ phase_c_1_git_identity() {
   sublog "git identity set: $new_name <$new_email>"
 }
 
+phase_c_1_setup_project_helper() {
+  # Symlink scripts/atelier-setup-project into ~/.local/bin so:
+  #   - the /atelier:setup-project slash command can invoke it via
+  #     Bash(atelier-setup-project:*) from inside Claude Code;
+  #   - the operator can also run it directly from any terminal.
+  #
+  # Why a symlink and not a copy: the operator already has the atelier
+  # checkout (from `git clone`), and `install.sh` is re-run when atelier is
+  # updated. A symlink ensures every script change is picked up without a
+  # separate "copy step". The link target is absolute so it survives the
+  # operator's cwd changing between install runs.
+  local src="$ATELIER_REPO_ROOT/scripts/atelier-setup-project"
+  local bin_dir="${HOME}/.local/bin"
+  local dest="$bin_dir/atelier-setup-project"
+
+  if [ ! -f "$src" ]; then
+    warn "expected $src — skipping atelier-setup-project install"
+    warn "this likely means install.sh is being run from outside the atelier checkout"
+    return
+  fi
+  if [ ! -x "$src" ]; then
+    warn "$src is not executable — chmoding +x"
+    chmod +x "$src"
+  fi
+
+  mkdir -p "$bin_dir"
+
+  if [ -L "$dest" ]; then
+    local current
+    current="$(readlink "$dest")"
+    if [ "$current" = "$src" ]; then
+      sublog "atelier-setup-project already symlinked ($dest -> $src)"
+    else
+      ln -sfn "$src" "$dest"
+      sublog "updated symlink: $dest -> $src (was -> $current)"
+    fi
+  elif [ -e "$dest" ]; then
+    # Regular file (or directory). The operator might have pinned a copy
+    # manually; we don't clobber. Tell them what we would have done.
+    warn "$dest exists and is not a symlink — leaving it alone"
+    warn "to use the atelier-managed helper, remove $dest and re-run install.sh"
+  else
+    ln -s "$src" "$dest"
+    sublog "linked $dest -> $src"
+  fi
+
+  # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
+  # future shells, but the current install.sh run probably doesn't have it
+  # yet. Warn rather than fail.
+  case ":${PATH:-}:" in
+    *":$bin_dir:"*) sublog "$bin_dir is on PATH"               ;;
+    *) sublog "$bin_dir not on PATH for this shell — will be set by shellrc hook on next login" ;;
+  esac
+}
+
 phase_c_1_shellrc_hooks() {
   # Idempotent injection via sentinel comments. On re-run, skip if the start
   # sentinel is already present. To refresh the block manually, remove
@@ -361,6 +424,14 @@ phase_c_1_shellrc_hooks() {
   local block
   block=$(cat <<'BLOCK'
 # >>> atelier hooks (managed by install.sh) >>>
+# Ensure ~/.local/bin is on PATH so atelier-setup-project (and any future
+# atelier-* CLI helpers installed by install.sh Phase C.1) are runnable from
+# any terminal — including the Bash tool inside a Claude Code session.
+# Note: a case-statement form would be more idiomatic, but the closing ")"
+# would terminate the surrounding $(cat <<'BLOCK' ...) substitution early.
+if [[ ":${PATH:-}:" != *":$HOME/.local/bin:"* ]]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 # Auto-switch Node version per-project via .nvmrc.
 if command -v fnm >/dev/null 2>&1; then
   eval "$(fnm env --use-on-cd)"
@@ -417,6 +488,7 @@ phase_c_1() {
   phase_c_1_git_wt
   phase_c_1_env_excludes
   phase_c_1_git_identity
+  phase_c_1_setup_project_helper
   phase_c_1_shellrc_hooks
   ok "Phase C.1 complete"
 }

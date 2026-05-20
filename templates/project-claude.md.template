@@ -1,0 +1,9 @@
+# CLAUDE.md — <project-name>
+
+This project is managed by atelier (https://github.com/AkaLab-Tech/atelier).
+
+The operator-facing rules (dependency installs, push/PR/merge gates, failure recovery, agent chain) are loaded into every session by atelier's `SessionStart` hook from `operator-rules.md` at the plugin root. Do not duplicate them here.
+
+## Project-specific guidance
+
+(Add anything specific to this project that an atelier agent should know — stack, conventions, deploy targets, etc. Keep it short and verifiable.)

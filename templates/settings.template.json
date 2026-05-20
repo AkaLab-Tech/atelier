@@ -162,6 +162,8 @@
       "Bash(mv*)",
       "Bash(cp*)",
 
+      "Bash(atelier-setup-project:*)",
+
       "Bash(claude plugin list --json)",
       "Bash(gh api repos/AkaLab-Tech/atelier/releases/latest*)",
       "Bash(gh api repos/AkaLab-Tech/atelier/tags*)",

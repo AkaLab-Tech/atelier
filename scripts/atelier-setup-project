@@ -1,0 +1,478 @@
+#!/usr/bin/env bash
+#
+# atelier-setup-project — bootstrap a project directory so atelier can manage
+# tasks in it. Runs OUTSIDE the Claude Code session to sidestep the harness's
+# interactive `.claude/**` Write/Edit guard that breaks `claude -p` mode.
+# See HISTORY.md → M4.7 (per-task settings) and M4.9 (this script).
+#
+# Mirrors the spec in commands/setup-project.md. The slash command is a thin
+# wrapper that invokes this script via Bash(atelier-setup-project:*).
+#
+# Usage:
+#   atelier-setup-project [--plugin-root <path>] [--yes|-y] [<project-path>]
+#   atelier-setup-project --help
+#
+# Exit codes:
+#   0  success (created, updated, or preserved)
+#   1  unrecoverable error (missing template, bad path, json corruption)
+#   2  refusal (already configured + non-interactive, or operator declined)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+# ---------- logging (mirrors install.sh style) ----------
+log()    { printf '==> %s\n' "$*"; }
+sublog() { printf '    %s\n' "$*"; }
+warn()   { printf '!!  %s\n' "$*" >&2; }
+die()    { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+ok()     { printf '    OK: %s\n' "$*"; }
+
+# ---------- usage ----------
+usage() {
+  cat <<EOF
+atelier-setup-project ${VERSION}
+
+Bootstrap a project so atelier can manage tasks in it. Idempotent.
+
+USAGE:
+  ${SCRIPT_NAME} [OPTIONS] [<project-path>]
+
+OPTIONS:
+  --plugin-root <path>   Path to the atelier plugin root (containing
+                         templates/ and .claude-plugin/plugin.json).
+                         Resolution order: this flag, then
+                         \$ATELIER_PLUGIN_ROOT, then the atelier checkout
+                         this script lives in, then the first match under
+                         ~/.claude/plugins/*/atelier/.
+  --yes, -y              Non-interactive mode. Auto-resolves every prompt
+                         with the safe default (never overwrite, never
+                         weaken). Also honored if \$ATELIER_AUTO is set.
+  --help, -h             Show this help and exit.
+
+POSITIONAL:
+  <project-path>         Project root to set up. Defaults to current dir.
+
+EXIT CODES:
+  0   success (created, updated, or preserved)
+  1   unrecoverable error
+  2   refusal (already configured + non-interactive, or operator declined)
+EOF
+}
+
+# ---------- arg parse ----------
+PROJECT_PATH_ARG=""
+PLUGIN_ROOT_FLAG=""
+NONINTERACTIVE=false
+[ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --plugin-root)
+      [ -n "${2:-}" ] || die "--plugin-root requires a path"
+      PLUGIN_ROOT_FLAG="$2"; shift 2 ;;
+    --plugin-root=*)
+      PLUGIN_ROOT_FLAG="${1#--plugin-root=}"; shift ;;
+    --yes|-y)
+      NONINTERACTIVE=true; shift ;;
+    --help|-h)
+      usage; exit 0 ;;
+    --)
+      shift; break ;;
+    -*)
+      die "unknown option: $1 (try --help)" ;;
+    *)
+      [ -z "$PROJECT_PATH_ARG" ] || die "only one project path may be given"
+      PROJECT_PATH_ARG="$1"; shift ;;
+  esac
+done
+
+# ---------- required tools ----------
+for tool in jq sed mkdir grep date; do
+  command -v "$tool" >/dev/null 2>&1 || die "required tool '$tool' not found on PATH"
+done
+
+# ---------- script real path (for plugin-root discovery step 3) ----------
+script_dir() {
+  local src="${BASH_SOURCE[0]}"
+  while [ -L "$src" ]; do
+    local d
+    d="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ $src != /* ]] && src="$d/$src"
+  done
+  cd -P "$(dirname "$src")" && pwd
+}
+
+looks_like_plugin_root() {
+  [ -f "$1/templates/settings.template.json" ] \
+    && [ -f "$1/.claude-plugin/plugin.json" ]
+}
+
+# ---------- plugin root resolution ----------
+resolve_plugin_root() {
+  local candidate
+
+  if [ -n "$PLUGIN_ROOT_FLAG" ]; then
+    candidate="$PLUGIN_ROOT_FLAG"
+    looks_like_plugin_root "$candidate" \
+      || die "--plugin-root '$candidate' is not an atelier checkout (missing templates/settings.template.json or .claude-plugin/plugin.json)"
+    printf '%s\n' "$candidate"; return
+  fi
+
+  if [ -n "${ATELIER_PLUGIN_ROOT:-}" ]; then
+    candidate="$ATELIER_PLUGIN_ROOT"
+    looks_like_plugin_root "$candidate" \
+      || die "\$ATELIER_PLUGIN_ROOT='$candidate' is not an atelier checkout"
+    printf '%s\n' "$candidate"; return
+  fi
+
+  # Script-relative: ~/.local/bin/atelier-setup-project -> <atelier>/scripts/atelier-setup-project
+  # script_dir returns <atelier>/scripts, so the parent is <atelier>.
+  candidate="$(dirname "$(script_dir)")"
+  if looks_like_plugin_root "$candidate"; then
+    printf '%s\n' "$candidate"; return
+  fi
+
+  # Marketplace install: ~/.claude/plugins/<marketplace>/atelier/.
+  for candidate in "$HOME/.claude/plugins"/*/atelier; do
+    if looks_like_plugin_root "$candidate"; then
+      printf '%s\n' "$candidate"; return
+    fi
+  done
+
+  die "cannot locate the atelier plugin root.
+
+   Tried (in order):
+   - --plugin-root flag         (not given)
+   - \$ATELIER_PLUGIN_ROOT      (${ATELIER_PLUGIN_ROOT:-unset})
+   - script-relative discovery  ($(dirname "$(script_dir)"))
+   - ~/.claude/plugins/*/atelier (no match)
+
+   Pass --plugin-root /abs/path/to/atelier-checkout, export ATELIER_PLUGIN_ROOT,
+   or install via the atelier marketplace."
+}
+
+# ---------- project path validation ----------
+resolve_project_path() {
+  local input="${PROJECT_PATH_ARG:-.}"
+  local abs
+
+  if [ -d "$input" ]; then
+    abs="$(cd "$input" && pwd -P)"
+  elif [ -e "$input" ]; then
+    die "<project-path> '$input' exists but is not a directory"
+  else
+    if $NONINTERACTIVE; then
+      die "<project-path> '$input' does not exist.
+   Non-interactive mode refuses to create the directory (operator intent ambiguous).
+   Re-run interactively, or pre-create the directory first."
+    fi
+    printf "Directory '%s' does not exist. Create it? [y/N]: " "$input" >&2
+    local ans; read -r ans
+    case "$ans" in
+      y|Y|yes|Yes) mkdir -p "$input" ;;
+      *) die "operator declined directory creation" ;;
+    esac
+    abs="$(cd "$input" && pwd -P)"
+  fi
+
+  # Deny system roots as literals, and the subtrees that are unambiguously
+  # system-owned (/etc, /usr, /Applications). Leave /var/* and /private/*
+  # subtrees alone because that is where macOS tmpdirs (mktemp -d) live, and
+  # smoke-testing the bootstrap there is legitimate.
+  case "$abs" in
+    "$HOME"|/|/bin|/sbin|/var|/opt|/private)
+      die "refusing to set up atelier under '$abs' (system / home root)" ;;
+    /etc|/etc/*|/usr|/usr/*|/Applications|/Applications/*)
+      die "refusing to set up atelier under '$abs' (system directory)" ;;
+  esac
+
+  if [ "$abs" = "$PLUGIN_ROOT" ]; then
+    die "refusing to set up atelier under its own plugin root '$abs'"
+  fi
+
+  printf '%s\n' "$abs"
+}
+
+# ---------- idempotence ----------
+CONFIG_FILE="${HOME}/.claude/.atelier-config.json"
+
+is_configured() {
+  local proj="$1"
+  [ -f "$CONFIG_FILE" ] || return 1
+  jq -e --arg p "$proj" '.projects[$p] // empty' "$CONFIG_FILE" >/dev/null 2>&1
+}
+
+# ---------- step status (one variable per step for the final summary) ----------
+SETTINGS_STATUS=""
+ROADMAP_STATUS=""
+INPROGRESS_STATUS=""
+HISTORY_STATUS=""
+CLAUDE_STATUS=""
+NPMRC_STATUS=""
+GITIGNORE_STATUS=""
+CONFIG_STATUS=""
+SETUP_COMPLETED=""
+SETUP_VERSION=""
+
+# ---------- step 3: .claude/settings.json ----------
+step_settings_json() {
+  local target="$PROJECT/.claude/settings.json"
+  local template="$PLUGIN_ROOT/templates/settings.template.json"
+
+  [ -f "$template" ] || die "template missing: $template"
+
+  mkdir -p "$PROJECT/.claude"
+
+  if [ -f "$target" ] && ! $RECONFIGURE; then
+    SETTINGS_STATUS="preserved"
+    sublog "$target already exists — preserving (not a reconfigure)"
+    return
+  fi
+
+  local tmp; tmp="$(mktemp)"
+  sed "s|<worktree>|$PROJECT|g" "$template" > "$tmp" \
+    || { rm -f "$tmp"; die "sed substitution failed for $target"; }
+
+  jq empty "$tmp" >/dev/null 2>&1 \
+    || { rm -f "$tmp"; die "$template did not produce valid JSON after substitution"; }
+
+  if grep -q "<worktree>" "$tmp"; then
+    rm -f "$tmp"
+    die "$template still contains literal '<worktree>' after substitution — template bug"
+  fi
+
+  if [ -f "$target" ] && $RECONFIGURE; then
+    if ! diff -q "$target" "$tmp" >/dev/null 2>&1; then
+      if $NONINTERACTIVE; then
+        rm -f "$tmp"
+        SETTINGS_STATUS="preserved"
+        warn "$target has local edits — preserved (non-interactive default)"
+        return
+      fi
+      printf "%s has local edits. Overwrite with current template? [y/N]: " "$target" >&2
+      local ans; read -r ans
+      case "$ans" in
+        y|Y|yes|Yes) mv "$tmp" "$target"; SETTINGS_STATUS="updated" ;;
+        *) rm -f "$tmp"; SETTINGS_STATUS="preserved" ;;
+      esac
+    else
+      rm -f "$tmp"
+      SETTINGS_STATUS="preserved"
+    fi
+  else
+    mv "$tmp" "$target"
+    SETTINGS_STATUS="created"
+  fi
+}
+
+# ---------- step 4: ROADMAP.md / IN_PROGRESS.md / HISTORY.md ----------
+step_roadmap_files() {
+  if [ ! -f "$PROJECT/ROADMAP.md" ]; then
+    cat > "$PROJECT/ROADMAP.md" <<EOF
+# Roadmap — $PROJECT_NAME
+
+Backlog of work for this project. Tasks flow: \`ROADMAP.md\` → \`IN_PROGRESS.md\` → \`HISTORY.md\`.
+
+Format per item: \`- [ ] <type> <title> [#id] [~estimate] [blocked_by:...]\` (PLAN.md §5).
+
+## 🔥 P0 — Blockers
+
+(Non-negotiable items. Keep this list small — anything here blocks shipping.)
+
+## 🎯 P1 — Next
+
+## 💭 P2 — Backlog
+EOF
+    ROADMAP_STATUS="created"
+  else
+    ROADMAP_STATUS="preserved"
+  fi
+
+  if [ ! -f "$PROJECT/IN_PROGRESS.md" ]; then
+    cat > "$PROJECT/IN_PROGRESS.md" <<EOF
+# In Progress
+
+Active tasks for the current development cycle.
+
+Workflow: \`ROADMAP.md\` → start a task → move here → finish → move to \`HISTORY.md\`.
+
+When a PR closes a task, the **same PR** must update both \`IN_PROGRESS.md\` (remove) and \`HISTORY.md\` (add). Do not defer either to a follow-up commit on the protected branch after merge.
+EOF
+    INPROGRESS_STATUS="created"
+  else
+    INPROGRESS_STATUS="preserved"
+  fi
+
+  if [ ! -f "$PROJECT/HISTORY.md" ]; then
+    cat > "$PROJECT/HISTORY.md" <<EOF
+# History
+
+Completed work log. Newest first. Each entry references the PR(s) that delivered the work.
+EOF
+    HISTORY_STATUS="created"
+  else
+    HISTORY_STATUS="preserved"
+  fi
+}
+
+# ---------- step 5: .claude/CLAUDE.md ----------
+step_project_claude_md() {
+  local target="$PROJECT/.claude/CLAUDE.md"
+  local template="$PLUGIN_ROOT/templates/project-claude.md.template"
+
+  [ -f "$template" ] || die "template missing: $template"
+
+  if [ -f "$target" ]; then
+    CLAUDE_STATUS="preserved"
+    return
+  fi
+
+  mkdir -p "$PROJECT/.claude"
+  sed "s|<project-name>|$PROJECT_NAME|g" "$template" > "$target"
+  CLAUDE_STATUS="created"
+}
+
+# ---------- step 6: .npmrc ----------
+step_npmrc() {
+  local target="$PROJECT/.npmrc"
+  local needed=("ignore-scripts=true" "minimum-release-age=10080" "audit-level=moderate")
+
+  if [ ! -f "$target" ]; then
+    {
+      echo "# atelier supply-chain guardrails (PLAN.md §4) — managed by /setup-project"
+      printf '%s\n' "${needed[@]}"
+    } > "$target"
+    NPMRC_STATUS="created"
+    return
+  fi
+
+  local missing=() line
+  for line in "${needed[@]}"; do
+    grep -qxF "$line" "$target" || missing+=("$line")
+  done
+
+  if [ ${#missing[@]} -eq 0 ]; then
+    NPMRC_STATUS="preserved"
+    return
+  fi
+
+  {
+    echo ""
+    echo "# atelier supply-chain guardrails (PLAN.md §4) — appended by /setup-project"
+    printf '%s\n' "${missing[@]}"
+  } >> "$target"
+  NPMRC_STATUS="appended"
+}
+
+# ---------- step 7: .gitignore ----------
+step_gitignore() {
+  local target="$PROJECT/.gitignore"
+  local needed=(".task-log/" ".claude/settings.local.json" ".DS_Store")
+
+  if [ ! -f "$target" ]; then
+    printf '%s\n' "${needed[@]}" > "$target"
+    GITIGNORE_STATUS="created"
+    return
+  fi
+
+  local missing=() line
+  for line in "${needed[@]}"; do
+    grep -qxF "$line" "$target" || missing+=("$line")
+  done
+
+  if [ ${#missing[@]} -eq 0 ]; then
+    GITIGNORE_STATUS="preserved"
+    return
+  fi
+
+  {
+    echo ""
+    echo "# atelier — appended by /setup-project"
+    printf '%s\n' "${missing[@]}"
+  } >> "$target"
+  GITIGNORE_STATUS="appended"
+}
+
+# ---------- step 8: record setup in ~/.claude/.atelier-config.json ----------
+step_record_setup() {
+  local now plugin_version tmp
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  plugin_version="$(jq -r '.version // "unknown"' "$PLUGIN_ROOT/.claude-plugin/plugin.json")"
+
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+
+  tmp="$(mktemp)"
+  if [ -f "$CONFIG_FILE" ]; then
+    jq --arg path "$PROJECT" --arg ts "$now" --arg ver "$plugin_version" \
+      '.projects[$path] = {setupCompleted: $ts, setupVersion: $ver}' \
+      "$CONFIG_FILE" > "$tmp" \
+      || { rm -f "$tmp"; die "failed to merge $CONFIG_FILE — refusing to overwrite"; }
+    CONFIG_STATUS="updated"
+  else
+    jq -n --arg path "$PROJECT" --arg ts "$now" --arg ver "$plugin_version" \
+      '{projects: {($path): {setupCompleted: $ts, setupVersion: $ver}}}' > "$tmp" \
+      || { rm -f "$tmp"; die "failed to create $CONFIG_FILE"; }
+    CONFIG_STATUS="created"
+  fi
+  mv "$tmp" "$CONFIG_FILE"
+
+  SETUP_COMPLETED="$now"
+  SETUP_VERSION="$plugin_version"
+}
+
+# ---------- main flow ----------
+PLUGIN_ROOT="$(resolve_plugin_root)"
+PROJECT="$(resolve_project_path)"
+PROJECT_NAME="$(basename "$PROJECT")"
+
+log "atelier-setup-project ${VERSION}"
+sublog "plugin-root: $PLUGIN_ROOT"
+sublog "project:     $PROJECT"
+
+RECONFIGURE=false
+if is_configured "$PROJECT"; then
+  completed="$(jq -r --arg p "$PROJECT" '.projects[$p].setupCompleted // "unknown"' "$CONFIG_FILE")"
+  version="$(jq -r --arg p "$PROJECT" '.projects[$p].setupVersion // "unknown"' "$CONFIG_FILE")"
+
+  if $NONINTERACTIVE; then
+    warn "$PROJECT is already configured (since $completed, version $version)."
+    warn "Reconfigure is not allowed in non-interactive mode because it overwrites"
+    warn ".claude/settings.json with the current plugin template. Re-run interactively"
+    warn "(without --yes / ATELIER_AUTO) if you genuinely want to reconfigure."
+    exit 2
+  fi
+
+  printf "Project already configured (since %s, version %s). Re-run setup? [y/N]: " "$completed" "$version" >&2
+  read -r ans
+  case "$ans" in
+    y|Y|yes|Yes) RECONFIGURE=true; sublog "operator confirmed reconfigure" ;;
+    *) ok "$PROJECT already configured — nothing to do"; exit 0 ;;
+  esac
+fi
+
+step_settings_json
+step_roadmap_files
+step_project_claude_md
+step_npmrc
+step_gitignore
+step_record_setup
+
+# ---------- output ----------
+echo ""
+ok "$PROJECT set up for atelier"
+sublog ".claude/settings.json:          $SETTINGS_STATUS"
+sublog "ROADMAP.md:                     $ROADMAP_STATUS"
+sublog "IN_PROGRESS.md:                 $INPROGRESS_STATUS"
+sublog "HISTORY.md:                     $HISTORY_STATUS"
+sublog ".claude/CLAUDE.md:              $CLAUDE_STATUS"
+sublog ".npmrc:                         $NPMRC_STATUS"
+sublog ".gitignore:                     $GITIGNORE_STATUS"
+sublog "~/.claude/.atelier-config.json: $CONFIG_STATUS"
+sublog "setupCompleted:                 $SETUP_COMPLETED"
+sublog "setupVersion:                   $SETUP_VERSION"
+echo ""
+sublog "Next: cd $PROJECT && run /next-task to claim the first ROADMAP.md item."
