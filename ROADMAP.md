@@ -51,6 +51,24 @@ A slash command for the Camino C of the blocked-task lifecycle (operator decides
 
 **Trigger to revisit:** after M4.2 + M4.3 land and the operator hits a real "I'm not retrying this" situation. Identified while designing M4.2 — deferred because the manual workaround (close issue + edit two markdown files) works fine for the rare case where a task is genuinely abandoned.
 
+### M4.6 — Non-interactive mode for `/next-task` and `task-orchestrator`
+
+When the operator runs atelier via `claude -p "..."` (non-interactive, no TTY), the orchestrator currently traps on its "Confirm the choice with the operator before claiming it" step — there is no human to answer. The slash command and the orchestrator should detect non-interactive mode (`-p` flag / non-TTY stdin / explicit env var) and skip operator-confirmation prompts, or accept an explicit `--yes` flag in the slash command arguments. Identified in dogfood-1 (Finding #7).
+
+**Acceptance:** `claude -p "/atelier:next-task"` from a non-TTY shell completes the full chain without hanging on a claim/route/proceed confirmation that has no way to be answered.
+
+### M4.7 — Per-worktree `.claude/settings.json` instantiation
+
+The `/next-task` slash command spec says step 7 instantiates a per-worktree `.claude/settings.json` with the worktree path injected, but the dogfood-1 run actually skipped that step (the sandbox blocked categorical writes to `.claude/` inside the new worktree). The chain still worked because sub-agents inherited the main session's permission scope, but if the operator ever runs Claude directly inside a per-task worktree (rather than the main worktree), the inherited scope is lost and the agents see a stale settings file. Identified in dogfood-1 (Finding #12).
+
+**Acceptance:** after `/atelier:next-task`, `<worktree>/.claude/settings.json` exists, parses with `jq empty`, and has `<worktree>` substituted with the per-task worktree path (not the main repo path).
+
+### M4.8 — Enforce `pr-author` `IN_PROGRESS.md → HISTORY.md` move
+
+The `pr-author` agent's spec says its step 5 must remove the task block from `IN_PROGRESS.md` and append it to `HISTORY.md` in the same PR. In the dogfood-1 happy-path run, `pr-author` moved `ROADMAP.md → IN_PROGRESS.md` (the orchestrator's job) but did NOT do its own `IN_PROGRESS.md → HISTORY.md` move. Decide between (a) hardening the agent's prompt so it always does the move, or (b) reassigning the move to the `auto-merge` skill as part of post-merge cleanup. Identified in dogfood-1 (Finding #13).
+
+**Acceptance:** after a merged task PR, `IN_PROGRESS.md` no longer contains the task entry and `HISTORY.md` does (under the correct month / date heading).
+
 ### M5.1 — Project registry
 
 `~/.claude-work/projects.json` tracks every project the operator has set up. Fields per project: path, name, last-task timestamp, setup version.
@@ -78,6 +96,11 @@ How to write [PLAN.md §5](PLAN.md)-shaped roadmaps: priorities, types, estimate
 ### M6.4 — Troubleshooting doc
 
 Common failure modes and recovery: auth expired, plugin not loading, hooks blocking unexpectedly, `git-wt` misconfigured, `.npmrc` guardrail false-positives.
+
+Two specific items captured during dogfood-1 that belong here:
+
+- **GitHub same-identity self-approval limitation.** When `pr-author` and `reviewer` run under the same GitHub identity (the operator's, in single-developer projects), GitHub silently downgrades the reviewer's `gh pr review --approve` to a comment, which trips both auto-merge guardrails #2 (review status) and #6 (pending human comment). The auto-merge skill is correct to hold the PR. Two operator-side mitigations to document: (a) configure a separate bot identity for `atelier:reviewer` (recommended for ≥1 active project), or (b) accept that single-developer projects always merge manually and add `--squash --delete-branch` to the operator's muscle memory. Identified in dogfood-1 (Finding #11).
+- **Claude Code permission-cache mis-alignment after worktree reset.** When `retry-with-logs` triggers the reset between attempt 03 and 04, the worktree is recreated via `git worktree remove --force` + `git worktree add`. The harness's permission cache continues to apply the pre-reset deny list against the recreated worktree path inconsistently — in dogfood-1, two separate `Edit` calls on a deny-listed path succeeded in attempts 04 and 05 (and were reverted to honor the hard refusal). Mitigation until Claude Code fixes the harness: between attempt 03 and attempt 04, the operator should restart the Claude Code session, or the orchestrator should surface a warning that enforcement is undefined post-reset. Identified in dogfood-1 (Finding B).
 
 ### M7.1 — Dogfood on a real (non-toy) project
 
