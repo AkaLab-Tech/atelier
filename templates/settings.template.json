@@ -1,7 +1,7 @@
 {
   "permissions": {
     "defaultMode": "acceptEdits",
-    "additionalDirectories": ["<worktree>"],
+    "additionalDirectories": ["<worktree>", "<worktree>-worktrees"],
 
     "deny": [
       "Bash(rm -rf *)",
@@ -54,10 +54,13 @@
 
     "allow": [
       "Read(<worktree>/**)",
+      "Read(<worktree>-worktrees/**)",
       "Glob",
       "Grep",
       "Edit(<worktree>/**)",
+      "Edit(<worktree>-worktrees/**)",
       "Write(<worktree>/**)",
+      "Write(<worktree>-worktrees/**)",
 
       "Bash(git status*)",
       "Bash(git diff*)",
@@ -99,7 +102,13 @@
       "Bash(pnpm update*)",
       "Bash(pnpm run *)",
       "Bash(pnpm test*)",
-      "Bash(pnpm exec *)",
+      "Bash(pnpm exec eslint*)",
+      "Bash(pnpm exec prettier*)",
+      "Bash(pnpm exec tsc*)",
+      "Bash(pnpm exec vitest*)",
+      "Bash(pnpm exec jest*)",
+      "Bash(pnpm exec playwright*)",
+      "Bash(pnpm exec tsx*)",
       "Bash(pnpm audit*)",
       "Bash(pnpm view*)",
 
