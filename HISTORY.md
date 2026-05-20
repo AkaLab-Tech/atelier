@@ -8,8 +8,62 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M4.3 — `/resume-task <id>` — 2026-05-19
+### M4.6 — Non-interactive mode for entry-point commands + `task-orchestrator` — 2026-05-19
 **PR:** _pending_
+
+First post-Phase-4 follow-up. Closes [dogfood-1 Finding #7](HISTORY.md): under `claude -p` (no TTY for the operator to answer), `/atelier:next-task` traps on its Step-4 confirmation prompt — and so does `task-orchestrator`'s standard-mode Step 1 confirm. With this PR every "ask the operator" point in the four entry-point files has a non-interactive branch with a documented safe-default rule.
+
+**The contract (single source of truth):**
+
+You are non-interactive if **any** of these is true:
+- `$ARGUMENTS` contains the literal token `--yes` (whitespace-bounded).
+- `$ARGUMENTS` contains the literal token `-y` (whitespace-bounded, not embedded in another flag).
+- The environment variable `ATELIER_AUTO` is set to any non-empty value.
+
+Otherwise, interactive. The signal is **deterministic** — never inferred from runtime probes like `test -t 0` (TTY checks on the agent's Bash sub-process are unreliable when the parent claude process is itself non-interactive). The operator opts in explicitly per invocation (the flag) or per session (the env var).
+
+**Delivered:**
+
+- `commands/next-task.md` — new "Interaction mode" section + per-step behaviour:
+  - Step 1 (dirty worktree): interactive asks how to proceed; non-interactive stops with error (refuses to guess between stash / continue / abort).
+  - Step 2 (occupied `IN_PROGRESS.md`): both modes refuse, but non-interactive surfaces the error rather than offering options.
+  - Step 3 (task id parse): strips `--yes` / `-y` from `$ARGUMENTS` before parsing the id.
+  - Step 4 (claim confirmation): interactive asks "Claim this task?"; non-interactive auto-claims with a single log line.
+  - Step 8 (orchestrator hand-off): now passes `interactive: true|false` in the briefing.
+  - Frontmatter: `argument-hint` updated, `allowed-tools` gains `Bash(env:*)`.
+
+- `commands/resume-task.md` — same section, Step 1 dirty-worktree refusal in non-interactive, Step 5 propagates `interactive` to the orchestrator briefing.
+
+- `commands/setup-project.md` — same section, plus four per-step rules:
+  - Step 1 (missing project path): interactive offers `mkdir -p`; non-interactive refuses (the operator's intended path is ambiguous under `--yes`).
+  - Step 2 (already-configured project): interactive offers reconfigure; **non-interactive refuses reconfigure** with a clear error pointing at re-running interactively. The most consequential safe-default — reconfigure overwrites `.claude/settings.json`, which would silently change the project's permission scope.
+  - Step 3 (existing settings with local edits): interactive asks before overwriting; non-interactive preserves the existing file.
+  - Step 6 (`.npmrc` weakened): interactive asks; non-interactive **applies the documented default** (append the missing atelier-section lines) automatically. Weakening (lowering an existing guardrail) is **never** auto-applied in either mode.
+
+- `agents/task-orchestrator.md` — Step 1 standard-mode branch gains a non-interactive check. When the briefing carries `interactive: false` *or* the env var `ATELIER_AUTO` is set, the orchestrator skips the "Confirm the choice with the operator" prompt after `task-discovery` and proceeds with its pick. The briefing is the authoritative signal when set; the env var is the fallback for direct-invocation cases (no `/next-task` wrapper). Resume mode (M4.3) was already non-prompting; this PR only adds the standard-mode skip.
+
+**Tests:**
+- YAML frontmatter parses cleanly on all four modified files.
+- Plugin loader auto-discovers the 6 atelier commands.
+- End-to-end exercise (`claude -p "/atelier:next-task --yes"` running the chain without hanging) is **deferred to dogfood-2** — the same setup as dogfood-1 with this fix applied. The unit-level evidence here is that every confirmation prompt in the audit (8 distinct points across 4 files) now has a non-interactive branch with a documented safe-default rule.
+
+**Decisions captured:**
+
+- **Two signals (flag + env), not one.** The flag (`--yes` / `-y`) is per-invocation; the env var (`ATELIER_AUTO`) is per-session. Either alone covers the common cases — the flag for ad-hoc scripted runs, the env var for CI / sustained automation. Requiring both would be friction; supporting either is one extra `env | grep` and a `$ARGUMENTS` substring match.
+- **No runtime TTY probe.** A `test -t 0` from the agent's Bash sub-process is unreliable: even when the parent `claude` is non-interactive (via `-p`), the sub-process's stdin may not propagate that state, and even when it does, the inference "no TTY → non-interactive" is right for `claude -p` but wrong for legitimate Claude Code sessions started without a terminal (some IDE harnesses). Determinism beats heuristics: the operator opts in explicitly.
+- **Safe default = never overwrite, never weaken, never widen.** When in doubt about whether to proceed silently, refuse. This is conservative for `/setup-project` (refuses reconfigure on configured projects) and permissive for `/next-task` (auto-claims because the operator's intent is already "claim the next task"). The default is chosen per step, not globally — documented inline.
+- **Strip flag before parsing.** `--yes` / `-y` is stripped from `$ARGUMENTS` before parsing per-command-specific arguments so commands like `/next-task #42 --yes` keep treating `#42` as the task id. Avoids a future foot-gun where a task id like `--yes-please` would never be reachable.
+- **Briefing-propagation in `/next-task` and `/resume-task`.** The slash command is the operator-facing entry; the orchestrator inherits the mode via the briefing. The env var is the fallback for cases where the orchestrator is invoked directly. This keeps the orchestrator's prompt simple — one check, two sources.
+
+**Acceptance criterion status:** the ROADMAP M4.6 acceptance — *"`claude -p \"/atelier:next-task\"` from a non-TTY shell completes the full chain without hanging on a claim/route/proceed confirmation that has no way to be answered"* — is **structurally satisfied**: every confirmation prompt in the entry-point flow now has a non-interactive branch. The end-to-end check (the same `claude -p` invocation actually running through to PR-open) waits for **dogfood-2**, which can now run because the trap from dogfood-1 is closed.
+
+**Follow-ups (still in ROADMAP):**
+- M4.7 — per-worktree `.claude/settings.json` instantiation. Independent of M4.6.
+- M4.8 — `pr-author` `IN_PROGRESS.md → HISTORY.md` move enforcement. Independent.
+- **Dogfood-2** is now unblocked; the natural next step once M4.7 + M4.8 land (or potentially even before).
+
+### M4.3 — `/resume-task <id>` — 2026-05-19
+**PR:** [#33](https://github.com/AkaLab-Tech/atelier/pull/33)
 
 Third and final Phase 4 milestone. Implements the "operator's recovery action" half of the blocked-task lifecycle whose contract was set in M4.2, and additionally handles the simpler interrupted-resume case (operator's previous session was killed mid-task). With this PR, Phase 4 (Robustness) is **closed**: retry budget (M4.1), hard-stop handoff (M4.2), and recovery (M4.3) together implement [PLAN.md §8](PLAN.md) end-to-end.
 

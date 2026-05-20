@@ -45,12 +45,6 @@ A slash command for the Camino C of the blocked-task lifecycle (operator decides
 
 **Trigger to revisit:** after M4.2 + M4.3 land and the operator hits a real "I'm not retrying this" situation. Identified while designing M4.2 — deferred because the manual workaround (close issue + edit two markdown files) works fine for the rare case where a task is genuinely abandoned.
 
-### M4.6 — Non-interactive mode for `/next-task` and `task-orchestrator`
-
-When the operator runs atelier via `claude -p "..."` (non-interactive, no TTY), the orchestrator currently traps on its "Confirm the choice with the operator before claiming it" step — there is no human to answer. The slash command and the orchestrator should detect non-interactive mode (`-p` flag / non-TTY stdin / explicit env var) and skip operator-confirmation prompts, or accept an explicit `--yes` flag in the slash command arguments. Identified in dogfood-1 (Finding #7).
-
-**Acceptance:** `claude -p "/atelier:next-task"` from a non-TTY shell completes the full chain without hanging on a claim/route/proceed confirmation that has no way to be answered.
-
 ### M4.7 — Per-worktree `.claude/settings.json` instantiation
 
 The `/next-task` slash command spec says step 7 instantiates a per-worktree `.claude/settings.json` with the worktree path injected, but the dogfood-1 run actually skipped that step (the sandbox blocked categorical writes to `.claude/` inside the new worktree). The chain still worked because sub-agents inherited the main session's permission scope, but if the operator ever runs Claude directly inside a per-task worktree (rather than the main worktree), the inherited scope is lost and the agents see a stale settings file. Identified in dogfood-1 (Finding #12).
