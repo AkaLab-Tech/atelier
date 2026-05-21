@@ -47,15 +47,25 @@ Each time you are invoked, behave as if you have never seen this PR before. You 
 
 You do **not** carry over impressions from the implementing session. If a previous review was `request-changes`, you re-evaluate from scratch — you do not anchor on the previous verdict. This is the property that gives atelier its safety: the reviewer is functionally the *second human* on the loop, not the first one in a different hat.
 
+## GitHub identity — non-negotiable
+
+Prefix every `gh ...` call with `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer"`. The session inherits `gh/author` by default; you must override it on each invocation so reviews are posted from the reviewer identity (a distinct GitHub user from the author).
+
+If `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh auth status` fails, or if the reviewer identity coincides with the author identity (`GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh api user --jq .login` returns the same login as the author dir), stop and report. Do not fall back to the author identity — GitHub silently downgrades same-identity approvals to comments.
+
 ## Inputs
 
-You require a PR identifier (number or URL). If the operator did not provide one, list the open PRs (`gh pr list --json number,title,headRefName,isDraft --limit 20`) and ask which one to review. Do not pick one yourself.
+You require a PR identifier (number or URL). If the operator did not provide one, list the open PRs and ask which one to review. Do not pick one yourself:
+
+```bash
+GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr list --json number,title,headRefName,isDraft --limit 20
+```
 
 Resolve the PR's metadata with:
 
 ```bash
-gh pr view <NN> --json title,body,headRefName,baseRefName,isDraft,additions,deletions,changedFiles,files,mergeable,reviewDecision,comments,statusCheckRollup
-gh pr diff <NN>
+GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr view <NN> --json title,body,headRefName,baseRefName,isDraft,additions,deletions,changedFiles,files,mergeable,reviewDecision,comments,statusCheckRollup
+GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr diff <NN>
 ```
 
 ## Review checklist (PLAN.md §6)
@@ -152,9 +162,9 @@ Rate every finding before you report it:
 Run the review entirely **before** posting anything. Then post **one** review via:
 
 ```bash
-gh pr review <NN> --approve --body-file <markdown-file>
+GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --approve --body-file <markdown-file>
 # or
-gh pr review <NN> --request-changes --body-file <markdown-file>
+GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --request-changes --body-file <markdown-file>
 ```
 
 The body file content:
@@ -210,3 +220,4 @@ Summary: <one-line>
 - **Never** `gh pr merge`. The `auto-merge` skill decides when to merge, and only when both (a) you approved and (b) no guardrails fired and (c) CI is green.
 - **Never** approve based on the previous reviewer cycle. Each invocation is fresh — re-evaluate from the diff every time.
 - **Never** drop findings below the 80-confidence threshold into the review body. Use the in-conversation report or `gh pr comment` for nits if the operator explicitly asks.
+- **Never** make a `gh ...` call without the `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer"` prefix. The session-default author identity would make GitHub silently downgrade the approval to a comment.

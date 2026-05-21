@@ -342,26 +342,92 @@ phase_b_claude_login() {
   claude auth login
 }
 
-phase_b_github_login() {
-  if gh auth status --hostname github.com >/dev/null 2>&1; then
-    sublog "gh already authenticated for github.com"
-  else
-    sublog "starting GitHub login (browser-based OAuth; HTTPS only)"
-    # --web              browser-based OAuth.
-    # --git-protocol https  HTTPS only — atelier never uses SSH (PLAN.md §2 step 5).
-    # --skip-ssh-key     defense-in-depth: even if a future flag combo would
-    #                    suggest an SSH key prompt, skip it.
-    # --scopes           per PLAN.md §2 step 5.
-    gh auth login \
-      --hostname github.com \
-      --git-protocol https \
-      --web \
-      --skip-ssh-key \
-      --scopes "repo,workflow,project,read:org"
+# Authenticate one of the two atelier-isolated `gh` identities (M5.0.1). Each
+# identity owns a dedicated config dir under $ATELIER_CONFIG_DIR/gh/<role>/, so
+# the operator's primary `gh` at ~/.config/gh/ is never touched by install.sh.
+# Idempotent: if `gh auth status` reports OK for the given config dir, the
+# browser-based OAuth is skipped on re-runs.
+#
+# Args: $1 = role (`author` | `reviewer`), $2 = human-friendly purpose string
+#       used in the prompt so the operator knows which account they're signing
+#       in with on this round.
+phase_b_atelier_gh_login() {
+  local role="$1"
+  local purpose="$2"
+  local cfg="$ATELIER_CONFIG_DIR/gh/$role"
+
+  mkdir -p "$cfg"
+
+  if GH_CONFIG_DIR="$cfg" gh auth status --hostname github.com >/dev/null 2>&1; then
+    sublog "atelier gh ($role) already authenticated at $cfg"
+    return
   fi
-  # Register gh as git credential helper for HTTPS. Idempotent.
-  sublog "registering gh as git credential helper (HTTPS, idempotent)"
-  gh auth setup-git
+
+  sublog "atelier gh login: $role — $purpose"
+  sublog "credentials will be stored under $cfg (isolated from ~/.config/gh/)"
+  # --web              browser-based OAuth.
+  # --git-protocol https  HTTPS only — atelier never uses SSH (PLAN.md §2 step 5).
+  # --skip-ssh-key     defense-in-depth: even if a future flag combo would
+  #                    suggest an SSH key prompt, skip it.
+  # --scopes           per PLAN.md §2 step 5.
+  GH_CONFIG_DIR="$cfg" gh auth login \
+    --hostname github.com \
+    --git-protocol https \
+    --web \
+    --skip-ssh-key \
+    --scopes "repo,workflow,project,read:org"
+}
+
+phase_b_atelier_author_login() {
+  phase_b_atelier_gh_login "author" \
+    "the GitHub account atelier uses for commits, push, and PR/issue authoring"
+
+  # Register `gh` as git credential helper for HTTPS, using the author config
+  # dir as the source of credentials. `gh auth git-credential` reads
+  # $GH_CONFIG_DIR at invocation time, so the helper line written into the
+  # global gitconfig is dynamic: with $GH_CONFIG_DIR exported (the `task()`
+  # alias does this), git uses the atelier-author token; without it, git falls
+  # back to ~/.config/gh/ — i.e. the operator's normal shell outside atelier.
+  # Idempotent.
+  sublog "registering gh (atelier-author) as git credential helper (HTTPS, idempotent)"
+  GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh auth setup-git
+}
+
+phase_b_atelier_reviewer_login() {
+  phase_b_atelier_gh_login "reviewer" \
+    "a SECOND GitHub account, distinct from the author one (so reviewer approvals are honoured by GitHub instead of being downgraded to comments — Finding #11 from dogfood-1)"
+  # No `gh auth setup-git` here — the reviewer never pushes; one credential
+  # helper registration (author's) is enough.
+}
+
+# Compare the GitHub login names recorded in $ATELIER_CONFIG_DIR/gh/{author,
+# reviewer}/. When they match (or either lookup fails), warn the operator that
+# Finding #11 will persist for this install; do NOT abort — the operator may
+# intentionally accept a single-identity setup and merge PRs manually.
+phase_b_verify_distinct_identities() {
+  local author reviewer
+  author="$(GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"   gh api user --jq .login 2>/dev/null || true)"
+  reviewer="$(GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh api user --jq .login 2>/dev/null || true)"
+
+  if [ -z "$author" ] || [ -z "$reviewer" ]; then
+    warn "could not read login from one of the atelier gh dirs:"
+    warn "  author:   ${author:-<unreadable>}"
+    warn "  reviewer: ${reviewer:-<unreadable>}"
+    warn "auto-merge may not work until both identities authenticate cleanly"
+    return
+  fi
+
+  if [ "$author" = "$reviewer" ]; then
+    warn "atelier author and reviewer GitHub identities are the SAME: @$author"
+    warn "GitHub will downgrade reviewer's 'approve' to a comment (Finding #11)"
+    warn "auto-merge guardrail #2 will hold the PR until a human merges"
+    warn "to fix: re-run install.sh after authenticating the reviewer dir with"
+    warn "a different GitHub account:"
+    warn "  GH_CONFIG_DIR=\"$ATELIER_CONFIG_DIR/gh/reviewer\" gh auth logout --hostname github.com"
+    warn "  $0   # rerun and pick the second account at the reviewer prompt"
+  else
+    sublog "atelier identities OK: author=@$author, reviewer=@$reviewer (distinct)"
+  fi
 }
 
 phase_b() {
@@ -376,13 +442,16 @@ phase_b() {
     warn "no TTY detected — skipping Phase B (interactive auth)"
     warn "to complete auth, re-run on a real terminal, or run these by hand:"
     warn "  claude auth login"
-    warn "  gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key --scopes 'repo,workflow,project,read:org'"
-    warn "  gh auth setup-git"
+    warn "  GH_CONFIG_DIR=\"$ATELIER_CONFIG_DIR/gh/author\" gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key --scopes 'repo,workflow,project,read:org'"
+    warn "  GH_CONFIG_DIR=\"$ATELIER_CONFIG_DIR/gh/author\" gh auth setup-git"
+    warn "  GH_CONFIG_DIR=\"$ATELIER_CONFIG_DIR/gh/reviewer\" gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key --scopes 'repo,workflow,project,read:org'"
     return
   fi
 
   phase_b_claude_login
-  phase_b_github_login
+  phase_b_atelier_author_login
+  phase_b_atelier_reviewer_login
+  phase_b_verify_distinct_identities
   ok "Phase B complete"
 }
 
@@ -651,9 +720,21 @@ fi
 # CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR pins the session to atelier's
 # config root — separate from the operator's personal Claude config so
 # atelier's autonomous-mode rules don't conflict with personal rules.
-task() { CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude "/next-task $*"; }
-# `task-status`: list the operator's open PRs across all repos they own.
-alias task-status='gh pr list --author @me --state open'
+# GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author pins every `gh ...` call inside
+# the session to atelier's author identity (M5.0.1). The `reviewer` agent
+# overrides this inline with $ATELIER_CONFIG_DIR/gh/reviewer for its own
+# gh calls so its approvals are honoured as a distinct GitHub identity.
+# The operator's normal shell (outside `task`) is unaffected by this export.
+task() {
+  CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" \
+    GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" \
+    claude "/next-task $*"
+}
+# `task-status`: list atelier-author's open PRs across all repos. Prefixed with
+# GH_CONFIG_DIR so it runs under the atelier-isolated identity (M5.0.1) — the
+# operator's primary ~/.config/gh/ is not touched by install.sh, so a plain
+# `gh pr list` here would fail with "not authenticated".
+alias task-status='GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh pr list --author @me --state open'
 # <<< atelier hooks (managed by install.sh) <<<
 BLOCK
 )
@@ -815,7 +896,10 @@ phase_verify() {
   log "Verification"
   verify_cmd    "claude --version"        claude --version
   verify_cmd    "claude auth status"      claude auth status
-  verify_cmd    "gh auth status"          gh auth status
+  # M5.0.1: verify both atelier-isolated gh identities. `env VAR=val cmd ...`
+  # prefixes the env transparently for verify_cmd's "$@" passthrough.
+  verify_cmd    "atelier gh auth (author)"   env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"   gh auth status --hostname github.com
+  verify_cmd    "atelier gh auth (reviewer)" env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh auth status --hostname github.com
   verify_cmd    "git wt help"             git wt help
   verify_plugin "atelier@akalab-tech"
   verify_plugin "claude-roadmap-tools@akalab-tech"

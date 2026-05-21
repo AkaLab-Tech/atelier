@@ -18,28 +18,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 2–5 — Single-project agent flow + robustness + multi-project foundation.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries — and when an operator can install / uninstall atelier without risking unrelated Claude state.
 
-### M5.0.1 — gh auth isolation via `GH_CONFIG_DIR` + atelier-bot identity
-
-Today `pr-author` runs `gh ...` calls under the operator's primary GitHub identity (whichever `gh auth login` set up before install.sh ran). Two problems:
-
-1. **Same-identity self-approval limitation (Finding #11, dogfood-1).** When `reviewer` runs under the same GitHub identity as `pr-author`, GitHub silently downgrades the reviewer's `gh pr review --approve` to a comment, which trips both auto-merge guardrails #2 (review status) and #6 (pending human comment). The auto-merge skill correctly holds the PR — but the chain is then stuck pending operator merge.
-2. **No isolation of atelier-side GitHub activity from the operator's personal `gh` state.** Atelier's PRs, issues, comments all attribute to the operator's account, which can pollute notification streams and make audit hard.
-
-`gh` already supports config-dir isolation via the `GH_CONFIG_DIR` env var (mirror of `CLAUDE_CONFIG_DIR`). M5.0.1 wires this into install.sh and atelier's flow:
-
-- `install.sh` Phase B grows a step that runs `gh auth login` under `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh"` so atelier's gh state is fully separate from the operator's primary `gh`.
-- The operator authenticates as a separate GitHub identity (typically a bot account they create for atelier — e.g., `atelier-bot-<operator>`).
-- `templates/settings.template.json` and the agent prompts run every `gh ...` invocation under the isolated `$GH_CONFIG_DIR`. Either via export (mirroring how M5.0 exports `CLAUDE_CONFIG_DIR`) or per-call prefix.
-- `pr-author` opens PRs as bot identity; `reviewer` reviews as the operator's primary identity → distinct identities, GitHub honours the approval, Finding #11 resolved.
-
-**Acceptance:** running `install.sh` end-to-end on a fresh machine results in two distinct `gh auth` configurations: one at `~/.config/gh/` (operator's personal, untouched) and one at `$ATELIER_CONFIG_DIR/gh/` (atelier-bot). When `pr-author` opens a PR and `reviewer` approves it on a dogfood repo, GitHub's UI shows the approval as a real approval (not a comment), and the auto-merge skill proceeds without the Finding #11 hold.
-
-**Trigger to revisit:** before any further dogfood that depends on `auto-merge` reaching merged state without operator intervention. M5.0.1 is the fix for the "auto-merge gate trips on self-approval" class of issue.
-
-**Open questions to resolve during implementation:**
-- Does the operator create the bot account manually before running install.sh, or does install.sh guide them through `gh auth login --web` with a different account?
-- How does `pr-author` know to use `$ATELIER_CONFIG_DIR/gh` vs the operator's `~/.config/gh/`? (Probably: `export GH_CONFIG_DIR=...` in the shellrc hook block alongside the `CLAUDE_CONFIG_DIR` work.)
-
 ### M5.0.3 — `atelier-uninstall` with chat-session preservation
 
 Today there is no clean way to uninstall atelier. To remove atelier, the operator has to manually:

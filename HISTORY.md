@@ -8,6 +8,70 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M5.0.1 — gh auth isolation via `GH_CONFIG_DIR` + dual atelier identities (author + reviewer) — 2026-05-21
+**PR:** _pending_
+
+Pre-M5.0.1, every `gh ...` invocation inside an atelier session ran under whichever GitHub identity `gh auth login` set up before `install.sh` ran — the operator's primary `~/.config/gh/`. Two consequences: (1) `pr-author` and `reviewer` shared the same GitHub user, so GitHub silently downgraded `gh pr review --approve` to a comment (Finding #11 from dogfood-1), tripping auto-merge guardrails #2 (review status) and #6 (pending human comment); (2) atelier's PRs, issues, comments, approvals all attributed to the operator's account, polluting their notification stream and mixing atelier-managed credentials with the operator's.
+
+M5.0.1 wires `gh`'s `GH_CONFIG_DIR` env var (mirror of `CLAUDE_CONFIG_DIR`) into install.sh and atelier's flow with **two distinct authenticated identities, both stored inside atelier's config root, both prompted for at install time** (even if the operator picks the same GitHub user as their personal one — not a requirement either way):
+
+- **`$ATELIER_CONFIG_DIR/gh/author/`** — used by every operational agent (`pr-author`, `implementer`, `tester`, `e2e-runner`, `unblocker`) for commits, push, `gh pr create`, `gh issue`, `gh label`, `gh project`.
+- **`$ATELIER_CONFIG_DIR/gh/reviewer/`** — used **only** by the `reviewer` agent for `gh pr view`, `gh pr review --approve / --request-changes`, and `gh pr comment` posted as part of a review.
+
+GitHub honours `--approve` from the reviewer dir as a real approval (instead of a comment) iff its GitHub user is distinct from the author's. install.sh ends Phase B with a `gh api user --jq .login` check against each dir and warns loudly when the two logins coincide; the install does not abort, so an operator who knowingly accepts single-identity (e.g., no second GH account available) still completes — Finding #11 simply persists for that install and auto-merge will hold the PR for human merge.
+
+**Delivered:**
+
+- `install.sh` — Phase B fully rewritten:
+  - **Removed** `phase_b_github_login` (the old single login that authenticated `~/.config/gh/` and ran `gh auth setup-git` globally). install.sh no longer touches the operator's personal `gh` state.
+  - **New `phase_b_atelier_gh_login()`** — generic helper parameterised by role (`author` | `reviewer`) and a human-friendly purpose string. `mkdir -p "$ATELIER_CONFIG_DIR/gh/<role>"` → idempotency check via `GH_CONFIG_DIR=... gh auth status` → `gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key --scopes "repo,workflow,project,read:org"` under the role's config dir.
+  - **New `phase_b_atelier_author_login()`** — calls the generic helper for the author role, then runs `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author gh auth setup-git`. Because `gh auth git-credential` reads `$GH_CONFIG_DIR` at invocation time, the helper line written into the global gitconfig is dynamic: `GH_CONFIG_DIR` exported → atelier-author creds; not exported → falls back to `~/.config/gh/` (the operator's normal shell, untouched).
+  - **New `phase_b_atelier_reviewer_login()`** — calls the generic helper for the reviewer role, prompts for a DIFFERENT GitHub account, no `setup-git` (reviewer never pushes — one credential helper registration is enough).
+  - **New `phase_b_verify_distinct_identities()`** — `GH_CONFIG_DIR=... gh api user --jq .login` for each role; warns loudly (not aborts) when they coincide or either lookup fails. The warning prints the exact `gh auth logout` + re-run-install.sh recipe the operator needs to fix the situation.
+  - **`phase_b()` flow:** `claude_login` → `author_login` → `reviewer_login` → `verify_distinct_identities`.
+  - **No-TTY guidance** updated: manual fallback messages list both `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author` and `.../gh/reviewer` login commands.
+
+- `install.sh` — shellrc hook block + verify:
+  - `task()` alias gains `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"` (paired with the existing `CLAUDE_CONFIG_DIR`). No global `export GH_CONFIG_DIR=...` is written: the operator's shell outside `task` stays on `~/.config/gh/`.
+  - `task-status` alias gains the same prefix (otherwise it would fail with "not authenticated" — `~/.config/gh/` is no longer touched).
+  - `phase_verify()` replaces the single `gh auth status` line with two `env GH_CONFIG_DIR=... gh auth status --hostname github.com` checks, one per role.
+
+- `templates/settings.template.json` — `permissions.allow` gains:
+  - `Bash(gh auth status*)` (missing pre-M5.0.1; needed by `/doctor` and by `phase_b_verify_distinct_identities` running inside any in-session check).
+  - `Bash(GH_CONFIG_DIR=* gh auth status*)`, `Bash(GH_CONFIG_DIR=* gh api user*)`, `Bash(GH_CONFIG_DIR=* gh pr view*)`, `Bash(GH_CONFIG_DIR=* gh pr list*)`, `Bash(GH_CONFIG_DIR=* gh pr diff*)`, `Bash(GH_CONFIG_DIR=* gh pr review*)`, `Bash(GH_CONFIG_DIR=* gh pr comment*)` — the reviewer's inline override patterns. Tool-matcher in Claude Code keys on the full command string, so the bare `Bash(gh pr review*)` rule does not cover `GH_CONFIG_DIR=... gh pr review …`.
+
+- `agents/reviewer.md` — new "GitHub identity — non-negotiable" section near the top; all `gh ...` examples in the spec body prefixed with `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer"`; new hard refusal bullet forbidding any `gh` call without that prefix. Kept lean (no milestone references, no `Finding #11` mentions inside the spec — that's history-doc territory).
+
+- `agents/pr-author.md` — short "GitHub identity" section: pr-author inherits the session default (`gh/author`), no prefix needed.
+
+- `skills/auto-merge/SKILL.md` — guardrail #2 grows a one-paragraph note: reviewer runs under a distinct identity, so `reviewDecision == APPROVED` resolves cleanly; if the two atelier identities resolve to the same GitHub login, guardrail #2 keeps holding until the operator re-authenticates the reviewer dir.
+
+- `PLAN.md` — §2 step 5 rewritten with the two atelier-isolated logins (5a author, 5b reviewer); §3 (permissions) `🟢 Allow` line for `gh` extended with `gh auth status` and the `Bash(GH_CONFIG_DIR=* gh ...)` family; §12 Phase 5 grows explicit bullets for M5.0, M5.0.1, M5.0.2, M5.0.3.
+
+**Tests:**
+
+- `bash -n` clean on modified `install.sh`.
+- `jq empty` clean on `templates/settings.template.json`.
+- **No end-to-end smoke yet.** Phase B's new flow requires a Mac, a browser, and two separate GitHub accounts — out of reach for a static-validation PR. Empirical validation is scheduled for dogfood-4 (re-run of the failed auto-merge from dogfood-1 with two-identity setup).
+
+**Decisions captured:**
+
+- **Two identities, both atelier-isolated; operator's `~/.config/gh/` is NOT touched.** The maintainer initially proposed re-using the operator's primary `~/.config/gh/` for the author role and adding only the reviewer dir, but rejected on the request "install.sh debe pedir login y guardar credenciales en la instalación de atelier, aun cuando la cuenta sea la misma" — to keep atelier's credentials self-contained for clean uninstall (M5.0.3 will simply remove `$ATELIER_CONFIG_DIR`) and to prevent atelier from inheriting whatever auth state the operator's personal `gh` happens to be in.
+- **Author = session default, reviewer = inline prefix.** Inverted form (reviewer default, author prefix) was considered. Picked author-default because operational agents vastly outnumber reviewer calls in any normal task, so defaulting to author minimises the prefix burden across the codebase.
+- **Identity-equality check warns, does NOT abort.** An operator who knowingly accepts single-identity (e.g., no second GH account, or testing in a sandbox) can still complete install.sh. The warning prints the exact recovery recipe; auto-merge will hold the PR until they fix it.
+- **`gh auth setup-git` runs under author's `GH_CONFIG_DIR`.** Because `gh auth git-credential` resolves `$GH_CONFIG_DIR` at invocation, the helper line in the global gitconfig is dynamic. One setup call is enough for both identities (and for the operator's unaltered `~/.config/gh/` outside atelier).
+- **`task-status` alias prefixed too.** Pre-M5.0.1, the operator's `~/.config/gh/` was authenticated by install.sh, so `gh pr list --author @me` worked from their normal shell. Post-M5.0.1, install.sh doesn't touch `~/.config/gh/`, so the alias would fail. Prefixing with `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author` keeps `task-status` working under the atelier-author identity (the same identity that opens the PRs).
+- **No SSH-key fallback.** PLAN.md §2 step 5's `--skip-ssh-key` defense-in-depth carries over to both new logins. Atelier never reaches for SSH, regardless of which role.
+- **Lean specs.** Agent / skill prompt updates kept operational-only — no milestone references, no Finding #11 mentions, no install-time concepts. Per maintainer convention (also applied to M4.7 and M5.0.2 spec edits).
+
+**Acceptance criterion status:** install.sh produces two `gh auth` configurations under `$ATELIER_CONFIG_DIR/gh/{author,reviewer}/`, isolated from `~/.config/gh/`; the shellrc hook block exports the author identity for atelier sessions; the reviewer agent overrides to the reviewer identity on every call. **Structurally satisfied** by `bash -n` + `jq empty` + diff review. **Empirical end-to-end validation pending dogfood-4.**
+
+**Follow-ups:**
+
+- Dogfood-4 — re-run the auto-merge flow from dogfood-1 on a freshly installed atelier with two distinct GitHub accounts; verify GitHub's PR UI shows the reviewer's verdict as a real approval and that `auto-merge` skill's guardrail #2 passes.
+- M5.0.3 — `atelier-uninstall` with chat-session preservation. Both `gh/author/` and `gh/reviewer/` dirs live inside `$ATELIER_CONFIG_DIR`, so the default-mode uninstall and the `--purge` mode both clean them up uniformly.
+- `/doctor` slash command (M2.x): when implemented, surface the two atelier-isolated `gh auth status` checks + the identity-equality result; surface a single actionable line when one of the dirs is unauthenticated or when both identities coincide.
+
 ### M5.0.2 — Preflight collision check + dynamic `ATELIER_CONFIG_DIR` — 2026-05-21
 **PR:** _pending_
 
