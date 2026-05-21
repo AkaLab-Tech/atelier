@@ -115,5 +115,5 @@ Or, if any step aborted, report exactly which step and why — the operator deci
 
 - **Never** create a worktree if `IN_PROGRESS.md` already has a task — see step 2.
 - **Never** claim a task whose `blocked_by:` references an open item.
-- **Never** edit `settings.template.json` itself from this command — that template is the source of truth shipped with the plugin; only the **instantiated** `<worktree>/.claude/settings.json` is written here.
+- **Never** edit `settings.template.json` itself from this command — that file is the template, not the output. Write to `<worktree>/.claude/settings.json` only.
 - **Never** push or open a PR from this command — that is `pr-author`'s job at the end of the chain.
