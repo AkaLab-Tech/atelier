@@ -234,7 +234,12 @@ SETUP_VERSION=""
 # ---------- step 3: .claude/settings.json ----------
 step_settings_json() {
   local target="$PROJECT/.claude/settings.json"
-  local template="$PLUGIN_ROOT/templates/settings.template.json"
+  # Read the INSTANTIATED template from atelier's config dir (per M5.0.2):
+  # install.sh has already substituted <atelier-config-dir> in this copy,
+  # so the only remaining placeholder is <worktree>. Reading from
+  # $CLAUDE_PLUGIN_ROOT/templates/ here would pick up the source template
+  # with the install-time placeholder unsubstituted.
+  local template="$ATELIER_CONFIG_DIR/templates/settings.template.json"
 
   [ -f "$template" ] || die "template missing: $template"
 
@@ -247,20 +252,26 @@ step_settings_json() {
   fi
 
   local tmp; tmp="$(mktemp)"
-  # Two placeholders substituted in one sed pass:
-  #   <worktree>          → absolute path of the project being set up
-  #   <atelier-config-dir> → atelier's isolated Claude config root (M5.0.2)
-  sed -e "s|<worktree>|$PROJECT|g" \
-      -e "s|<atelier-config-dir>|$ATELIER_CONFIG_DIR|g" \
-      "$template" > "$tmp" \
+  # Only <worktree> is substituted here — it's a per-project value. The
+  # install-time placeholder <atelier-config-dir> was already substituted
+  # by install.sh into the instantiated template at
+  # $ATELIER_CONFIG_DIR/templates/ (M5.0.2). If <atelier-config-dir> is
+  # still in the template at this point, that's an install bug, not a
+  # runtime concern — surface it explicitly via the second grep check
+  # below.
+  sed "s|<worktree>|$PROJECT|g" "$template" > "$tmp" \
     || { rm -f "$tmp"; die "sed substitution failed for $target"; }
 
   jq empty "$tmp" >/dev/null 2>&1 \
     || { rm -f "$tmp"; die "$template did not produce valid JSON after substitution"; }
 
-  if grep -q "<worktree>" "$tmp" || grep -q "<atelier-config-dir>" "$tmp"; then
+  if grep -q "<worktree>" "$tmp"; then
     rm -f "$tmp"
-    die "$template still contains literal '<worktree>' or '<atelier-config-dir>' after substitution — template bug"
+    die "$template still contains literal '<worktree>' after substitution — template bug"
+  fi
+  if grep -q "<atelier-config-dir>" "$tmp"; then
+    rm -f "$tmp"
+    die "$template still contains literal '<atelier-config-dir>' — install.sh did not instantiate the template under \$ATELIER_CONFIG_DIR/templates/ (re-run install.sh)"
   fi
 
   if [ -f "$target" ] && $RECONFIGURE; then
@@ -340,7 +351,12 @@ EOF
 # ---------- step 5: .claude/CLAUDE.md ----------
 step_project_claude_md() {
   local target="$PROJECT/.claude/CLAUDE.md"
-  local template="$PLUGIN_ROOT/templates/project-claude.md.template"
+  # Same convention as step_settings_json — read from atelier's config dir,
+  # not $CLAUDE_PLUGIN_ROOT. project-claude.md.template has no install-time
+  # placeholder (only <project-name> at runtime) but install.sh copies it
+  # into $ATELIER_CONFIG_DIR/templates/ alongside the instantiated
+  # settings.template.json for source-path consistency.
+  local template="$ATELIER_CONFIG_DIR/templates/project-claude.md.template"
 
   [ -f "$template" ] || die "template missing: $template"
 

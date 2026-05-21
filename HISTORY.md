@@ -24,19 +24,24 @@ Newest first. Each entry references the PR(s) that delivered the work.
   - **`phase_c_1_claude_config_dir()` extended:** after `mkdir -p "$ATELIER_CONFIG_DIR"`, writes `$ATELIER_CONFIG_DIR/.atelier-managed` (a small JSON marker with `managedBy`, `installedAt`, `installerVersion`, `atelierConfigDir`). Refreshed on every install. Future preflight runs recognise this file as "atelier's dir, OK to use".
   - **Shellrc hook block** now contains `export ATELIER_CONFIG_DIR="__ATELIER_CONFIG_DIR__"` as a placeholder line, with bash-native `${block//__ATELIER_CONFIG_DIR__/$ATELIER_CONFIG_DIR}` substitution after the heredoc to bake in the chosen path. `task()` now reads `$ATELIER_CONFIG_DIR` instead of hardcoded `$HOME/.claude-work`.
 
-- `scripts/atelier-setup-project` — env-var-driven:
+- `install.sh` Phase C.1 — new `phase_c_1_instantiate_templates()`:
+  - Reads `$ATELIER_REPO_ROOT/templates/settings.template.json` (the source with placeholders) and writes `$ATELIER_CONFIG_DIR/templates/settings.template.json` with `<atelier-config-dir>` substituted by `$ATELIER_CONFIG_DIR`. The `<worktree>` placeholder stays untouched — it's a per-task / per-project value resolved at runtime by consumers.
+  - Copies `$ATELIER_REPO_ROOT/templates/project-claude.md.template` verbatim to `$ATELIER_CONFIG_DIR/templates/project-claude.md.template` (no install-time placeholders, but copied to the same dir for source-path consistency).
+  - Wired into `phase_c_1()` between `phase_c_1_claude_config_dir` and `phase_c_1_git_wt` so templates exist before any consumer runs.
+
+- `scripts/atelier-setup-project` — reads instantiated templates from `$ATELIER_CONFIG_DIR/templates/`:
   - Top of script: `ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"` (env var with fallback for non-atelier shells like the slash-command's `Bash` subprocess).
   - `CONFIG_FILE="$ATELIER_CONFIG_DIR/projects.json"` (dynamic).
   - Plugin auto-discover: `for candidate in "$ATELIER_CONFIG_DIR/plugins"/*/atelier; do` (dynamic).
-  - `step_settings_json()` sed: two `-e` substitutions in one pass — `<worktree>` and `<atelier-config-dir>`. Verification now also checks no literal `<atelier-config-dir>` remains.
+  - `step_settings_json()` reads from `$ATELIER_CONFIG_DIR/templates/settings.template.json` (instantiated). Sed substitutes only `<worktree>` — one placeholder, one pass, simple. Two grep verifications: no literal `<worktree>` left (the per-project sed failed) and no literal `<atelier-config-dir>` left (an actionable error pointing at install.sh — "re-run install.sh to instantiate the template").
+  - `step_project_claude_md()` reads from `$ATELIER_CONFIG_DIR/templates/project-claude.md.template`. Same source-path convention.
   - Final summary print: `$(printf '%s' "$CONFIG_FILE" | sed "s|^$HOME|~|"): $CONFIG_STATUS` — replaces `$HOME` with `~` for display, regardless of actual config dir.
-  - `--help` text + inline comments + error messages updated to reference `$ATELIER_CONFIG_DIR` with default note.
 
-- `templates/settings.template.json` — hardcoded `~/.claude-work/*` Read entries are now `<atelier-config-dir>/*` placeholders, substituted by `atelier-setup-project` (per-project) and by `commands/next-task.md` step 7 (per-task worktree).
+- `templates/settings.template.json` (the source) — hardcoded `~/.claude-work/*` Read entries are now `<atelier-config-dir>/*` placeholders. Substituted **once at install time** by `install.sh`, not at runtime by every consumer.
 
-- `commands/next-task.md` step 7 — sed gains a second `-e` for `<atelier-config-dir>`, reads `${ATELIER_CONFIG_DIR:-$HOME/.claude-work}` (env var with fallback for `--plugin-dir` ad-hoc mode). Verification grows from 5 guards to 6 (added: no literal `<atelier-config-dir>` left). Hard refusals updated to mention both placeholders.
+- `commands/next-task.md` step 7 — reads from `$CLAUDE_CONFIG_DIR/templates/settings.template.json` (the instantiated copy, accessible from inside the atelier session via the env var Claude Code itself reads). Sed substitutes only `<worktree>`. Five guards (pre-M5.0.2 simplicity). Hard refusals gain one entry forbidding reads from `$CLAUDE_PLUGIN_ROOT/templates/` (would pick up the source-with-placeholders copy).
 
-- `commands/setup-project.md` — steps 3 and 8 reference `$ATELIER_CONFIG_DIR/projects.json` (default `~/.claude-work/projects.json`). Step 4 mentions both placeholder substitutions.
+- `commands/setup-project.md` — steps 3 and 8 reference `$ATELIER_CONFIG_DIR/projects.json` (default `~/.claude-work/projects.json`). Step 4 references `$ATELIER_CONFIG_DIR/templates/settings.template.json` (instantiated) and mentions only the `<worktree>` runtime placeholder.
 
 - `HISTORY.md` M5.0 PR line backfilled `_pending_` → [#46](https://github.com/AkaLab-Tech/atelier/pull/46).
 
@@ -52,13 +57,14 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 **Decisions captured:**
 
+- **Install-time substitution of `<atelier-config-dir>`, NOT runtime.** First draft of this PR (commit `51c2c50`) substituted both `<worktree>` and `<atelier-config-dir>` at runtime, inside `commands/next-task.md` step 7 and `atelier-setup-project`'s `step_settings_json()`. Review feedback caught the design smell: `<atelier-config-dir>` is install-time (the operator decided where atelier lives at install — that doesn't change per-task / per-project), so making slash commands "know where atelier lives" mixed concerns. Final shape (commit `<this PR's second commit>`): install.sh substitutes `<atelier-config-dir>` once into `$ATELIER_CONFIG_DIR/templates/settings.template.json`; the consumers read THAT instantiated copy. Slash command specs no longer mention `<atelier-config-dir>` or env-var fallback chains — they just substitute the one remaining runtime placeholder, `<worktree>`.
 - **Argparse via case-statement, not getopts.** Bash `getopts` doesn't natively support GNU-style `--long-options`. The hand-rolled while-case loop is ~25 lines and supports both `--config-dir <path>` and `--config-dir=<path>` forms.
 - **Tilde-expansion is opt-in.** Operator-typed paths get `${path/#\~/$HOME}` expansion. Flag values and env vars do too. The bash native `~` expansion only happens at parse-time of unquoted tokens, so this manual expansion is required when the path comes through a quoted argument.
 - **Marker file is JSON, not a touch file.** Could have been `touch $dir/.atelier-managed`. JSON makes it self-documenting (`jq . .atelier-managed` works) and lets future install.sh records add fields (e.g., last-install version) without breaking parse.
 - **Marker refreshed on every install, not just on first install.** `installedAt` reflects the most recent install. That's the more useful question to answer for the operator ("when did atelier last touch this dir?") versus "when was it originally installed" (which they can pull from `git log` on their atelier checkout).
-- **Two substitutions in one sed pass, not two passes.** Using `sed -e ... -e ...` is one process, one fork. Two passes would be two `sed` invocations and an intermediate temp file.
+- **Instantiated templates live under `$ATELIER_CONFIG_DIR/templates/`, not `$CLAUDE_PLUGIN_ROOT/templates/`.** Mutating the plugin's own templates dir post-install would be weird — the plugin checkout is a git working tree managed by Claude Code's plugin updater. Writing to `$ATELIER_CONFIG_DIR/templates/` (atelier's instance config) keeps the source / instance separation clean. The plugin checkout stays pristine; the operator's instance has its own copy with install-time placeholders resolved.
 - **Final summary print uses `sed "s|^$HOME|~|"`, not parameter-expansion `${CONFIG_FILE/#$HOME/~}`.** Both work, but the sed form survives the case where `$CONFIG_FILE` doesn't start with `$HOME` (e.g., operator set `ATELIER_CONFIG_DIR=/var/lib/atelier`), printing the full path instead of mangling.
-- **No `commands/finish-task.md` / `commands/resume-task.md` / `commands/doctor.md` / `commands/status.md` changes in this PR.** They don't reference `~/.claude-work/` or the registry path today. If a future audit shows they do, that's a follow-up — for M5.0.2 the touch points are install.sh, the bash helper, the template, and the two slash commands that DO substitute the template (`setup-project` via the helper, `next-task` step 7).
+- **No `commands/finish-task.md` / `commands/resume-task.md` / `commands/doctor.md` / `commands/status.md` changes in this PR.** They don't reference `~/.claude-work/` or the registry path today. If a future audit shows they do, that's a follow-up — for M5.0.2 the touch points are install.sh (preflight + instantiation), the bash helper, the template, and the two slash commands that DO substitute the template (`setup-project` via the helper, `next-task` step 7).
 
 **Acceptance criterion status:** atelier handles config-dir collisions safely (preflight refuses, prompts, or proceeds idempotently depending on context) and all hardcoded paths now flow from a single `$ATELIER_CONFIG_DIR` variable. **Structurally satisfied** and **empirically validated** by the four smoke tests above.
 

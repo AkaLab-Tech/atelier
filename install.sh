@@ -392,6 +392,44 @@ phase_b() {
 # the recorded git-wt SHA from here to detect drift against upstream.
 ATELIER_STATE_DIR="${HOME}/.local/state/atelier"
 
+phase_c_1_instantiate_templates() {
+  # Atelier ships `templates/` with placeholders that depend on where atelier
+  # is installed:
+  #   - <atelier-config-dir> in settings.template.json (replaced once, here)
+  #   - <worktree>           in settings.template.json (replaced per-task /
+  #                          per-project at runtime by atelier-setup-project
+  #                          and `/next-task` step 7)
+  #   - <project-name>       in project-claude.md.template (replaced
+  #                          per-project at runtime by atelier-setup-project)
+  #
+  # <atelier-config-dir> is install-time. The slash commands and the bash
+  # helper shouldn't need to know "where atelier lives" — that's a decision
+  # made here, in install.sh, when the operator chose --config-dir or
+  # accepted the default. Per-task / per-project consumers read the
+  # instantiated copy under $ATELIER_CONFIG_DIR/templates/ and only worry
+  # about the runtime placeholders that genuinely change per invocation.
+  local src_dir="$ATELIER_REPO_ROOT/templates"
+  local dst_dir="$ATELIER_CONFIG_DIR/templates"
+  mkdir -p "$dst_dir"
+
+  # 1) settings.template.json — substitute <atelier-config-dir>; leave
+  #    <worktree> untouched (per-task / per-project substitution).
+  sed "s|<atelier-config-dir>|$ATELIER_CONFIG_DIR|g" \
+      "$src_dir/settings.template.json" \
+      > "$dst_dir/settings.template.json"
+  if grep -q "<atelier-config-dir>" "$dst_dir/settings.template.json"; then
+    rm -f "$dst_dir/settings.template.json"
+    die "settings.template.json instantiation left a literal <atelier-config-dir> behind (template bug?)"
+  fi
+  sublog "instantiated $dst_dir/settings.template.json"
+
+  # 2) project-claude.md.template — no install-time placeholders to
+  #    substitute; copy verbatim. The per-project <project-name>
+  #    substitution happens later in atelier-setup-project.
+  cp "$src_dir/project-claude.md.template" "$dst_dir/project-claude.md.template"
+  sublog "copied $dst_dir/project-claude.md.template"
+}
+
 phase_c_1_claude_config_dir() {
   # Create atelier's isolated config root if it does not yet exist (M5.0),
   # then write a small marker file so future preflight runs (M5.0.2) can
@@ -663,6 +701,7 @@ BLOCK
 phase_c_1() {
   log "Phase C.1 — host-OS configuration"
   phase_c_1_claude_config_dir
+  phase_c_1_instantiate_templates
   phase_c_1_git_wt
   phase_c_1_env_excludes
   phase_c_1_git_identity
