@@ -60,6 +60,29 @@ Why this matters: an operator running atelier via marketplace install probably d
 
 **Trigger to revisit:** before dogfood-4 (or a re-run of dogfood-3). Currently blocking any autonomous agent-chain validation of atelier via `claude -p --plugin-dir`.
 
+### M4.14 — Implement↔validate inner loop with iteration budget
+
+The `/next-task` chain currently runs implementation and validation as a single forward pass. Any failure (lint, typecheck, unit tests) falls through to the `retry-with-logs` skill, which resets the worktree and restarts the entire task. There is no cheap inner loop where the implementer can iterate against quick validation before committing to the heavier PR-gate path.
+
+This task introduces an explicit implement↔validate loop driven by `task-orchestrator`, separating fast checks (run on every iteration) from slow checks (run once, before PR):
+
+1. **`/validate`** — new slash command that runs the **fast** validation layer (lint + typecheck + unit/integration tests) and prints a structured result (pass/fail + per-check output). Invocable standalone for manual debug.
+2. **`/validate --full`** — adds the **slow** layer (Playwright e2e + screenshot capture). Run once before `/pr-flow`, never inside the loop.
+3. **`task-orchestrator` loop logic** — after `implementer` returns, the orchestrator calls `/validate`. On fail, it re-invokes `implementer` with the validation output appended to the prompt (so the next attempt sees what failed). The loop counter is anchored to the existing 3+3 retry budget from [PLAN.md §8](PLAN.md): up to 3 inner iterations → trigger `retry-with-logs` worktree reset → up to 3 more inner iterations → hard stop with the existing `blocked` issue path.
+4. **Iteration counter** — persisted at `<worktree>/.task-log/attempt-count` so a session restart does not silently reset the budget.
+
+The hook-driven variant (auto-reprompt on `Stop`) is captured separately as M4.15 — alternative path, not a replacement for the orchestrator-driven loop.
+
+**Acceptance:**
+
+- `/validate` exists as a standalone command and prints a structured pass/fail summary.
+- Running `/next-task` on a task whose first implementation attempt fails lint/typecheck/unit-tests triggers an automatic in-place re-implementation **without** a worktree reset, up to 3 times.
+- On the 4th failure, `retry-with-logs` resets the worktree and iteration 4 begins fresh; iterations 4–6 follow the same inner-loop pattern.
+- On the 7th total failure, the task is marked `[BLOCKED]` with the existing GitHub issue flow (must not regress).
+- `task-orchestrator` prompt explicitly documents the loop contract and the counter location.
+
+**Trigger to revisit:** when an implementation attempt routinely fails on issues that do not require a full worktree reset to fix (typos, missing imports, lint-only). Identified in conversation 2026-05-21 — the current single-pass-then-reset flow over-rotates on full resets when a cheap inner loop would catch most trivial mistakes.
+
 ---
 
 ## Low Priority / Ideas
@@ -85,6 +108,32 @@ A slash command for the Camino C of the blocked-task lifecycle (operator decides
 **Acceptance:** running `/abandon-task <id>` on a `[BLOCKED]` entry closes the issue with `wontfix`, moves the entry to `HISTORY.md` with `abandoned` mark, and removes the worktree (with confirmation).
 
 **Trigger to revisit:** after M4.2 + M4.3 land and the operator hits a real "I'm not retrying this" situation. Identified while designing M4.2 — deferred because the manual workaround (close issue + edit two markdown files) works fine for the rare case where a task is genuinely abandoned.
+
+### M4.15 — `Stop`-hook auto-reprompt on validation failure (exceptional path)
+
+`blocked_by: M4.14`
+
+Complement to M4.14. Where M4.14 puts the implement↔validate loop inside `task-orchestrator` (the orchestrator reads the validation output and decides whether to re-invoke `implementer`), M4.15 explores doing the same thing one layer lower — at the harness level, via a `Stop` hook that triggers automatically when an assistant turn ends with a failed validation.
+
+The hook script:
+
+1. Detects that the last turn ran `/validate` (or `/validate --full`) and the exit was failure.
+2. Reads `<worktree>/.task-log/attempt-count` and increments it. If the count exceeds the 3+3 budget, the hook does **nothing** — the orchestrator-side `blocked` issue path takes over.
+3. Emits a structured retry prompt back to Claude containing:
+   - An explicit `RETRY-attempt-N / 6` header (so the model knows this is not a fresh task and how much budget remains).
+   - The full output of the failed validation (stdout + stderr from the failing checks) verbatim.
+   - A directive: *"the previous attempt failed the checks below — correct the issues without restarting the task; do not reset the worktree".*
+
+This is **not** the primary loop mechanism (M4.14 is). It is captured as an alternative for cases where the orchestrator-driven loop is too high-latency (long agent dispatch overhead per turn) or where the operator wants the loop to keep running across session restarts without re-entering `/next-task`.
+
+**Acceptance:**
+
+- A `Stop` hook script under `hooks/` detects validation-failure conditions and emits a structured retry prompt with `RETRY-attempt-N` framing and the previous validation output verbatim.
+- The hook respects the same 3+3 budget anchored to `<worktree>/.task-log/attempt-count` (the file written by M4.14) — never exceeds it, never bypasses the `blocked` issue path.
+- Hook is **opt-in** (off by default), enabled via a per-project setting or env var — atelier ships without it active to avoid surprising the operator.
+- When active, the hook composes with M4.14 cleanly (no double-incrementing the counter, no race between orchestrator-driven and hook-driven reprompts).
+
+**Trigger to revisit:** after M4.14 is in production and the operator observes that orchestrator dispatch latency dominates iteration time, **or** wants the loop to survive a session restart. Captured in conversation 2026-05-21 as an exceptional-case mechanism — the operator likes the idea but explicitly tagged it as "for later".
 
 ### M5.1 — Project registry
 
