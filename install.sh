@@ -25,6 +25,16 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# Atelier ships under ~/.claude-work/ (per M5.0 config-root isolation). Every
+# `claude` invocation in this script — Phase B auth, Phase C.2 marketplace +
+# plugin install — targets that config dir, not the operator's personal
+# ~/.claude/ or ~/.claude-personal/. Exported once at script load so child
+# processes inherit it; the operator's parent shell is unaffected (this is a
+# subshell export). The shellrc hook block injected by Phase C.1 sets the
+# same env var inline on the `task()` function so the operator's
+# interactive sessions also land in atelier's config root.
+export CLAUDE_CONFIG_DIR="${HOME}/.claude-work"
+
 # Absolute path of the atelier checkout this install.sh lives in. Phase C.1
 # symlinks scripts/atelier-setup-project from here into ~/.local/bin so the
 # slash command can call it from inside Claude (and the operator from their
@@ -250,6 +260,22 @@ phase_b() {
 # the recorded git-wt SHA from here to detect drift against upstream.
 ATELIER_STATE_DIR="${HOME}/.local/state/atelier"
 
+phase_c_1_claude_config_dir() {
+  # Create atelier's isolated config root if it does not yet exist. Per the
+  # `export CLAUDE_CONFIG_DIR=~/.claude-work` at the top of this script,
+  # every subsequent `claude` invocation in install.sh writes here:
+  # auth tokens (Phase B), marketplace + plugin install (Phase C.2). The
+  # operator's personal Claude config (~/.claude/ or ~/.claude-personal/)
+  # is never touched. See M5.0 in HISTORY.md for the full rationale.
+  local dir="${HOME}/.claude-work"
+  if [ -d "$dir" ]; then
+    sublog "atelier config root already exists: $dir"
+  else
+    mkdir -p "$dir"
+    sublog "created atelier config root: $dir"
+  fi
+}
+
 phase_c_1_git_wt() {
   local sha_file="$ATELIER_STATE_DIR/git-wt.sha"
 
@@ -437,9 +463,12 @@ if command -v fnm >/dev/null 2>&1; then
   eval "$(fnm env --use-on-cd)"
 fi
 # `task`: open a Claude session for the next roadmap task in this project.
-# Wired by M2.3 once `/next-task` lands; the alias ships here so the operator
-# does not need to re-run install.sh after M2.3.
-task() { claude "/next-task $*"; }
+# CLAUDE_CONFIG_DIR=~/.claude-work pins the session to atelier's config root
+# (M5.0 config-root isolation) — separate from the operator's personal Claude
+# config so atelier's autonomous-mode rules don't conflict with personal
+# rules. Without this prefix, `claude` would use whatever CLAUDE_CONFIG_DIR
+# happens to be in the shell's environment (often unset / personal).
+task() { CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude "/next-task $*"; }
 # `task-status`: list the operator's open PRs across all repos they own.
 alias task-status='gh pr list --author @me --state open'
 # <<< atelier hooks (managed by install.sh) <<<
@@ -485,6 +514,7 @@ BLOCK
 
 phase_c_1() {
   log "Phase C.1 — host-OS configuration"
+  phase_c_1_claude_config_dir
   phase_c_1_git_wt
   phase_c_1_env_excludes
   phase_c_1_git_identity

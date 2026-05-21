@@ -46,7 +46,7 @@ OPTIONS:
                          Resolution order: this flag, then
                          \$ATELIER_PLUGIN_ROOT, then the atelier checkout
                          this script lives in, then the first match under
-                         ~/.claude/plugins/*/atelier/.
+                         ~/.claude-work/plugins/*/atelier/.
   --yes, -y              Non-interactive mode. Auto-resolves every prompt
                          with the safe default (never overwrite, never
                          weaken). Also honored if \$ATELIER_AUTO is set.
@@ -136,8 +136,8 @@ resolve_plugin_root() {
     printf '%s\n' "$candidate"; return
   fi
 
-  # Marketplace install: ~/.claude/plugins/<marketplace>/atelier/.
-  for candidate in "$HOME/.claude/plugins"/*/atelier; do
+  # Marketplace install: ~/.claude-work/plugins/<marketplace>/atelier/ (per M5.0).
+  for candidate in "$HOME/.claude-work/plugins"/*/atelier; do
     if looks_like_plugin_root "$candidate"; then
       printf '%s\n' "$candidate"; return
     fi
@@ -149,7 +149,7 @@ resolve_plugin_root() {
    - --plugin-root flag         (not given)
    - \$ATELIER_PLUGIN_ROOT      (${ATELIER_PLUGIN_ROOT:-unset})
    - script-relative discovery  ($(dirname "$(script_dir)"))
-   - ~/.claude/plugins/*/atelier (no match)
+   - ~/.claude-work/plugins/*/atelier (no match)
 
    Pass --plugin-root /abs/path/to/atelier-checkout, export ATELIER_PLUGIN_ROOT,
    or install via the atelier marketplace."
@@ -198,7 +198,7 @@ resolve_project_path() {
 }
 
 # ---------- idempotence ----------
-CONFIG_FILE="${HOME}/.claude/.atelier-config.json"
+CONFIG_FILE="${HOME}/.claude-work/projects.json"
 
 is_configured() {
   local proj="$1"
@@ -400,7 +400,7 @@ step_gitignore() {
   GITIGNORE_STATUS="appended"
 }
 
-# ---------- step 8: record setup in ~/.claude/.atelier-config.json ----------
+# ---------- step 8: record setup in ~/.claude-work/projects.json ----------
 step_record_setup() {
   local now plugin_version tmp
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -474,7 +474,7 @@ sublog "HISTORY.md:                     $HISTORY_STATUS"
 sublog ".claude/CLAUDE.md:              $CLAUDE_STATUS"
 sublog ".npmrc:                         $NPMRC_STATUS"
 sublog ".gitignore:                     $GITIGNORE_STATUS"
-sublog "~/.claude/.atelier-config.json: $CONFIG_STATUS"
+sublog "~/.claude-work/projects.json:    $CONFIG_STATUS"
 sublog "setupCompleted:                 $SETUP_COMPLETED"
 sublog "setupVersion:                   $SETUP_VERSION"
 echo ""
