@@ -63,7 +63,7 @@ Format:
 - `scope` is the area touched (`plugin`, `install`, `hooks`, `agents`, project-area, etc.). Skip the parens entirely when no scope makes sense.
 - `subject` is imperative (`add`, `fix`, `remove` — not `added`/`fixed`).
 - The **body** is non-optional for atelier tasks. It cites:
-  - The roadmap entry being closed (e.g. `Closes M2.2` or `Closes #42`).
+  - The roadmap entry being closed (e.g. `Closes #<task-id>`).
   - The acceptance criteria, in 1–3 bullets.
   - For dependency additions: the PLAN.md §4 justification (self-question + ≥2 alternatives compared + why this choice).
 
