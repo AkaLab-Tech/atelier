@@ -40,30 +40,6 @@ Today `pr-author` runs `gh ...` calls under the operator's primary GitHub identi
 - Does the operator create the bot account manually before running install.sh, or does install.sh guide them through `gh auth login --web` with a different account?
 - How does `pr-author` know to use `$ATELIER_CONFIG_DIR/gh` vs the operator's `~/.config/gh/`? (Probably: `export GH_CONFIG_DIR=...` in the shellrc hook block alongside the `CLAUDE_CONFIG_DIR` work.)
 
-### M5.0.2 — Preflight collision check + dynamic `ATELIER_CONFIG_DIR`
-
-M5.0 (PR [#46](https://github.com/AkaLab-Tech/atelier/pull/46)) hardcoded `~/.claude-work/` as atelier's config root. If an operator runs `install.sh` on a machine where `~/.claude-work/` already has unrelated content (another Claude session, an old experiment, etc.), atelier silently merges its state into the operator's existing directory — risking data loss.
-
-This is not hypothetical: the maintainer hit it on their own machine during M5.0's development. The fix was manual (rename `~/.claude-work/` → `~/.claude-hbops/` before re-running install.sh). M5.0.2 makes atelier handle the collision automatically.
-
-**(a) Preflight collision check.** New early-phase step in `install.sh` (before any `claude`/`gh` invocation) inspects the target config dir:
-
-- Empty or non-existent → proceed with the default `~/.claude-work/`.
-- Contains atelier markers (`plugins/atelier@*/` or a written `.atelier-managed` marker file) → it's atelier's previous install, proceed (idempotent re-install).
-- Contains other content → **stop**. In interactive mode, prompt the operator: *"`~/.claude-work/` is occupied by content that does not look like atelier. Please pick an alternative path (e.g. `~/.claude-atelier/`, `~/.atelier/`):"*. In non-interactive mode, fail with an actionable error pointing at `--config-dir <path>` flag and `ATELIER_CONFIG_DIR=...` env var.
-
-**(b) Parameterize all hardcoded paths.** Everywhere atelier hardcodes `~/.claude-work/` becomes `${ATELIER_CONFIG_DIR:-$HOME/.claude-work}` with the chosen path injected at install time:
-
-- `install.sh` top: `export CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"` (computed from preflight, not literal).
-- `phase_c_1_claude_config_dir` (M5.0): `mkdir -p "$ATELIER_CONFIG_DIR"`.
-- Shellrc hook block: `export ATELIER_CONFIG_DIR="<chosen path>"` baked in via sed-substitution during install. `task()` reads `$ATELIER_CONFIG_DIR`.
-- `scripts/atelier-setup-project`: `CONFIG_FILE="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}/projects.json"`. Plugin auto-discover path same.
-- `templates/settings.template.json`: gains a `<atelier-config-dir>` placeholder that `atelier-setup-project` substitutes alongside `<worktree>` when writing per-project settings.json.
-
-**Acceptance:** running `install.sh` on a machine with an unrelated `~/.claude-work/` does NOT clobber it. Interactive operator gets prompted for alternative; non-interactive gets a clear actionable error. The chosen path is consistently read by `task()`, `atelier-setup-project`, and per-project `settings.json` instantiation. Running `install.sh` again later (with the same operator's choice) is idempotent.
-
-**Trigger to revisit:** before any operator other than the maintainer runs `install.sh` from scratch. Identified post-M5.0 when the maintainer realized their own initial setup almost destroyed an unrelated `~/.claude-work/` directory.
-
 ### M5.0.3 — `atelier-uninstall` with chat-session preservation
 
 Today there is no clean way to uninstall atelier. To remove atelier, the operator has to manually:

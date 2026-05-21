@@ -3,11 +3,12 @@
 # atelier install.sh — single entry-point installer.
 #
 # Phases (per PLAN.md §2):
+#   0    preflight: resolve $ATELIER_CONFIG_DIR + collision check  (M5.0.2)
 #   A    base deps (git, gh, fnm, pnpm, jq, fzf) + Claude Code
-#   B    Claude + GitHub auth                              [not yet implemented]
+#   B    Claude + GitHub auth
 #   C.1  git-wt, .env* excludes, git identity, shellrc,
-#        atelier-setup-project helper symlink                [not yet implemented]
-#   C.2  drive Claude Code to install the atelier plugin   [not yet implemented]
+#        atelier-setup-project helper symlink, .atelier-managed marker
+#   C.2  drive Claude Code to install the atelier plugin
 #
 # Conventions:
 #   - strict mode: `set -euo pipefail` and a defensive IFS.
@@ -25,22 +26,31 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-# Atelier ships under ~/.claude-work/ (per M5.0 config-root isolation). Every
-# `claude` invocation in this script — Phase B auth, Phase C.2 marketplace +
-# plugin install — targets that config dir, not the operator's personal
-# ~/.claude/ or ~/.claude-personal/. Exported once at script load so child
-# processes inherit it; the operator's parent shell is unaffected (this is a
-# subshell export). The shellrc hook block injected by Phase C.1 sets the
-# same env var inline on the `task()` function so the operator's
-# interactive sessions also land in atelier's config root.
-export CLAUDE_CONFIG_DIR="${HOME}/.claude-work"
-
 # Absolute path of the atelier checkout this install.sh lives in. Phase C.1
 # symlinks scripts/atelier-setup-project from here into ~/.local/bin so the
 # slash command can call it from inside Claude (and the operator from their
 # terminal). Computed once at script load; doesn't follow symlinks because
 # the operator's clone is the canonical source.
 ATELIER_REPO_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Default path for atelier's isolated Claude config root (M5.0). The operator
+# may override via the --config-dir flag or the ATELIER_CONFIG_DIR env var;
+# Phase 0 preflight (M5.0.2) resolves the final value into ATELIER_CONFIG_DIR
+# and then exports CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR so every claude
+# invocation in this script (Phase B auth, Phase C.2 plugin install) lands
+# in the right place.
+ATELIER_CONFIG_DIR_DEFAULT="${HOME}/.claude-work"
+
+# Set by parse_args. Empty unless --config-dir was given on the command line.
+ATELIER_CONFIG_DIR_FLAG=""
+
+# Set by parse_args. true → preflight refuses (rather than prompts) when the
+# target directory has unrelated content.
+NONINTERACTIVE=false
+
+# Resolved by resolve_config_dir() in main() — must NOT be referenced before
+# parse_args + resolve_config_dir have run.
+ATELIER_CONFIG_DIR=""
 
 # ---------- logging ----------
 
@@ -62,6 +72,128 @@ detect_os() {
     linux*)  printf 'linux\n' ;;
     *)       die "unsupported OS '${OSTYPE:-unknown}' (atelier supports macOS and Linux)" ;;
   esac
+}
+
+# ---------- usage / argparse ----------
+
+usage() {
+  cat <<EOF
+atelier install.sh — bootstrap a fresh Mac (or apt-based Linux) for atelier.
+
+USAGE:
+  install.sh [OPTIONS]
+
+OPTIONS:
+  --config-dir <path>   Path for atelier's isolated Claude config root
+                        (M5.0). Used as CLAUDE_CONFIG_DIR for every claude
+                        invocation in this script, baked into the shellrc
+                        hook block, and recorded in scripts/
+                        atelier-setup-project for the project registry.
+                        Resolution priority: this flag, then the
+                        ATELIER_CONFIG_DIR env var, then the default
+                        \`~/.claude-work/\`.
+  --yes, -y             Non-interactive mode. The preflight collision
+                        check refuses (rather than prompts) if the target
+                        config dir already has unrelated content.
+  --help, -h            Show this help and exit.
+
+PREFLIGHT BEHAVIOUR (M5.0.2):
+  Before any install step, install.sh inspects the resolved
+  \$ATELIER_CONFIG_DIR:
+    - empty / non-existent → proceed (will be created in Phase C.1)
+    - contains the \`.atelier-managed\` marker or \`plugins/<*>/atelier/\`
+      → recognised as a previous atelier install, proceed (idempotent)
+    - contains other content → STOP. Interactive: prompt for an
+      alternative path. Non-interactive: error out with the resolution
+      options above.
+EOF
+}
+
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --config-dir)
+        [ -n "${2:-}" ] || die "--config-dir requires a path"
+        ATELIER_CONFIG_DIR_FLAG="$2"; shift 2 ;;
+      --config-dir=*)
+        ATELIER_CONFIG_DIR_FLAG="${1#--config-dir=}"; shift ;;
+      --yes|-y)
+        NONINTERACTIVE=true; shift ;;
+      --help|-h)
+        usage; exit 0 ;;
+      *)
+        die "unknown argument: $1 (try --help)" ;;
+    esac
+  done
+}
+
+resolve_config_dir() {
+  # Priority: --config-dir flag > $ATELIER_CONFIG_DIR env > default.
+  if [ -n "$ATELIER_CONFIG_DIR_FLAG" ]; then
+    ATELIER_CONFIG_DIR="$ATELIER_CONFIG_DIR_FLAG"
+  elif [ -n "${ATELIER_CONFIG_DIR:-}" ]; then
+    : # use existing env var value
+  else
+    ATELIER_CONFIG_DIR="$ATELIER_CONFIG_DIR_DEFAULT"
+  fi
+  # Expand leading ~ tilde if present (operator may type `~/.foo`).
+  ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR/#\~/$HOME}"
+  export ATELIER_CONFIG_DIR
+}
+
+# ---------- phase 0: preflight (M5.0.2) ----------
+
+# Return 0 if $1 (path) is safe to use as atelier's config dir; 1 otherwise.
+# Safe states: doesn't exist, exists but empty, exists with atelier markers
+# (the .atelier-managed file or plugins/<*>/atelier/). Unsafe state: exists
+# with unrelated content.
+preflight_check() {
+  local dir="$1"
+  [ -d "$dir" ] || return 0
+  [ -z "$(ls -A "$dir" 2>/dev/null)" ] && return 0
+  [ -f "$dir/.atelier-managed" ] && return 0
+  # Glob expands to nothing if no match; the nullglob behaviour is the
+  # safe path. Wrap in a subshell so set -e + nullglob don't leak out.
+  if ( shopt -s nullglob; matches=("$dir/plugins"/*/atelier); [ ${#matches[@]} -gt 0 ] ); then
+    return 0
+  fi
+  return 1
+}
+
+phase_0_preflight() {
+  log "Phase 0 — preflight: atelier config dir collision check"
+  while true; do
+    if preflight_check "$ATELIER_CONFIG_DIR"; then
+      sublog "atelier config dir OK: $ATELIER_CONFIG_DIR"
+      return 0
+    fi
+
+    warn "atelier wants to install under $ATELIER_CONFIG_DIR but that"
+    warn "directory already contains content that does not look like atelier:"
+    ls -A "$ATELIER_CONFIG_DIR" 2>/dev/null | head -10 | sed 's/^/      /' >&2
+
+    if $NONINTERACTIVE; then
+      die "non-interactive mode refuses to proceed.
+
+   Options:
+     1. Re-run with --config-dir <path> pointing at an empty or atelier-
+        managed directory.
+     2. Set ATELIER_CONFIG_DIR=<path> before running install.sh.
+     3. Manually clear / move \$ATELIER_CONFIG_DIR's contents and re-run.
+     4. Re-run install.sh interactively (without --yes / -y) to be
+        prompted for an alternative path."
+    fi
+
+    # Interactive: ask operator for an alternative.
+    printf "    pick an alternative path (e.g. ~/.claude-atelier/, ~/.atelier/): " >&2
+    local answer=""
+    read -r answer
+    [ -n "$answer" ] || { warn "empty path, try again"; continue; }
+    answer="${answer/#\~/$HOME}"
+    ATELIER_CONFIG_DIR="$answer"
+    export ATELIER_CONFIG_DIR
+    sublog "trying $ATELIER_CONFIG_DIR ..."
+  done
 }
 
 # ---------- phase A: base deps + Claude Code ----------
@@ -260,20 +392,67 @@ phase_b() {
 # the recorded git-wt SHA from here to detect drift against upstream.
 ATELIER_STATE_DIR="${HOME}/.local/state/atelier"
 
-phase_c_1_claude_config_dir() {
-  # Create atelier's isolated config root if it does not yet exist. Per the
-  # `export CLAUDE_CONFIG_DIR=~/.claude-work` at the top of this script,
-  # every subsequent `claude` invocation in install.sh writes here:
-  # auth tokens (Phase B), marketplace + plugin install (Phase C.2). The
-  # operator's personal Claude config (~/.claude/ or ~/.claude-personal/)
-  # is never touched. See M5.0 in HISTORY.md for the full rationale.
-  local dir="${HOME}/.claude-work"
-  if [ -d "$dir" ]; then
-    sublog "atelier config root already exists: $dir"
-  else
-    mkdir -p "$dir"
-    sublog "created atelier config root: $dir"
+phase_c_1_instantiate_templates() {
+  # Atelier ships `templates/` with placeholders that depend on where atelier
+  # is installed:
+  #   - <atelier-config-dir> in settings.template.json (replaced once, here)
+  #   - <worktree>           in settings.template.json (replaced per-task /
+  #                          per-project at runtime by atelier-setup-project
+  #                          and `/next-task` step 7)
+  #   - <project-name>       in project-claude.md.template (replaced
+  #                          per-project at runtime by atelier-setup-project)
+  #
+  # <atelier-config-dir> is install-time. The slash commands and the bash
+  # helper shouldn't need to know "where atelier lives" — that's a decision
+  # made here, in install.sh, when the operator chose --config-dir or
+  # accepted the default. Per-task / per-project consumers read the
+  # instantiated copy under $ATELIER_CONFIG_DIR/templates/ and only worry
+  # about the runtime placeholders that genuinely change per invocation.
+  local src_dir="$ATELIER_REPO_ROOT/templates"
+  local dst_dir="$ATELIER_CONFIG_DIR/templates"
+  mkdir -p "$dst_dir"
+
+  # 1) settings.template.json — substitute <atelier-config-dir>; leave
+  #    <worktree> untouched (per-task / per-project substitution).
+  sed "s|<atelier-config-dir>|$ATELIER_CONFIG_DIR|g" \
+      "$src_dir/settings.template.json" \
+      > "$dst_dir/settings.template.json"
+  if grep -q "<atelier-config-dir>" "$dst_dir/settings.template.json"; then
+    rm -f "$dst_dir/settings.template.json"
+    die "settings.template.json instantiation left a literal <atelier-config-dir> behind (template bug?)"
   fi
+  sublog "instantiated $dst_dir/settings.template.json"
+
+  # 2) project-claude.md.template — no install-time placeholders to
+  #    substitute; copy verbatim. The per-project <project-name>
+  #    substitution happens later in atelier-setup-project.
+  cp "$src_dir/project-claude.md.template" "$dst_dir/project-claude.md.template"
+  sublog "copied $dst_dir/project-claude.md.template"
+}
+
+phase_c_1_claude_config_dir() {
+  # Create atelier's isolated config root if it does not yet exist (M5.0),
+  # then write a small marker file so future preflight runs (M5.0.2) can
+  # recognise this directory as atelier-managed without false-positive
+  # collision warnings. The marker is refreshed on every install, so its
+  # `installedAt` reflects the most recent install timestamp (not the
+  # original — keep the install state observable but minimal).
+  if [ ! -d "$ATELIER_CONFIG_DIR" ]; then
+    mkdir -p "$ATELIER_CONFIG_DIR"
+    sublog "created atelier config root: $ATELIER_CONFIG_DIR"
+  else
+    sublog "atelier config root already exists: $ATELIER_CONFIG_DIR"
+  fi
+
+  cat > "$ATELIER_CONFIG_DIR/.atelier-managed" <<MARKER
+{
+  "managedBy": "atelier",
+  "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "installerVersion": "0.1.0",
+  "atelierConfigDir": "$ATELIER_CONFIG_DIR"
+}
+MARKER
+  sublog "wrote $ATELIER_CONFIG_DIR/.atelier-managed marker"
 }
 
 phase_c_1_git_wt() {
@@ -458,22 +637,29 @@ phase_c_1_shellrc_hooks() {
 if [[ ":${PATH:-}:" != *":$HOME/.local/bin:"* ]]; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
+# Atelier's isolated Claude config root (M5.0 + M5.0.2). The path is baked
+# in here by install.sh based on the operator's choice (default
+# ~/.claude-work/, may be overridden with --config-dir). To change it
+# later, edit the path below and re-source this rc file — but note that
+# install.sh on a re-run will re-inject this block from the current value.
+export ATELIER_CONFIG_DIR="__ATELIER_CONFIG_DIR__"
 # Auto-switch Node version per-project via .nvmrc.
 if command -v fnm >/dev/null 2>&1; then
   eval "$(fnm env --use-on-cd)"
 fi
 # `task`: open a Claude session for the next roadmap task in this project.
-# CLAUDE_CONFIG_DIR=~/.claude-work pins the session to atelier's config root
-# (M5.0 config-root isolation) — separate from the operator's personal Claude
-# config so atelier's autonomous-mode rules don't conflict with personal
-# rules. Without this prefix, `claude` would use whatever CLAUDE_CONFIG_DIR
-# happens to be in the shell's environment (often unset / personal).
-task() { CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude "/next-task $*"; }
+# CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR pins the session to atelier's
+# config root — separate from the operator's personal Claude config so
+# atelier's autonomous-mode rules don't conflict with personal rules.
+task() { CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude "/next-task $*"; }
 # `task-status`: list the operator's open PRs across all repos they own.
 alias task-status='gh pr list --author @me --state open'
 # <<< atelier hooks (managed by install.sh) <<<
 BLOCK
 )
+  # Bake the resolved config dir into the placeholder. Bash native string
+  # substitution (no sed needed — the placeholder has no glob chars).
+  block="${block//__ATELIER_CONFIG_DIR__/$ATELIER_CONFIG_DIR}"
 
   # Pick which rc file(s) to inject into. Default shell is what `$SHELL`
   # reports. If neither zsh nor bash, write to both so the operator gets the
@@ -515,6 +701,7 @@ BLOCK
 phase_c_1() {
   log "Phase C.1 — host-OS configuration"
   phase_c_1_claude_config_dir
+  phase_c_1_instantiate_templates
   phase_c_1_git_wt
   phase_c_1_env_excludes
   phase_c_1_git_identity
@@ -638,7 +825,21 @@ phase_verify() {
 # ---------- entry point ----------
 
 main() {
+  parse_args "$@"
+  resolve_config_dir
+
+  # Pin every claude invocation in this script (Phase B auth, Phase C.2
+  # marketplace + plugin install) to atelier's resolved config dir. Child
+  # processes inherit the export; the operator's parent shell is
+  # unaffected (this is a subshell export). The shellrc hook block
+  # injected by Phase C.1 sets the same convention inline on the `task()`
+  # function so the operator's interactive sessions also land here.
+  export CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"
+
   log "atelier install.sh starting (os=$(detect_os), arch=$(uname -m))"
+  sublog "atelier config dir: $ATELIER_CONFIG_DIR"
+
+  phase_0_preflight
   phase_a
   phase_b
   phase_c_1

@@ -72,7 +72,7 @@ Invoke the external `git-wt` skill (or `git wt switch <branch>` directly) to cre
 
 ### 7. Instantiate the per-task `.claude/settings.json`
 
-Read `$CLAUDE_PLUGIN_ROOT/templates/settings.template.json`. The template contains the literal placeholder `<worktree>` (in `additionalDirectories` and in some `Read(...)`/`Edit(...)`/`Write(...)` patterns) that must be substituted with the **absolute path of the per-task worktree** (from step 6), NOT the main repo path.
+Read `$CLAUDE_CONFIG_DIR/templates/settings.template.json`. The template contains a literal `<worktree>` placeholder that must be substituted with the **absolute path of the per-task worktree** (from step 6), NOT the main repo path.
 
 **Critical implementation detail:** the Claude Code harness has a built-in guard that requires explicit operator approval for the `Write` and `Edit` tools when the target path is under `.claude/**`. That guard hangs the chain in non-interactive (`-p`) mode. The atelier convention is therefore to write `.claude/settings.json` **via Bash shell redirection** (`sed > file`), never via the `Write` / `Edit` tools — the redirect is a `Bash` tool operation, which the per-path matchers handle via the standard allow / deny matrix and which is not subject to the harness's `.claude/**` interactive guard. The path `<worktree>-worktrees/**` is in `additionalDirectories`, so the `Bash` redirect to `<task-worktree>/.claude/settings.json` is permitted.
 
@@ -81,7 +81,7 @@ Run **as a single Bash command** (this command's frontmatter allows the four pie
 ```bash
 mkdir -p <absolute-worktree-path>/.claude && \
   sed 's|<worktree>|<absolute-worktree-path>|g' \
-    "$CLAUDE_PLUGIN_ROOT/templates/settings.template.json" \
+    "$CLAUDE_CONFIG_DIR/templates/settings.template.json" \
   > <absolute-worktree-path>/.claude/settings.json && \
   jq empty <absolute-worktree-path>/.claude/settings.json && \
   test "$(jq -r '.permissions.additionalDirectories[0]' <absolute-worktree-path>/.claude/settings.json)" = "<absolute-worktree-path>"

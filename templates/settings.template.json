@@ -172,10 +172,10 @@
       "Bash(gh api repos/Miguelslo27/git-wt/commits/main*)",
       "Bash(command -v git-wt)",
       "Read(~/.local/state/atelier/git-wt.sha)",
-      "Read(~/.claude-work/settings.json)",
+      "Read(<atelier-config-dir>/settings.json)",
       "Read(~/.zshrc)",
       "Read(~/.bashrc)",
-      "Read(~/.claude-work/projects.json)"
+      "Read(<atelier-config-dir>/projects.json)"
     ]
   }
 }
