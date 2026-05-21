@@ -32,11 +32,10 @@ add <pkg>` → `pnpm audit`.
 ### Never commit to protected branches
 
 Never `git commit` (or `git push`) to `main`, `master`, `develop`,
-`staging`, or any release branch — including in **target projects**
-atelier manages, where the operator may be the sole contributor and
-skipping the PR loop for a one-line fix looks tempting.
+`staging`, or any release branch — for **autonomous agent work**
+and for **operator code work on projects atelier manages**.
 
-For every code change, create a branch first:
+For every code change in scope, create a branch first:
 
 1. `git checkout -b task/<id>-<slug>` for ROADMAP-driven tasks. The
    `/next-task` flow does this automatically via the `git-wt` skill.
@@ -52,9 +51,24 @@ This applies even when there is no team to review the PR — the audit
 trail and the "Revert this PR" affordance are independent of team
 size, and the discipline prevents accidentally pushing un-reviewed
 changes to `origin main` when the operator (or an agent) is in a
-hurry. **No exceptions for "throwaway" target projects:** atelier's
-own dogfood repos have already produced one violation of this rule
-(HISTORY → M4.12); the bar is the same everywhere.
+hurry.
+
+#### Scope: when this rule does NOT apply
+
+The rule targets **autonomous agent work** and **gestionado code**.
+One narrow case is out of scope:
+
+**Maintainer bootstrap of test rigs / dogfood repos.** Setting up a
+throwaway target project (`atelier-dogfood-N`, smoke-test harnesses,
+controlled environments to probe the chain) is **pre-test
+preparation, not gestionado code**. The maintainer may commit the
+initial scaffolding directly to `main` on those repos. The
+autonomous probes that run on top still respect the rule —
+`/next-task` creates `task/*` branches as part of its normal flow,
+so the rule is fully in force during the actual test.
+
+If you find yourself reaching for this exception on a non-throwaway
+repo, you are probably in the rule's scope. Branch first, ask later.
 
 The atelier permission model (PLAN.md §3) blocks **pushes** to
 protected branches via `Bash(git push * main)` deny rules in

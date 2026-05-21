@@ -8,14 +8,53 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M4.12 — Codify "no commits to protected branches" + fix M4.10 migration recipe — 2026-05-20
+### M4.13 — Refine M4.12 scope: rule applies to managed projects, not to test-rig bootstrap — 2026-05-21
 **PR:** _pending_
+
+[M4.12](#m412--codify-no-commits-to-protected-branches--fix-m410-migration-recipe--2026-05-20) shipped the line *"No exceptions for 'throwaway' target projects: atelier's own dogfood repos have already produced one violation of this rule; the bar is the same everywhere."* That framing turned out to be over-restrictive: applying it consistently meant wrapping the **operator's bootstrap of a fresh dogfood project** in a `chore/initial-scaffolding` PR, which adds ceremony to pre-test setup work that nothing autonomous depends on. The whole point of a dogfood is to exercise atelier's autonomous flow (`/next-task` → `task/*` branch → PR → auto-merge); the **maintainer-side bootstrap that prepares the dogfood** is rig setup, not gestionado code. M4.13 narrows the rule's scope accordingly.
+
+**Delivered:**
+
+- `operator-rules.md` — the "Never commit to protected branches" sub-section is restructured:
+  - The opening rule now explicitly names its two targets: **autonomous agent work** and **operator code work on projects atelier manages**.
+  - A new "Scope: when this rule does NOT apply" sub-sub-section carves out exactly one exception: **maintainer bootstrap of test rigs / dogfood repos** (the initial scaffolding of a throwaway target project). The carve-out is intentionally narrow — no exception for single-developer real projects, no exception for "I'm in a hurry", no exception unless the repo is named/labelled as a throwaway rig.
+  - The carve-out makes the rule's intent clearer: autonomous probes that run on top of the bootstrap **still respect the rule** (because `/next-task` creates `task/*` branches as part of its normal flow), so the rule is fully in force during the actual test.
+  - Removed: the original "No exceptions for 'throwaway' target projects" sentence — it lived in the paragraph immediately preceding the new sub-sub-section and is now superseded.
+
+- `HISTORY.md` M4.12 entry — an inline annotation on the "Delivered" section's first bullet (the one summarizing the `operator-rules.md` change) points forward to this M4.13 entry, so a reader who lands on M4.12 sees the correction without having to find this entry independently. The original text of M4.12 is otherwise preserved as the audit trail of what we thought at the time.
+
+- `HISTORY.md` M4.12 PR line — backfill `_pending_` to [#43](https://github.com/AkaLab-Tech/atelier/pull/43) (merged).
+
+**Tests:**
+
+- No code changes — pure rules/doc revision.
+- The carve-out's empirical justification is the dogfood-3 → dogfood-4 sequence from the previous session: the dogfood-3 bootstrap was committed directly to `main` (which surfaced the "never commit to protected branches" gap and led to M4.12), then dogfood-4 was bootstrapped via a `chore/initial-scaffolding` PR following M4.12's maximalist framing — and that PR was correctly identified by the operator as unnecessary ceremony for a throwaway test rig. M4.13 codifies the operator's intent.
+
+**Decisions captured:**
+
+- **Inline annotation on M4.12 instead of "superseding" it.** HISTORY is mostly append-only, but a reader who lands on M4.12's "no exceptions" framing without seeing this M4.13 entry would walk away with the wrong rule. The annotation in M4.12 is minimal — one parenthetical pointer to this entry — and M4.13 carries the full reasoning.
+- **Scope is "test rigs / dogfood repos", not "single-developer projects".** Considered broadening the carve-out to "any single-developer project". Rejected: single-developer status is not stable (the project may grow, others may fork, the operator may revisit it themselves after months and want the audit trail). Throwaway test rigs are stable in their throwaway-ness because the name (`atelier-dogfood-N`, `*-smoke-*`, etc.) and the GitHub repo description explicitly label them as such. The narrower scope is the safer default — if the operator wants to commit-to-main on a non-dogfood single-dev repo, they make that call explicitly, knowing they are outside the rule.
+- **Autonomous agents still follow the rule on dogfood repos.** Even when atelier is running on a dogfood, the orchestrator chain creates `task/<id>-<slug>` branches as part of `/next-task`'s normal flow. The rule is fully in force during the autonomous probe — which is the whole point of the dogfood.
+- **No PreToolUse hook in this milestone.** Same reasoning as M4.12: the rule stays prompt-level. A future hook (M4.x or M5.x) inherits this refined scope when it lands and could read the carve-out from the rules text.
+- **Annotation in M4.12 is the only change to the M4.12 entry.** The "Delivered" bullets, "Decisions captured", and "Acceptance criterion status" of M4.12 are left as-is — they describe what M4.12 shipped, which is historically accurate. Adjusting them retroactively would erase the audit trail of how the rule evolved.
+
+**Acceptance criterion status:** the rule's scope is now correct — narrow enough to allow dogfood bootstrap without ceremony, wide enough to keep all autonomous-agent work and all managed-project code work inside the rule. **Structurally satisfied.**
+
+**Follow-ups (not in scope here):**
+
+- `/atelier:doctor` could grow a check that warns when `git symbolic-ref HEAD` resolves to a protected branch on a project that does NOT match the throwaway-test-rig naming convention. (Captures the "are you sure you want to commit to main here?" prompt that M4.13 leaves to the operator.)
+- The PreToolUse hook idea (M4.12 follow-up) inherits this refined scope when it lands.
+
+### M4.12 — Codify "no commits to protected branches" + fix M4.10 migration recipe — 2026-05-20
+**PR:** [#43](https://github.com/AkaLab-Tech/atelier/pull/43)
 
 Atelier shipped [M4.10](#m410--gitignore-claudesettingsjson-in-atelier-setup-project--2026-05-20) with a documented migration recipe that ran `git commit` directly on `main` (no branch, no PR). When the maintainer executed that recipe on the dogfood-3 repo the day M4.10 merged, they noticed the violation against the operator's global CLAUDE.md rule ("NUNCA realices un commit en ramas protegidas") — and realized atelier's own operator-facing rules never stated this principle explicitly. The permission template only blocks **pushes** to `main` / `master` / `develop` / `staging` (`Bash(git push * main)`); the commit-level rule was carried implicitly by `/next-task`'s branching flow, but had no force outside that flow.
 
 M4.12 closes the gap.
 
 **Delivered:**
+
+> ⚠️ *[**Refined by [M4.13](#m413--refine-m412-scope-rule-applies-to-managed-projects-not-to-test-rig-bootstrap--2026-05-21)**: the "no exception applies to throwaway target projects" framing below was over-restrictive. `operator-rules.md` now has an explicit carve-out for **maintainer bootstrap of test rigs / dogfood repos**. See M4.13 for the full reasoning. The rest of this M4.12 entry is preserved as the audit trail of what we thought at the time.]*
 
 - [operator-rules.md](operator-rules.md) — new sub-section "### Never commit to protected branches" under §"Push, PR, and merge gates", placed before "### Before pushing". States the rule explicitly, lists the four branch-name conventions (`task/<id>-<slug>`, `chore/<short>`, `docs/<topic>`, `fix/<short>`), notes that **no exception applies to throwaway target projects**, and references the permission-model push-block as the layered defence. Closes with a forward-pointer to a future `PreToolUse` hook that could enforce this at commit time.
 
