@@ -8,6 +8,42 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M3.4 — Playwright MCP server for live visual validation — 2026-05-21
+**PR:** _pending_
+
+Pre-M3.4, the only Playwright touchpoint in atelier was M3.1's `visual-validation` skill, which the `e2e-runner` agent invokes once per task to drive the project's `@playwright/test` suite for the PR gate. `implementer` and `reviewer` had no way to actually *see* the UI they were working on — they read source, ran unit tests, and trusted that the e2e suite at the end would catch regressions. Surfaced in the dogfood-1 follow-up as: implementer is guessing about layout because it can't observe the rendered result.
+
+M3.4 registers the official `@playwright/mcp` server as a Claude Code MCP at the plugin level so those two agents get a controllable browser as a tool (`mcp__playwright__*`). `implementer` navigates, clicks, types, snapshots the DOM and screenshots while iterating; `reviewer` independently exercises the flow against the PR diff before deciding approve / request-changes. Distinct from M3.1: M3.1 is the *end-of-task* PR-gate suite; M3.4 is *during-task* live validation.
+
+**Delivered:**
+
+- `.mcp.json` (new, at plugin root) — declares the `playwright` MCP server, started via `npx -y @playwright/mcp@latest`. Auto-loaded by Claude Code when the atelier plugin activates. Connection is stdio and lazy: the npx process spawns only on first `mcp__playwright__*` tool call, not at session start.
+- `templates/settings.template.json` — `permissions.allow` gains `mcp__playwright__*` (one entry), so the harness does not prompt the operator on each tool call once the agent has the tool in its `tools:` list.
+- `agents/implementer.md` — `tools:` gains `"mcp__playwright"`; new core responsibility #6 "Validate UI changes visually" instructs the agent to navigate the affected route, exercise the changed interaction, and screenshot the result before reporting done. Skipped for backend-only or docs-only changes.
+- `agents/reviewer.md` — `tools:` gains `"mcp__playwright"`; new paragraph under "Correctness" checklist directs the reviewer, on PRs with UI surface, to launch the MCP browser, navigate to the dev URL / preview link (or `http://localhost:3000` as fallback), and exercise the changed flow against the same ≥ 80% confidence bar. "visual check skipped: no UI surface / no server" is the recorded outcome when no reachable UI is present.
+- `PLAN.md` — §1 lists `.mcp.json` among the auto-discovered files; new subsection §7 "MCP servers ✅" between Skills and Slash commands documents the slot and the `playwright` entry; §12 Phase 3 gains the M3.4 deliverable line.
+
+**Tests:**
+
+- `jq -e .` clean on `.mcp.json` and `templates/settings.template.json`.
+
+**Decisions captured:**
+
+- **`npx -y` over `pnpm dlx`.** Aligns with the official Playwright MCP guidance (`claude mcp add playwright npx @playwright/mcp@latest`). The atelier "pnpm only" rule (PLAN.md §2 step 2) targets project deps and lockfiles — runtime invocation of an MCP server via a one-shot runner is not a project dep, so `npx` is consistent with the rule's intent. If we later hit operator environments without `npx` on PATH but with `pnpm`, swap to `pnpm dlx @playwright/mcp@latest` — one-line change in `.mcp.json`.
+- **Floating to `@latest`, not pinned.** The atelier `.npmrc minimum-release-age=10080` guardrail does not apply here (the MCP runner is invoked via `npx`, not `pnpm add`). The tradeoff accepted: a `@playwright/mcp` release that renames tools could break agents silently. Mitigation if that happens: pin to a specific version in `.mcp.json` (e.g., `@playwright/mcp@0.0.32`) and bump on review.
+- **Allow `mcp__playwright__*` project-wide; restrict by agent via `tools:` frontmatter.** Claude Code's per-agent `tools:` list is the canonical restriction layer; the project `settings.json` allow list only governs whether the harness prompts. Adding wildcard to allow + adding `mcp__playwright` to two agents only is the idiomatic pattern — no deny entries needed for other agents because they simply don't list the tool.
+- **Browsers stay lazy.** Atelier's PLAN.md §1 step 2 already established the lazy pattern for the ~250 MB chromium bundle ("Playwright moved to M3.1 / `e2e-runner`: only operators running e2e tasks need the ~250 MB browser bundle"). M3.4 inherits that policy — the bundle downloads to `~/.cache/ms-playwright` on first MCP tool call, not at atelier install time. Operators who never trigger UI work never pay.
+- **`implementer` + `reviewer` only.** `tester` keeps its unit/integration focus (a browser would tempt it into e2e territory that belongs to `e2e-runner`); `e2e-runner` already drives the formal suite via M3.1; `pr-author` / `task-orchestrator` / `unblocker` have no visual-validation use case. The `reviewer` getting the MCP is a notable shift from its previously read-only stance — the browser tool reads/observes only, no file writes, so it stays consistent with the "evaluate; do not change" hard refusal in [agents/reviewer.md](agents/reviewer.md).
+- **No HISTORY-typical "Tests" section with empirical smoke tests.** Smoke-testing the MCP requires Claude Code reloading the plugin and an agent issuing a first `mcp__playwright__*` call (which downloads the chromium bundle). That validation happens post-merge during the next UI-touching task. JSON syntax validation is what's verifiable pre-merge.
+
+**Acceptance criterion status:** **structurally satisfied** — all four scoped artefacts (`.mcp.json`, settings template entry, two agent `tools:` updates with operational guidance) shipped. **Empirical validation** (first `mcp__playwright__browser_navigate` call from `implementer`, no permission prompt; `tester` invocation cannot call it; chromium bundle downloads to `~/.cache/ms-playwright` on first call) happens at the next UI-touching task post-merge.
+
+**Follow-ups:**
+
+- Confirm during the next UI-touching task that the MCP server actually starts cleanly via `npx -y @playwright/mcp@latest` on the operator's machine (Node version from `fnm` LTS should be sufficient).
+- Consider an `mcp__playwright` mention in `agents/e2e-runner.md` if the e2e-runner ever needs to do exploratory navigation outside its formal Playwright suite — not in scope for M3.4.
+- If the floating `@latest` ever breaks (tool rename, breaking arg-shape change), pin in `.mcp.json` and add a `safe-install`-style allowlist entry. Captured as a watch-item.
+
 ### M5.0.1 — gh auth isolation via `GH_CONFIG_DIR` + dual atelier identities (author + reviewer) — 2026-05-21
 **PR:** _pending_
 

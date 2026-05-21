@@ -19,7 +19,7 @@ This repo (`atelier`) is the single artifact the operator clones. `install.sh` l
 
 ### Two-layer configuration
 
-- **Global** — distributed as a **Claude Code native plugin**. This repo ships `.claude-plugin/plugin.json` only; the marketplace catalog (`marketplace.json`) that lists `atelier` lives in a dedicated repo, [AkaLab-Tech/claude-plugins](https://github.com/AkaLab-Tech/claude-plugins), alongside every other AkaLab-Tech plugin. The operator installs everything with `/plugin marketplace add AkaLab-Tech/claude-plugins` + `/plugin install atelier@akalab-tech`. Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/` and `CLAUDE.md` from the plugin root. Hooks and scripts reference files via `$CLAUDE_PLUGIN_ROOT` — never hardcoded paths.
+- **Global** — distributed as a **Claude Code native plugin**. This repo ships `.claude-plugin/plugin.json` only; the marketplace catalog (`marketplace.json`) that lists `atelier` lives in a dedicated repo, [AkaLab-Tech/claude-plugins](https://github.com/AkaLab-Tech/claude-plugins), alongside every other AkaLab-Tech plugin. The operator installs everything with `/plugin marketplace add AkaLab-Tech/claude-plugins` + `/plugin install atelier@akalab-tech`. Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/`, `CLAUDE.md` and `.mcp.json` from the plugin root. Hooks and scripts reference files via `$CLAUDE_PLUGIN_ROOT` — never hardcoded paths.
 - **Host-OS layer** (handled by `install.sh` before the plugin is installed): things that can't live inside a Claude plugin — base deps, Claude Code itself, GitHub auth, `git-wt` external package, `.env*` in git excludes, `fnm`/alias shellrc hooks, git identity.
 - **Per project** (created by `/setup-project <path>`): `ROADMAP.md`, `.claude/settings.json` (generated from `settings.template.json`), `.claude/CLAUDE.md` with project-specific rules, `.npmrc` (pnpm supply-chain guardrails — see §4), optional project-specific agents/skills that override globals.
 
@@ -349,6 +349,14 @@ Auto-discovered by Claude Code from the plugin's `./skills/` directory (no expli
 - `safe-commit` — lint + typecheck + tests before commit.
 - `safe-install` — audit + `pnpm view` before `pnpm add`.
 
+### MCP servers ✅
+
+Declared in `.mcp.json` at the plugin root and auto-loaded when atelier is active. Connections are stdio (lazy: the server process spawns on first tool call, not at session start).
+
+- `playwright` — official `@playwright/mcp` server, started via `npx -y @playwright/mcp@latest`. Provides a controllable browser as an agent tool (`mcp__playwright__*`) so `implementer` can validate UI work as it builds and `reviewer` can independently exercise the flow during PR review. Distinct from M3.1's `visual-validation` skill, which drives the project's own `@playwright/test` suite for the PR gate (§6).
+
+  **Scope by agent.** `mcp__playwright__*` is in the allow list of `settings.template.json`; only `implementer` and `reviewer` list `mcp__playwright` in their agent `tools:` frontmatter, so no other agent can invoke it. Browsers (~250 MB chromium bundle) download on the first tool call into `~/.cache/ms-playwright`, mirroring the `visual-validation` lazy-install policy from §1.
+
 ### Slash commands (global)
 
 - `/next-task` — full pickup-to-PR flow.
@@ -467,6 +475,7 @@ Phases are sequential. Each phase ends with a verifiable milestone.
 - M3.1 `e2e-runner` agent + `visual-validation` skill.
 - M3.2 `reviewer` agent (Opus) with explicit checklist.
 - M3.3 Auto-merge logic with all guardrails from §6.
+- M3.4 Playwright MCP server registered via plugin `.mcp.json` (`@playwright/mcp@latest` via `npx -y`); `mcp__playwright__*` allowed in `settings.template.json`; `implementer` and `reviewer` list `mcp__playwright` in their tools. Gives those two agents a controllable browser for live visual validation, separate from the PR-gate suite driven by M3.1's `visual-validation` skill.
 
 **Done when:** the toy-repo flow ends with a merged PR (squash), closed roadmap item, deleted branch, cleaned worktree.
 
