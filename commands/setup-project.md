@@ -1,5 +1,5 @@
 ---
-description: Initialise a project so the operator can run atelier tasks in it — delegates to the `atelier-setup-project` bash helper installed by `install.sh` Phase C.1. Idempotent — re-running on a configured project offers a reconfigure flow (interactive only).
+description: Initialise a project so the operator can run atelier tasks in it — delegates to the `atelier-setup-project` bash helper installed by `install.sh`. Idempotent — re-running on a configured project offers a reconfigure flow (interactive only).
 argument-hint: "[project-path] [--yes|-y]"
 allowed-tools: Bash(atelier-setup-project:*)
 ---
@@ -40,7 +40,7 @@ These all live in the bash helper; documented here so the operator knows what to
 ## Where to look if something breaks
 
 - `atelier-setup-project --help` prints the full CLI contract.
-- `which atelier-setup-project` should resolve to `~/.local/bin/atelier-setup-project` (a symlink installed by `install.sh` Phase C.1).
-- If `which` is empty: re-run `install.sh` Phase C.1, or check that `~/.local/bin` is on `$PATH`.
+- `which atelier-setup-project` should resolve to `~/.local/bin/atelier-setup-project` (a symlink installed by `install.sh`).
+- If `which` is empty: re-run `install.sh`, or check that `~/.local/bin` is on `$PATH`.
 - If the helper reports "cannot locate the atelier plugin root", `$CLAUDE_PLUGIN_ROOT` is not set (you are probably running ad-hoc via `claude --plugin-dir`). Run `atelier-setup-project --plugin-root /abs/path/to/atelier-checkout <path>` directly from your terminal, or export `ATELIER_PLUGIN_ROOT` in your shell.
 
