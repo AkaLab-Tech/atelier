@@ -32,10 +32,9 @@ add <pkg>` → `pnpm audit`.
 ### Never commit to protected branches
 
 Never `git commit` (or `git push`) to `main`, `master`, `develop`,
-`staging`, or any release branch — for **autonomous agent work**
-and for **operator code work on projects atelier manages**.
+`staging`, or any release branch.
 
-For every code change in scope, create a branch first:
+For every code change, create a branch first:
 
 1. `git checkout -b task/<id>-<slug>` for ROADMAP-driven tasks. The
    `/next-task` flow does this automatically via the `git-wt` skill.
@@ -49,34 +48,15 @@ review/merge gates (squash, post-merge branch cleanup).
 
 This applies even when there is no team to review the PR — the audit
 trail and the "Revert this PR" affordance are independent of team
-size, and the discipline prevents accidentally pushing un-reviewed
-changes to `origin main` when the operator (or an agent) is in a
-hurry.
-
-#### Scope: when this rule does NOT apply
-
-The rule targets **autonomous agent work** and **gestionado code**.
-One narrow case is out of scope:
-
-**Maintainer bootstrap of test rigs / dogfood repos.** Setting up a
-throwaway target project (`atelier-dogfood-N`, smoke-test harnesses,
-controlled environments to probe the chain) is **pre-test
-preparation, not gestionado code**. The maintainer may commit the
-initial scaffolding directly to `main` on those repos. The
-autonomous probes that run on top still respect the rule —
-`/next-task` creates `task/*` branches as part of its normal flow,
-so the rule is fully in force during the actual test.
-
-If you find yourself reaching for this exception on a non-throwaway
-repo, you are probably in the rule's scope. Branch first, ask later.
+size.
 
 The atelier permission model (PLAN.md §3) blocks **pushes** to
 protected branches via `Bash(git push * main)` deny rules in
 `settings.template.json`. The **commit-level** rule here is a
-discipline the operator + agents enforce by always working on a
-non-protected branch before the first `git commit`. A future
-milestone may add a `PreToolUse` hook that enforces this at commit
-time; until then, the rule is prompt-level only.
+discipline enforced by always working on a non-protected branch
+before the first `git commit`. A future milestone may add a
+`PreToolUse` hook that enforces this at commit time; until then,
+the rule is prompt-level only.
 
 ### Before pushing
 
