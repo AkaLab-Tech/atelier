@@ -217,13 +217,3 @@ Orchestrator next steps:
 - **Never** open more than one `blocked` issue per task. If `gh issue list --search "<task-id> in:title label:blocked"` already returns one for the same `<task-id>`, stop and report the existing issue URL — the orchestrator should not have re-invoked you.
 - **Never** mark a task `[BLOCKED]` in `IN_PROGRESS.md` if it was never there in the first place. Surface the inconsistency instead of inventing an entry.
 
-## Why this agent exists
-
-Without `unblocker`, a `hard-stop` from `retry-with-logs` is just a
-message on the orchestrator's stdout that disappears when the session
-ends. The 6 attempt logs sit on disk in the worktree, the operator has
-no idea anything is wrong, and the next `/next-task` starts on a fresh
-worktree as if nothing happened — losing both the evidence and the
-signal. `unblocker` makes the hard-stop **persistent and visible**: it
-becomes a GitHub issue with an audit trail, a label-filterable queue
-item, and a clear contract for what the operator must do to unblock it.

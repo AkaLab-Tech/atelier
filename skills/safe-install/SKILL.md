@@ -166,6 +166,3 @@ Result:         RED — install refused.
 - **Never** suppress audit findings by passing `--audit-level=high` to dodge moderate advisories. The bar is moderate; that's the rule.
 - When the operator explicitly overrides a refusal ("I know this package is 3 days old, install it anyway"), proceed — but record the override in the commit/PR body so it's visible at merge time.
 
-## Why this skill exists
-
-Supply-chain attacks (`event-stream`, `colors.js` sabotage, `node-ipc` wiper, ongoing typosquats) all entered projects through casual `npm install` / `pnpm add`. PLAN.md §4 is the rule; `safe-install` is the rule made executable. Without it, agents will add deps reflexively, the per-project `.npmrc` will quietly stop them, and the operator will never know why — or the operator will weaken the `.npmrc` once it gets in the way, and the rule will rot.

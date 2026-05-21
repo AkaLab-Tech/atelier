@@ -148,6 +148,3 @@ Playwright suite: <N passed, M failed, K skipped> (<duration>s).
 - **Committing screenshots to the repository.** They live in `.task-log/screenshots/` (already gitignored by `/setup-project`) and on the gist server. Never under version control.
 - **Modifying test files** to mask flakes. Flakes are surfaced; the operator decides what to do.
 
-## Why this skill exists
-
-`operator-rules.md` (loaded by the SessionStart hook) covers PLAN.md §6 push and PR gates abstractly. Playwright has enough operational surface (config, browsers cache, screenshot dance, gist upload) that inlining it in every agent that needs e2e would be a maintenance burden. One skill, invoked by `e2e-runner`, keeps the e2e recipe authoritative and reviewable in one place.

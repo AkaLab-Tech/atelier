@@ -245,13 +245,3 @@ Next step:  hand off to the `unblocker` agent. Do NOT retry. Do NOT
   `<worktree>/.task-log/`. The `unblocker` agent and `/resume-task`
   both rely on this fixed location.
 
-## Why this skill exists
-
-PLAN.md §8 is a one-paragraph rule that, if left to the orchestrator's
-free interpretation, will drift the first time an attempt is ambiguous
-("the specialist *almost* succeeded, do we count it?"). This skill
-collapses the rule to a finite-state machine: count files, pick a
-decision from a table, write a log. The orchestrator stops *deciding*
-the retry policy and starts *executing* it. That single move is what
-makes the 6-attempt budget auditable and what lets `unblocker`
-trust that the log directory is a complete record.
