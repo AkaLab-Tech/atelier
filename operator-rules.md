@@ -32,9 +32,7 @@ add <pkg>` → `pnpm audit`.
 ### Never commit to protected branches
 
 Never `git commit` (or `git push`) to `main`, `master`, `develop`,
-`staging`, or any release branch — including in **target projects**
-atelier manages, where the operator may be the sole contributor and
-skipping the PR loop for a one-line fix looks tempting.
+`staging`, or any release branch.
 
 For every code change, create a branch first:
 
@@ -50,19 +48,15 @@ review/merge gates (squash, post-merge branch cleanup).
 
 This applies even when there is no team to review the PR — the audit
 trail and the "Revert this PR" affordance are independent of team
-size, and the discipline prevents accidentally pushing un-reviewed
-changes to `origin main` when the operator (or an agent) is in a
-hurry. **No exceptions for "throwaway" target projects:** atelier's
-own dogfood repos have already produced one violation of this rule
-(HISTORY → M4.12); the bar is the same everywhere.
+size.
 
 The atelier permission model (PLAN.md §3) blocks **pushes** to
 protected branches via `Bash(git push * main)` deny rules in
 `settings.template.json`. The **commit-level** rule here is a
-discipline the operator + agents enforce by always working on a
-non-protected branch before the first `git commit`. A future
-milestone may add a `PreToolUse` hook that enforces this at commit
-time; until then, the rule is prompt-level only.
+discipline enforced by always working on a non-protected branch
+before the first `git commit`. A future milestone may add a
+`PreToolUse` hook that enforces this at commit time; until then,
+the rule is prompt-level only.
 
 ### Before pushing
 

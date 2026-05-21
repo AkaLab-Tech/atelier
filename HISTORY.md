@@ -8,14 +8,56 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M4.12 — Codify "no commits to protected branches" + fix M4.10 migration recipe — 2026-05-20
+### M4.13 — Strip atelier-internal references from operator-rules.md — 2026-05-21
 **PR:** _pending_
+
+[M4.12](#m412--codify-no-commits-to-protected-branches--fix-m410-migration-recipe--2026-05-20) shipped operator-rules.md with the line *"**No exceptions for 'throwaway' target projects:** atelier's own dogfood repos have already produced one violation of this rule (HISTORY → M4.12); the bar is the same everywhere."* That sentence leaks atelier-internal concepts — `dogfood`, references to atelier's own dev infrastructure — into a file that the `SessionStart` hook loads into **every target-project session**. The agent reading operator-rules.md in a managed project doesn't need to know — and shouldn't be told — about atelier's internal test rigs.
+
+A first draft of M4.13 made this worse: it added a "Scope: when this rule does NOT apply" sub-section that explicitly named `atelier-dogfood-N`, smoke-test harnesses, and other atelier-internal labels. The operator immediately pushed back — that whole section had no business in operator-facing rules.
+
+M4.13 (this version) takes the simpler approach: **strip all atelier-internal references from operator-rules.md**. The rule stays universal: *"Never commit to protected branches."* Whether the maintainer commits directly to main when bootstrapping atelier's own throwaway test rigs is a personal call that doesn't need to be codified in the rules every other session reads.
+
+**Delivered:**
+
+- `operator-rules.md` "Never commit to protected branches" sub-section, simplified:
+  - Opening sentence: dropped *"including in **target projects** atelier manages, where the operator may be the sole contributor and skipping the PR loop for a one-line fix looks tempting"* — meta-phrasing that was self-referential from the agent's POV. Replaced with the bare rule.
+  - Removed M4.12's *"**No exceptions for 'throwaway' target projects**..."* sentence — atelier-internal leakage.
+  - Did **not** add the "Scope: when this rule does NOT apply" sub-section that this milestone's first draft proposed (the carve-out itself was atelier-internal leakage).
+  - Final shape: rule statement → four branch-name conventions → "no exceptions for team-size" reasoning → permission-model note + future-hook pointer. No `dogfood`, no `test rig`, no `gestionado`, no `atelier-dogfood-N`. Generic English.
+
+- `HISTORY.md` M4.12 entry — inline annotation at the top of "Delivered" updated to explain the M4.12 framing both over-reached *and* leaked atelier-internal concepts, and points forward to this entry. The rest of M4.12 is preserved as the audit trail.
+
+- `HISTORY.md` M4.12 PR line — backfill `_pending_` to [#43](https://github.com/AkaLab-Tech/atelier/pull/43) (merged).
+
+**Tests:**
+
+- No code changes — pure rules cleanup.
+- The cleaned operator-rules.md was reviewed for any remaining atelier-internal references: no `dogfood`, no `dogfood-N`, no `atelier-dogfood`, no `smoke-test`, no `throwaway`, no `test rig`, no `gestionado` jargon. All English, all generic.
+
+**Decisions captured:**
+
+- **The carve-out is NOT codified anywhere atelier loads into agent sessions.** The maintainer's discretion about *"when can I commit-to-main on my own throwaway test repo"* lives in atelier dev docs (this HISTORY entry, future maintainer-only notes) — not in operator-rules.md, not in any agent-facing CLAUDE.md, not in PLAN.md §3's permissions matrix. Even mentioning "this exception exists" in operator-facing files would re-leak the same atelier-internal context this milestone is trying to strip.
+- **Inline annotation on M4.12, not a "superseded" mark.** Same reasoning as before — HISTORY is mostly append-only, but a reader who lands on M4.12's framing should see the correction inline.
+- **No "Scope" or "Exceptions" section in operator-rules.md, period.** Considered keeping a generic version ("the rule has narrow exceptions; ask if unsure"). Rejected — that invites edge-case lawyering. Bare rule is clearer.
+- **No PreToolUse hook in this milestone.** Inherited from M4.12 — a future hook lands separately and would read the (now clean) rule.
+
+**Acceptance criterion status:** operator-rules.md no longer references any atelier-internal infrastructure. The rule is clean, universal, and audience-appropriate (every session that loads it sees a coherent constraint with no internal jargon). **Structurally satisfied.**
+
+**Follow-ups (not in scope here):**
+
+- Same `/atelier:doctor` and PreToolUse hook ideas as M4.12. Both should be designed without reference to specific test-rig names — the rule is universal, regardless of who's running it.
+- A general sweep of other prompt files (`CLAUDE.md`, agent prompts, command specs) for similar "atelier-internal leakage" — same pattern as M4.10/M4.12's "we should sweep this for similar issues" but specifically about *what concepts the agent should know about*, not just about commit hygiene.
+
+### M4.12 — Codify "no commits to protected branches" + fix M4.10 migration recipe — 2026-05-20
+**PR:** [#43](https://github.com/AkaLab-Tech/atelier/pull/43)
 
 Atelier shipped [M4.10](#m410--gitignore-claudesettingsjson-in-atelier-setup-project--2026-05-20) with a documented migration recipe that ran `git commit` directly on `main` (no branch, no PR). When the maintainer executed that recipe on the dogfood-3 repo the day M4.10 merged, they noticed the violation against the operator's global CLAUDE.md rule ("NUNCA realices un commit en ramas protegidas") — and realized atelier's own operator-facing rules never stated this principle explicitly. The permission template only blocks **pushes** to `main` / `master` / `develop` / `staging` (`Bash(git push * main)`); the commit-level rule was carried implicitly by `/next-task`'s branching flow, but had no force outside that flow.
 
 M4.12 closes the gap.
 
 **Delivered:**
+
+> ⚠️ *[**Refined by [M4.13](#m413--strip-atelier-internal-references-from-operator-rulesmd--2026-05-21)**: the "no exception applies to throwaway target projects" framing below leaked atelier-internal concepts (dogfood-N, atelier's own dev infrastructure) into operator-rules.md, which the `SessionStart` hook loads into every target-project session. M4.13 strips that leakage — operator-rules.md now states the rule cleanly with no atelier-internal references. The rest of this M4.12 entry is preserved as the audit trail of what we thought at the time.]*
 
 - [operator-rules.md](operator-rules.md) — new sub-section "### Never commit to protected branches" under §"Push, PR, and merge gates", placed before "### Before pushing". States the rule explicitly, lists the four branch-name conventions (`task/<id>-<slug>`, `chore/<short>`, `docs/<topic>`, `fix/<short>`), notes that **no exception applies to throwaway target projects**, and references the permission-model push-block as the layered defence. Closes with a forward-pointer to a future `PreToolUse` hook that could enforce this at commit time.
 
