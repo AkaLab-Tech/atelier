@@ -8,8 +8,47 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M4.13 — Strip atelier-internal references from operator-rules.md — 2026-05-21
+### M1.7 — Self-CI for atelier (structural validations only) — 2026-05-21
 **PR:** _pending_
+
+Atelier's own development had zero CI: PRs to this repo (M4.6 → M4.13) relied on manual review plus the "Tests:" section in each HISTORY entry. That worked for the single-maintainer case but missed simple structural defects more than once — most notably the `bash` heredoc-in-cmdsub typo caught at the last minute during M4.9 implementation. M1.7 closes the gap with a minimal GitHub Actions workflow that runs four structural checks on every PR against `main` (and on push to `main`).
+
+**Delivered:**
+
+- `.github/workflows/structural.yml` (NEW, 66 lines) — single workflow file, single job, four steps:
+  1. **bash -n on shell scripts.** Iterates over `install.sh` and every file in `scripts/*`. Emits `::error file=<path>::shell syntax error` annotations on failure so GitHub surfaces them inline in the PR review UI.
+  2. **python3 -m json.tool on JSON files.** `find . -type f -name '*.json' -not -path './node_modules/*' -not -path './.git/*'` — catches every JSON in the repo, including `templates/settings.template.json`, `.claude-plugin/plugin.json`, `hooks/hooks.json`, `hooks/patterns/*.json`, and the worktree's own `.claude/settings.json`.
+  3. **YAML frontmatter parse on `agents/*.md` / `commands/*.md` / `skills/*/SKILL.md`.** Ruby is used (built-in `yaml` stdlib on `ubuntu-latest`; no extra installs needed) to extract the `^---\n.*?\n---` block and `YAML.safe_load` it. Catches any frontmatter that Claude Code would silently reject at plugin-load time.
+  4. **`scripts/atelier-setup-project --help` exit 0.** Minimal smoke that the bash helper binary still loads after any change.
+
+- Triggers: `pull_request` against `main` (the primary use case) plus `push` to `main` (defensive — catches a stale-base PR slipping through after merge).
+- Permissions: `contents: read` only. The workflow is read-only by design.
+- Timeout: 2 minutes (well above the 30-second target; the local equivalent runs in <2 s on the maintainer's laptop).
+
+**Tests:**
+
+- `ruby -ryaml` parse on `.github/workflows/structural.yml` itself confirms valid YAML before commit. 66 lines (target was <80).
+- The full local equivalent of the workflow (the same 4 checks run by hand) ran clean on `main` at commit `12855c4`: 31/31 checks passed (2 shell scripts, 8 JSON files, 20 agents/commands/skills, 1 helper smoke). That run is the empirical baseline this workflow codifies.
+- **The PR opening this milestone is the workflow's own first run.** A clean PR demonstrates the happy path; a deliberately-broken follow-up PR (one of the acceptance scenarios — unbalanced quote in `install.sh`, invalid JSON, malformed frontmatter) is left for future verification when the next operator opens such a PR by accident.
+
+**Decisions captured:**
+
+- **Triggers on both `pull_request` and `push` to main.** Pull-request alone would miss the case where a PR is opened against a stale `main` and then `main` advances before the merge: the merge commit on `main` might contain a combination that no PR's workflow ever validated. Adding `push: branches: [main]` is one extra run per merge — cheap insurance.
+- **Ruby for the YAML check.** Considered Python with `pip install pyyaml` (more familiar in CI). Rejected — ruby ships with `yaml` in its stdlib on `ubuntu-latest`, so no install step, no caching needed, no network call. One less moving part.
+- **`::error file=…::` annotations.** GitHub renders these as in-line file annotations on the PR's "Files changed" tab. A failure that says only "JSON parse failed" wastes the reviewer's time finding which JSON; the explicit file pointer goes straight to the offending file.
+- **No `find -type f -name "*.md"` over the whole tree for frontmatter.** Bounded the YAML check to `agents/`, `commands/`, `skills/*/SKILL.md` because: (a) those are the files Claude Code actually parses for plugin frontmatter; (b) other `.md` files (`README`, `PLAN`, `HISTORY`, `ROADMAP`) may legitimately contain `---` lines mid-document as section breaks, and a global find would false-positive on them.
+- **No behavioural / end-to-end tests in this milestone.** Per the ROADMAP entry's "Out of scope" — agent-chain runs, `claude` CLI authenticated in CI, dogfood automation all depend on infrastructure that does not exist yet and would balloon M1.7's scope. Those land in M3.x.
+- **Workflow is operator/maintainer-managed only.** The agent permission template (`templates/settings.template.json`) already denies `Edit(.github/workflows/**)` and `Write(.github/workflows/**)` — once this workflow exists, future agent-led PRs cannot modify it. The maintainer (this PR's author) is the only allowed editor by design.
+
+**Acceptance criterion status:** the ROADMAP M1.7 acceptance — *"opening a PR against `main` with a deliberately broken `install.sh`, an invalid `templates/settings.template.json`, or a malformed YAML frontmatter fails the workflow with a clear error pointing at the offending file. A clean PR passes within 30 seconds."* — is **structurally satisfied** (the workflow exists and runs the right checks) and **partially empirically validated** (the happy path on this PR's clean commits demonstrates the green case; the broken-input cases are deferred to future PRs that accidentally introduce defects).
+
+**Follow-ups (not in scope here):**
+
+- M3.x will add behavioural / end-to-end CI as part of the `auto-merge` + `reviewer` workflow (separate concerns from structural validations).
+- A future maintainer could extend `structural.yml` with: shellcheck (stricter than `bash -n`), markdownlint, a JSON-schema check on the hooks pattern files, or a `claude plugin validate` command if/when one ships. All explicit non-goals for M1.7.
+
+### M4.13 — Strip atelier-internal references from operator-rules.md — 2026-05-21
+**PR:** [#44](https://github.com/AkaLab-Tech/atelier/pull/44)
 
 [M4.12](#m412--codify-no-commits-to-protected-branches--fix-m410-migration-recipe--2026-05-20) shipped operator-rules.md with the line *"**No exceptions for 'throwaway' target projects:** atelier's own dogfood repos have already produced one violation of this rule (HISTORY → M4.12); the bar is the same everywhere."* That sentence leaks atelier-internal concepts — `dogfood`, references to atelier's own dev infrastructure — into a file that the `SessionStart` hook loads into **every target-project session**. The agent reading operator-rules.md in a managed project doesn't need to know — and shouldn't be told — about atelier's internal test rigs.
 

@@ -1,0 +1,66 @@
+name: Structural validations
+
+# Atelier M1.7: minimal CI that runs structural-only checks on every PR
+# against `main`. Catches shell-syntax typos, corrupt JSON, malformed YAML
+# frontmatter, and the helper binary failing to load. Anything behavioural
+# (agent-chain runs, claude CLI auth in CI, end-to-end dogfood) is
+# deferred to M3.x.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  structural:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n on shell scripts
+        run: |
+          fail=0
+          for f in install.sh scripts/*; do
+            [ -f "$f" ] || continue
+            echo "checking $f"
+            bash -n "$f" || { echo "::error file=$f::shell syntax error"; fail=1; }
+          done
+          exit $fail
+
+      - name: python3 -m json.tool on JSON files
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            echo "checking $f"
+            python3 -m json.tool < "$f" > /dev/null \
+              || { echo "::error file=$f::invalid JSON"; fail=1; }
+          done < <(find . -type f -name '*.json' \
+                        -not -path './node_modules/*' \
+                        -not -path './.git/*')
+          exit $fail
+
+      - name: YAML frontmatter parse on agents / commands / skills
+        run: |
+          fail=0
+          for f in agents/*.md commands/*.md skills/*/SKILL.md; do
+            [ -f "$f" ] || continue
+            echo "checking $f"
+            ruby -ryaml -e '
+              c = File.read(ARGV[0])
+              m = c.match(/\A---\n(.*?)\n---/m)
+              raise "no frontmatter in #{ARGV[0]}" if m.nil?
+              YAML.safe_load(m[1])
+            ' "$f" || { echo "::error file=$f::invalid YAML frontmatter"; fail=1; }
+          done
+          exit $fail
+
+      - name: atelier-setup-project --help smoke
+        run: |
+          ./scripts/atelier-setup-project --help > /dev/null \
+            || { echo "::error::atelier-setup-project --help exited non-zero"; exit 1; }
