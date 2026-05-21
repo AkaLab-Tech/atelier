@@ -72,9 +72,7 @@ Invoke the external `git-wt` skill (or `git wt switch <branch>` directly) to cre
 
 ### 7. Instantiate the per-task `.claude/settings.json`
 
-Read the **instantiated** settings template from `$CLAUDE_CONFIG_DIR/templates/settings.template.json`. This is atelier's per-install copy — `install.sh` already substituted any install-time placeholders (the `<atelier-config-dir>` location of atelier's config root, per M5.0.2). The only remaining placeholder is `<worktree>`, which must be substituted with the **absolute path of the per-task worktree** (from step 6), NOT the main repo path.
-
-> Note on the path: `$CLAUDE_CONFIG_DIR` is the env var Claude Code reads to know where its install lives, so it's the canonical source for atelier's config root **from inside a session loaded from it**. Equivalent to `$ATELIER_CONFIG_DIR` (set by the shellrc hook) when `task()` launched the session.
+Read `$CLAUDE_CONFIG_DIR/templates/settings.template.json`. The template contains a literal `<worktree>` placeholder that must be substituted with the **absolute path of the per-task worktree** (from step 6), NOT the main repo path.
 
 **Critical implementation detail:** the Claude Code harness has a built-in guard that requires explicit operator approval for the `Write` and `Edit` tools when the target path is under `.claude/**`. That guard hangs the chain in non-interactive (`-p`) mode. The atelier convention is therefore to write `.claude/settings.json` **via Bash shell redirection** (`sed > file`), never via the `Write` / `Edit` tools — the redirect is a `Bash` tool operation, which the per-path matchers handle via the standard allow / deny matrix and which is not subject to the harness's `.claude/**` interactive guard. The path `<worktree>-worktrees/**` is in `additionalDirectories`, so the `Bash` redirect to `<task-worktree>/.claude/settings.json` is permitted.
 
@@ -95,7 +93,6 @@ The five guards in order: directory exists; sed succeeded; output parses as JSON
 - **Never** use the `Write` tool to create `<task-worktree>/.claude/settings.json`. The harness blocks it in non-interactive mode. Always Bash + redirect.
 - **Never** substitute `<worktree>` with the main-repo path. The whole point of per-task settings is to scope `Edit` / `Write` to the task's worktree.
 - **Never** skip the substitution-verification guard (the last two checks above). A file that exists but still contains the literal `<worktree>` placeholder would silently widen the `additionalDirectories` to `<worktree>/**` (matching nothing useful) and the operator would not notice until much later.
-- **Never** read the template directly from `$CLAUDE_PLUGIN_ROOT/templates/settings.template.json`. That is the source-with-placeholders copy shipped with the plugin. The instantiated copy under `$CLAUDE_CONFIG_DIR/templates/` is the only one with install-time placeholders resolved.
 
 ### 8. Hand off to `task-orchestrator`
 
