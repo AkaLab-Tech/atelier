@@ -116,6 +116,7 @@
 
       "Bash(git push origin task/*)",
 
+      "Bash(gh auth status*)",
       "Bash(gh issue *)",
       "Bash(gh label list*)",
       "Bash(gh label create*)",
@@ -131,6 +132,14 @@
       "Bash(gh repo view*)",
       "Bash(gh gist create*)",
       "Bash(gh gist view*)",
+
+      "Bash(GH_CONFIG_DIR=* gh auth status*)",
+      "Bash(GH_CONFIG_DIR=* gh api user*)",
+      "Bash(GH_CONFIG_DIR=* gh pr view*)",
+      "Bash(GH_CONFIG_DIR=* gh pr list*)",
+      "Bash(GH_CONFIG_DIR=* gh pr diff*)",
+      "Bash(GH_CONFIG_DIR=* gh pr review*)",
+      "Bash(GH_CONFIG_DIR=* gh pr comment*)",
 
       "Bash(pnpm install*)",
       "Bash(pnpm add*)",

@@ -50,14 +50,22 @@ The operator runs **one command** and answers at most **two prompts** (Claude lo
 
 ### Phase B — Authentication (only human interaction)
 4. Claude Code login: run `claude auth login`, which opens a browser tab for OAuth. (The `/login` slash command — described in earlier drafts — only works inside an interactive `claude` session; the CLI subcommand achieves the same flow from a shell script.) Idempotency: `claude auth status` exits `0` if already authenticated, so the script skips the browser when the operator re-runs `install.sh`.
-5. GitHub login — **HTTPS only, no SSH keys ever**:
+5. GitHub login — **HTTPS only, no SSH keys ever**, and **two distinct atelier-isolated identities** stored inside atelier's config root (M5.0.1):
    ```bash
-   gh auth login --hostname github.com --git-protocol https --web \
-     --skip-ssh-key \
-     --scopes "repo,workflow,project,read:org"
-   gh auth setup-git   # registers gh as git credential helper (idempotent)
+   # 5a — atelier-author: every operational gh call (pr-author, commits,
+   #      push, gh pr create, gh issue) runs under this identity.
+   GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"   gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key --scopes "repo,workflow,project,read:org"
+   GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"   gh auth setup-git   # registers gh as git credential helper (idempotent). The helper is dynamic — it reads $GH_CONFIG_DIR at invocation time, so the operator's normal shell (no GH_CONFIG_DIR exported) falls back to ~/.config/gh/ untouched.
+
+   # 5b — atelier-reviewer: only the `reviewer` agent uses this, and only for
+   #      gh pr view/review/comment. Must authenticate with a DIFFERENT
+   #      GitHub user than 5a — same-identity self-review makes GitHub
+   #      downgrade the approval to a comment (Finding #11 from dogfood-1).
+   GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key --scopes "repo,workflow,project,read:org"
    ```
-   `--skip-ssh-key` is defense-in-depth — `--git-protocol https` already pins HTTPS, but skipping the SSH key prompt prevents any residual SSH affordance. Token stored in OS keychain. All slash commands must clone via HTTPS (`gh repo clone` or `https://github.com/...`). Idempotency: `gh auth status --hostname github.com` exits `0` if already authenticated.
+   `--skip-ssh-key` is defense-in-depth — `--git-protocol https` already pins HTTPS, but skipping the SSH key prompt prevents any residual SSH affordance. Token stored under each role's config dir (no OS-keychain dependency for the isolated installs). All slash commands must clone via HTTPS (`gh repo clone` or `https://github.com/...`). Idempotency: `GH_CONFIG_DIR=... gh auth status --hostname github.com` exits `0` if already authenticated, so re-runs of `install.sh` don't re-prompt. Phase B ends with `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/<role> gh api user --jq .login` against each role; if the two logins resolve to the same GitHub user, install.sh **warns loudly** (without aborting) so the operator knows Finding #11 will persist for this install.
+
+   Install.sh never touches the operator's `~/.config/gh/` — that is the operator's personal `gh` state, independent of atelier. The `task()` shellrc alias exports `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"` for the session, so every agent inherits the author identity by default; `reviewer` overrides this inline with `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer"`.
 
 Phase B is the only interactive step in `install.sh`. When the script runs without a TTY (CI, piped install, `ssh host 'bash install.sh'` without `-t`), Phase B auto-skips with a clear message that lists the manual commands the operator should run from a real terminal. Phases C.1/C.2 continue regardless, so the rest of host-OS configuration still lands.
 
@@ -128,7 +136,7 @@ Lives in `settings.template.json`. `/next-task` instantiates a per-task `setting
 - Git read: `status`, `diff`, `log`, `show`, `branch`, `blame`, `fetch`, `ls-files`.
 - Git write: `add`, `commit`, `checkout -b`, `switch`, `worktree`, `stash`.
 - Git push: `git push origin task/*` **only**. Deny everything else.
-- GitHub CLI: `gh issue *`, `gh pr create/view/list/comment`, `gh pr merge` (only under §6 conditions), `gh project *`, `gh repo clone/view`.
+- GitHub CLI: `gh issue *`, `gh pr create/view/list/comment`, `gh pr merge` (only under §6 conditions), `gh project *`, `gh repo clone/view`, `gh auth status` (read-only identity check). Also `Bash(GH_CONFIG_DIR=* gh ...)` for the reviewer's atelier-isolated identity override (M5.0.1): `gh auth status`, `gh api user`, `gh pr view/list/diff/review/comment`.
 - pnpm: `install`, `add`, `remove`, `update`, `run *`, `test`, `exec *`, `audit`, `view`.
 - Tests / lint / types: `vitest`, `jest`, `pytest`, `playwright test`, `eslint`, `prettier`, `tsc`, `biome`.
 - Filesystem in worktree: `ls`, `mkdir -p`, `mv`, `cp`.
@@ -472,7 +480,11 @@ Phases are sequential. Each phase ends with a verifiable milestone.
 
 ### Phase 5 — Multi-project
 **Deliverables:**
-- M5.1 Project registry at `~/.claude-work/projects.json`.
+- M5.0 Config root isolation: atelier lives under `$ATELIER_CONFIG_DIR` (default `~/.claude-work/`), separate from the operator's personal Claude.
+- M5.0.1 `gh` auth isolation: two atelier-isolated `gh` identities at `$ATELIER_CONFIG_DIR/gh/author/` (used by every operational agent) and `$ATELIER_CONFIG_DIR/gh/reviewer/` (used only by the `reviewer` agent). The two must be different GitHub users so `gh pr review --approve` lands as a real approval, fixing Finding #11.
+- M5.0.2 Preflight collision check + dynamic `ATELIER_CONFIG_DIR` so the operator can choose a different path when the default already has unrelated content.
+- M5.0.3 `atelier-uninstall` with chat-session preservation (default) + `--purge` opt-in.
+- M5.1 Project registry at `$ATELIER_CONFIG_DIR/projects.json`.
 - M5.2 `/setup-project` bootstraps a new project end-to-end: `.claude/settings.json`, `ROADMAP.md`, `.claude/CLAUDE.md`, `.npmrc` (pnpm guardrails), `.gitignore`, and registry entry.
 - M5.3 `task` alias resolves current project from cwd (fallback to menu if not inside one).
 

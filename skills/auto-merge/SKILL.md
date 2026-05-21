@@ -53,6 +53,8 @@ Only `APPROVED` proceeds. Anything else (including `null`) → `held: review sta
 
 Important: GitHub's `reviewDecision` is the **net** decision after all reviews. If the `atelier:reviewer` agent approved but a human later marked `request-changes`, GitHub returns `CHANGES_REQUESTED` (correctly). The skill honours GitHub's verdict — it does not double-check the agent's individual review.
 
+Note: the `reviewer` agent runs under `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/reviewer`, a distinct GitHub user from the author identity at `$ATELIER_CONFIG_DIR/gh/author`. With distinct identities, GitHub honours the reviewer's `--approve` and `reviewDecision` resolves to `APPROVED`. If the two identities resolve to the same GitHub login, this guardrail keeps holding until the reviewer dir is re-authenticated with a different account.
+
 ### 3. All CI checks succeeded
 
 ```bash
