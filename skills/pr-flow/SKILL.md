@@ -165,6 +165,3 @@ These are non-negotiable — surface a clear error and stop:
 - Marking the PR ready for auto-merge. Auto-merge requires the `reviewer` agent to approve through the `auto-merge` skill; `pr-flow` only opens a normal PR.
 - Touching `package.json`, `pnpm-lock.yaml`, `.github/workflows/**`, `Dockerfile`, `docker-compose*` from this flow. Those changes belong elsewhere and must be called out in the PR description so reviewers and the `auto-merge` skill know this PR is human-only.
 
-## Why this skill exists
-
-`pr-flow` is the executable form of PLAN.md §6. Without it, every PR opened by atelier risks drifting from the gate rules (squash strategy, push to wrong branch, missing tracking move). One skill, invoked by the `pr-author` agent and the `/finish-task` slash command, keeps every PR shaped the same way.

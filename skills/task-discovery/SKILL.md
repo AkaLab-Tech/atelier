@@ -85,6 +85,3 @@ The orchestrator (`task-orchestrator` agent) takes the returned record and:
 
 When this skill is invoked **directly by the operator** ("what's next?"), present the result in a short table — id, title, type, priority, estimate — and ask whether to claim it, rather than auto-claiming.
 
-## Why this skill exists
-
-A central place to encode the roadmap-parsing rules. Without it, every agent that needs "the next task" rewrites the parser, drifts from PLAN.md §5, and silently disagrees about what `blocked_by` means. One skill, one source of truth.

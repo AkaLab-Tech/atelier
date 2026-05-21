@@ -118,7 +118,7 @@ Launch the `atelier:task-orchestrator` agent with these inputs:
 - `worktree_path`: `<wt>` (the absolute path captured in step 4b for blocked-resume, or resolved from `git wt list` matching `task/<id>-*` for interrupted-resume)
 - `branch`: `task/<id>-<slug>` (from `git branch --show-current` inside `<wt>`, or from `git wt list`)
 - **`resume_mode`**: `interrupted` | `blocked` — pass this **explicitly** in the agent prompt. The orchestrator's Step 1 ("Pick the task") has special handling for this flag: it does **not** treat the active `IN_PROGRESS.md` entry as an anomaly and does **not** invoke `task-discovery`. It jumps directly to the specialist chain starting from `implementer`.
-- **`interactive`**: `true` | `false` — propagate the interaction mode from the section above. The orchestrator does not have its own confirmation step in resume mode, so this is mostly forward-looking (specialists that may add prompts in the future inherit the flag).
+- **`interactive`**: `true` | `false` — propagate the interaction mode from the section above. The orchestrator has no confirmation step in resume mode, but specialists inherit the flag.
 
 For **blocked-resume**, also tell the orchestrator that `.task-log/` was wiped and the budget is a fresh 6.
 
@@ -151,6 +151,3 @@ If a step aborted, report exactly which one and the actionable next instruction 
 - **Never** invoke `unblocker` from this command. Resume reverses what `unblocker` did; re-invoking it would loop.
 - **Never** silently overwrite an in-flight `IN_PROGRESS.md` heading. If the heading mid-file changed between step 2's read and step 4b's edit (concurrent operator edit), stop and surface — the resume needs a stable target.
 
-## Why this command exists
-
-Without `/resume-task`, every interruption forces the operator into manual recovery: read `.task-log/` to figure out what happened, edit `IN_PROGRESS.md` by hand, find the right branch to re-checkout. After a `hard-stop` it is worse — the marker must come off, the logs cleared, the budget reset, and the orchestrator told to start over without re-picking. This command is the inverse of `unblocker`'s state mutation (for blocked-resume) and the inverse of a crashed session (for interrupted-resume). Same command, two flows, one operator intent: *get this task moving again*.

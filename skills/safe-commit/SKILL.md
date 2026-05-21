@@ -85,6 +85,3 @@ The `✓ / ✗` symbols and the `Result: GREEN | RED` line are the parser's anch
 - **Never** add a `--passWithNoTests` flag, `--bail=false`, or any other shape-changing flag to the test command. Use what `package.json` defines.
 - When a step is N/A (no script defined), **say so explicitly**. The push gate cannot be "green" if a project has no test script — it has to be "yellow" / "partial" so the operator can decide.
 
-## Why this skill exists
-
-The push gate is the most-violated rule in agent-driven development — agents commit prematurely, skip lint, or `--no-verify` past failing pre-commits. `safe-commit` makes the gate explicit, deterministic, and machine-readable so `pr-author` and friends can refuse to push when anything is red.

@@ -54,9 +54,7 @@ The atelier permission model (PLAN.md §3) blocks **pushes** to
 protected branches via `Bash(git push * main)` deny rules in
 `settings.template.json`. The **commit-level** rule here is a
 discipline enforced by always working on a non-protected branch
-before the first `git commit`. A future milestone may add a
-`PreToolUse` hook that enforces this at commit time; until then,
-the rule is prompt-level only.
+before the first `git commit`.
 
 ### Before pushing
 

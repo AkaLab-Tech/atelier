@@ -180,6 +180,3 @@ Next step:     human review required. Operator can:
 - **Never** override `reviewDecision`. If GitHub says `CHANGES_REQUESTED`, that is final until a new review supersedes it.
 - **Never** silently widen the 500-line threshold. If a project legitimately needs a larger threshold, the skill's behaviour is "human review"; the v2 per-project config is the right place to make the threshold adjustable.
 
-## Why this skill exists
-
-The auto-merge gate is the riskiest single action in the atelier flow — it's the only one that lands a change on the protected branch without a human pressing a button. The six guardrails are the contract between the operator and atelier: "if **all** of these pass, you may merge without me". One skill, one place to audit the contract, one place to update when the contract changes.
