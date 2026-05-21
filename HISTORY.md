@@ -8,8 +8,97 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M1.7 — Self-CI for atelier (structural validations only) — 2026-05-21
+### M5.0 — Config root isolation: atelier lives under `~/.claude-work/` — 2026-05-21
 **PR:** _pending_
+
+Until M5.0, atelier shared the operator's primary Claude config directory (`~/.claude/` by default, or `~/.claude-personal/` when the operator used `CLAUDE_CONFIG_DIR` to separate accounts). That co-location had two costs:
+
+1. **Rule conflicts.** The operator's personal `~/.claude/CLAUDE.md` may say things like *"never push without confirmation"* — appropriate for their personal sessions but actively hostile to atelier's autonomous flow (`pr-author` *must* push to `task/*` without prompting). The conflict was patched at the per-task settings layer (`settings.template.json`'s allow list), but the rule-vs-rule choreography was fragile.
+2. **Plugin pollution.** atelier's plugin install (`atelier@akalab-tech` + `claude-roadmap-tools@akalab-tech`) landed under the operator's main config dir's `plugins/`, mixing with whatever else the operator had installed there.
+
+M5.0 moves atelier to its own isolated config directory: **`~/.claude-work/`**. Auth tokens, plugin installs, memory, sessions — everything atelier touches at the config-dir level lives there, separate from the operator's personal Claude.
+
+**Delivered:**
+
+- `install.sh`:
+  - **Top of script (after `set -euo pipefail`)** — `export CLAUDE_CONFIG_DIR="${HOME}/.claude-work"`. Every `claude` invocation in install.sh inherits this: Phase B auth (`claude auth status` / `claude auth login`), Phase C.2 marketplace + plugin install (`claude plugin marketplace add`, `claude plugin install`). Wrapped via export rather than per-call prefix because there are ~6 spots inside Phase B/C.2 and per-call wrapping invites drift.
+  - **New `phase_c_1_claude_config_dir()` function** — `mkdir -p ~/.claude-work/` (idempotent). Wired into `phase_c_1()` as the first sub-step so the directory exists before any `claude` invocation runs.
+  - **`task()` function in shellrc hook block** — now reads `task() { CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude "/next-task $*"; }`. Without the inline prefix, the operator's interactive `task` invocation would open `claude` under whatever `CLAUDE_CONFIG_DIR` is in their shell environment (often unset / personal), which would NOT have atelier installed and would fail with `/atelier:next-task` unknown.
+
+- `scripts/atelier-setup-project`:
+  - **`CONFIG_FILE` path** changed from `${HOME}/.claude/.atelier-config.json` to `${HOME}/.claude-work/projects.json`. The file shape is unchanged (the `projects` JSON object); only the path moved.
+  - **Plugin auto-discover path** changed from `$HOME/.claude/plugins/*/atelier/` to `$HOME/.claude-work/plugins/*/atelier/`. Inline comment + `--help` output + the actionable error message all updated.
+  - **Final summary print** changed from `~/.claude/.atelier-config.json: $CONFIG_STATUS` to `~/.claude-work/projects.json: $CONFIG_STATUS`.
+
+- `templates/settings.template.json` — allow-list entries updated:
+  - `Read(~/.claude/settings.json)` → `Read(~/.claude-work/settings.json)`
+  - `Read(~/.claude/.atelier-config.json)` → `Read(~/.claude-work/projects.json)`
+
+- `commands/setup-project.md` (the slash command spec / wrapper docs) — references to `~/.claude/.atelier-config.json` updated to `~/.claude-work/projects.json` in steps 3 and 8 of the inline contract description.
+
+**Tests:**
+
+- `bash -n` clean on the modified `install.sh` and `scripts/atelier-setup-project`.
+- `python3 -m json.tool` clean on the modified `templates/settings.template.json`.
+- Smoke test of `atelier-setup-project --yes <fresh-dir>` under an isolated `$HOME`: helper writes the registry to `$HOME/.claude-work/projects.json` (new path), nothing at `$HOME/.claude/.atelier-config.json` (old path). The final-summary line now reads `~/.claude-work/projects.json: created` instead of `~/.claude/.atelier-config.json: created`. Confirmed empirically.
+- The M1.7 structural CI workflow (added in [#45](https://github.com/AkaLab-Tech/atelier/pull/45)) runs on this PR and validates: shell syntax, JSON validity, YAML frontmatter, helper `--help` smoke.
+
+**Decisions captured:**
+
+- **Single export at the top of install.sh, not per-call.** The script has ~6 `claude ...` invocations inside Phase B and C.2. Wrapping each with `CLAUDE_CONFIG_DIR=... claude ...` is correct but invites silent drift when a new invocation is added. The export at script load is one line, one place to forget, and child processes inherit naturally.
+- **Inline `CLAUDE_CONFIG_DIR=` prefix in `task()`, NOT export.** The shellrc hook block runs in the operator's interactive shell. Adding `export CLAUDE_CONFIG_DIR=~/.claude-work` at top-of-block would pollute every command the operator runs in that shell with atelier's config dir — including plain `claude` invocations the operator wants to use for personal work. The inline prefix on `task()` scopes the env var to just that one function call.
+- **`~/.claude-work/` chosen, not `~/.claude-atelier/` or `~/.atelier/`.** The operator already had a `~/.claude-work/` directory in use (held their employer-account Claude session). That directory was renamed to `~/.claude-hbops/` before this milestone (a one-time housekeeping operation the operator performed manually). `~/.claude-work/` is now exclusively atelier's. The naming contrasts well with the operator's `~/.claude-personal/`: "personal Claude" vs "work Claude / atelier mode".
+- **Registry shape unchanged.** The file at the new path keeps the exact `{ "projects": { "<abs-path>": { "setupCompleted": ..., "setupVersion": ... } } }` shape from M4.9. Only the file's filesystem location moved. The migration recipe below is a single `mv`.
+- **No GH auth isolation in this milestone.** Captured as **M5.0.1** follow-up. `gh` has `GH_CONFIG_DIR` env var support (mirror of `CLAUDE_CONFIG_DIR`). Isolating gh auth means a separate `gh auth login` for an atelier-bot identity — operational decision the operator may or may not want.
+
+**Migration for pre-M5.0 operators** (anyone who previously ran `atelier-setup-project` and has the registry at `~/.claude/.atelier-config.json` plus the plugin installed under `~/.claude/plugins/`):
+
+```sh
+# 1. Create the new config root if it does not exist
+mkdir -p ~/.claude-work
+
+# 2. Move the registry (shape unchanged — just rename the file)
+[ -f ~/.claude/.atelier-config.json ] && \
+  mv ~/.claude/.atelier-config.json ~/.claude-work/projects.json
+
+# 3. Remove the existing atelier shellrc hook block so install.sh can
+#    re-inject the M5.0 version (with CLAUDE_CONFIG_DIR=~/.claude-work
+#    on task())
+sed -i.pre-m5.0 '/# >>> atelier hooks/,/# <<< atelier hooks/d' ~/.zshrc
+
+# 4. Re-run install.sh from the atelier checkout. With CLAUDE_CONFIG_DIR
+#    exported at the top, Phase B re-authenticates atelier under
+#    ~/.claude-work/ (the operator may be prompted to log in fresh —
+#    that one-time pain is expected), and Phase C.2 installs the atelier
+#    marketplace + plugins under ~/.claude-work/plugins/.
+bash ~/path/to/atelier-checkout/install.sh
+
+# 5. Optionally: uninstall atelier from the old config dir to keep the
+#    two Claude installs cleanly separate. Run WITHOUT CLAUDE_CONFIG_DIR
+#    set so the uninstall targets the operator's personal config:
+unset CLAUDE_CONFIG_DIR
+claude plugin uninstall atelier@akalab-tech
+claude plugin uninstall claude-roadmap-tools@akalab-tech
+```
+
+Step 3 (`sed -i.pre-m5.0`) keeps a backup of the pre-edit `~/.zshrc` as `~/.zshrc.pre-m5.0`. Operator can `mv ~/.zshrc.pre-m5.0 ~/.zshrc` to revert if anything goes wrong.
+
+**Acceptance criterion status:** the rule-conflict + plugin-pollution costs are structurally eliminated:
+
+- `task` from a normal shell opens Claude under `~/.claude-work/`, with atelier's own rules.
+- `atelier-setup-project` writes the registry to `~/.claude-work/projects.json`, no longer co-located with personal Claude state.
+- `install.sh` re-run installs the atelier plugin into `~/.claude-work/plugins/`.
+
+**Structurally satisfied** + **empirically validated** by the `atelier-setup-project` smoke test under isolated `$HOME`. End-to-end validation of `install.sh` from scratch (a fresh-Mac re-install) is deferred — the next time an operator bootstraps from scratch is the natural validation moment.
+
+**Follow-ups:**
+
+- **M5.0.1** — gh auth isolation. `gh` respects `GH_CONFIG_DIR` (mirror of `CLAUDE_CONFIG_DIR`). install.sh Phase B could set `GH_CONFIG_DIR=~/.claude-work/gh` so atelier's `gh auth login` lands separate from the operator's personal gh auth. Requires a separate GitHub identity (bot account) for atelier — which fixes Finding #11 (same-identity self-approval) at the same time. Recommended as a paired pair.
+- **M5.1** — extend the registry schema with `name` and `lastTask` fields (originally planned per ROADMAP). The path component of M5.1 is now done by this M5.0 milestone; only the schema extension remains.
+- **Hardening of install.sh shellrc hook re-injection.** Today, install.sh skips the shellrc edit if the sentinel is already present — a re-run after a code change to the hook block does NOT pick up the new version. The migration recipe above works around this manually. A future install.sh could detect drift and offer to refresh.
+
+### M1.7 — Self-CI for atelier (structural validations only) — 2026-05-21
+**PR:** [#45](https://github.com/AkaLab-Tech/atelier/pull/45)
 
 Atelier's own development had zero CI: PRs to this repo (M4.6 → M4.13) relied on manual review plus the "Tests:" section in each HISTORY entry. That worked for the single-maintainer case but missed simple structural defects more than once — most notably the `bash` heredoc-in-cmdsub typo caught at the last minute during M4.9 implementation. M1.7 closes the gap with a minimal GitHub Actions workflow that runs four structural checks on every PR against `main` (and on push to `main`).
 
