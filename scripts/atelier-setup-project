@@ -46,7 +46,8 @@ OPTIONS:
                          Resolution order: this flag, then
                          \$ATELIER_PLUGIN_ROOT, then the atelier checkout
                          this script lives in, then the first match under
-                         ~/.claude-work/plugins/*/atelier/.
+                         \$ATELIER_CONFIG_DIR/plugins/*/atelier/
+                         (default \$ATELIER_CONFIG_DIR is ~/.claude-work/).
   --yes, -y              Non-interactive mode. Auto-resolves every prompt
                          with the safe default (never overwrite, never
                          weaken). Also honored if \$ATELIER_AUTO is set.
@@ -136,8 +137,9 @@ resolve_plugin_root() {
     printf '%s\n' "$candidate"; return
   fi
 
-  # Marketplace install: ~/.claude-work/plugins/<marketplace>/atelier/ (per M5.0).
-  for candidate in "$HOME/.claude-work/plugins"/*/atelier; do
+  # Marketplace install: $ATELIER_CONFIG_DIR/plugins/<marketplace>/atelier/
+  # (per M5.0 + M5.0.2; default $ATELIER_CONFIG_DIR is ~/.claude-work/).
+  for candidate in "$ATELIER_CONFIG_DIR/plugins"/*/atelier; do
     if looks_like_plugin_root "$candidate"; then
       printf '%s\n' "$candidate"; return
     fi
@@ -149,7 +151,7 @@ resolve_plugin_root() {
    - --plugin-root flag         (not given)
    - \$ATELIER_PLUGIN_ROOT      (${ATELIER_PLUGIN_ROOT:-unset})
    - script-relative discovery  ($(dirname "$(script_dir)"))
-   - ~/.claude-work/plugins/*/atelier (no match)
+   - \$ATELIER_CONFIG_DIR/plugins/*/atelier (no match, $ATELIER_CONFIG_DIR)
 
    Pass --plugin-root /abs/path/to/atelier-checkout, export ATELIER_PLUGIN_ROOT,
    or install via the atelier marketplace."
@@ -197,8 +199,19 @@ resolve_project_path() {
   printf '%s\n' "$abs"
 }
 
+# ---------- atelier config dir (M5.0 + M5.0.2) ----------
+# Atelier's isolated Claude config root. install.sh bakes the chosen path
+# into the shellrc hook block (`export ATELIER_CONFIG_DIR=...`) so any shell
+# sourcing the rc inherits it. When this script runs from a non-atelier
+# shell (e.g. a freshly-spawned `claude -p` subprocess that didn't read the
+# rc, or the operator invoking the binary directly without a re-sourced
+# shell), fall back to the default. Operators with a non-default config
+# dir need either a re-sourced shell or to set ATELIER_CONFIG_DIR
+# explicitly in the invocation env.
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+
 # ---------- idempotence ----------
-CONFIG_FILE="${HOME}/.claude-work/projects.json"
+CONFIG_FILE="$ATELIER_CONFIG_DIR/projects.json"
 
 is_configured() {
   local proj="$1"
@@ -234,15 +247,20 @@ step_settings_json() {
   fi
 
   local tmp; tmp="$(mktemp)"
-  sed "s|<worktree>|$PROJECT|g" "$template" > "$tmp" \
+  # Two placeholders substituted in one sed pass:
+  #   <worktree>          → absolute path of the project being set up
+  #   <atelier-config-dir> → atelier's isolated Claude config root (M5.0.2)
+  sed -e "s|<worktree>|$PROJECT|g" \
+      -e "s|<atelier-config-dir>|$ATELIER_CONFIG_DIR|g" \
+      "$template" > "$tmp" \
     || { rm -f "$tmp"; die "sed substitution failed for $target"; }
 
   jq empty "$tmp" >/dev/null 2>&1 \
     || { rm -f "$tmp"; die "$template did not produce valid JSON after substitution"; }
 
-  if grep -q "<worktree>" "$tmp"; then
+  if grep -q "<worktree>" "$tmp" || grep -q "<atelier-config-dir>" "$tmp"; then
     rm -f "$tmp"
-    die "$template still contains literal '<worktree>' after substitution — template bug"
+    die "$template still contains literal '<worktree>' or '<atelier-config-dir>' after substitution — template bug"
   fi
 
   if [ -f "$target" ] && $RECONFIGURE; then
@@ -400,7 +418,7 @@ step_gitignore() {
   GITIGNORE_STATUS="appended"
 }
 
-# ---------- step 8: record setup in ~/.claude-work/projects.json ----------
+# ---------- step 8: record setup in $ATELIER_CONFIG_DIR/projects.json ----------
 step_record_setup() {
   local now plugin_version tmp
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -474,7 +492,7 @@ sublog "HISTORY.md:                     $HISTORY_STATUS"
 sublog ".claude/CLAUDE.md:              $CLAUDE_STATUS"
 sublog ".npmrc:                         $NPMRC_STATUS"
 sublog ".gitignore:                     $GITIGNORE_STATUS"
-sublog "~/.claude-work/projects.json:    $CONFIG_STATUS"
+sublog "$(printf '%s' "$CONFIG_FILE" | sed "s|^$HOME|~|"): $CONFIG_STATUS"
 sublog "setupCompleted:                 $SETUP_COMPLETED"
 sublog "setupVersion:                   $SETUP_VERSION"
 echo ""

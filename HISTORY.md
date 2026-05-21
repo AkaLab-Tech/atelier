@@ -8,8 +8,68 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M5.0 — Config root isolation: atelier lives under `~/.claude-work/` — 2026-05-21
+### M5.0.2 — Preflight collision check + dynamic `ATELIER_CONFIG_DIR` — 2026-05-21
 **PR:** _pending_
+
+[M5.0](#m50--config-root-isolation-atelier-lives-under-claude-work--2026-05-21) hardcoded `~/.claude-work/` as atelier's config root. That was correct as the **default** but wrong as the only possible value: if an operator runs `install.sh` on a machine where `~/.claude-work/` already has unrelated content, atelier would silently merge its state into the operator's existing directory. The maintainer hit this during M5.0's own development (the directory was holding their employer-account Claude session). The fix at the time was a manual rename — M5.0.2 makes atelier handle the collision automatically.
+
+**Delivered:**
+
+- `install.sh` — argparse + Phase 0 preflight + threading:
+  - **New argv parser** (`parse_args()`): `--config-dir <path>` (override), `--yes` / `-y` (non-interactive), `--help` / `-h`. Unknown args fail with a `try --help` hint.
+  - **New `resolve_config_dir()`** sets `$ATELIER_CONFIG_DIR` from priority `--config-dir` flag → `$ATELIER_CONFIG_DIR` env var → default `~/.claude-work/`. Expands `~/` tilde if the operator typed one. Exports the resolved value.
+  - **New `preflight_check()` helper** returns 0 if the target dir is safe (doesn't exist, empty, contains `.atelier-managed` marker, or contains `plugins/<*>/atelier/`) and 1 if it has unrelated content.
+  - **New `phase_0_preflight()`** runs before everything else. On a collision: interactive mode prompts for an alternative path in a loop (tilde-expansion supported); non-interactive mode fails with an actionable error listing the four resolution options.
+  - **`main()` re-ordered:** `parse_args` → `resolve_config_dir` → `export CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"` → `phase_0_preflight` → A/B/C.1/C.2/verify. The hardcoded `export CLAUDE_CONFIG_DIR=${HOME}/.claude-work` that lived at script-load is gone.
+  - **`phase_c_1_claude_config_dir()` extended:** after `mkdir -p "$ATELIER_CONFIG_DIR"`, writes `$ATELIER_CONFIG_DIR/.atelier-managed` (a small JSON marker with `managedBy`, `installedAt`, `installerVersion`, `atelierConfigDir`). Refreshed on every install. Future preflight runs recognise this file as "atelier's dir, OK to use".
+  - **Shellrc hook block** now contains `export ATELIER_CONFIG_DIR="__ATELIER_CONFIG_DIR__"` as a placeholder line, with bash-native `${block//__ATELIER_CONFIG_DIR__/$ATELIER_CONFIG_DIR}` substitution after the heredoc to bake in the chosen path. `task()` now reads `$ATELIER_CONFIG_DIR` instead of hardcoded `$HOME/.claude-work`.
+
+- `scripts/atelier-setup-project` — env-var-driven:
+  - Top of script: `ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"` (env var with fallback for non-atelier shells like the slash-command's `Bash` subprocess).
+  - `CONFIG_FILE="$ATELIER_CONFIG_DIR/projects.json"` (dynamic).
+  - Plugin auto-discover: `for candidate in "$ATELIER_CONFIG_DIR/plugins"/*/atelier; do` (dynamic).
+  - `step_settings_json()` sed: two `-e` substitutions in one pass — `<worktree>` and `<atelier-config-dir>`. Verification now also checks no literal `<atelier-config-dir>` remains.
+  - Final summary print: `$(printf '%s' "$CONFIG_FILE" | sed "s|^$HOME|~|"): $CONFIG_STATUS` — replaces `$HOME` with `~` for display, regardless of actual config dir.
+  - `--help` text + inline comments + error messages updated to reference `$ATELIER_CONFIG_DIR` with default note.
+
+- `templates/settings.template.json` — hardcoded `~/.claude-work/*` Read entries are now `<atelier-config-dir>/*` placeholders, substituted by `atelier-setup-project` (per-project) and by `commands/next-task.md` step 7 (per-task worktree).
+
+- `commands/next-task.md` step 7 — sed gains a second `-e` for `<atelier-config-dir>`, reads `${ATELIER_CONFIG_DIR:-$HOME/.claude-work}` (env var with fallback for `--plugin-dir` ad-hoc mode). Verification grows from 5 guards to 6 (added: no literal `<atelier-config-dir>` left). Hard refusals updated to mention both placeholders.
+
+- `commands/setup-project.md` — steps 3 and 8 reference `$ATELIER_CONFIG_DIR/projects.json` (default `~/.claude-work/projects.json`). Step 4 mentions both placeholder substitutions.
+
+- `HISTORY.md` M5.0 PR line backfilled `_pending_` → [#46](https://github.com/AkaLab-Tech/atelier/pull/46).
+
+**Tests:**
+
+- `bash -n` clean on modified `install.sh` and `scripts/atelier-setup-project`.
+- `python3 -m json.tool` clean on `templates/settings.template.json`.
+- Smoke test #1 (fresh tmpdir, no $ATELIER_CONFIG_DIR set): `atelier-setup-project --yes <project>` writes the registry to `$HOME/.claude-work/projects.json` (the default fallback) — verifies M5.0 behaviour didn't regress.
+- Smoke test #2 (fresh tmpdir, `ATELIER_CONFIG_DIR=<custom>` set): `atelier-setup-project --yes <project>` writes the registry to `<custom>/projects.json` (the env var win) — verifies M5.0.2's parameterization.
+- Smoke test #3 (collision, non-interactive): `install.sh --yes --config-dir <occupied>` exits non-zero with the actionable error message — verifies preflight refusal.
+- Smoke test #4 (idempotent re-install): writing `.atelier-managed` marker into a config dir, then running preflight — passes without prompting.
+- M1.7 structural CI workflow runs on this PR.
+
+**Decisions captured:**
+
+- **Argparse via case-statement, not getopts.** Bash `getopts` doesn't natively support GNU-style `--long-options`. The hand-rolled while-case loop is ~25 lines and supports both `--config-dir <path>` and `--config-dir=<path>` forms.
+- **Tilde-expansion is opt-in.** Operator-typed paths get `${path/#\~/$HOME}` expansion. Flag values and env vars do too. The bash native `~` expansion only happens at parse-time of unquoted tokens, so this manual expansion is required when the path comes through a quoted argument.
+- **Marker file is JSON, not a touch file.** Could have been `touch $dir/.atelier-managed`. JSON makes it self-documenting (`jq . .atelier-managed` works) and lets future install.sh records add fields (e.g., last-install version) without breaking parse.
+- **Marker refreshed on every install, not just on first install.** `installedAt` reflects the most recent install. That's the more useful question to answer for the operator ("when did atelier last touch this dir?") versus "when was it originally installed" (which they can pull from `git log` on their atelier checkout).
+- **Two substitutions in one sed pass, not two passes.** Using `sed -e ... -e ...` is one process, one fork. Two passes would be two `sed` invocations and an intermediate temp file.
+- **Final summary print uses `sed "s|^$HOME|~|"`, not parameter-expansion `${CONFIG_FILE/#$HOME/~}`.** Both work, but the sed form survives the case where `$CONFIG_FILE` doesn't start with `$HOME` (e.g., operator set `ATELIER_CONFIG_DIR=/var/lib/atelier`), printing the full path instead of mangling.
+- **No `commands/finish-task.md` / `commands/resume-task.md` / `commands/doctor.md` / `commands/status.md` changes in this PR.** They don't reference `~/.claude-work/` or the registry path today. If a future audit shows they do, that's a follow-up — for M5.0.2 the touch points are install.sh, the bash helper, the template, and the two slash commands that DO substitute the template (`setup-project` via the helper, `next-task` step 7).
+
+**Acceptance criterion status:** atelier handles config-dir collisions safely (preflight refuses, prompts, or proceeds idempotently depending on context) and all hardcoded paths now flow from a single `$ATELIER_CONFIG_DIR` variable. **Structurally satisfied** and **empirically validated** by the four smoke tests above.
+
+**Follow-ups (unchanged from M5.0 entry):**
+
+- M5.0.1 — gh auth isolation via `GH_CONFIG_DIR` + atelier-bot identity. Now reads `$ATELIER_CONFIG_DIR/gh/` cleanly thanks to this milestone's parameterization.
+- M5.0.3 — `atelier-uninstall` with chat-session preservation. Will read `$ATELIER_CONFIG_DIR` from the shellrc hook block to know what to clean / preserve.
+- Hardening of install.sh shellrc hook re-injection. install.sh skips the shellrc edit if the sentinel comment is already present — same issue noted in M5.0 entry; a future installer could detect drift and offer to refresh.
+
+### M5.0 — Config root isolation: atelier lives under `~/.claude-work/` — 2026-05-21
+**PR:** [#46](https://github.com/AkaLab-Tech/atelier/pull/46)
 
 Until M5.0, atelier shared the operator's primary Claude config directory (`~/.claude/` by default, or `~/.claude-personal/` when the operator used `CLAUDE_CONFIG_DIR` to separate accounts). That co-location had two costs:
 

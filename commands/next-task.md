@@ -72,7 +72,10 @@ Invoke the external `git-wt` skill (or `git wt switch <branch>` directly) to cre
 
 ### 7. Instantiate the per-task `.claude/settings.json`
 
-Read `$CLAUDE_PLUGIN_ROOT/templates/settings.template.json`. The template contains the literal placeholder `<worktree>` (in `additionalDirectories` and in some `Read(...)`/`Edit(...)`/`Write(...)` patterns) that must be substituted with the **absolute path of the per-task worktree** (from step 6), NOT the main repo path.
+Read `$CLAUDE_PLUGIN_ROOT/templates/settings.template.json`. The template contains **two literal placeholders** that must be substituted before writing the per-task settings file:
+
+- `<worktree>` — substituted with the **absolute path of the per-task worktree** (from step 6), NOT the main repo path. Appears in `additionalDirectories` and in some `Read(...)`/`Edit(...)`/`Write(...)` patterns.
+- `<atelier-config-dir>` — substituted with the operator's atelier config root, taken from the `$ATELIER_CONFIG_DIR` env var (default `~/.claude-work/`, per M5.0 + M5.0.2). Appears in the allow list's `Read(...)` entries for atelier's own state files.
 
 **Critical implementation detail:** the Claude Code harness has a built-in guard that requires explicit operator approval for the `Write` and `Edit` tools when the target path is under `.claude/**`. That guard hangs the chain in non-interactive (`-p`) mode. The atelier convention is therefore to write `.claude/settings.json` **via Bash shell redirection** (`sed > file`), never via the `Write` / `Edit` tools — the redirect is a `Bash` tool operation, which the per-path matchers handle via the standard allow / deny matrix and which is not subject to the harness's `.claude/**` interactive guard. The path `<worktree>-worktrees/**` is in `additionalDirectories`, so the `Bash` redirect to `<task-worktree>/.claude/settings.json` is permitted.
 
@@ -80,19 +83,22 @@ Run **as a single Bash command** (this command's frontmatter allows the four pie
 
 ```bash
 mkdir -p <absolute-worktree-path>/.claude && \
-  sed 's|<worktree>|<absolute-worktree-path>|g' \
+  sed -e 's|<worktree>|<absolute-worktree-path>|g' \
+      -e "s|<atelier-config-dir>|${ATELIER_CONFIG_DIR:-$HOME/.claude-work}|g" \
     "$CLAUDE_PLUGIN_ROOT/templates/settings.template.json" \
   > <absolute-worktree-path>/.claude/settings.json && \
   jq empty <absolute-worktree-path>/.claude/settings.json && \
+  ! grep -q '<worktree>' <absolute-worktree-path>/.claude/settings.json && \
+  ! grep -q '<atelier-config-dir>' <absolute-worktree-path>/.claude/settings.json && \
   test "$(jq -r '.permissions.additionalDirectories[0]' <absolute-worktree-path>/.claude/settings.json)" = "<absolute-worktree-path>"
 ```
 
-The five guards in order: directory exists; sed succeeded; output parses as JSON; `<worktree>` placeholder was actually substituted (no literal `<worktree>` left); and the substitution landed in the canonical first slot of `additionalDirectories`. Any of them failing → **stop and report** with the exact failure (do NOT advance to step 8 with a missing / corrupt / unmodified settings file — silently skipping this leaves the task in a half-configured state that only surfaces when the operator later opens a session inside the task worktree).
+The six guards in order: directory exists; sed succeeded; output parses as JSON; the `<worktree>` placeholder was actually substituted (no literal left); the `<atelier-config-dir>` placeholder was also substituted (no literal left); and the worktree substitution landed in the canonical first slot of `additionalDirectories`. Any guard failing → **stop and report** with the exact failure (do NOT advance to step 8 with a missing / corrupt / unmodified settings file — silently skipping this leaves the task in a half-configured state that only surfaces when the operator later opens a session inside the task worktree).
 
 **Hard refusals:**
 - **Never** use the `Write` tool to create `<task-worktree>/.claude/settings.json`. The harness blocks it in non-interactive mode. Always Bash + redirect.
 - **Never** substitute `<worktree>` with the main-repo path. The whole point of per-task settings is to scope `Edit` / `Write` to the task's worktree.
-- **Never** skip the substitution-verification guard (the last two checks above). A file that exists but still contains the literal `<worktree>` placeholder would silently widen the `additionalDirectories` to `<worktree>/**` (matching nothing useful) and the operator would not notice until much later.
+- **Never** skip the substitution-verification guards (the four `grep -q` / `test` checks above). A file that exists but still contains a literal `<worktree>` or `<atelier-config-dir>` placeholder would silently widen the allow list to a nonsense pattern and the operator would not notice until much later.
 
 ### 8. Hand off to `task-orchestrator`
 
