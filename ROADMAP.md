@@ -16,7 +16,81 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 ## Medium Priority
 
-> **Phases 2–4 — Single-project agent flow + robustness.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries.
+> **Phases 2–5 — Single-project agent flow + robustness + multi-project foundation.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries — and when an operator can install / uninstall atelier without risking unrelated Claude state.
+
+### M5.0.1 — gh auth isolation via `GH_CONFIG_DIR` + atelier-bot identity
+
+Today `pr-author` runs `gh ...` calls under the operator's primary GitHub identity (whichever `gh auth login` set up before install.sh ran). Two problems:
+
+1. **Same-identity self-approval limitation (Finding #11, dogfood-1).** When `reviewer` runs under the same GitHub identity as `pr-author`, GitHub silently downgrades the reviewer's `gh pr review --approve` to a comment, which trips both auto-merge guardrails #2 (review status) and #6 (pending human comment). The auto-merge skill correctly holds the PR — but the chain is then stuck pending operator merge.
+2. **No isolation of atelier-side GitHub activity from the operator's personal `gh` state.** Atelier's PRs, issues, comments all attribute to the operator's account, which can pollute notification streams and make audit hard.
+
+`gh` already supports config-dir isolation via the `GH_CONFIG_DIR` env var (mirror of `CLAUDE_CONFIG_DIR`). M5.0.1 wires this into install.sh and atelier's flow:
+
+- `install.sh` Phase B grows a step that runs `gh auth login` under `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh"` so atelier's gh state is fully separate from the operator's primary `gh`.
+- The operator authenticates as a separate GitHub identity (typically a bot account they create for atelier — e.g., `atelier-bot-<operator>`).
+- `templates/settings.template.json` and the agent prompts run every `gh ...` invocation under the isolated `$GH_CONFIG_DIR`. Either via export (mirroring how M5.0 exports `CLAUDE_CONFIG_DIR`) or per-call prefix.
+- `pr-author` opens PRs as bot identity; `reviewer` reviews as the operator's primary identity → distinct identities, GitHub honours the approval, Finding #11 resolved.
+
+**Acceptance:** running `install.sh` end-to-end on a fresh machine results in two distinct `gh auth` configurations: one at `~/.config/gh/` (operator's personal, untouched) and one at `$ATELIER_CONFIG_DIR/gh/` (atelier-bot). When `pr-author` opens a PR and `reviewer` approves it on a dogfood repo, GitHub's UI shows the approval as a real approval (not a comment), and the auto-merge skill proceeds without the Finding #11 hold.
+
+**Trigger to revisit:** before any further dogfood that depends on `auto-merge` reaching merged state without operator intervention. M5.0.1 is the fix for the "auto-merge gate trips on self-approval" class of issue.
+
+**Open questions to resolve during implementation:**
+- Does the operator create the bot account manually before running install.sh, or does install.sh guide them through `gh auth login --web` with a different account?
+- How does `pr-author` know to use `$ATELIER_CONFIG_DIR/gh` vs the operator's `~/.config/gh/`? (Probably: `export GH_CONFIG_DIR=...` in the shellrc hook block alongside the `CLAUDE_CONFIG_DIR` work.)
+
+### M5.0.2 — Preflight collision check + dynamic `ATELIER_CONFIG_DIR`
+
+M5.0 (PR [#46](https://github.com/AkaLab-Tech/atelier/pull/46)) hardcoded `~/.claude-work/` as atelier's config root. If an operator runs `install.sh` on a machine where `~/.claude-work/` already has unrelated content (another Claude session, an old experiment, etc.), atelier silently merges its state into the operator's existing directory — risking data loss.
+
+This is not hypothetical: the maintainer hit it on their own machine during M5.0's development. The fix was manual (rename `~/.claude-work/` → `~/.claude-hbops/` before re-running install.sh). M5.0.2 makes atelier handle the collision automatically.
+
+**(a) Preflight collision check.** New early-phase step in `install.sh` (before any `claude`/`gh` invocation) inspects the target config dir:
+
+- Empty or non-existent → proceed with the default `~/.claude-work/`.
+- Contains atelier markers (`plugins/atelier@*/` or a written `.atelier-managed` marker file) → it's atelier's previous install, proceed (idempotent re-install).
+- Contains other content → **stop**. In interactive mode, prompt the operator: *"`~/.claude-work/` is occupied by content that does not look like atelier. Please pick an alternative path (e.g. `~/.claude-atelier/`, `~/.atelier/`):"*. In non-interactive mode, fail with an actionable error pointing at `--config-dir <path>` flag and `ATELIER_CONFIG_DIR=...` env var.
+
+**(b) Parameterize all hardcoded paths.** Everywhere atelier hardcodes `~/.claude-work/` becomes `${ATELIER_CONFIG_DIR:-$HOME/.claude-work}` with the chosen path injected at install time:
+
+- `install.sh` top: `export CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"` (computed from preflight, not literal).
+- `phase_c_1_claude_config_dir` (M5.0): `mkdir -p "$ATELIER_CONFIG_DIR"`.
+- Shellrc hook block: `export ATELIER_CONFIG_DIR="<chosen path>"` baked in via sed-substitution during install. `task()` reads `$ATELIER_CONFIG_DIR`.
+- `scripts/atelier-setup-project`: `CONFIG_FILE="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}/projects.json"`. Plugin auto-discover path same.
+- `templates/settings.template.json`: gains a `<atelier-config-dir>` placeholder that `atelier-setup-project` substitutes alongside `<worktree>` when writing per-project settings.json.
+
+**Acceptance:** running `install.sh` on a machine with an unrelated `~/.claude-work/` does NOT clobber it. Interactive operator gets prompted for alternative; non-interactive gets a clear actionable error. The chosen path is consistently read by `task()`, `atelier-setup-project`, and per-project `settings.json` instantiation. Running `install.sh` again later (with the same operator's choice) is idempotent.
+
+**Trigger to revisit:** before any operator other than the maintainer runs `install.sh` from scratch. Identified post-M5.0 when the maintainer realized their own initial setup almost destroyed an unrelated `~/.claude-work/` directory.
+
+### M5.0.3 — `atelier-uninstall` with chat-session preservation
+
+Today there is no clean way to uninstall atelier. To remove atelier, the operator has to manually:
+
+1. Edit `~/.zshrc` to remove the atelier hooks block (between sentinel comments).
+2. `rm ~/.local/bin/atelier-setup-project`.
+3. `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR claude plugin uninstall atelier@akalab-tech` and `claude-roadmap-tools@akalab-tech`.
+4. Decide what to do with `$ATELIER_CONFIG_DIR` — which contains chat history (`history.jsonl`), session state (`projects/`), plans (`plans/`), backups — without a clear convention.
+
+M5.0.3 ships a single command — `scripts/atelier-uninstall` — that automates steps 1–3 and gives the operator a clear default for step 4 (preserve), with an explicit opt-in for destructive wipe.
+
+**Default mode (conservative):**
+
+- Remove the atelier hooks block from `~/.zshrc` and/or `~/.bashrc` (via `sed` against the existing sentinel comments — same comments used at install time).
+- Remove the `~/.local/bin/atelier-setup-project` symlink and the new `~/.local/bin/atelier-uninstall` symlink.
+- Uninstall `atelier@akalab-tech` and `claude-roadmap-tools@akalab-tech` plugins under `$ATELIER_CONFIG_DIR`.
+- **NOT removed:** `$ATELIER_CONFIG_DIR` itself. The operator's chat history, sessions, plans, backups all remain in place. They can still `CLAUDE_CONFIG_DIR=~/.claude-work claude` (or whatever the chosen path was) later to access archived sessions, even though atelier is no longer "installed" on their system.
+
+**Purge mode (`--purge` flag):**
+
+- All of the above, plus `rm -rf "$ATELIER_CONFIG_DIR"`.
+- Requires explicit confirmation prompt: *"This will permanently delete all chat history, sessions, plans, and backups under `<path>`. Type 'PURGE' (uppercase) to confirm."*.
+- Non-interactive `--purge --yes` is allowed, but the operator must explicitly opt in to both flags.
+
+**Acceptance:** `atelier-uninstall` from any shell removes atelier's shellrc footprint, symlinks, and plugin install — without touching the operator's chat sessions by default. `atelier-uninstall --purge` (with confirmation) wipes everything. After a default uninstall, re-installing atelier via `install.sh` picks up the same `$ATELIER_CONFIG_DIR` and does NOT require re-authenticating to Claude (auth tokens persist in `$ATELIER_CONFIG_DIR/.claude.json`).
+
+**Trigger to revisit:** when an operator (including the maintainer) needs to decommission atelier without losing chat history. Captured post-M5.0 alongside M5.0.2 as the natural pair of install-side and uninstall-side hardening.
 
 ### M4.11 — Investigate the M4.7 thesis under `claude --plugin-dir` ad-hoc CLI mode
 
