@@ -357,6 +357,8 @@ Declared in `.mcp.json` at the plugin root and auto-loaded when atelier is activ
 
   **Scope by agent.** `mcp__playwright__*` is in the allow list of `settings.template.json`; only `implementer` and `reviewer` list `mcp__playwright` in their agent `tools:` frontmatter, so no other agent can invoke it. Browsers (~250 MB chromium bundle) download on the first tool call into `~/.cache/ms-playwright`, mirroring the `visual-validation` lazy-install policy from §1.
 
+  **Hard deny: `mcp__playwright__browser_run_code_unsafe`.** The MCP server exposes 23 tools; 22 are sandboxed to the browser (navigate, click, snapshot, evaluate-in-page, etc.). The 23rd — `browser_run_code_unsafe` — is documented by the server itself as "Run a Playwright code snippet. Unsafe: executes arbitrary JavaScript in the Playwright server process and is RCE-equivalent." That executes against the operator's host as the operator's user, breaking the read-only contract of `reviewer` and giving `implementer` an unbounded escape hatch. `settings.template.json` denies this single tool by name; the other 22 stay covered by the wildcard.
+
 ### Slash commands (global)
 
 - `/next-task` — full pickup-to-PR flow.

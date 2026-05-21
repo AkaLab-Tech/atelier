@@ -60,7 +60,9 @@
       "Edit(<worktree>-worktrees/**/pnpm-lock.yaml)",
       "Write(./pnpm-lock.yaml)",
       "Write(<worktree>/pnpm-lock.yaml)",
-      "Write(<worktree>-worktrees/**/pnpm-lock.yaml)"
+      "Write(<worktree>-worktrees/**/pnpm-lock.yaml)",
+
+      "mcp__playwright__browser_run_code_unsafe"
     ],
 
     "ask": [
