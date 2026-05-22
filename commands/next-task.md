@@ -93,7 +93,14 @@ Exit codes:
 
 ### 8. Hand off to `task-orchestrator`
 
-Launch the `atelier:task-orchestrator` agent (Opus) with the worktree path and the structured task record from step 3 as its briefing. **Include the interaction mode in the briefing** — when non-interactive, pass `interactive: false` (or equivalent prose) so the orchestrator's Step 1 standard-mode branch skips its own confirmation prompt (Step 1 also reads `ATELIER_AUTO` as a fallback, but the briefing is the authoritative signal when set). From this point the chain (`implementer` → `tester` → `pr-author`) is the orchestrator's responsibility — `/next-task`'s job ends here.
+Launch the `atelier:task-orchestrator` agent (Opus) via the `Task` tool. The briefing must include:
+
+- **`worktree_path`** — absolute path to the per-task worktree from step 6.
+- **task record** — structured fields from step 3 (`id`, `title`, `type`, `priority`, `estimate`, `worktree`, `acceptance`, `context`).
+- **interaction mode** — when non-interactive, pass `interactive: false` (or equivalent prose) so the orchestrator's Step 1 standard-mode branch skips its own confirmation prompt (Step 1 also reads `ATELIER_AUTO` as a fallback, but the briefing is the authoritative signal when set).
+- **cwd reminder** — the explicit one-liner: *"Your `Bash` cwd is the cwd this `/next-task` invocation inherited, NOT `<worktree_path>`. Every `Bash` call targeting the worktree must use `git -C <worktree_path>`, `pnpm --dir <worktree_path>`, `gh --repo <owner/name>`, or `cd <worktree_path> && ...` prefix. Read/Edit/Write on absolute paths are fine. See `operator-rules.md` § Operating against the task worktree."* The orchestrator's own system prompt repeats this rule (defense in depth), but the briefing is the authoritative carrier — if `SessionStart` did not fire for the subagent dispatch, the briefing is the only place the rule reaches the orchestrator.
+
+From this point the chain (`implementer` → `tester` → `pr-author`) is the orchestrator's responsibility — `/next-task`'s job ends here.
 
 ## Output
 
