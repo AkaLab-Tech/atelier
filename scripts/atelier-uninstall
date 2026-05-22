@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+#
+# atelier-uninstall — reverse what install.sh Phase C.1 did, with
+# chat-session preservation as the default.
+#
+# Default mode (conservative):
+#   - Strip the atelier hooks block from ~/.zshrc and/or ~/.bashrc
+#     (sed between sentinel comments, inclusive).
+#   - Remove ~/.local/bin/atelier-setup-project and ~/.local/bin/atelier-uninstall.
+#   - Remove ~/.local/state/atelier/ (git-wt.sha and friends — pure state).
+#   - Uninstall atelier@akalab-tech and claude-roadmap-tools@akalab-tech
+#     under $ATELIER_CONFIG_DIR.
+#   - PRESERVE $ATELIER_CONFIG_DIR itself (chat history, sessions, plans,
+#     backups). The operator can still access archived sessions later via
+#     CLAUDE_CONFIG_DIR=<path> claude.
+#
+# Purge mode (--purge):
+#   - Everything default does, plus `rm -rf "$ATELIER_CONFIG_DIR"`.
+#   - Requires interactive PURGE confirmation, unless --yes is also given.
+#
+# Out of scope (intentionally not touched):
+#   - .env* in git's global excludes (hygiene benefit independent of atelier).
+#   - ~/.gitconfig (operator-level identity, not atelier's to manage).
+#   - ~/.config/gh/ (operator's own gh auth; atelier uses
+#     $ATELIER_CONFIG_DIR/gh/ which is removed under --purge).
+#
+# Usage:
+#   atelier-uninstall [--purge] [--yes|-y] [--help|-h]
+#
+# Exit codes:
+#   0  success (all applicable steps completed; some may report "nothing to do")
+#   1  unrecoverable error
+#   2  refusal (operator declined the PURGE confirmation, or --purge without --yes
+#      in a non-TTY context)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+# ---------- logging (mirrors install.sh + atelier-setup-project style) ----------
+log()    { printf '==> %s\n' "$*"; }
+sublog() { printf '    %s\n' "$*"; }
+warn()   { printf '!!  %s\n' "$*" >&2; }
+die()    { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+ok()     { printf '    OK: %s\n' "$*"; }
+
+# ---------- usage ----------
+usage() {
+  cat <<EOF
+atelier-uninstall ${VERSION}
+
+Reverse atelier's install. Default mode preserves chat history and session
+state; --purge wipes everything under \$ATELIER_CONFIG_DIR.
+
+USAGE:
+  ${SCRIPT_NAME} [OPTIONS]
+
+OPTIONS:
+  --purge          Also remove \$ATELIER_CONFIG_DIR (chat history, sessions,
+                   plans, backups, plugin installs). Requires interactive
+                   confirmation by typing 'PURGE' unless --yes is also given.
+  --yes, -y        Non-interactive mode. Required alongside --purge to skip
+                   the confirmation prompt. Has no effect on the default
+                   mode (default mode is non-destructive of operator data
+                   and runs without prompts).
+  --help, -h       Show this help and exit.
+
+EXAMPLES:
+  ${SCRIPT_NAME}                   # safe uninstall, keeps chat history
+  ${SCRIPT_NAME} --purge           # interactive PURGE prompt
+  ${SCRIPT_NAME} --purge --yes     # non-interactive wipe (CI/automation)
+
+EXIT CODES:
+  0  success
+  1  unrecoverable error
+  2  refusal (operator declined PURGE, or --purge without --yes in non-TTY)
+EOF
+}
+
+# ---------- arg parse ----------
+PURGE=false
+NONINTERACTIVE=false
+[ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --purge)      PURGE=true; shift ;;
+    --yes|-y)     NONINTERACTIVE=true; shift ;;
+    --help|-h)    usage; exit 0 ;;
+    --)           shift; break ;;
+    *)            die "unknown argument: $1 (try --help)" ;;
+  esac
+done
+
+# ---------- atelier config dir resolution ----------
+# Same convention as atelier-setup-project: respect env, fall back to default.
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+
+# ---------- step status (one var per step for the final summary) ----------
+SHELLRC_STATUS=""
+BIN_STATUS=""
+STATE_STATUS=""
+PLUGINS_STATUS=""
+CONFIG_DIR_STATUS=""
+
+# ---------- step 1: shellrc hooks ----------
+step_shellrc_hooks() {
+  local sentinel_start='# >>> atelier hooks (managed by install.sh) >>>'
+  local sentinel_end='# <<< atelier hooks (managed by install.sh) <<<'
+  local files=("${HOME}/.zshrc" "${HOME}/.bashrc")
+  local stripped=()
+  local skipped=()
+
+  for f in "${files[@]}"; do
+    [ -f "$f" ] || continue
+    if ! grep -qF "$sentinel_start" "$f"; then
+      skipped+=("$(basename "$f"):no-block")
+      continue
+    fi
+    if [ ! -w "$f" ]; then
+      warn "$(basename "$f") is not writable — skipping shellrc clean-up for this file"
+      skipped+=("$(basename "$f"):not-writable")
+      continue
+    fi
+    # sed: delete from sentinel_start through sentinel_end (inclusive). Both
+    # sentinels are literal strings, no regex metacharacters, so plain `/.../`
+    # match is safe. Use a tmp file to avoid in-place portability issues
+    # between GNU sed (Linux) and BSD sed (macOS).
+    local tmp; tmp="$(mktemp)"
+    sed "/${sentinel_start}/,/${sentinel_end}/d" "$f" > "$tmp"
+    # Also strip any blank line immediately preceding the removed block that
+    # install.sh emitted as a separator. Only safe to do this when the file
+    # actually changed (sed produced output different from input).
+    if ! diff -q "$f" "$tmp" >/dev/null 2>&1; then
+      mv "$tmp" "$f"
+      stripped+=("$(basename "$f")")
+    else
+      rm -f "$tmp"
+      skipped+=("$(basename "$f"):no-change")
+    fi
+  done
+
+  if [ ${#stripped[@]} -gt 0 ]; then
+    SHELLRC_STATUS="stripped: $(IFS=,; echo "${stripped[*]}")"
+  else
+    SHELLRC_STATUS="nothing to strip"
+  fi
+}
+
+# ---------- step 2: ~/.local/bin symlinks ----------
+step_local_bin() {
+  local bin_dir="${HOME}/.local/bin"
+  local removed=()
+  local kept=()
+
+  for name in atelier-setup-project atelier-uninstall; do
+    local link="$bin_dir/$name"
+    if [ -L "$link" ]; then
+      rm -f "$link"
+      removed+=("$name")
+    elif [ -e "$link" ]; then
+      # Regular file, not a symlink: operator may have pinned a manual copy.
+      # Do not clobber.
+      warn "$link exists but is not a symlink — leaving it alone"
+      kept+=("$name:not-symlink")
+    fi
+  done
+
+  if [ ${#removed[@]} -gt 0 ]; then
+    BIN_STATUS="removed: $(IFS=,; echo "${removed[*]}")"
+  else
+    BIN_STATUS="nothing to remove"
+  fi
+  if [ ${#kept[@]} -gt 0 ]; then
+    BIN_STATUS="$BIN_STATUS (kept: $(IFS=,; echo "${kept[*]}"))"
+  fi
+}
+
+# ---------- step 3: ~/.local/state/atelier ----------
+step_local_state() {
+  local state_dir="${HOME}/.local/state/atelier"
+  if [ ! -d "$state_dir" ]; then
+    STATE_STATUS="nothing to remove"
+    return
+  fi
+  rm -rf "$state_dir"
+  STATE_STATUS="removed: $state_dir"
+}
+
+# ---------- step 4: plugin uninstalls under $ATELIER_CONFIG_DIR ----------
+step_plugin_uninstall() {
+  if ! command -v claude >/dev/null 2>&1; then
+    PLUGINS_STATUS="skipped: claude CLI not on PATH"
+    return
+  fi
+  if [ ! -d "$ATELIER_CONFIG_DIR" ]; then
+    PLUGINS_STATUS="skipped: \$ATELIER_CONFIG_DIR does not exist"
+    return
+  fi
+
+  local results=()
+  for plugin in atelier@akalab-tech claude-roadmap-tools@akalab-tech; do
+    # Use a subshell so any environment changes from `claude plugin uninstall`
+    # do not leak into the rest of this script. Capture exit so a missing
+    # plugin (already uninstalled) is recorded but does not abort.
+    if CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" \
+       claude plugin uninstall "$plugin" </dev/null >/dev/null 2>&1
+    then
+      results+=("$plugin:uninstalled")
+    else
+      results+=("$plugin:not-installed-or-error")
+    fi
+  done
+  PLUGINS_STATUS="$(IFS=,; echo "${results[*]}")"
+}
+
+# ---------- step 5: purge $ATELIER_CONFIG_DIR (--purge only) ----------
+step_purge_config_dir() {
+  if ! $PURGE; then
+    CONFIG_DIR_STATUS="preserved (use --purge to remove)"
+    return
+  fi
+  if [ ! -d "$ATELIER_CONFIG_DIR" ]; then
+    CONFIG_DIR_STATUS="nothing to remove (\$ATELIER_CONFIG_DIR does not exist)"
+    return
+  fi
+
+  # Confirmation gate. --yes opts out of the prompt; otherwise we require the
+  # operator to type 'PURGE' (uppercase) literally. We never accept --purge
+  # without confirmation on a non-TTY.
+  if ! $NONINTERACTIVE; then
+    if [ ! -t 0 ]; then
+      warn "--purge requires a TTY for confirmation, or --yes to skip the prompt"
+      CONFIG_DIR_STATUS="refused: non-TTY without --yes"
+      exit 2
+    fi
+    printf 'This will permanently delete all chat history, sessions, plans, and backups under:\n' >&2
+    printf '  %s\n' "$ATELIER_CONFIG_DIR" >&2
+    printf "Type 'PURGE' (uppercase) to confirm, anything else to abort: " >&2
+    local ans; read -r ans
+    if [ "$ans" != "PURGE" ]; then
+      CONFIG_DIR_STATUS="refused: operator declined"
+      exit 2
+    fi
+  fi
+
+  rm -rf "$ATELIER_CONFIG_DIR"
+  CONFIG_DIR_STATUS="purged: $ATELIER_CONFIG_DIR"
+}
+
+# ---------- main flow ----------
+log "atelier-uninstall ${VERSION}"
+sublog "mode:               $($PURGE && echo 'PURGE (destructive)' || echo 'default (preserve config dir)')"
+sublog "interactive:        $($NONINTERACTIVE && echo 'no (--yes / ATELIER_AUTO set)' || echo 'yes')"
+sublog "ATELIER_CONFIG_DIR: $ATELIER_CONFIG_DIR"
+
+step_shellrc_hooks
+step_local_bin
+step_local_state
+step_plugin_uninstall
+step_purge_config_dir
+
+# ---------- output ----------
+echo ""
+ok "atelier uninstall complete"
+sublog "shellrc hooks:           $SHELLRC_STATUS"
+sublog "~/.local/bin symlinks:   $BIN_STATUS"
+sublog "~/.local/state/atelier:  $STATE_STATUS"
+sublog "plugins:                 $PLUGINS_STATUS"
+sublog "\$ATELIER_CONFIG_DIR:     $CONFIG_DIR_STATUS"
+
+if ! $PURGE; then
+  echo ""
+  sublog "Chat history, sessions, plans, and backups remain at:"
+  sublog "  $ATELIER_CONFIG_DIR"
+  sublog "Access later via 'CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR claude'."
+  sublog "Re-install atelier with install.sh; auth tokens persist."
+  echo ""
+  sublog "To wipe everything, re-run: ${SCRIPT_NAME} --purge"
+fi
+
+# Reminder: this script does NOT touch ~/.gitconfig, ~/.config/gh/, or the
+# global gitignore entry for .env* — those are operator-level hygiene
+# settings that survive atelier's lifecycle.
