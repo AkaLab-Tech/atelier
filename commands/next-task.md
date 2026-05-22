@@ -74,7 +74,7 @@ Invoke the external `git-wt` skill (or `git wt switch <branch>` directly) to cre
 
 Read `$CLAUDE_CONFIG_DIR/templates/settings.template.json`. The template contains a literal `<worktree>` placeholder that must be substituted with the **absolute path of the per-task worktree** (from step 6), NOT the main repo path.
 
-**Critical implementation detail:** the Claude Code harness has a built-in guard that requires explicit operator approval for the `Write` and `Edit` tools when the target path is under `.claude/**`. That guard hangs the chain in non-interactive (`-p`) mode. The atelier convention is therefore to write `.claude/settings.json` **via Bash shell redirection** (`sed > file`), never via the `Write` / `Edit` tools — the redirect is a `Bash` tool operation, which the per-path matchers handle via the standard allow / deny matrix and which is not subject to the harness's `.claude/**` interactive guard. The path `<worktree>-worktrees/**` is in `additionalDirectories`, so the `Bash` redirect to `<task-worktree>/.claude/settings.json` is permitted.
+**Known limitation in `-p` mode (M4.11 finding, see M4.16):** under the current Claude Code harness (claude ≥ 2.1.148), this step **does not complete in non-interactive (`-p`) mode**. The harness denies both `Write`/`Edit` to `.claude/**` paths and Bash output redirection (`>`, `tee`) to `.claude/**`, even from slash-command context. It additionally denies any chained Bash command (`A && B`) regardless of target. The M4.7 thesis ("Bash `>` bypasses the `.claude/**` guard when the path is in `additionalDirectories`") was empirically true at design time but no longer holds. Until M4.16 introduces an external helper binary that performs the file-write outside the harness's permission scope, autonomous `claude -p` chains cannot complete this step. **Interactive operators can still proceed** — the harness will prompt for each denied operation; approve them and the step succeeds. If the step fails in `-p` mode, **stop and report** with a one-line pointer to M4.11 / M4.16; do NOT advance to step 8 with a missing settings file.
 
 Run **as a single Bash command** (this command's frontmatter allows the four pieces — `mkdir`, `sed`, `jq`, `test`):
 
@@ -90,9 +90,10 @@ mkdir -p <absolute-worktree-path>/.claude && \
 The five guards in order: directory exists; sed succeeded; output parses as JSON; `<worktree>` placeholder was actually substituted (no literal `<worktree>` left); and the substitution landed in the canonical first slot of `additionalDirectories`. Any of them failing → **stop and report** with the exact failure (do NOT advance to step 8 with a missing / corrupt / unmodified settings file — silently skipping this leaves the task in a half-configured state that only surfaces when the operator later opens a session inside the task worktree).
 
 **Hard refusals:**
-- **Never** use the `Write` tool to create `<task-worktree>/.claude/settings.json`. The harness blocks it in non-interactive mode. Always Bash + redirect.
+- **Never** use the `Write` tool to create `<task-worktree>/.claude/settings.json`. The harness blocks it. Always Bash + redirect.
 - **Never** substitute `<worktree>` with the main-repo path. The whole point of per-task settings is to scope `Edit` / `Write` to the task's worktree.
 - **Never** skip the substitution-verification guard (the last two checks above). A file that exists but still contains the literal `<worktree>` placeholder would silently widen the `additionalDirectories` to `<worktree>/**` (matching nothing useful) and the operator would not notice until much later.
+- **Never** advance to step 8 if this step was denied in `-p` mode. Report "step 7 denied by harness in `-p` mode — see M4.16" and stop. Do not retry with `--dangerously-skip-permissions` to force a pass; that loses every other safety guarantee in the template.
 
 ### 8. Hand off to `task-orchestrator`
 
