@@ -8,8 +8,44 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M4.20 — `task-orchestrator` subagent inherits parent `cwd`, not worktree — 2026-05-22
+### M4.18 — Rename `git-wt` source `Miguelslo27/git-wt` → `AkaLab-Tech/git-wt` — 2026-05-22
 **PR:** _pending_
+
+`git-wt` moved from the maintainer's personal namespace (`Miguelslo27`) to the AkaLab-Tech organization. GitHub's redirect covers `git clone` transparently, but `gh api repos/...` calls do not follow the redirect — which meant `/doctor`'s drift check was hitting the wrong repo, and the per-project `settings.json` allowlist entry was pinned to the old path (risking a permission prompt on the new URL the first time the operator's session resolved drift against it). Pure URL-rewrite chore — no behavior changes, no version pinning.
+
+**Delivered (12 occurrences across 5 files):**
+
+- `CLAUDE.md` (1) — maintainer-guide link in §Architecture.
+- `PLAN.md` (4) — §2 step 6 install command, §8 git-wt entry, §10 `/doctor` description (mentions `gh api repos/.../commits/main` for SHA-drift detection).
+- `install.sh` (3) — comment about the `gh api` SHA check (line 618), `sublog` cloning message (622), the `git clone` invocation itself (624).
+- `templates/settings.template.json` (1) — `Bash(gh api repos/.../commits/main*)` allow entry.
+- `commands/doctor.md` (3) — the `gh api` SHA fetch + two `git clone` remediation snippets.
+
+**Not touched (per acceptance spec):**
+
+- `HISTORY.md` — historical text preserved as written; entries describe past state at their write time. Existing mentions of `Miguelslo27/git-wt` in M2.2 and M1.6 entries remain.
+
+**Tests:**
+
+- `grep -rn Miguelslo27 --include={*.md,*.sh,*.json,*.yml,*.yaml}` returns hits only in `HISTORY.md`. 0 hits in the 5 target files.
+- `jq empty templates/settings.template.json` — ok.
+- `bash -n install.sh` — ok.
+- Per-file sanity: each target file's `AkaLab-Tech/git-wt` count matches the previous `Miguelslo27/git-wt` count (1, 4, 3, 1, 3 → 12 total).
+
+**Decisions captured:**
+
+- **No version pinning.** `install.sh` keeps cloning `main` shallow as before. If drift becomes problematic, capture it as a separate milestone.
+- **HISTORY.md is frozen.** Its existing mentions of `Miguelslo27/git-wt` (M2.2 + M1.6 entries) describe atelier's state at write time. Rewriting them would falsify the audit trail. The acceptance criterion explicitly excludes HISTORY from the rewrite.
+- **No per-project settings.json migration in this PR.** Already-instantiated `.claude/settings.json` files carry the old URL; per the M4.18 ROADMAP note, they pick up the new URL on the next `/setup-project` reconfigure. No PR-time data migration needed.
+
+**Acceptance status:** **fully passed** (all three ROADMAP criteria verified statically; runtime confirmation deferred to the next `/doctor` invocation on the operator's machine).
+
+**Follow-ups:**
+
+- If a per-project `.claude/settings.json` instantiated before this PR keeps the old `Bash(gh api repos/Miguelslo27/git-wt/commits/main*)` entry, the operator hits a permission prompt the next time `/doctor` runs; reconfiguring via `/setup-project` refreshes the entry from the new template.
+
+### M4.20 — `task-orchestrator` subagent inherits parent `cwd`, not worktree — 2026-05-22
+**PR:** [#60](https://github.com/AkaLab-Tech/atelier/pull/60)
 
 [M4.16](https://github.com/AkaLab-Tech/atelier/pull/57) PR #57's end-to-end validation on 2026-05-22 surfaced that under `claude -p`, `/atelier:next-task` advanced cleanly through step 7 (M4.16's helper writing the worktree's `.claude/settings.json`) but blocked at step 8 (handoff to `task-orchestrator`): the subagent dispatched by the `Task` tool inherits its parent's cwd (the main repo or operator's home dir), NOT the per-task worktree. The harness's `additionalDirectories` list only governs `Read` / `Edit` / `Write` paths; `Bash` subprocesses see the inherited cwd. So `git status` / `pnpm test` / `gh pr create` run via `Bash` operate against the wrong cwd, even though the worktree is in `additionalDirectories`. There is no harness API to set the subagent's cwd explicitly via the `Task` tool — the fix has to be documentation-level: instruct every agent that touches `Bash` to use cwd-independent path flags (`git -C <wt>`, `pnpm --dir <wt>`, `gh --repo <owner/name>`) or `cd <wt> && ...` prefix.
 

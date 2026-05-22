@@ -31,10 +31,10 @@ claude plugin update claude-roadmap-tools@akalab-tech
 `git-wt` is not a native Claude Code plugin, so it has its own mechanism:
 
 1. Read the recorded SHA: `cat ~/.local/state/atelier/git-wt.sha`. If the file is missing or empty: `✗ git-wt SHA not recorded` with the message "re-run `install.sh` to record it".
-2. Read the upstream HEAD SHA: `gh api repos/Miguelslo27/git-wt/commits/main --jq '.sha'`.
+2. Read the upstream HEAD SHA: `gh api repos/AkaLab-Tech/git-wt/commits/main --jq '.sha'`.
 3. Compare full SHAs. If equal: `✓ git-wt <short-sha> (up to date)`. If different: `✗ git-wt <local-short> → <upstream-short>` and add this command block:
    ```bash
-   git clone --depth 1 https://github.com/Miguelslo27/git-wt.git /tmp/git-wt
+   git clone --depth 1 https://github.com/AkaLab-Tech/git-wt.git /tmp/git-wt
    /tmp/git-wt/install.sh --skill-for=claude
    git -C /tmp/git-wt rev-parse HEAD > ~/.local/state/atelier/git-wt.sha
    rm -rf /tmp/git-wt
@@ -86,7 +86,7 @@ Host checks
 To apply pending updates, run:
     claude plugin marketplace update akalab-tech
     claude plugin update claude-roadmap-tools@akalab-tech
-    git clone --depth 1 https://github.com/Miguelslo27/git-wt.git /tmp/git-wt
+    git clone --depth 1 https://github.com/AkaLab-Tech/git-wt.git /tmp/git-wt
     /tmp/git-wt/install.sh --skill-for=claude
     git -C /tmp/git-wt rev-parse HEAD > ~/.local/state/atelier/git-wt.sha
     rm -rf /tmp/git-wt

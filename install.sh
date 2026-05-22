@@ -615,13 +615,13 @@ phase_c_1_git_wt() {
   # installed git-wt manually before atelier started tracking it). Clone the
   # current upstream HEAD; install only when git-wt is not on PATH; always
   # record the SHA. /doctor (M1.6) compares this value against
-  # `gh api repos/Miguelslo27/git-wt/commits/main`. When recording on a
+  # `gh api repos/AkaLab-Tech/git-wt/commits/main`. When recording on a
   # backfill (git-wt was already installed), the recorded SHA reflects
   # upstream HEAD at install.sh runtime — close enough for v1 drift
   # detection; the next install.sh run will refresh it.
-  sublog "cloning Miguelslo27/git-wt into /tmp/git-wt"
+  sublog "cloning AkaLab-Tech/git-wt into /tmp/git-wt"
   rm -rf /tmp/git-wt
-  git clone --depth 1 https://github.com/Miguelslo27/git-wt.git /tmp/git-wt
+  git clone --depth 1 https://github.com/AkaLab-Tech/git-wt.git /tmp/git-wt
 
   if ! has git-wt; then
     sublog "running git-wt installer (--skill-for=claude)"
