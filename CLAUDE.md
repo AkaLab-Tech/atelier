@@ -27,7 +27,7 @@ Three layers, each with a different delivery mechanism:
 2. **Host-OS layer** — `install.sh` Phase C.1 handles what cannot live inside a plugin: base deps, Claude Code itself, GitHub HTTPS auth, the external `git-wt` package, `.env*` in git's global excludes, `fnm` shellrc hooks, git identity. (Note: pnpm supply-chain guardrails live in each project's `.npmrc`, not in `~/.npmrc` — see §3.)
 3. **Per-project layer** — `/setup-project <path>` creates `.claude/settings.json` (instantiated from `settings.template.json` with the worktree path injected), project `ROADMAP.md`, project `.claude/CLAUDE.md`, project `.npmrc` (pnpm guardrails from PLAN.md §4).
 
-Isolation: every task runs inside its own git worktree (managed via the external `git-wt` skill, sourced from [Miguelslo27/git-wt](https://github.com/Miguelslo27/git-wt) — **not** maintained here). `Edit`/`Write` permissions are scoped to that worktree per task.
+Isolation: every task runs inside its own git worktree (managed via the external `git-wt` skill, sourced from [AkaLab-Tech/git-wt](https://github.com/AkaLab-Tech/git-wt) — **not** maintained here). `Edit`/`Write` permissions are scoped to that worktree per task.
 
 ## Hard constraints (already decided in PLAN.md — do not relitigate without flagging)
 

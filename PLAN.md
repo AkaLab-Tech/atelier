@@ -76,9 +76,9 @@ Phase C is split in two: **C.1** handles what can't live inside a Claude Code pl
 
 #### C.1 — Host-OS configuration (no interaction)
 
-6. Install **`git-wt`** (external, [Miguelslo27/git-wt](https://github.com/Miguelslo27/git-wt)) non-interactively for Claude:
+6. Install **`git-wt`** (external, [AkaLab-Tech/git-wt](https://github.com/AkaLab-Tech/git-wt)) non-interactively for Claude:
    ```bash
-   git clone https://github.com/Miguelslo27/git-wt.git /tmp/git-wt
+   git clone https://github.com/AkaLab-Tech/git-wt.git /tmp/git-wt
    /tmp/git-wt/install.sh --skill-for=claude
    ```
    Installs the binary to `~/.local/bin/git-wt`, injects the shell wrapper into `~/.zshrc`/`~/.bashrc`, and drops the Claude skill at `~/.claude/skills/git-wt/`.
@@ -344,7 +344,7 @@ Auto-merge when:
 Auto-discovered by Claude Code from the plugin's `./skills/` directory (no explicit manifest entries needed).
 
 - `task-discovery` — parse `ROADMAP.md`, pick next task.
-- `git-wt` — worktree per task. **Sourced externally** from [Miguelslo27/git-wt](https://github.com/Miguelslo27/git-wt); installed in Phase C step 6. Not maintained in this repo.
+- `git-wt` — worktree per task. **Sourced externally** from [AkaLab-Tech/git-wt](https://github.com/AkaLab-Tech/git-wt); installed in Phase C step 6. Not maintained in this repo.
 - `pr-flow` — branch → commit → push → PR.
 - `visual-validation` — Playwright screenshots.
 - `safe-commit` — lint + typecheck + tests before commit.
@@ -373,7 +373,7 @@ Declared in `.mcp.json` at the plugin root and auto-loaded when atelier is activ
 - `/finish-task` — finalize PR.
 - `/status` — what's in progress, blocked, awaiting review.
 - `/setup-project <path>` — initialize a new project with `.claude/settings.json`, `ROADMAP.md`, `.npmrc` (pnpm guardrails — see §4), `.gitignore` entries. **Idempotent**: writes `~/.claude/.atelier-config.json` with `setupCompleted` (ISO timestamp) + `setupVersion`. Re-running on a configured project skips the wizard and offers a "reconfigure" flow instead. Pattern borrowed from [`omc-setup`](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/main/skills/omc-setup/SKILL.md).
-- `/doctor` — health check. Verifies: update status for the three artefacts the operator depends on — `atelier` and `claude-roadmap-tools` via local `plugin.json:version` vs latest release/tag (both live in the shared `akalab-tech` marketplace, so a single `/plugin marketplace update akalab-tech` followed by `/plugin update <name>@akalab-tech` refreshes whichever is stale), and `git-wt` via locally installed SHA (recorded by `install.sh` Phase C.1) vs `gh api repos/Miguelslo27/git-wt/commits/main` (re-run external `install.sh --skill-for=claude` to apply, since `git-wt` is **not** a native plugin); no legacy hooks leaking into `~/.claude/settings.json`; `git-wt` binary present; `fnm` hook active in shellrc; current project's `.npmrc` guardrails in place; per-project `.atelier-config.json` consistency. When an update is available, `/doctor` prints the exact command for the operator to apply it — it does **not** apply updates automatically. Borrowed from [`omc-doctor`](https://github.com/Yeachan-Heo/oh-my-claudecode/tree/main/skills/omc-doctor).
+- `/doctor` — health check. Verifies: update status for the three artefacts the operator depends on — `atelier` and `claude-roadmap-tools` via local `plugin.json:version` vs latest release/tag (both live in the shared `akalab-tech` marketplace, so a single `/plugin marketplace update akalab-tech` followed by `/plugin update <name>@akalab-tech` refreshes whichever is stale), and `git-wt` via locally installed SHA (recorded by `install.sh` Phase C.1) vs `gh api repos/AkaLab-Tech/git-wt/commits/main` (re-run external `install.sh --skill-for=claude` to apply, since `git-wt` is **not** a native plugin); no legacy hooks leaking into `~/.claude/settings.json`; `git-wt` binary present; `fnm` hook active in shellrc; current project's `.npmrc` guardrails in place; per-project `.atelier-config.json` consistency. When an update is available, `/doctor` prints the exact command for the operator to apply it — it does **not** apply updates automatically. Borrowed from [`omc-doctor`](https://github.com/Yeachan-Heo/oh-my-claudecode/tree/main/skills/omc-doctor).
 
 ---
 

@@ -183,7 +183,7 @@
       "Bash(gh api repos/AkaLab-Tech/atelier/tags*)",
       "Bash(gh api repos/AkaLab-Tech/claude-roadmap-tools/releases/latest*)",
       "Bash(gh api repos/AkaLab-Tech/claude-roadmap-tools/tags*)",
-      "Bash(gh api repos/Miguelslo27/git-wt/commits/main*)",
+      "Bash(gh api repos/AkaLab-Tech/git-wt/commits/main*)",
       "Bash(command -v git-wt)",
       "Read(~/.local/state/atelier/git-wt.sha)",
       "Read(<atelier-config-dir>/settings.json)",
