@@ -18,28 +18,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 2–5 — Single-project agent flow + robustness + multi-project foundation.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries — and when an operator can install / uninstall atelier without risking unrelated Claude state.
 
-### M4.16 — Per-task `.claude/settings.json` via external helper binary
-
-**Blocking autonomous `claude -p` chains.** M4.11 (HISTORY entry) empirically established that under the current Claude Code harness (claude ≥ 2.1.148, observed 2026-05-22), the Bash redirect pattern that `/next-task` step 7 uses to write `<worktree>/.claude/settings.json` is denied in non-interactive `-p` mode — by a `.claude/**` sensitive-directory guard that even slash-command context cannot bypass. M4.7's thesis ("Bash `>` bypasses the `.claude/**` interactive guard when the path is in `additionalDirectories`") was true at its design time (2026-05-20) but the harness has since added stronger layers. Interactive operators can still run `/next-task` (they approve the prompts manually); autonomous `claude -p` chains cannot.
-
-M4.16 replicates M4.9's solution pattern (which the operator-facing `atelier-setup-project` bash helper uses for `/setup-project`): an external binary invoked from step 7 that does the file-write inside its own subprocess, **outside the harness's permission scope**. The harness only gates the `Bash(atelier-XXX:*)` invocation itself (which the template allowlists); what the binary does internally with file descriptors is not visible to the harness.
-
-**Scope:**
-
-1. Decision: extend the existing `scripts/atelier-setup-project` with a `--per-task-settings <worktree-path>` subcommand mode, OR introduce a new dedicated binary (e.g., `scripts/atelier-next-task-settings`). Extending the existing helper is preferred unless the surface area diverges meaningfully — `atelier-setup-project` already handles template instantiation, sed substitution, and the five-guard verification chain. The per-task case differs only in the target path and the substitution value.
-2. Update `install.sh` Phase C.1 to symlink the new entry point (or the extended helper) into `~/.local/bin/`.
-3. Update `templates/settings.template.json` allow list to include `Bash(atelier-next-task-settings:*)` (or whatever name lands), following the existing `Bash(atelier-setup-project:*)` pattern.
-4. Rewrite `commands/next-task.md` step 7 to invoke the helper via one `Bash` tool call. Drop the inline `mkdir + sed + jq + test` chain (the helper now owns those five guards internally). Replace the "Known limitation" note with the new flow description.
-5. End-to-end verify in `-p` mode with a fictitious project setup (mirroring M3.4's Validation §B pattern).
-
-**Acceptance:**
-
-- `/next-task` step 7 completes successfully in non-interactive `claude -p` mode under current harness behavior, producing a syntactically valid `<worktree>/.claude/settings.json` with the worktree path substituted in the canonical first slot of `additionalDirectories`.
-- No regression for interactive operators (the helper is callable from both modes).
-- Drop the M4.11 "Known limitation" warning from `commands/next-task.md` step 7 once empirically verified.
-
-**Trigger to revisit:** before dogfood-4 or any other autonomous chain validation. M4.11 closure surfaced this as the immediate next blocker; without it the chain is interactive-only and atelier's autonomous-delivery thesis cannot be exercised end-to-end.
-
 ### M5.0.3 — `atelier-uninstall` with chat-session preservation
 
 Today there is no clean way to uninstall atelier. To remove atelier, the operator has to manually:
