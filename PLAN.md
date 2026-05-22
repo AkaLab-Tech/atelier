@@ -39,7 +39,7 @@ The native plugin system gives us: (a) one-liner install/update via `/plugin mar
 
 The operator runs **one command** and answers at most **two prompts** (Claude login + GitHub login).
 
-### Phase A — Preparation (no interaction)
+### Phase A — Preparation (no interaction, plus one optional Chrome prompt)
 1. Detect OS (macOS/Linux) and architecture.
 2. Verify / install base dependencies via Homebrew (mac) or apt (linux):
    - `git`, `gh`, `fnm`, `pnpm`, `jq`, `fzf`. (Playwright moved to M3.1 / `e2e-runner`: only operators running e2e tasks need the ~250 MB browser bundle.)
@@ -47,6 +47,7 @@ The operator runs **one command** and answers at most **two prompts** (Claude lo
    - **`pnpm`** is the package manager of choice — never fall back to `npm`. Installed via `corepack enable` once Node is available.
    - **`fzf`** enables the interactive picker for `git wt switch` (see Phase C, `git-wt` install).
 3. Install Claude Code if not present via the official native installer: `curl -fsSL https://claude.ai/install.sh | bash`. Lands the signed native binary at `~/.local/bin/claude` and self-updates in the background. The `curl|sh` pattern is in the agent-level deny-list (PLAN.md §3), but `install.sh` runs in the operator's terminal before atelier's agent layer is active, so it is out of that scope.
+4. **Optional: system Chrome for `mcp__plugin_atelier_playwright`** (M3.4). Detect Chrome platform-appropriately: macOS — `[ -d "/Applications/Google Chrome.app" ] || [ -d "$HOME/Applications/Google Chrome.app" ]`; Linux — `command -v google-chrome[-stable]`. If present, log and continue. If absent **and** the operator is interactive (TTY + no `--yes`), prompt `Install Google Chrome now via 'brew install --cask google-chrome'? [Y/n]` on macOS — Y installs via brew cask, N skips with the install command for later. On Linux, surface the manual install commands (`apt`/`rpm` snippets) — too distro-dependent to automate generically. In non-interactive mode (`--yes` or no TTY), warn and continue without installing. The MCP server returns an actionable error on first call if Chrome is still missing, and `/doctor` check 4.f re-warns persistently.
 
 ### Phase B — Authentication (only human interaction)
 4. Claude Code login: run `claude auth login`, which opens a browser tab for OAuth. (The `/login` slash command — described in earlier drafts — only works inside an interactive `claude` session; the CLI subcommand achieves the same flow from a shell script.) Idempotency: `claude auth status` exits `0` if already authenticated, so the script skips the browser when the operator re-runs `install.sh`.
