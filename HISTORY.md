@@ -8,6 +8,70 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M4.11 — Investigation of the M4.7 thesis under `--plugin-dir` (the answer is bigger than the question) — 2026-05-22
+**PR:** _pending_
+
+Dogfood-3 (HISTORY entry 2026-05-21) surfaced D3-2: `/next-task` step 7's `Bash > <wt>/.claude/settings.json` was denied by the harness under `claude --plugin-dir` ad-hoc CLI mode, contradicting the M4.7 thesis ("Bash redirect bypasses the `.claude/**` interactive guard when the path is in `additionalDirectories`"). The hypothesis captured in M4.11's ROADMAP entry was that mode (marketplace install vs `--plugin-dir`) was the discriminating variable. Empirical probing this milestone established that **the mode is not the cause** — the harness has changed since M4.7's design (2026-05-20) and now layers multiple write guards that affect ALL session-load modes equally in `-p` non-interactive context.
+
+The acceptance question — *"under what session-load mode does `Bash > <wt>/.claude/settings.json` actually succeed, given `<wt>` is in `additionalDirectories`?"* — now has a different shape of answer: **no mode succeeds in `-p`; the step is interactive-only under current harness**.
+
+**Methodology:**
+
+A fictitious project (`/tmp/m4-11-probe/`) with a `.claude/settings.json` containing `additionalDirectories: ["/tmp/m4-11-probe", "/tmp/m4-11-probe-wt"]` and explicit `Bash(mkdir*) Bash(echo*) Bash(cat*) Bash(test*) Bash(jq*)` allow entries. Target write directory `/tmp/m4-11-probe-wt/`. Each cell = one `claude -p` invocation; success measured by filesystem state (not just the model's reported outcome — the model misreports denial reasons enough to be untrustworthy alone). Claude Code version: 2.1.148 (official native installer, freshly migrated from the npm wrapper this session).
+
+**Findings matrix** (each cell: filesystem state after the invocation):
+
+| Cell | Context | Operation | Target | Result |
+|---|---|---|---|---|
+| 0a | Top-level Bash | `A && B` chain with `>` | `/tmp/m4-11-probe-wt/.claude/settings.json` | **denied** — "multiple operations require approval" |
+| 0b | Top-level Bash, `--plugin-dir` | same chain | same | **denied** — same message (mode does not differ) |
+| 0c | Top-level Bash, individual ops | `>` redirect single | `<wt>/.claude/settings.json` | **denied** — `.claude` sensitive guard |
+| nc | Top-level Bash, individual op | `>` redirect single | `<wt>/regular.txt` (non-`.claude`) | **denied** — "output redirection blocked despite additionalDirectories" |
+| tee | Top-level Bash, individual op | `\|tee` | non-`.claude` | **denied** |
+| W1 | Top-level `Write` tool | n/a | non-`.claude` | **denied** |
+| W2 | Top-level `Write` tool | n/a | `.claude/**` | **denied** |
+| dsp | Top-level, `--dangerously-skip-permissions` | `>` redirect | non-`.claude` | **ok** |
+| slash-non | **Slash command** Bash, individual op | `>` redirect | non-`.claude` | **ok** |
+| slash-chain | **Slash command** Bash, `A && B` | any | any | **denied** — multi-op guard reaches slash commands |
+| slash-dc | **Slash command** Bash, individual op | `>` redirect | `<wt>/.claude/...` | **denied** — `.claude` guard reaches slash commands |
+
+The slash-command probe used a minimal `/atelier:m4-11-probe` command defined in this milestone's worktree, invoked via `claude --plugin-dir <wt> -p "/atelier:m4-11-probe"`.
+
+**The answer (M4.11 acceptance):**
+
+Under the current harness (claude 2.1.148, observed 2026-05-22):
+
+1. **Top-level Bash** in `-p` mode: writes to any `additionalDirectories` path are denied, regardless of `>` vs `tee` vs `Write` tool. The block is at the harness level, not the project settings level.
+2. **Slash-command Bash** in `-p` mode: single-op writes to non-`.claude` paths in `additionalDirectories` succeed. Writes to `.claude/**` paths still denied. Chained Bash (`A && B`) denied regardless of target.
+3. **`--dangerously-skip-permissions`**: bypasses all of the above (and bypasses every other safety guarantee — not acceptable as a production path).
+4. **The session-load mode** (`marketplace install` vs `--plugin-dir`) does NOT change the verdict in any of the above. D3-2's `--plugin-dir` was incidental; the same failure happens in marketplace install.
+
+**Root cause of D3-2 reinterpreted:** the harness's `.claude/**` sensitive-directory guard is reachable from slash-command context and denies Bash redirect there. The M4.7 thesis was correct at its time (2026-05-20 harness) but the harness has since added stronger gates. The `--plugin-dir` framing in M4.11's original hypothesis was a false attribution — the bug is harness-version-dependent, not session-load-mode-dependent.
+
+**Delivered (this PR):**
+
+- `commands/next-task.md` step 7 — replaced the "Critical implementation detail" paragraph (which claimed the M4.7 thesis as binding) with a "Known limitation in `-p` mode" note explicitly stating: step 7 fails under current harness in `-p` mode; interactive operators can still proceed by approving the prompts; autonomous chains must wait for M4.16 (helper-binary fix). Added one new hard refusal: never advance to step 8 when step 7 was denied; never retry with `--dangerously-skip-permissions`. The Bash command itself is unchanged — it still works in interactive mode where prompts can be answered.
+- `ROADMAP.md` — new entry **M4.16** (Medium Priority) capturing the functional fix: extend `atelier-setup-project` (or introduce a new dedicated binary) so step 7 invokes an external helper via `Bash(atelier-...:*)`. The helper does the file-write inside its own subprocess, outside the harness's permission scope (mirroring M4.9's pattern, which is empirically known to work). Acceptance includes end-to-end verification in `-p` mode and dropping the M4.11 limitation note from step 7.
+
+**Tests:**
+
+- Each row of the findings matrix above is one empirical probe (11 invocations total). Filesystem state was verified independently of the model's reported outcome (the model misreported denial reasons several times during the run — relying on it alone would have produced a different — and wrong — answer).
+
+**Decisions captured:**
+
+- **Mode is not the discriminator.** The original M4.11 hypothesis blamed `--plugin-dir`. Empirical evidence shows the same failure under all session-load modes. Future investigations should test BOTH a slash-command-context probe AND a top-level probe before attributing a guard to "mode" specifically.
+- **The model's denial reasons are unreliable.** Across the 11 probes, the model produced at least three different one-line "reasons" for what was empirically the same underlying guard (`.claude` sensitive directory). Treat the model's introspection as a hint, never as evidence; the filesystem (or `cat` of the target after attempt) is the ground truth.
+- **Slash-command context bypasses the generic write guard but not the `.claude/**` guard.** This is genuinely useful: it means future atelier slash commands that need to write to NON-`.claude/**` paths in `additionalDirectories` work fine; only the `.claude/**` write path needs the helper-binary workaround.
+- **The patch is non-functional (research + ergonomic).** M4.11's acceptance criterion allowed either documenting the limitation OR gating step 7 with a runtime probe + alternative path. Chose the documentation path because (a) the functional fix is M4.16 which has its own design surface, (b) the step-7 Bash command still works in interactive mode so existing interactive operators are not impacted, (c) `claude -p` autonomous chains are not yet a routine operator workflow (atelier's autonomous-delivery thesis still being assembled).
+- **Captured M4.16 in ROADMAP, not in this PR.** Tempting to bundle the helper-binary fix with M4.11's research, but M4.16 needs design discussion (extend existing helper vs new binary, naming, integration with step 7's verification chain) that's worth a dedicated PR. M4.11 ships the answer; M4.16 ships the fix.
+
+**Acceptance criterion status:** **fully satisfied**. The acceptance asked for "a clear written answer" plus an update to `commands/next-task.md`. Both delivered. The functional fix is deferred to M4.16 (per the explicit "If the answer is X, update commands/next-task.md to either (1) document the limitation and require marketplace install for full chains, or (2) gate step 7..." — chose option 1, since the M4.11 finding showed marketplace install is ALSO broken).
+
+**Follow-ups (in ROADMAP):**
+
+- M4.16 — Per-task `.claude/settings.json` via external helper binary. The functional unblock. **Required before any autonomous `claude -p` chain validation** (dogfood-4 and beyond).
+- HISTORY M4.7 entry remains correct AS OF ITS DATE (2026-05-20) — the thesis was empirically true then. Not retroactively wrong; the harness changed.
+
 ### M3.4 — Playwright MCP server for live visual validation — 2026-05-21
 **PR:** _pending_
 
