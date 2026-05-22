@@ -62,7 +62,7 @@
       "Write(<worktree>/pnpm-lock.yaml)",
       "Write(<worktree>-worktrees/**/pnpm-lock.yaml)",
 
-      "mcp__playwright__browser_run_code_unsafe"
+      "mcp__plugin_atelier_playwright__browser_run_code_unsafe"
     ],
 
     "ask": [
@@ -173,7 +173,7 @@
       "Bash(mv*)",
       "Bash(cp*)",
 
-      "mcp__playwright__*",
+      "mcp__plugin_atelier_playwright__*",
 
       "Bash(atelier-setup-project:*)",
 

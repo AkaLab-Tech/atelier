@@ -353,11 +353,13 @@ Auto-discovered by Claude Code from the plugin's `./skills/` directory (no expli
 
 Declared in `.mcp.json` at the plugin root and auto-loaded when atelier is active. Connections are stdio (lazy: the server process spawns on first tool call, not at session start).
 
-- `playwright` — official `@playwright/mcp` server, started via `npx -y @playwright/mcp@latest`. Provides a controllable browser as an agent tool (`mcp__playwright__*`) so `implementer` can validate UI work as it builds and `reviewer` can independently exercise the flow during PR review. Distinct from M3.1's `visual-validation` skill, which drives the project's own `@playwright/test` suite for the PR gate (§6).
+**Namespace convention.** Claude Code namespaces MCP servers loaded via a plugin's `.mcp.json` as `plugin_<pluginname>_<servername>` to avoid collisions with project-level `.mcp.json` servers of the same name. So a server declared as `playwright` in `atelier`'s plugin `.mcp.json` exposes its tools as `mcp__plugin_atelier_playwright__<tool>` (not `mcp__playwright__<tool>`). `settings.template.json` allow/deny entries and agent `tools:` frontmatter must use the prefixed name.
 
-  **Scope by agent.** `mcp__playwright__*` is in the allow list of `settings.template.json`; only `implementer` and `reviewer` list `mcp__playwright` in their agent `tools:` frontmatter, so no other agent can invoke it. Browsers (~250 MB chromium bundle) download on the first tool call into `~/.cache/ms-playwright`, mirroring the `visual-validation` lazy-install policy from §1.
+- `playwright` — official `@playwright/mcp` server, started via `npx -y @playwright/mcp@latest`. Provides a controllable browser as an agent tool (`mcp__plugin_atelier_playwright__*`) so `implementer` can validate UI work as it builds and `reviewer` can independently exercise the flow during PR review. Distinct from M3.1's `visual-validation` skill, which drives the project's own `@playwright/test` suite for the PR gate (§6).
 
-  **Hard deny: `mcp__playwright__browser_run_code_unsafe`.** The MCP server exposes 23 tools; 22 are sandboxed to the browser (navigate, click, snapshot, evaluate-in-page, etc.). The 23rd — `browser_run_code_unsafe` — is documented by the server itself as "Run a Playwright code snippet. Unsafe: executes arbitrary JavaScript in the Playwright server process and is RCE-equivalent." That executes against the operator's host as the operator's user, breaking the read-only contract of `reviewer` and giving `implementer` an unbounded escape hatch. `settings.template.json` denies this single tool by name; the other 22 stay covered by the wildcard.
+  **Scope by agent.** `mcp__plugin_atelier_playwright__*` is in the allow list of `settings.template.json`; only `implementer` and `reviewer` list `mcp__plugin_atelier_playwright` in their agent `tools:` frontmatter, so no other agent can invoke it. Browsers (~250 MB chromium bundle) download on the first tool call into `~/.cache/ms-playwright`, mirroring the `visual-validation` lazy-install policy from §1.
+
+  **Hard deny: `mcp__plugin_atelier_playwright__browser_run_code_unsafe`.** The MCP server exposes 23 tools; 22 are sandboxed to the browser (navigate, click, snapshot, evaluate-in-page, etc.). The 23rd — `browser_run_code_unsafe` — is documented by the server itself as "Run a Playwright code snippet. Unsafe: executes arbitrary JavaScript in the Playwright server process and is RCE-equivalent." That executes against the operator's host as the operator's user, breaking the read-only contract of `reviewer` and giving `implementer` an unbounded escape hatch. `settings.template.json` denies this single tool by name; the other 22 stay covered by the wildcard.
 
 ### Slash commands (global)
 
@@ -477,7 +479,7 @@ Phases are sequential. Each phase ends with a verifiable milestone.
 - M3.1 `e2e-runner` agent + `visual-validation` skill.
 - M3.2 `reviewer` agent (Opus) with explicit checklist.
 - M3.3 Auto-merge logic with all guardrails from §6.
-- M3.4 Playwright MCP server registered via plugin `.mcp.json` (`@playwright/mcp@latest` via `npx -y`); `mcp__playwright__*` allowed in `settings.template.json`; `implementer` and `reviewer` list `mcp__playwright` in their tools. Gives those two agents a controllable browser for live visual validation, separate from the PR-gate suite driven by M3.1's `visual-validation` skill.
+- M3.4 Playwright MCP server registered via plugin `.mcp.json` (`@playwright/mcp@latest` via `npx -y`); `mcp__plugin_atelier_playwright__*` allowed in `settings.template.json`; `implementer` and `reviewer` list `mcp__plugin_atelier_playwright` in their tools. Gives those two agents a controllable browser for live visual validation, separate from the PR-gate suite driven by M3.1's `visual-validation` skill.
 
 **Done when:** the toy-repo flow ends with a merged PR (squash), closed roadmap item, deleted branch, cleaned worktree.
 
