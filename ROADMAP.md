@@ -105,6 +105,70 @@ Sonnet agent + skill for on-demand Docker container management during task execu
 
 **Trigger to revisit:** the first time a task needs to test against a containerized service and the operator would otherwise write Docker config by hand. Captured 2026-05-22 as a daily-work productivity tool that complements (not blocks) the core agent flow.
 
+### M4.18 — Rename `git-wt` source from `Miguelslo27/git-wt` to `AkaLab-Tech/git-wt`
+
+`git-wt` moved from the maintainer's personal namespace (`Miguelslo27`) to the organization (`AkaLab-Tech`). GitHub's redirect handles `git clone` of the old URL transparently, but the `gh api repos/...` drift check used by `/doctor` references the old path explicitly, and the `Bash` allowlist entry in `settings.template.json` is pinned to that path — so even when the redirect works for cloning, `/doctor` reports drift against the wrong repo and the operator may hit a permission prompt on the new URL.
+
+Chore — no behavior changes, just URL rewrites. No version pinning: `install.sh` keeps cloning `main` shallow as today.
+
+- [ ] `install.sh` (around lines 618 / 622 / 624) — replace `Miguelslo27/git-wt` with `AkaLab-Tech/git-wt` in the clone URL, the `sublog` line, and the surrounding comment about the upstream `gh api` SHA check.
+- [ ] `templates/settings.template.json` line 185 — update `Bash(gh api repos/Miguelslo27/git-wt/commits/main*)` to `AkaLab-Tech/git-wt`. Per-project `.claude/settings.json` files already instantiated from the template will pick this up on the next `/setup-project` reconfigure.
+- [ ] `commands/doctor.md` lines 34 / 37 / 89 — update the upstream-SHA fetch (`gh api`) and the remediation clone command in the doctor recipe.
+- [ ] `PLAN.md` lines 79 / 81 / 347 / 376 — design-doc references.
+- [ ] `CLAUDE.md` line 30 — maintainer-guide link.
+- [ ] `HISTORY.md` is **not** updated (historical text preserved as written).
+
+**Acceptance:** `grep -rn 'Miguelslo27' . --include='*.md' --include='*.sh' --include='*.json'` returns hits only in `HISTORY.md`. `/doctor` run after the change resolves drift against `AkaLab-Tech/git-wt` without prompting for a permission grant. A fresh `install.sh` run on a clean Mac clones from the new URL successfully.
+
+**Trigger to revisit:** open immediately — leaves drift detection silently wrong against the new repo and risks the install if GitHub's redirect ever stops working. Captured 2026-05-22 after the maintainer transferred ownership of `git-wt` to AkaLab-Tech.
+
+### M4.19 — `/setup-project` auto-generates root `CLAUDE.md` (interview or codebase scan)
+
+`/setup-project` today writes a placeholder `.claude/CLAUDE.md` from a generic template and leaves the **root** `CLAUDE.md` (the file Claude Code uses to learn project architecture / stack / conventions) entirely up to the operator. Result: agents start every task with effectively zero project context until the operator manually populates that file.
+
+This task makes `/setup-project` populate the root `CLAUDE.md` automatically, branching on whether the project is **new** or **existing**. The atelier-specific `.claude/CLAUDE.md` is **also** managed (current placeholder template stays; existing idempotency rule in `commands/setup-project.md` line 34 still applies — never overwrite if already present).
+
+**Detection (auto, with override):**
+
+- Heuristic on the target path:
+  - **`new`** when the repo has 0 commits OR tracks ≤3 files all matching docs-only patterns (`README*`, `LICENSE*`, `.gitignore`).
+  - **`existing`** when the repo has any manifest file (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `Gemfile`, …), a populated source dir (`src/`, `lib/`, `app/`), or >3 tracked files.
+- CLI override: `atelier-setup-project --mode=new|existing` forces the branch and skips the heuristic. Default is the heuristic.
+
+**`new` branch — single-question interview + AI drafts:**
+
+- One open question to the operator: *"What is this project about? (free-form)"*.
+- A sub-agent converts the answer into a structured root `CLAUDE.md` covering: purpose, anticipated stack, anticipated conventions. Sections with unknown values are explicitly marked `TBD` (e.g., *"Test runner: TBD"*) so a later task can fill them in.
+
+**`existing` branch — `project-profiler` agent (Sonnet, read-only):**
+
+- Tools restricted to `Read`, `Glob`, `Grep`. No execution, no installs, no network — the agent's prompt forbids them explicitly.
+- Scans `README*`, manifest files, top-level dir layout, CI configs (`.github/workflows/*`), test/lint configs (`vitest.config.*`, `eslint.config.*`, `tsconfig.json`, etc.).
+- Writes the root `CLAUDE.md` with: detected stack (from manifests), high-level architecture, conventions (test runner, linter, package manager, deploy target if detectable). Whatever it cannot infer with confidence is left as `TBD` rather than guessed.
+
+**Both branches:**
+
+- Never overwrite an existing root `CLAUDE.md` (same idempotency rule as `.claude/CLAUDE.md`).
+- Status (`written` / `kept-existing`) logged in the `/setup-project` summary block.
+
+**Sub-tasks:**
+
+- [ ] Heuristic function in `scripts/atelier-setup-project` returning `new|existing`.
+- [ ] `--mode=new|existing` CLI flag, overriding the heuristic.
+- [ ] `agents/project-profiler.md` — Sonnet, tools `Read` / `Glob` / `Grep` only, prompt explicitly forbidding execution / install / network.
+- [ ] `templates/project-claude-root.md.template` for the `new` branch (placeholders the interview / AI fills in).
+- [ ] `/setup-project` step 5 extended: branch on detection, run the appropriate path, write the root `CLAUDE.md` only when missing.
+- [ ] `commands/setup-project.md` updated to document the new step + override flag.
+
+**Acceptance:**
+
+- `/setup-project` on an empty repo (0 commits): asks the open question, writes root `CLAUDE.md` reflecting the answer, writes `.claude/CLAUDE.md` from the current placeholder template.
+- `/setup-project` on a populated repo (has `package.json` + `src/`): no interview, `project-profiler` writes root `CLAUDE.md` with detected stack / conventions; `.claude/CLAUDE.md` written from the current template.
+- `atelier-setup-project --mode=new` on a populated repo forces the interview branch (ignores heuristic).
+- Re-running `/setup-project` on a project that already has a root `CLAUDE.md` leaves it untouched (logs `kept-existing`).
+
+**Trigger to revisit:** captured 2026-05-22. Without this, every new project bootstrapped via atelier starts with agents having zero project context until the operator manually writes the root `CLAUDE.md` — friction at exactly the moment the operator is trying to get the project running.
+
 ---
 
 ## Low Priority / Ideas
