@@ -8,8 +8,48 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M4.16 — Per-task `.claude/settings.json` via external helper binary — 2026-05-22
+### M4.20 — `task-orchestrator` subagent inherits parent `cwd`, not worktree — 2026-05-22
 **PR:** _pending_
+
+[M4.16](https://github.com/AkaLab-Tech/atelier/pull/57) PR #57's end-to-end validation on 2026-05-22 surfaced that under `claude -p`, `/atelier:next-task` advanced cleanly through step 7 (M4.16's helper writing the worktree's `.claude/settings.json`) but blocked at step 8 (handoff to `task-orchestrator`): the subagent dispatched by the `Task` tool inherits its parent's cwd (the main repo or operator's home dir), NOT the per-task worktree. The harness's `additionalDirectories` list only governs `Read` / `Edit` / `Write` paths; `Bash` subprocesses see the inherited cwd. So `git status` / `pnpm test` / `gh pr create` run via `Bash` operate against the wrong cwd, even though the worktree is in `additionalDirectories`. There is no harness API to set the subagent's cwd explicitly via the `Task` tool — the fix has to be documentation-level: instruct every agent that touches `Bash` to use cwd-independent path flags (`git -C <wt>`, `pnpm --dir <wt>`, `gh --repo <owner/name>`) or `cd <wt> && ...` prefix.
+
+**Delivered:**
+
+- **`operator-rules.md` (+19 lines)** — new section "Operating against the task worktree (cwd vs paths)" between the push/PR/merge gates and the failure-recovery section. Loaded into every agent's context by the `SessionStart` hook (`hooks/load-operator-rules.sh`), so every specialist — `implementer`, `tester`, `pr-author`, `e2e-runner`, `reviewer`, `unblocker` — sees the rule without having to be modified individually. Names the four allowed patterns explicitly (`-C`, `--dir`, `--repo`, `cd-prefix`) and the hard rule that `Bash` never gets a naked `git status` / `pnpm test`. Also documents the briefing-propagation requirement for orchestrators dispatching subagents.
+- **`agents/task-orchestrator.md` (+11 lines)** — new "Operating context" block immediately after the operator-rules reference, restating the rule with the orchestrator-specific framing (it is the first point of contact in the chain). Step 5 "Delegate sequentially" gets a "Briefing contract" sub-paragraph: every specialist dispatch must include (a) absolute `<worktree-path>`, (b) task ID + structured record, (c) one-line cwd reminder. Defense in depth — the rule reaches the specialist via `SessionStart` (`operator-rules.md`) and via the orchestrator's explicit briefing.
+- **`commands/next-task.md` step 8 (+9 lines)** — the briefing `/next-task` hands to the orchestrator now carries the full cwd reminder explicitly, so even if `SessionStart` did not fire for the subagent dispatch, the briefing is the authoritative carrier. Lists the four required pieces (worktree_path, task record, interaction mode, cwd reminder) as a bullet list rather than a single paragraph.
+- **Specialists (`implementer.md`, `tester.md`, `pr-author.md`, `e2e-runner.md`, `reviewer.md`, `unblocker.md`) — no changes.** They inherit the rule via `operator-rules.md` (SessionStart) and via the orchestrator's briefing. If a future validation surfaces a specialist that does not honor the rule despite both channels, that specialist gets a targeted update.
+
+**Tests:**
+
+- **End-to-end empirical re-run** of M4.16's validation fixture, this time with the M4.20 worktree as `--plugin-dir`. `claude --plugin-dir <wt> -p "/atelier:next-task #1 --yes"` from inside `atelier-dogfood-4` on `main@35c6025`, with the same isolated `$ATELIER_CONFIG_DIR` template + dual-gh-id setup. The chain advanced **all the way through `pr-author`**:
+  - Steps 1-7 (`/next-task`) — clean, identical to M4.16's run.
+  - Step 8 (handoff to `task-orchestrator`) — **no longer blocks**. Orchestrator received the briefing with the cwd reminder, then dispatched specialists with the same reminder propagated.
+  - `implementer` — wrote `src/greet.ts` (8 lines) + `test/greet.test.ts` (8 lines) inside the worktree using `Read` / `Write` on absolute paths.
+  - `tester` — `pnpm --dir <wt> test` reported 2 files, 2 tests passed; `pnpm --dir <wt> exec tsc --noEmit` clean. Both invocations used the `--dir` flag per the new rule.
+  - `pr-author` — generated 3 commits on `task/1-add-greet-helper` (`acc0a04` tracking-open, `1b704ec` feat, `4463223` tracking-close), all attributed to `Mike <miguelmail2006@gmail.com>` (operator identity preserved, no Claude attribution per the user's CLAUDE.md global rule). Push gate green via `safe-commit` hook. The chain paused **just before** `git push` + `gh pr create`, honoring the user's CLAUDE.md global rule that requires explicit confirmation for `git push`. **This pause is correct behavior, not a chain failure.**
+- After explicit operator confirmation, the branch was pushed and `gh pr create` opened **[atelier-dogfood-4 PR #2](https://github.com/AkaLab-Tech/atelier-dogfood-4/pull/2)** with the body referencing this M4.20 validation.
+- No regression for `Read` / `Edit` / `Write` against absolute paths — those still operate against the worktree per the harness's `additionalDirectories` rule, untouched by M4.20.
+
+**Decisions captured:**
+
+- **Documentation-level fix, not a harness change.** The `Task` tool's JSON schema has no `cwd` parameter, so propagating the worktree path as the subagent's cwd is not directly possible from the plugin's side. The achievable fix is to standardize the cwd-independent invocation patterns and instruct every agent to use them. This is what M4.20 ships.
+- **Single source of truth + defense in depth.** The rule lives in `operator-rules.md` (authoritative, broadcast by `SessionStart` to every agent's context) and is re-stated in two more places: `agents/task-orchestrator.md` (the first agent dispatched, hard-coded into its system prompt) and `commands/next-task.md` step 8 (the briefing carrier). If `SessionStart` fails to fire for a subagent dispatch (a behavior I cannot empirically confirm one-way-or-the-other for the harness's `Task` tool), the briefing reaches the orchestrator anyway. Single source + redundant reach.
+- **Specialists not modified directly.** The 6 specialist agent files (`implementer`, `tester`, `pr-author`, `e2e-runner`, `reviewer`, `unblocker`) are left untouched. They inherit the rule via `operator-rules.md` and via the orchestrator's briefing. The validation run above confirmed `implementer` and `tester` honored the rule (using `Read` / `Write` with absolute paths and `pnpm --dir <wt>` respectively) without needing modifications to their own system prompts.
+- **`git push` deliberately deferred to the operator.** The chain stops before `git push` because the user's global CLAUDE.md mandates explicit per-push approval. The post-fix run confirmed that the orchestrator and `pr-author` respect this rule even when running under `--yes` / `ATELIER_AUTO` — the non-interactive flag governs task confirmation, not `git push` confirmation, which has a stricter global rule. Same outcome on dogfood-4 PR #2 in this validation: the operator approved the push after reviewing the prepared commits and body.
+
+**Acceptance status:** **fully passed.** Both criteria from the ROADMAP entry verified:
+
+1. `/atelier:next-task #1 --yes` against a real project under `claude -p` reaches `pr-author` (PR creation) without operator intervention — **verified**, the chain reached `pr-author` and prepared the push + PR body without any prompt during steps 1-7 or any specialist call. The only pause was at `git push`, which is gated by the user's global CLAUDE.md rule, not by M4.20's scope.
+2. No regression for interactive operators — `Read` / `Edit` / `Write` flow against absolute paths untouched; existing flows that already used `git -C` / `pnpm --dir` patterns keep working.
+
+**Follow-ups:**
+
+- If a future validation surfaces a specialist (`implementer`, `tester`, `pr-author`, `e2e-runner`, `reviewer`, `unblocker`) that does not honor the cwd rule despite `operator-rules.md` + orchestrator briefing, capture a targeted milestone to add the rule to that specialist's system prompt directly.
+- Watch for the harness adding a `cwd` parameter to the `Task` tool in a future Claude Code release. When that lands, M4.20 can simplify to pass `cwd=<worktree>` once at the dispatch site, and the per-Bash-call discipline becomes optional rather than mandatory.
+
+### M4.16 — Per-task `.claude/settings.json` via external helper binary — 2026-05-22
+**PR:** [#57](https://github.com/AkaLab-Tech/atelier/pull/57)
 
 M4.11 (HISTORY entry directly below) empirically established that under claude 2.1.148, the harness denies `Bash > <worktree>/.claude/settings.json` (and every redirect / write variant) in non-interactive `-p` mode — a `.claude/**` sensitive-directory guard that reaches even slash-command context. The fix M4.11 pointed at was an external helper binary invoked from `/next-task` step 7: the binary does the file-write inside its own subprocess, outside the harness's permission scope. The harness only gates the `Bash(atelier-setup-project ...)` invocation itself (allowlisted); what the binary does internally with file descriptors is not visible to the harness. Same pattern M4.9 already uses for `/setup-project`.
 

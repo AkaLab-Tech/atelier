@@ -97,6 +97,25 @@ following applies:
 **Post-merge:** delete the remote branch, remove the local worktree, mark
 the roadmap item `[x]`.
 
+## Operating against the task worktree (cwd vs paths)
+
+Your subprocess sandbox inherits its current working directory from the parent invocation. When `/atelier:next-task` (or another caller) dispatches you to work on a task, the worktree has been created at `<worktree-path>` (the absolute path arrives in your briefing) — but **your cwd is NOT inside it**. The cwd is whatever the operator started Claude Code from (typically the main repo or the operator's home dir).
+
+This matters because the harness's `additionalDirectories` list in `<worktree>/.claude/settings.json` only governs which paths your `Read` / `Edit` / `Write` tools may touch. It does **not** affect what `cwd` your `Bash` subprocesses see. A naked `git status` or `pnpm test` run via `Bash` operates against the cwd it inherited — not the worktree.
+
+**Hard rule — every `Bash` invocation that targets the worktree must use one of these patterns:**
+
+1. **`-C <worktree-path>` flag** for git: `git -C /abs/worktree status`, `git -C /abs/worktree add ...`, `git -C /abs/worktree commit ...`.
+2. **`--dir <worktree-path>` flag** for pnpm: `pnpm --dir /abs/worktree install`, `pnpm --dir /abs/worktree test`, `pnpm --dir /abs/worktree exec ...`.
+3. **`--repo <owner/name>` flag** for gh (cwd-independent by design): `gh pr create --repo owner/name`, `gh pr view <num> --repo owner/name`.
+4. **`cd <worktree-path> && <command>` prefix** when no path-flag exists for the tool: `cd /abs/worktree && npx some-tool`. Bash subprocesses are short-lived (one shell per `Bash` invocation), so the `cd` does not persist across calls — every call needs the prefix.
+
+`Read` / `Edit` / `Write` accept absolute paths and are unaffected by cwd — keep using them with the absolute `<worktree-path>/...` form.
+
+**Never** assume cwd equals worktree. If you find yourself writing `git add .` or `pnpm test` without one of the patterns above, stop and rewrite.
+
+**When you dispatch a specialist** via the `Task` tool, the specialist inherits the same cwd you did (the harness does not propagate cwd through `Task`). Include `<worktree-path>` in the specialist's briefing **and** remind them this rule applies to their Bash calls too. Defense in depth — the specialist also reads `operator-rules.md` via `SessionStart`, but explicit briefing is the authoritative signal.
+
 ## Failure recovery (§8)
 
 Every attempt writes a log to `<worktree>/.task-log/<timestamp>-<attempt>.md`
