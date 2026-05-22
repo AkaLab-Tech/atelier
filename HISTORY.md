@@ -49,7 +49,7 @@ M4.11 (HISTORY entry directly below) empirically established that under claude 2
 - If the harness ever changes such that even `Bash(atelier-setup-project:*)` becomes prefix-strict (the per-flag entry would still cover it), or if a future flag is added without a corresponding allow entry, the failure mode is harness-deny with a clear actionable message — not silent skip.
 
 ### M4.11 — Investigation of the M4.7 thesis under `--plugin-dir` (the answer is bigger than the question) — 2026-05-22
-**PR:** _pending_
+**PR:** [#55](https://github.com/AkaLab-Tech/atelier/pull/55)
 
 Dogfood-3 (HISTORY entry 2026-05-21) surfaced D3-2: `/next-task` step 7's `Bash > <wt>/.claude/settings.json` was denied by the harness under `claude --plugin-dir` ad-hoc CLI mode, contradicting the M4.7 thesis ("Bash redirect bypasses the `.claude/**` interactive guard when the path is in `additionalDirectories`"). The hypothesis captured in M4.11's ROADMAP entry was that mode (marketplace install vs `--plugin-dir`) was the discriminating variable. Empirical probing this milestone established that **the mode is not the cause** — the harness has changed since M4.7's design (2026-05-20) and now layers multiple write guards that affect ALL session-load modes equally in `-p` non-interactive context.
 
@@ -113,7 +113,7 @@ Under the current harness (claude 2.1.148, observed 2026-05-22):
 - HISTORY M4.7 entry remains correct AS OF ITS DATE (2026-05-20) — the thesis was empirically true then. Not retroactively wrong; the harness changed.
 
 ### M3.4 — Playwright MCP server for live visual validation — 2026-05-21
-**PR:** _pending_
+**PR:** [#53](https://github.com/AkaLab-Tech/atelier/pull/53)
 
 Pre-M3.4, the only Playwright touchpoint in atelier was M3.1's `visual-validation` skill, which the `e2e-runner` agent invokes once per task to drive the project's `@playwright/test` suite for the PR gate. `implementer` and `reviewer` had no way to actually *see* the UI they were working on — they read source, ran unit tests, and trusted that the e2e suite at the end would catch regressions. Surfaced in the dogfood-1 follow-up as: implementer is guessing about layout because it can't observe the rendered result.
 
@@ -163,7 +163,7 @@ M3.4 registers the official `@playwright/mcp` server as a Claude Code MCP at the
 - If the floating `@latest` ever breaks (tool rename, breaking arg-shape change), pin in `.mcp.json` and add a `safe-install`-style allowlist entry. Captured as a watch-item.
 
 ### M5.0.1 — gh auth isolation via `GH_CONFIG_DIR` + dual atelier identities (author + reviewer) — 2026-05-21
-**PR:** _pending_
+**PR:** [#52](https://github.com/AkaLab-Tech/atelier/pull/52)
 
 Pre-M5.0.1, every `gh ...` invocation inside an atelier session ran under whichever GitHub identity `gh auth login` set up before `install.sh` ran — the operator's primary `~/.config/gh/`. Two consequences: (1) `pr-author` and `reviewer` shared the same GitHub user, so GitHub silently downgraded `gh pr review --approve` to a comment (Finding #11 from dogfood-1), tripping auto-merge guardrails #2 (review status) and #6 (pending human comment); (2) atelier's PRs, issues, comments, approvals all attributed to the operator's account, polluting their notification stream and mixing atelier-managed credentials with the operator's.
 
@@ -227,7 +227,7 @@ GitHub honours `--approve` from the reviewer dir as a real approval (instead of 
 - `/doctor` slash command (M2.x): when implemented, surface the two atelier-isolated `gh auth status` checks + the identity-equality result; surface a single actionable line when one of the dirs is unauthenticated or when both identities coincide.
 
 ### M5.0.2 — Preflight collision check + dynamic `ATELIER_CONFIG_DIR` — 2026-05-21
-**PR:** _pending_
+**PR:** [#48](https://github.com/AkaLab-Tech/atelier/pull/48)
 
 [M5.0](#m50--config-root-isolation-atelier-lives-under-claude-work--2026-05-21) hardcoded `~/.claude-work/` as atelier's config root. That was correct as the **default** but wrong as the only possible value: if an operator runs `install.sh` on a machine where `~/.claude-work/` already has unrelated content, atelier would silently merge its state into the operator's existing directory. The maintainer hit this during M5.0's own development (the directory was holding their employer-account Claude session). The fix at the time was a manual rename — M5.0.2 makes atelier handle the collision automatically.
 
@@ -498,7 +498,7 @@ M4.12 closes the gap.
 - Reviewing all other documented recipes in atelier (CLAUDE.md, agent prompts, command specs) to ensure none of them prescribe a direct `git commit` on a protected branch. This M4.12 PR touched only the M4.10 recipe; a sweep is worth doing once.
 
 ### M4.10 — Gitignore `.claude/settings.json` in `atelier-setup-project` — 2026-05-20
-**PR:** _pending_
+**PR:** [#42](https://github.com/AkaLab-Tech/atelier/pull/42)
 
 Fix for the dogfood-3 Finding D3-3 captured in PR [#41](https://github.com/AkaLab-Tech/atelier/pull/41). The bash helper substitutes `<worktree>` with the operator's absolute path when it writes `<project>/.claude/settings.json`, so that file is **per-operator** and must not be committed. The helper's `step_gitignore` was only listing `.task-log/`, `.claude/settings.local.json`, and `.DS_Store` — `settings.json` itself was missing, which is exactly how dogfood-3's initial commit baked `/Users/mike/Work/atelier-dogfood-3` into the version-controlled file.
 
