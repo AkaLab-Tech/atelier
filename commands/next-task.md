@@ -1,7 +1,7 @@
 ---
 description: Pick the next task from `ROADMAP.md`, set up its worktree, and hand it to the `task-orchestrator` agent end-to-end.
 argument-hint: "[task-id] [--yes|-y]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git wt:*), Bash(sed:*), Bash(mkdir:*), Bash(jq:*), Bash(test:*), Bash(env:*), Skill, Task
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git wt:*), Bash(atelier-setup-project:*), Bash(env:*), Skill, Task
 ---
 
 You are running the `/next-task` slash command. Drive the full pickup-to-PR flow for one task from the project's `ROADMAP.md`, exactly as [PLAN.md §7](PLAN.md) prescribes.
@@ -72,28 +72,24 @@ Invoke the external `git-wt` skill (or `git wt switch <branch>` directly) to cre
 
 ### 7. Instantiate the per-task `.claude/settings.json`
 
-Read `$CLAUDE_CONFIG_DIR/templates/settings.template.json`. The template contains a literal `<worktree>` placeholder that must be substituted with the **absolute path of the per-task worktree** (from step 6), NOT the main repo path.
+Invoke the `atelier-setup-project` helper in per-task mode. The helper performs all five guards (template existence, sed substitution, JSON validity, no leftover `<worktree>` / `<atelier-config-dir>` placeholders, substitution landed in the canonical first slot of `additionalDirectories`) inside a subprocess **outside the harness's permission scope** — which is how this step completes in non-interactive `claude -p` mode despite the harness's `.claude/**` sensitive-directory guard.
 
-**Known limitation in `-p` mode (M4.11 finding, see M4.16):** under the current Claude Code harness (claude ≥ 2.1.148), this step **does not complete in non-interactive (`-p`) mode**. The harness denies both `Write`/`Edit` to `.claude/**` paths and Bash output redirection (`>`, `tee`) to `.claude/**`, even from slash-command context. It additionally denies any chained Bash command (`A && B`) regardless of target. The M4.7 thesis ("Bash `>` bypasses the `.claude/**` guard when the path is in `additionalDirectories`") was empirically true at design time but no longer holds. Until M4.16 introduces an external helper binary that performs the file-write outside the harness's permission scope, autonomous `claude -p` chains cannot complete this step. **Interactive operators can still proceed** — the harness will prompt for each denied operation; approve them and the step succeeds. If the step fails in `-p` mode, **stop and report** with a one-line pointer to M4.11 / M4.16; do NOT advance to step 8 with a missing settings file.
-
-Run **as a single Bash command** (this command's frontmatter allows the four pieces — `mkdir`, `sed`, `jq`, `test`):
+Run **as a single Bash command**:
 
 ```bash
-mkdir -p <absolute-worktree-path>/.claude && \
-  sed 's|<worktree>|<absolute-worktree-path>|g' \
-    "$CLAUDE_CONFIG_DIR/templates/settings.template.json" \
-  > <absolute-worktree-path>/.claude/settings.json && \
-  jq empty <absolute-worktree-path>/.claude/settings.json && \
-  test "$(jq -r '.permissions.additionalDirectories[0]' <absolute-worktree-path>/.claude/settings.json)" = "<absolute-worktree-path>"
+atelier-setup-project --per-task-settings <absolute-worktree-path>
 ```
 
-The five guards in order: directory exists; sed succeeded; output parses as JSON; `<worktree>` placeholder was actually substituted (no literal `<worktree>` left); and the substitution landed in the canonical first slot of `additionalDirectories`. Any of them failing → **stop and report** with the exact failure (do NOT advance to step 8 with a missing / corrupt / unmodified settings file — silently skipping this leaves the task in a half-configured state that only surfaces when the operator later opens a session inside the task worktree).
+Where `<absolute-worktree-path>` is the path captured in step 6, NOT the main repo path.
+
+Exit codes:
+- `0` → success. Helper prints `OK: per-task settings created: <path>/.claude/settings.json`.
+- non-zero → one of the five guards failed. **Stop and report** the helper's stderr verbatim. Do NOT advance to step 8.
 
 **Hard refusals:**
-- **Never** use the `Write` tool to create `<task-worktree>/.claude/settings.json`. The harness blocks it. Always Bash + redirect.
 - **Never** substitute `<worktree>` with the main-repo path. The whole point of per-task settings is to scope `Edit` / `Write` to the task's worktree.
-- **Never** skip the substitution-verification guard (the last two checks above). A file that exists but still contains the literal `<worktree>` placeholder would silently widen the `additionalDirectories` to `<worktree>/**` (matching nothing useful) and the operator would not notice until much later.
-- **Never** advance to step 8 if this step was denied in `-p` mode. Report "step 7 denied by harness in `-p` mode — see M4.16" and stop. Do not retry with `--dangerously-skip-permissions` to force a pass; that loses every other safety guarantee in the template.
+- **Never** bypass the helper with an inline `mkdir + sed + > .claude/settings.json` chain. The harness denies `.claude/**` writes — that is exactly what motivated this helper (see HISTORY → M4.11, M4.16).
+- **Never** advance to step 8 if the helper exits non-zero. Stop and report verbatim. Do not retry with `--dangerously-skip-permissions` to force a pass; that loses every other safety guarantee in the template.
 
 ### 8. Hand off to `task-orchestrator`
 
@@ -116,5 +112,5 @@ Or, if any step aborted, report exactly which step and why — the operator deci
 
 - **Never** create a worktree if `IN_PROGRESS.md` already has a task — see step 2.
 - **Never** claim a task whose `blocked_by:` references an open item.
-- **Never** edit `settings.template.json` itself from this command — that file is the template, not the output. Write to `<worktree>/.claude/settings.json` only.
+- **Never** edit `settings.template.json` itself from this command — that file is the template, not the output. The helper writes the instantiated copy to `<worktree>/.claude/settings.json`; this command never touches either file directly.
 - **Never** push or open a PR from this command — that is `pr-author`'s job at the end of the chain.

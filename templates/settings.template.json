@@ -176,6 +176,7 @@
       "mcp__plugin_atelier_playwright__*",
 
       "Bash(atelier-setup-project:*)",
+      "Bash(atelier-setup-project --per-task-settings:*)",
 
       "Bash(claude plugin list --json)",
       "Bash(gh api repos/AkaLab-Tech/atelier/releases/latest*)",

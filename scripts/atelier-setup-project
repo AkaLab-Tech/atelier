@@ -39,6 +39,7 @@ Bootstrap a project so atelier can manage tasks in it. Idempotent.
 
 USAGE:
   ${SCRIPT_NAME} [OPTIONS] [<project-path>]
+  ${SCRIPT_NAME} --per-task-settings <absolute-worktree-path> [--plugin-root <path>]
 
 OPTIONS:
   --plugin-root <path>   Path to the atelier plugin root (containing
@@ -51,6 +52,17 @@ OPTIONS:
   --yes, -y              Non-interactive mode. Auto-resolves every prompt
                          with the safe default (never overwrite, never
                          weaken). Also honored if \$ATELIER_AUTO is set.
+  --per-task-settings <abs-path>
+                         Per-task mode (used by /next-task step 7). Skips
+                         the full project bootstrap; only writes
+                         <abs-path>/.claude/settings.json from the
+                         instantiated template, substituting <worktree>
+                         with <abs-path>. Always overwrites — worktrees
+                         are ephemeral, each invocation produces a fresh
+                         deterministic file. Mutually exclusive with the
+                         <project-path> positional argument. --yes /
+                         \$ATELIER_AUTO are accepted but ignored
+                         (per-task mode is non-interactive by construction).
   --help, -h             Show this help and exit.
 
 POSITIONAL:
@@ -66,6 +78,7 @@ EOF
 # ---------- arg parse ----------
 PROJECT_PATH_ARG=""
 PLUGIN_ROOT_FLAG=""
+PER_TASK_SETTINGS_PATH=""
 NONINTERACTIVE=false
 [ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
 
@@ -76,6 +89,11 @@ while [ $# -gt 0 ]; do
       PLUGIN_ROOT_FLAG="$2"; shift 2 ;;
     --plugin-root=*)
       PLUGIN_ROOT_FLAG="${1#--plugin-root=}"; shift ;;
+    --per-task-settings)
+      [ -n "${2:-}" ] || die "--per-task-settings requires an absolute worktree path"
+      PER_TASK_SETTINGS_PATH="$2"; shift 2 ;;
+    --per-task-settings=*)
+      PER_TASK_SETTINGS_PATH="${1#--per-task-settings=}"; shift ;;
     --yes|-y)
       NONINTERACTIVE=true; shift ;;
     --help|-h)
@@ -89,6 +107,15 @@ while [ $# -gt 0 ]; do
       PROJECT_PATH_ARG="$1"; shift ;;
   esac
 done
+
+# ---------- mutual exclusion: --per-task-settings is its own mode ----------
+# Per-task mode is non-interactive by construction. --yes / $ATELIER_AUTO
+# are accepted (and silently ignored) so chains that export ATELIER_AUTO
+# globally don't need to unset it before invoking step 7.
+if [ -n "$PER_TASK_SETTINGS_PATH" ]; then
+  [ -z "$PROJECT_PATH_ARG" ] \
+    || die "--per-task-settings is mutually exclusive with <project-path> positional argument"
+fi
 
 # ---------- required tools ----------
 for tool in jq sed mkdir grep date; do
@@ -461,7 +488,75 @@ step_record_setup() {
   SETUP_VERSION="$plugin_version"
 }
 
+# ---------- per-task mode: only write <worktree>/.claude/settings.json ----------
+# Invoked by /next-task step 7. Runs outside the harness's permission scope
+# (the harness only gates the `Bash(atelier-setup-project ...)` invocation
+# itself; the subprocess can write to .claude/** freely). See HISTORY M4.11
+# for the harness behavior that motivated this path; M4.16 introduces it.
+step_per_task_settings() {
+  local target="$PROJECT/.claude/settings.json"
+  local template="$ATELIER_CONFIG_DIR/templates/settings.template.json"
+
+  [ -f "$template" ] \
+    || die "template missing: $template (run install.sh first to instantiate the template into \$ATELIER_CONFIG_DIR/templates/)"
+
+  mkdir -p "$PROJECT/.claude"
+
+  local tmp; tmp="$(mktemp)"
+  sed "s|<worktree>|$PROJECT|g" "$template" > "$tmp" \
+    || { rm -f "$tmp"; die "sed substitution failed for $target"; }
+
+  jq empty "$tmp" >/dev/null 2>&1 \
+    || { rm -f "$tmp"; die "$template did not produce valid JSON after substitution"; }
+
+  if grep -q "<worktree>" "$tmp"; then
+    rm -f "$tmp"
+    die "$template still contains literal '<worktree>' after substitution — template bug"
+  fi
+  if grep -q "<atelier-config-dir>" "$tmp"; then
+    rm -f "$tmp"
+    die "$template still contains literal '<atelier-config-dir>' — install.sh did not instantiate the template under \$ATELIER_CONFIG_DIR/templates/ (re-run install.sh)"
+  fi
+
+  local first_slot
+  first_slot="$(jq -r '.permissions.additionalDirectories[0]' "$tmp" 2>/dev/null)" \
+    || { rm -f "$tmp"; die "could not read .permissions.additionalDirectories[0] from instantiated settings"; }
+  if [ "$first_slot" != "$PROJECT" ]; then
+    rm -f "$tmp"
+    die "substituted <worktree> did not land in canonical first slot of additionalDirectories (got '$first_slot', expected '$PROJECT')"
+  fi
+
+  mv "$tmp" "$target"
+  SETTINGS_STATUS="created"
+}
+
+run_per_task_mode() {
+  case "$PER_TASK_SETTINGS_PATH" in
+    /*) ;;
+    *) die "--per-task-settings requires an absolute path, got '$PER_TASK_SETTINGS_PATH'" ;;
+  esac
+  [ -d "$PER_TASK_SETTINGS_PATH" ] \
+    || die "--per-task-settings path does not exist or is not a directory: $PER_TASK_SETTINGS_PATH"
+
+  PLUGIN_ROOT="$(resolve_plugin_root)"
+  PROJECT="$PER_TASK_SETTINGS_PATH"
+
+  log "atelier-setup-project ${VERSION} --per-task-settings"
+  sublog "plugin-root: $PLUGIN_ROOT"
+  sublog "worktree:    $PROJECT"
+
+  step_per_task_settings
+
+  echo ""
+  ok "per-task settings $SETTINGS_STATUS: $PROJECT/.claude/settings.json"
+}
+
 # ---------- main flow ----------
+if [ -n "$PER_TASK_SETTINGS_PATH" ]; then
+  run_per_task_mode
+  exit 0
+fi
+
 PLUGIN_ROOT="$(resolve_plugin_root)"
 PROJECT="$(resolve_project_path)"
 PROJECT_NAME="$(basename "$PROJECT")"
