@@ -19,7 +19,7 @@ This repo (`atelier`) is the single artifact the operator clones. `install.sh` l
 
 ### Two-layer configuration
 
-- **Global** — distributed as a **Claude Code native plugin**. This repo ships `.claude-plugin/plugin.json` only; the marketplace catalog (`marketplace.json`) that lists `atelier` lives in a dedicated repo, [AkaLab-Tech/claude-plugins](https://github.com/AkaLab-Tech/claude-plugins), alongside every other AkaLab-Tech plugin. The operator installs everything with `/plugin marketplace add AkaLab-Tech/claude-plugins` + `/plugin install atelier@akalab-tech`. Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/` and `CLAUDE.md` from the plugin root. Hooks and scripts reference files via `$CLAUDE_PLUGIN_ROOT` — never hardcoded paths.
+- **Global** — distributed as a **Claude Code native plugin**. This repo ships `.claude-plugin/plugin.json` only; the marketplace catalog (`marketplace.json`) that lists `atelier` lives in a dedicated repo, [AkaLab-Tech/claude-plugins](https://github.com/AkaLab-Tech/claude-plugins), alongside every other AkaLab-Tech plugin. The operator installs everything with `/plugin marketplace add AkaLab-Tech/claude-plugins` + `/plugin install atelier@akalab-tech`. Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/`, `CLAUDE.md` and `.mcp.json` from the plugin root. Hooks and scripts reference files via `$CLAUDE_PLUGIN_ROOT` — never hardcoded paths.
 - **Host-OS layer** (handled by `install.sh` before the plugin is installed): things that can't live inside a Claude plugin — base deps, Claude Code itself, GitHub auth, `git-wt` external package, `.env*` in git excludes, `fnm`/alias shellrc hooks, git identity.
 - **Per project** (created by `/setup-project <path>`): `ROADMAP.md`, `.claude/settings.json` (generated from `settings.template.json`), `.claude/CLAUDE.md` with project-specific rules, `.npmrc` (pnpm supply-chain guardrails — see §4), optional project-specific agents/skills that override globals.
 
@@ -39,7 +39,7 @@ The native plugin system gives us: (a) one-liner install/update via `/plugin mar
 
 The operator runs **one command** and answers at most **two prompts** (Claude login + GitHub login).
 
-### Phase A — Preparation (no interaction)
+### Phase A — Preparation (no interaction, plus one optional Chrome prompt)
 1. Detect OS (macOS/Linux) and architecture.
 2. Verify / install base dependencies via Homebrew (mac) or apt (linux):
    - `git`, `gh`, `fnm`, `pnpm`, `jq`, `fzf`. (Playwright moved to M3.1 / `e2e-runner`: only operators running e2e tasks need the ~250 MB browser bundle.)
@@ -47,6 +47,7 @@ The operator runs **one command** and answers at most **two prompts** (Claude lo
    - **`pnpm`** is the package manager of choice — never fall back to `npm`. Installed via `corepack enable` once Node is available.
    - **`fzf`** enables the interactive picker for `git wt switch` (see Phase C, `git-wt` install).
 3. Install Claude Code if not present via the official native installer: `curl -fsSL https://claude.ai/install.sh | bash`. Lands the signed native binary at `~/.local/bin/claude` and self-updates in the background. The `curl|sh` pattern is in the agent-level deny-list (PLAN.md §3), but `install.sh` runs in the operator's terminal before atelier's agent layer is active, so it is out of that scope.
+4. **Optional: system Chrome for `mcp__plugin_atelier_playwright`** (M3.4). Detect Chrome platform-appropriately: macOS — `[ -d "/Applications/Google Chrome.app" ] || [ -d "$HOME/Applications/Google Chrome.app" ]`; Linux — `command -v google-chrome[-stable]`. If present, log and continue. If absent **and** the operator is interactive (TTY + no `--yes`), prompt `Install Google Chrome now via 'brew install --cask google-chrome'? [Y/n]` on macOS — Y installs via brew cask, N skips with the install command for later. On Linux, surface the manual install commands (`apt`/`rpm` snippets) — too distro-dependent to automate generically. In non-interactive mode (`--yes` or no TTY), warn and continue without installing. The MCP server returns an actionable error on first call if Chrome is still missing, and `/doctor` check 4.f re-warns persistently.
 
 ### Phase B — Authentication (only human interaction)
 4. Claude Code login: run `claude auth login`, which opens a browser tab for OAuth. (The `/login` slash command — described in earlier drafts — only works inside an interactive `claude` session; the CLI subcommand achieves the same flow from a shell script.) Idempotency: `claude auth status` exits `0` if already authenticated, so the script skips the browser when the operator re-runs `install.sh`.
@@ -349,6 +350,22 @@ Auto-discovered by Claude Code from the plugin's `./skills/` directory (no expli
 - `safe-commit` — lint + typecheck + tests before commit.
 - `safe-install` — audit + `pnpm view` before `pnpm add`.
 
+### MCP servers ✅
+
+Declared in `.mcp.json` at the plugin root and auto-loaded when atelier is active. Connections are stdio (lazy: the server process spawns on first tool call, not at session start).
+
+**Namespace convention.** Claude Code namespaces MCP servers loaded via a plugin's `.mcp.json` as `plugin_<pluginname>_<servername>` to avoid collisions with project-level `.mcp.json` servers of the same name. So a server declared as `playwright` in `atelier`'s plugin `.mcp.json` exposes its tools as `mcp__plugin_atelier_playwright__<tool>` (not `mcp__playwright__<tool>`). `settings.template.json` allow/deny entries and agent `tools:` frontmatter must use the prefixed name.
+
+- `playwright` — official `@playwright/mcp` server, started via `npx -y @playwright/mcp@latest`. Provides a controllable browser as an agent tool (`mcp__plugin_atelier_playwright__*`) so `implementer` can validate UI work as it builds and `reviewer` can independently exercise the flow during PR review. Distinct from M3.1's `visual-validation` skill, which drives the project's own `@playwright/test` suite for the PR gate (§6).
+
+  **Scope by agent.** `mcp__plugin_atelier_playwright__*` is in the allow list of `settings.template.json`; only `implementer` and `reviewer` list `mcp__plugin_atelier_playwright` in their agent `tools:` frontmatter, so no other agent can invoke it.
+
+  **First-call cost.** `@playwright/mcp` uses the operator's system Chrome by default — no full browser-bundle download. First call materializes only a profile directory: ~9 MB on macOS at `~/Library/Caches/ms-playwright/mcp-chrome-<hash>/`, equivalent on Linux at `~/.cache/ms-playwright/mcp-chrome-<hash>/`. Distinct from M3.1's `visual-validation` skill which runs `pnpm exec playwright install` and downloads the full ~250 MB chromium/firefox/webkit bundles.
+
+  **Chrome-missing failure mode.** If the operator has no system Chrome installed, the first tool call returns a structured MCP error: `Error: Browser "chrome" is not installed. Run \`npx @playwright/mcp install-browser chrome\` to install`. Recoverable in one command (Playwright's channel install supports `chrome` since v1.30 — on macOS it triggers the Chrome installer, on Linux it goes through apt/yum). On macOS Chrome is near-universal so this is rare; on Linux dev workstations it may not be present. The error is actionable enough that an `implementer` subagent reading the structured response can surface it to the operator with the install command. Pre-flighted by `/doctor` check 4.f, which detects Chrome on macOS via `/Applications/Google Chrome.app` and on Linux via `command -v google-chrome[-stable]` — surfaces the install command before the operator hits the error in a real task.
+
+  **Hard deny: `mcp__plugin_atelier_playwright__browser_run_code_unsafe`.** The MCP server exposes 23 tools; 22 are sandboxed to the browser (navigate, click, snapshot, evaluate-in-page, etc.). The 23rd — `browser_run_code_unsafe` — is documented by the server itself as "Run a Playwright code snippet. Unsafe: executes arbitrary JavaScript in the Playwright server process and is RCE-equivalent." That executes against the operator's host as the operator's user, breaking the read-only contract of `reviewer` and giving `implementer` an unbounded escape hatch. `settings.template.json` denies this single tool by name; the other 22 stay covered by the wildcard.
+
 ### Slash commands (global)
 
 - `/next-task` — full pickup-to-PR flow.
@@ -467,6 +484,7 @@ Phases are sequential. Each phase ends with a verifiable milestone.
 - M3.1 `e2e-runner` agent + `visual-validation` skill.
 - M3.2 `reviewer` agent (Opus) with explicit checklist.
 - M3.3 Auto-merge logic with all guardrails from §6.
+- M3.4 Playwright MCP server registered via plugin `.mcp.json` (`@playwright/mcp@latest` via `npx -y`); `mcp__plugin_atelier_playwright__*` allowed in `settings.template.json`; `implementer` and `reviewer` list `mcp__plugin_atelier_playwright` in their tools. Gives those two agents a controllable browser for live visual validation, separate from the PR-gate suite driven by M3.1's `visual-validation` skill.
 
 **Done when:** the toy-repo flow ends with a merged PR (squash), closed roadmap item, deleted branch, cleaned worktree.
 

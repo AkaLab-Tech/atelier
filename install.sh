@@ -315,6 +315,82 @@ phase_a_claude_code() {
   curl -fsSL https://claude.ai/install.sh | bash
 }
 
+phase_a_chrome_optional() {
+  # The atelier plugin ships an MCP server (mcp__plugin_atelier_playwright)
+  # that uses the operator's system Chrome by default for visual validation
+  # by the implementer and reviewer agents on UI tasks. If Chrome is missing,
+  # the MCP returns an actionable error on first call but does NOT auto-
+  # download. This step pre-flights the dependency: detect Chrome; if absent
+  # and a TTY is available, prompt; otherwise warn and continue.
+  local os chrome_found=false
+  os="$(detect_os)"
+
+  case "$os" in
+    mac)
+      if [ -d "/Applications/Google Chrome.app" ] || [ -d "$HOME/Applications/Google Chrome.app" ]; then
+        chrome_found=true
+      fi
+      ;;
+    linux)
+      if has google-chrome || has google-chrome-stable; then
+        chrome_found=true
+      fi
+      ;;
+  esac
+
+  if $chrome_found; then
+    sublog "system Chrome detected (used by mcp__plugin_atelier_playwright)"
+    return
+  fi
+
+  # Chrome missing. Non-interactive (--yes or no TTY): warn + continue.
+  if [ "$NONINTERACTIVE" = true ] || [ ! -t 0 ]; then
+    warn "system Chrome not detected — mcp__plugin_atelier_playwright will fail on first call until installed"
+    sublog "install later with one of:"
+    sublog "    npx @playwright/mcp@latest install-browser chrome"
+    case "$os" in
+      mac)   sublog "    brew install --cask google-chrome" ;;
+      linux) sublog "    sudo apt-get install -y google-chrome-stable    # (or your distro's equivalent)" ;;
+    esac
+    sublog "/doctor 4.f will warn you until installed"
+    return
+  fi
+
+  # Interactive prompt path.
+  echo
+  sublog "atelier's playwright MCP needs system Chrome for visual validation"
+  sublog "by the implementer and reviewer agents on UI tasks."
+  echo
+  case "$os" in
+    mac)
+      local ans
+      read -r -p "    Install Google Chrome now via 'brew install --cask google-chrome'? [Y/n]: " ans
+      case "${ans:-Y}" in
+        [Yy]|[Yy][Ee][Ss])
+          sublog "installing Google Chrome via brew cask"
+          if brew install --cask google-chrome; then
+            ok "Google Chrome installed"
+          else
+            warn "brew install --cask google-chrome failed — install continues. Install Chrome manually before using UI tasks."
+          fi
+          ;;
+        *)
+          sublog "skipped — install later with: brew install --cask google-chrome (or npx @playwright/mcp@latest install-browser chrome). /doctor will warn you."
+          ;;
+      esac
+      ;;
+    linux)
+      # Linux Chrome install varies by distro and usually needs adding a repo;
+      # not safe to automate generically here. Surface the instruction.
+      sublog "Chrome install on Linux depends on your distro — install manually if you need the playwright MCP:"
+      sublog "    apt:  sudo apt-get install -y google-chrome-stable"
+      sublog "    rpm:  sudo yum install -y google-chrome-stable"
+      sublog "    or:   npx @playwright/mcp@latest install-browser chrome"
+      sublog "/doctor 4.f will warn you until installed."
+      ;;
+  esac
+}
+
 phase_a() {
   log "Phase A — base dependencies + Claude Code"
   local os
@@ -325,6 +401,7 @@ phase_a() {
   esac
   phase_a_node_and_pnpm
   phase_a_claude_code
+  phase_a_chrome_optional
   ok "Phase A complete"
 }
 
