@@ -22,6 +22,7 @@ M3.4 registers the official `@playwright/mcp` server as a Claude Code MCP at the
 - `agents/implementer.md` — `tools:` gains `"mcp__plugin_atelier_playwright"`; new core responsibility #6 "Validate UI changes visually" instructs the agent to navigate the affected route, exercise the changed interaction, and screenshot the result before reporting done. Skipped for backend-only or docs-only changes.
 - `agents/reviewer.md` — `tools:` gains `"mcp__plugin_atelier_playwright"`; new paragraph under "Correctness" checklist directs the reviewer, on PRs with UI surface, to launch the MCP browser, navigate to the dev URL / preview link (or `http://localhost:3000` as fallback), and exercise the changed flow against the same ≥ 80% confidence bar. "visual check skipped: no UI surface / no server" is the recorded outcome when no reachable UI is present.
 - `PLAN.md` — §1 lists `.mcp.json` among the auto-discovered files; new subsection §7 "MCP servers ✅" between Skills and Slash commands documents the slot and the `playwright` entry; §12 Phase 3 gains the M3.4 deliverable line.
+- `commands/doctor.md` — new auxiliary host check 4.f detects system Chrome presence (platform-aware: macOS `/Applications/Google Chrome.app`, Linux `command -v google-chrome[-stable]`) and prints the `npx @playwright/mcp@latest install-browser chrome` install command if missing. Pre-flights the Chrome-missing failure mode (commit 5) so the operator sees the warning before hitting it in a real UI task. Output format example updated.
 
 **Tests:**
 

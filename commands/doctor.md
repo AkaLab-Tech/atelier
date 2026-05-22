@@ -49,6 +49,17 @@ b. **`git-wt` binary on PATH.** Run `command -v git-wt`. `✓` if exit 0; `✗` 
 c. **`fnm env --use-on-cd` active in the operator's shell.** Look for the sentinel `# >>> atelier hooks (managed by install.sh) >>>` in `~/.zshrc` and `~/.bashrc` (whichever exists). `✓` if found in the operator's default shell rc; `✗` with "re-run `install.sh`" otherwise.
 d. **Current project's `.npmrc` guardrails present** (only if a `.npmrc` exists in `$CLAUDE_PROJECT_DIR` or the cwd). Confirm all three of `ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate` are present. `✓` if all three; `✗` listing which are missing, with the suggestion to re-run `/setup-project`.
 e. **Per-project `~/.claude/.atelier-config.json` consistency** (only if the file exists). Confirm it parses as JSON and contains both `setupCompleted` (ISO timestamp) and `setupVersion` (string). `✓` if both; `✗` with "re-run `/setup-project --reconfigure`".
+f. **System Chrome present (required by `mcp__plugin_atelier_playwright`).** The playwright MCP that atelier ships uses the operator's system Chrome by default; first call fails with an actionable error if Chrome is missing. Detect platform via `uname -s` and check accordingly:
+   - **macOS** (`Darwin`): `[ -d "/Applications/Google Chrome.app" ] || [ -d "$HOME/Applications/Google Chrome.app" ]`.
+   - **Linux**: `command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/dev/null 2>&1`.
+   - Any other OS: skip the check with `–` and a one-line note ("Chrome presence check not implemented for <os>").
+
+   `✓ system Chrome detected` if found. `✗ system Chrome not found — mcp__plugin_atelier_playwright will fail on first call` with this fix command block:
+   ```bash
+   npx @playwright/mcp@latest install-browser chrome
+   # alternatively (macOS): brew install --cask google-chrome
+   # alternatively (Linux): use your distro's package manager (apt install google-chrome-stable, etc.)
+   ```
 
 ## Output format
 
@@ -70,6 +81,7 @@ Host checks
     ✓ atelier shellrc hooks active
     ✓ project .npmrc guardrails present
     ✓ ~/.claude/.atelier-config.json consistent
+    ✓ system Chrome detected
 
 To apply pending updates, run:
     claude plugin marketplace update akalab-tech
