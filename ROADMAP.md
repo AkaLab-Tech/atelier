@@ -46,6 +46,36 @@ M5.0.3 ships a single command — `scripts/atelier-uninstall` — that automates
 
 **Trigger to revisit:** when an operator (including the maintainer) needs to decommission atelier without losing chat history. Captured post-M5.0 alongside M5.0.2 as the natural pair of install-side and uninstall-side hardening.
 
+### M5.0.4 — Release policy + versioning convention for atelier plugins
+
+`/atelier:doctor`'s drift check for `atelier`, `claude-roadmap-tools`, and `git-wt` compares the local `plugin.json:version` (or installed CLI version) against the upstream's `releases/latest` tag (with fallback to `tags[0]`). For that comparison to mean anything, releases / tags must actually be created — and the convention for **when** and **how** has not been written down anywhere. The initial `v0.1.0` releases were cut ad-hoc on 2026-05-22 to recover `/doctor`'s functionality; this milestone captures the policy so future releases stop being ad-hoc.
+
+**Open questions to answer (in order):**
+
+1. **When does a release happen?** Per-PR merge to main (one release per merge, version bumped in the PR itself)? Per-milestone (release when an M-level block lands)? Or ad-hoc (maintainer judgment, like the initial `v0.1.0`)? Each has tradeoffs — per-PR is mechanical but noisy; per-milestone is intentional but requires defining "milestone" precisely; ad-hoc preserves discretion but leaves operators uncertain about update cadence.
+2. **What does each SemVer level mean for atelier?** Suggested mapping:
+   - `patch` (`0.1.x`) — docs / chore / bug fix that does not change agent prompts, slash commands, or permissions.
+   - `minor` (`0.x.0`) — new agent / skill / slash command / hook / MCP server, or material change to an existing agent's prompt or capabilities.
+   - `major` (`x.0.0`) — breaking change to the permission model (`settings.template.json` reshape, deny list expansion), agent dispatch contract, or anything that requires the operator to re-run `/setup-project` against existing projects. **First major bump (1.0.0) is its own discussion** — what "production-ready" means for atelier.
+3. **Tag format.** `v0.1.0` (prefixed) or `0.1.0` (bare)? Both work for `/doctor` (it strips leading `v`). The initial releases use `v0.1.0`; this commits us to that prefix unless explicitly changed.
+4. **Release notes.** Auto-generated from commits between tags? Manually written? PR-body-driven? Each has different operator-facing readability.
+5. **Cross-plugin synchronization.** `atelier` and `claude-roadmap-tools` are separate repos in the same marketplace. Are they versioned together (lockstep) or independently? They share no code today but the operator installs both via the marketplace, so versioning them together would let `/doctor` report one number; versioning independently is more accurate but adds cognitive load.
+6. **`marketplace.json` and versions.** The marketplace.json at `AkaLab-Tech/claude-plugins` currently lists plugins by name + source-repo, no version field. Should marketplace.json carry a `pinned-version` per plugin, or always resolve to `main` HEAD (current behavior)? If pinned, who bumps the pin and when?
+7. **`git-wt` versioning.** It's external (separate repo, not maintained as part of atelier). Same SemVer rules apply, or different cadence?
+
+**Scope (after the discussion lands):**
+
+- [ ] Decisions captured in `PLAN.md` as a new §N — Release policy. Authoritative once committed.
+- [ ] Optional automation milestone (separate M-something): GH Actions workflow that bumps `plugin.json:version` + creates the release on merge to main, per whichever cadence is chosen.
+- [ ] Optional CI gate (separate M-something): refuse merge if `plugin.json:version` did not change for a PR that meets the bump criteria.
+
+**Acceptance (for this milestone alone):**
+
+- A new section in `PLAN.md` documents answers to the 7 open questions above, marked `✅ agreed` per atelier's design-doc convention.
+- `/doctor` continues to report `up to date` after the policy is materialized (validates the policy is consistent with the existing drift-check logic).
+
+**Trigger to revisit:** before any release v0.2.0. The maintainer is currently the only contributor and the only author of releases — but anything that gets formal enough to publish to a wider audience needs the policy locked. Captured 2026-05-22 immediately after the ad-hoc v0.1.0 releases were cut, to prevent the same ad-hoc decisions from accumulating without convention.
+
 ### M4.14 — Implement↔validate inner loop with iteration budget
 
 The `/next-task` chain currently runs implementation and validation as a single forward pass. Any failure (lint, typecheck, unit tests) falls through to the `retry-with-logs` skill, which resets the worktree and restarts the entire task. There is no cheap inner loop where the implementer can iterate against quick validation before committing to the heavier PR-gate path.
