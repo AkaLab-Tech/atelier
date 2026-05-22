@@ -8,6 +8,55 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M5.0.3 — `atelier-uninstall` with chat-session preservation — 2026-05-22
+**PR:** _pending_
+
+Before this milestone, decommissioning atelier required the operator to manually (a) edit `~/.zshrc` to strip the atelier hooks block, (b) remove `~/.local/bin/atelier-setup-project`, (c) run `claude plugin uninstall` for both atelier plugins, and (d) decide what to do with `$ATELIER_CONFIG_DIR` (where chat history, sessions, plans, and backups live) — without a documented convention. M5.0.3 ships `scripts/atelier-uninstall`, an operator-facing helper that automates steps a-c with a chat-session-preserving default, and offers an explicit `--purge` opt-in for step d.
+
+**Delivered:**
+
+- **`scripts/atelier-uninstall` (+298 lines, new file)** — five reversal steps invoked in order, with idempotent semantics (every step reports "nothing to strip / remove" on a re-run cleanly):
+  1. `step_shellrc_hooks` — sed-strips the block between the install.sh sentinels (`# >>> atelier hooks (managed by install.sh) >>>` / `# <<< atelier hooks (managed by install.sh) <<<`) from `~/.zshrc` and `~/.bashrc`. Operator's other shellrc content is preserved verbatim — sed targets the sentinel pair only.
+  2. `step_local_bin` — removes the `atelier-setup-project` and `atelier-uninstall` symlinks under `~/.local/bin/`. Refuses to clobber a plain file (operator may have pinned a manual copy); reports `kept:` in that case.
+  3. `step_local_state` — removes `~/.local/state/atelier/` (currently holds `git-wt.sha` for `/doctor`'s drift check; future state files land here).
+  4. `step_plugin_uninstall` — runs `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR claude plugin uninstall <plugin>@akalab-tech` for both `atelier` and `claude-roadmap-tools`. A failing call (plugin not installed, claude CLI missing, etc.) is recorded as `:not-installed-or-error` and does not abort the rest of the flow.
+  5. `step_purge_config_dir` — default mode reports `preserved (use --purge to remove)`; under `--purge` requires interactive typed-out `PURGE` confirmation, or `--yes` to skip the prompt (non-interactive automation), then `rm -rf "$ATELIER_CONFIG_DIR"`.
+
+- **`install.sh` Phase C.1 (+12 / -17 lines)** — extracted the symlink-creation logic from `phase_c_1_setup_project_helper` into a new private helper `_phase_c_1_symlink_helper <name>` so the install can symlink both `atelier-setup-project` and `atelier-uninstall` without duplicating the idempotent re-link / not-a-symlink branches. Behavior for `atelier-setup-project` is byte-identical; new behavior is one extra call symlinking the uninstall helper.
+
+- **No template change.** `templates/settings.template.json` is intentionally not updated — `atelier-uninstall` is operator-facing (terminal-invoked), not called from any slash command, so it does not need a `Bash(...)` allow entry. If a future `/atelier:uninstall` slash command is added, this rule revisits.
+
+- **Out of scope** (documented in the script header and `--help`): `.env*` in git's global excludes (hygiene benefit independent of atelier — survives uninstall), `~/.gitconfig` (operator-level identity, not atelier's to manage), and `~/.config/gh/` (operator's own gh auth; atelier's isolated gh identities live under `$ATELIER_CONFIG_DIR/gh/` per M5.0.1 and are wiped only under `--purge`).
+
+**Tests:**
+
+- `bash -n` on both `scripts/atelier-uninstall` and the modified `install.sh`: ok.
+- `--help` renders the OPTIONS, EXAMPLES, and EXIT CODES sections.
+- Unknown argument (`--bogus`): exit 1 with "unknown argument" error.
+- **End-to-end fixture validation** against `/tmp/atelier-uninstall-validation3/` with a fake operator footprint (shellrc block, both bin symlinks, state file, fake `.claude.json` + `history.jsonl` in the config dir):
+  - **Default mode** — exit 0, shellrc block stripped (operator's `alias ll='ls -la'` survived intact), both symlinks removed, state dir removed, `$ATELIER_CONFIG_DIR` directory present with `history.jsonl + plugins/ + backups/` still inside. Plugin uninstalls reported `:not-installed-or-error` (correct — the fake config dir has no real plugin install for `claude plugin uninstall` to operate on).
+  - **Idempotent re-run** — exit 0, all five steps report `nothing to strip / remove`. Safe to invoke twice in a row.
+  - **`--purge --yes`** — exit 0, `$ATELIER_CONFIG_DIR` removed entirely. Confirmation prompt skipped per `--yes`.
+
+**Decisions captured:**
+
+- **Default preserves; `--purge` is opt-in.** Chat history, sessions, plans, and backups are the operator's data, not atelier's. The conservative default lets an operator decommission atelier without losing months of session work; `--purge` exists for clean-slate scenarios (CI, migration to a new machine, dispute over disk usage).
+- **`--yes` only meaningful with `--purge`.** Default mode is non-destructive of operator data, so it does not prompt — `--yes` is a no-op there. With `--purge`, `--yes` skips the typed-`PURGE` confirmation. Non-TTY without `--yes` is refused (exit 2) rather than guessing.
+- **Plugin uninstall failures do not abort the script.** A failing `claude plugin uninstall` (plugin already removed, claude CLI not on PATH, network glitch) is recorded as `:not-installed-or-error` so the rest of the host-level cleanup still completes. Operator can re-run `--purge` later to finish wiping anything the plugin uninstall left behind.
+- **`set -e` discipline.** Initial implementation hit `set -e` aborts on `[ ${#kept[@]} -gt 0 ] && BIN_STATUS+=...` when `kept` was empty — the test returned non-zero, killed the script. Fix: convert all `cond && action` to `if cond; then action; fi`. Caught by fixture-driven validation, not by `bash -n` (syntactic check missed the runtime semantics). Worth remembering for future bash work in atelier.
+- **No template allow entry needed.** `atelier-uninstall` is invoked from the operator's terminal directly, not from a slash command inside Claude Code. The harness's permission gate only applies to `Bash(...)` invocations from inside an LLM-driven session.
+
+**Acceptance status:** **fully passed.** Both acceptance criteria from the ROADMAP entry verified:
+
+1. `atelier-uninstall` from any shell removes atelier's shellrc footprint, symlinks, and plugin install without touching chat sessions by default — verified by the fixture run, with `history.jsonl + plugins/ + backups/` surviving the default-mode invocation.
+2. `atelier-uninstall --purge` (with confirmation) wipes everything — verified by the `--purge --yes` run; `$ATELIER_CONFIG_DIR` was `rm -rf`-ed in one pass.
+3. After a default uninstall, re-installing via `install.sh` picks up the same `$ATELIER_CONFIG_DIR` and does not require re-authenticating to Claude (auth tokens persist in `$ATELIER_CONFIG_DIR/.claude.json`). **Statically verified** — install.sh's `phase_c_1_claude_config_dir` reuses the existing path if `$ATELIER_CONFIG_DIR/.claude.json` is present; runtime confirmation deferred to the first re-install on a real operator machine.
+
+**Follow-ups:**
+
+- If a future `/atelier:uninstall` slash command is added (M-something), `templates/settings.template.json` allow list gains `Bash(atelier-uninstall:*)` at the same time. Currently no such slash command is planned.
+- The plugin uninstall step would benefit from a more diagnostic message when `claude plugin uninstall` fails — currently lumped as `:not-installed-or-error`. If operators start hitting failure modes that are not "not installed", split the status into more granular reporting.
+
 ### M4.18 — Rename `git-wt` source `Miguelslo27/git-wt` → `AkaLab-Tech/git-wt` — 2026-05-22
 **PR:** _pending_
 
