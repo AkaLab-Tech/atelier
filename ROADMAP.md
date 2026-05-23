@@ -12,49 +12,7 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phase 1 — Foundation.** Blocks everything else. A fresh Mac must be able to run `install.sh`, log in to Claude + GitHub, and end with the `atelier` plugin installed and `/doctor` ✅.
 
-> **Install hardening from M7.1 dogfood-2 (2026-05-23).** Findings F1–F12 surfaced during a full-wipe reinstall on the operator's machine, following [docs/dogfood-guide.md](docs/dogfood-guide.md) Stages 0–1. M7.1 (full task cycle on a real project) is paused until they are resolved. **Progress: correctness PR-A ([#70](https://github.com/AkaLab-Tech/atelier/pull/70), v0.4.2) closed F6 + F7a + F9 + F11. UX-blocking PR-B (PR _pending_) closes F2 + F5 + F10 + F12. F7b (orchestrator-side adoption of the identity file written by F7a) spawned as a follow-up — see below. Remaining: F1, F3, F4, F7b, F8.** Tags in each entry: `[correctness]` = real bug or constraint violation; `[ux-blocking]` = non-technical operator can be misled or blocked; `[noise]` / `[improvement]` = polish / would-be-nice but operator can work around.
-
-### M7.1.F1 — Strip M5.0.2 preflight design block from `install.sh` output
-
-`[noise]` · Source: M7.1 dogfood-2 install run (2026-05-23)
-
-The end of `install.sh` prints a multi-line block titled `PREFLIGHT BEHAVIOUR (M5.0.2)` that documents atelier's internal design contract for the config-dir collision check (empty / marker-detected / collision branches). That text is aimed at future atelier maintainers — it does not belong in operator-facing stdout of a successful install. It dilutes the actual "first steps" message (see F12) and confuses non-technical operators.
-
-**Scope:**
-
-- [ ] Locate the heredoc / echo block in `install.sh` and either delete it, demote it to a `#`-prefixed code comment, or move it to `docs/install-internals.md`.
-- [ ] Audit the rest of `install.sh` for similar design-doc leakage (any `==>` / `!!` blocks that explain internal contracts rather than reporting operator-relevant state).
-
-**Acceptance:** running `./install.sh` end-to-end on a clean system produces no output mentioning `PREFLIGHT BEHAVIOUR`, milestone IDs (`M5.0.2`, etc.), or other internal design framing.
-
-### M7.1.F3 — Phase A: detect outdated base deps and offer update
-
-`[improvement]` · Source: M7.1 dogfood-2 install run (2026-05-23)
-
-Phase A today only checks that base deps (`git`, `gh`, `fnm`, `node`, `pnpm`, `docker compose v2`) are *present* and meet a minimum version. It does not check whether a newer version is available. Operators running atelier for months can be unknowingly on stale tooling — and atelier's install / doctor flow is the obvious surface to surface this.
-
-**Scope:**
-
-- [ ] For each base dep, query the latest available version via the operator's package manager (`brew outdated <pkg>` on macOS; `apt list --upgradable <pkg>` on Debian/Ubuntu; `fnm ls-remote --lts | tail -1` for node; `npm view pnpm version` for pnpm; `gh release view --repo cli/cli --json tagName` for gh; `gh release view --repo AkaLab-Tech/git-wt --json tagName` for git-wt).
-- [ ] When `current < latest`, print: `↷ <pkg> 1.2.3 (latest 1.4.0 available) — atelier can update for you (Y/n)?`.
-- [ ] Respect a global flag `ATELIER_SKIP_UPDATE_PROMPTS=1` for non-interactive installs.
-- [ ] Never auto-update without explicit consent; default to **no** on Enter.
-
-**Acceptance:** running `./install.sh` on a system with at least one outdated dep prints the offer, accepts Y / n, and on Y executes the update via the appropriate package manager and re-verifies the version before continuing.
-
-### M7.1.F4 — Phase B: when Claude / gh already authenticated, offer to switch accounts
-
-`[improvement]` · Source: M7.1 dogfood-2 install run (2026-05-23)
-
-Phase B currently prints `Claude Code already authenticated` and proceeds silently. Same pattern applies to `atelier-author` / `atelier-reviewer` `gh` logins when their `GH_CONFIG_DIR` already holds a token. An operator reinstalling onto a machine that previously hosted a different identity (shared mac, identity rotation, account compromise) gets no opportunity to switch.
-
-**Scope:**
-
-- [ ] When Claude Code reports an existing session, prompt: `Already logged in as <user>. Keep this account (Y) or switch to another (s)?`. `s` triggers `claude logout` followed by a fresh auth flow.
-- [ ] Same treatment for `atelier-author` and `atelier-reviewer` — they already isolate via `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/<role>`, so the prompt + logout / login are self-contained.
-- [ ] Default to "keep" on Enter so the typical re-run stays fast.
-
-**Acceptance:** running `./install.sh` on a machine where Claude + both gh identities are already authenticated produces three prompts (one per credential) each offering keep / switch with the existing identity displayed.
+> **Install hardening from M7.1 dogfood-2 (2026-05-23).** Findings F1–F12 surfaced during a full-wipe reinstall on the operator's machine, following [docs/dogfood-guide.md](docs/dogfood-guide.md) Stages 0–1. M7.1 (full task cycle on a real project) is paused until they are resolved. **Progress: correctness PR-A ([#70](https://github.com/AkaLab-Tech/atelier/pull/70), v0.4.2) closed F6 + F7a + F9 + F11. UX-blocking PR-B ([#72](https://github.com/AkaLab-Tech/atelier/pull/72)) closed F2 + F5 + F10 + F12. Noise/improvement PR-C (PR _pending_) closes F1 + F3 + F4 + F8. F7b (orchestrator-side adoption of the identity file written by F7a) is the only remaining install-side finding — see below.** Tags in each entry: `[correctness]` = real bug or constraint violation; `[ux-blocking]` = non-technical operator can be misled or blocked; `[noise]` / `[improvement]` = polish / would-be-nice but operator can work around.
 
 ### M7.1.F7b — Orchestrator-side adoption of `$ATELIER_CONFIG_DIR/git-identity.conf`
 
@@ -70,22 +28,6 @@ F7a (closed in PR-A) writes `$ATELIER_CONFIG_DIR/git-identity.conf` at install t
 - [ ] Add a doctor check: `$ATELIER_CONFIG_DIR/git-identity.conf` exists and the `[user]` section names / emails match `gh api user` under the author config dir.
 
 **Acceptance:** after F7b lands, commits made by atelier inside a managed worktree show `Author: <atelier-author identity>` while commits made by the operator outside that worktree retain the operator's personal identity. Verified via `git log --format='%an <%ae>' -1` from both contexts.
-
-### M7.1.F8 — Trailing-slash normalization + path-format validation in Phase 0 prompt
-
-`[noise]` · Source: M7.1 dogfood-2 install run (2026-05-23)
-
-The Phase 0 prompt sample text shows paths with a trailing `/` (`pick an alternative path (e.g. ~/.claude-atelier/, ~/.atelier/):`). Operators copy the pattern, store `$ATELIER_CONFIG_DIR` with `/` suffix, and every subsequent concatenation `${ATELIER_CONFIG_DIR}/sub` produces `//sub` — a visible cosmetic bug throughout the rest of the install output. POSIX collapses `//` to `/` so there is no functional impact, but it makes the install look sloppy.
-
-**Scope:**
-
-- [ ] Reword the prompt sample text to show paths **without** trailing `/` (`~/.claude-atelier`, `~/.atelier`).
-- [ ] Normalize the operator's input: `path="${path%/}"` before storing.
-- [ ] Validate format before accepting: reject empty input, paths with unescaped whitespace, paths pointing at existing non-directory files, unresolvable relative paths. On reject, print the reason and re-prompt.
-- [ ] Resolve `~` and `$HOME` if present (`path="${path/#\~/$HOME}"`).
-
-**Acceptance:** entering `~/.claude-atelier/` (with trailing slash) results in the install storing `/Users/<user>/.claude-atelier` and all downstream log lines showing single-slash paths. Entering `/tmp/foo bar` (with space) is rejected with a clear message and re-prompts.
-
 
 ---
 

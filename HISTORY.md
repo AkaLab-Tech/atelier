@@ -8,6 +8,73 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F8 — Trailing-slash normalization + path-format validation in Phase 0 prompt — 2026-05-23
+**PR:** _pending_
+
+The Phase 0 alternative-path prompt's sample text showed paths with trailing `/` (`pick an alternative path (e.g. ~/.claude-atelier/, ~/.atelier/):`). Operators copied the pattern, so `$ATELIER_CONFIG_DIR` ended up stored with a `/` suffix, and every concatenation `${ATELIER_CONFIG_DIR}/sub` produced `//sub` throughout the install output. F8 reworks the prompt + adds input validation.
+
+**Delivered:**
+
+- **`install.sh` Phase 0 prompt** sample paths reworded WITHOUT trailing `/`: `~/.claude-atelier`, `~/.atelier`.
+- **Path normalization** added after `read -r answer` — tilde expansion (`${answer/#\~/$HOME}`), trailing-slash strip (`${answer%/}`).
+- **Format validation** before storing: rejects empty input, paths containing whitespace (`case … *[[:space:]]*)`), and existing non-directory entries (file at the path). Failed validations re-prompt via `continue` — no death-spiral exit.
+
+**Decisions captured:**
+
+- **In-place input validation only.** Doesn't try to be a general path validator (POSIX allows almost any byte in a path). The three checks cover the specific failure modes the dogfood operator saw + the most likely typos.
+- **Non-existent paths allowed.** Phase C.1 creates the directory if missing — operators can pick a brand-new path freely; only explicit "file exists here" is rejected.
+
+### M7.1.F4 — Offer account switch when Claude / gh already authenticated — 2026-05-23
+**PR:** _pending_
+
+Before F4, Phase B silently kept whatever Claude / `atelier-author` / `atelier-reviewer` accounts were already authenticated. Operators reinstalling on a machine that hosted a different identity (shared mac, identity rotation, account compromise) had no in-flow path to swap accounts — they'd have to manually `claude logout` / `GH_CONFIG_DIR=… gh auth logout` before re-running install.sh.
+
+**Delivered:**
+
+- **`install.sh` — `phase_b_claude_login`** when `claude auth status` succeeds: reads the currently-authenticated email via `claude auth status 2>&1 | grep -Eio '[a-z0-9._%+-]+@…'`, prompts `Keep (Y) or switch (s)? [Y/s]`. On `s` / `S` / `switch`: runs `claude auth logout 2>/dev/null` then `claude auth login` (browser tab). On Enter / `Y` / anything else: keeps current account with a `step_skip`.
+- **`install.sh` — `phase_b_atelier_gh_login`** symmetric treatment per role. Reads current login via `GH_CONFIG_DIR=$cfg gh api user --jq .login`, prompts `atelier gh (author) already authenticated as @login. Keep (Y) or switch (s)? [Y/s]`. On `s`: `GH_CONFIG_DIR=$cfg gh auth logout --hostname github.com` then falls through to the existing F5 permissions block + `gh auth login`. Keeps existing account by default.
+- **Non-interactive short-circuit** — `$NONINTERACTIVE` (`--yes` / `-y`) or `[ ! -t 0 ]` (piped install, CI) both skip the prompt silently and keep the current account. Matches the safe-default pattern of every other interactive prompt in install.sh.
+
+**Decisions captured:**
+
+- **Default to keep on Enter.** Most re-runs are routine maintenance — the prompt should be Enter-able for fast progress. Switching is the unusual case.
+- **No 3-way `claude` / `author` / `reviewer` prompt.** Each credential has its own prompt at its own call site; less to read at once, and operators can decide per identity rather than batch.
+
+### M7.1.F3 — Detect outdated base deps + offer update opt-in — 2026-05-23
+**PR:** _pending_
+
+Phase A used to only check that base deps were *present*; freshness was opaque to the operator. Long-running atelier installs could silently drift to stale `gh` / `fnm` versions with no in-flow warning. F3 surfaces outdatedness in Phase A and lets the operator opt in to an update right there.
+
+**Delivered:**
+
+- **`install.sh` — new `_offer_dep_update <dep> <current> <latest> <update_cmd>`** helper. Behavior matrix:
+  - `ATELIER_SKIP_UPDATE_PROMPTS=1` → skip-line only (silent unless logs are scanned).
+  - `--yes` / `-y` / `[ ! -t 0 ]` (non-interactive) → skip-line with a manual `update_cmd` hint.
+  - Interactive: prompt `↷ <dep> X (latest Y available) — update now via \`<cmd>\`? [y/N]:`. Defaults to **N** on Enter. On `y` / `Y`: `eval` the update_cmd and confirm with `step_ok`.
+- **`install.sh` — `phase_a_mac_deps`** uses `brew outdated --json --formula` (single batched call) to detect outdatedness for `gh` and `fnm`. Parses `installed_versions[0]` + `current_version` via `jq` to feed `_offer_dep_update`. Update command: `brew upgrade $pkg`.
+- **`install.sh` — `phase_a_linux_deps`** uses `apt list --upgradable 2>/dev/null | grep '^gh/'` to detect an outdated `gh` (the only apt-managed dep atelier ships on Debian/Ubuntu — `fnm` on Linux comes from the curl installer, not apt). Parses `latest amd64 [upgradable from: current]` format. Update command: `sudo apt-get update && sudo apt-get install -y gh`.
+
+**Decisions captured:**
+
+- **Scoped to `gh` + `fnm` on macOS, `gh` on Linux.** ROADMAP scope listed every dep (node, pnpm, docker compose v2, git-wt). Limited to the OS-package-manager-managed ones because they're the safest to auto-update; node/pnpm have their own ecosystem update paths (fnm/corepack) and need more careful detection; docker compose v2 / git-wt have separate drift mechanisms (system-level / M1.6 `/doctor` SHA check). Captured as a follow-up if it surfaces friction.
+- **Default to NO on Enter.** Updating in the middle of an install is invasive — the operator may have other in-flight work depending on the current version. Forcing a deliberate `y` keystroke is the conservative choice.
+- **Helper uses `eval` on the update_cmd string** so callers can pass multi-command sequences (`sudo apt-get update && sudo apt-get install -y gh`). Trusted input — callers in `install.sh` only, not operator-provided.
+
+### M7.1.F1 — Strip M5.0.2 PREFLIGHT BEHAVIOUR design block from `--help` output — 2026-05-23
+**PR:** _pending_
+
+`install.sh --help` used to print a 9-line `PREFLIGHT BEHAVIOUR (M5.0.2):` block documenting atelier's internal config-dir collision state machine. That text was design documentation aimed at future maintainers — it didn't help an operator running `--help` to learn the available CLI flags, and dilutes operator-facing output with milestone IDs / internal contract framing.
+
+**Delivered:**
+
+- **`install.sh` — `usage()`** loses the trailing `PREFLIGHT BEHAVIOUR (M5.0.2):` block. The block's content is preserved in code comments at the contract owners (`preflight_check()`, `mark_install_started()`, `phase_0_preflight()`) — the canonical place for design documentation since v0.4.2.
+- **`--help` output** now ends at `--help, -h            Show this help and exit.` — clean, operator-facing.
+
+**Decisions captured:**
+
+- **Comments over docs.** The block could have moved to a new `docs/install-internals.md`. Chose code comments because the state machine is small enough to live next to the code that implements it, and atomic with future changes (anyone editing the marker contract sees and updates the doc in the same diff).
+- **No `--help` audit beyond this block.** The rest of `usage()` (USAGE, OPTIONS) is straightforward operator-facing reference — no other leakage detected.
+
 ### M7.1.F12 — End-of-install "first steps" guide for the operator — 2026-05-23
 **PR:** _pending_
 
