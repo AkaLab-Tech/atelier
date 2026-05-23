@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M7.1.F11 — Document `$ATELIER_CONFIG_DIR` lookup order + add `/doctor` check — 2026-05-23
-**PR:** _pending_
+**PR:** [#70](https://github.com/AkaLab-Tech/atelier/pull/70)
 
 F11's audit revealed the persistence model already works end-to-end: `phase_c_1_shellrc_hooks` bakes `export ATELIER_CONFIG_DIR=<resolved-path>` into the operator's `~/.zshrc` / `~/.bashrc` (line 991 of `install.sh`), and downstream tooling (`scripts/atelier-uninstall` line 99, `scripts/atelier-setup-project` line 259) already reads the env var with a `~/.claude-work/` fallback. The chain is intact — what was missing was explicit documentation and a verification check.
 
@@ -24,7 +24,7 @@ F11's audit revealed the persistence model already works end-to-end: `phase_c_1_
 - **Documentation is the deliverable.** No code logic changed — the chain already worked. The fix is making the contract observable (doctor check) and findable (install.sh comment).
 
 ### M7.1.F9 — Force HTTPS for marketplace `git clone` (PLAN.md §2 conformance) — 2026-05-23
-**PR:** _pending_
+**PR:** [#70](https://github.com/AkaLab-Tech/atelier/pull/70)
 
 `claude plugin marketplace add AkaLab-Tech/claude-plugins` was defaulting to SSH clone (`Cloning via SSH: git@github.com:AkaLab-Tech/claude-plugins.git`), violating the hard constraint in [PLAN.md §2](PLAN.md) step 5 ("GitHub auth: HTTPS only. **Never** generate, reference, or rely on SSH keys."). Phase C.2 succeeded on machines with SSH keys configured *outside* atelier but would fail with an opaque SSH error on a clean Mac without keys.
 
@@ -38,7 +38,7 @@ F11's audit revealed the persistence model already works end-to-end: `phase_c_1_
 - **Constant change over env-var override.** The ROADMAP scope listed `GIT_CONFIG_COUNT=...` + `url.https://...insteadOf git@github.com:` as a fallback if the CLI rejected URL form. Tested by inspection: `claude plugin marketplace add` accepts full git URLs directly. The constant change is the minimal, most explicit fix — and it also fixes the operator-facing manual fallback (`phase_c_2_print_manual_commands`) which uses the same constant.
 
 ### M7.1.F7a — Capture atelier-author git identity into `$ATELIER_CONFIG_DIR/git-identity.conf` (install side) — 2026-05-23
-**PR:** _pending_
+**PR:** [#70](https://github.com/AkaLab-Tech/atelier/pull/70)
 
 Install-side delivery of M7.1.F7. The end-to-end acceptance (atelier commits authored by atelier-author rather than the operator) splits across two PRs: F7a (install writes the identity file) closed here; F7b (orchestrator + commit-creating subagents adopt the file via `GIT_CONFIG_GLOBAL`) tracked separately on the ROADMAP.
 
@@ -61,7 +61,7 @@ Install-side delivery of M7.1.F7. The end-to-end acceptance (atelier commits aut
 - **F7 split into F7a + F7b.** F7a is a write-once install step; F7b is cross-cutting orchestrator + agent work. Splitting keeps PR-A focused on install.sh and lets F7b ship as its own reviewable change. ROADMAP entry for F7b explicitly notes `blocked_by: F7a (delivered)`.
 
 ### M7.1.F6 — Resumable installs via `install_status: in_progress` marker — 2026-05-23
-**PR:** _pending_
+**PR:** [#70](https://github.com/AkaLab-Tech/atelier/pull/70)
 
 Before F6, `install.sh` planted the `.atelier-managed` marker mid-Phase C.1. Any failure before that point (token expiry mid-Phase B, `Ctrl+C` at any point, Phase C.2 marketplace clone fail, etc.) left `$ATELIER_CONFIG_DIR` partially populated **without** the marker. The next `./install.sh` ran the M5.0.2 preflight collision check on the half-populated dir, failed to find the marker, and refused to reuse the directory — forcing the operator to pick an alternative path even though they actually wanted to retry. Observed in dogfood-2: a Phase B token expiry left `~/.claude-work/{.claude.json,backups,gh}` adrift; the retry rejected the path.
 
