@@ -71,6 +71,7 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
 
    **Briefing contract — every specialist dispatch must include:** (a) absolute `<worktree-path>`, (b) the task ID + structured task record, (c) one-line cwd reminder: *"Your cwd is NOT inside the worktree; use `git -C <wt>`, `pnpm --dir <wt>`, `gh --repo <owner/name>`, or `cd <wt> && ...` prefix for every `Bash` call against the worktree. See `operator-rules.md` § Operating against the task worktree."* Without this, the specialist's `Bash` calls land in the wrong cwd and fail silently or against the wrong files.
 
+   - **`docker-runner`** (conditional) — scaffolds `Dockerfile` / `docker-compose.yml` for tasks that need containerized services (Postgres, Redis, MySQL, MinIO, etc.) and brings the stack up via the `docker-env` skill. **Skip entirely** when the task acceptance criteria do not mention a containerized service. See **When to dispatch `docker-runner`** below for the trigger heuristic.
    - **`implementer`** writes the code.
    - **`/validate` (fast layer)** — inner loop gate. See **Inner loop** below.
    - **`tester`** writes / runs unit + integration tests until the push gate is green.
@@ -97,6 +98,18 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
    **`/validate --full` runs once, after the inner loop exits clean and after `tester` and (when relevant) `e2e-runner`** — final gate before `pr-author`. The slow layer is too expensive to iterate against; only `/validate` (fast) lives inside the inner loop.
 
    **Hard refusal — `/validate` inside the inner loop is NEVER `--full`.** If the orchestrator finds itself running the slow layer inside the loop, that is a bug — the slow layer's Playwright + screenshot cost would explode iteration time. Stop and report.
+
+   ### When to dispatch `docker-runner`
+
+   Inspect the task's acceptance criteria + context paragraphs. Dispatch `docker-runner` **before** `implementer` when **any** of these signals is present:
+
+   - Explicit mention of a containerized service: `postgres`, `mysql`, `redis`, `mongo`, `kafka`, `minio`, `elasticsearch`, `rabbitmq`, etc.
+   - Phrase patterns: *"integration tests need <X>"*, *"backed by <database>"*, *"<service> running locally"*, *"docker-compose"*, *"Dockerfile"*.
+   - The implementer would otherwise need to install a service on the operator's host (which contaminates the host and is out of policy).
+
+   **Do NOT dispatch** `docker-runner` for tasks that are pure docs / UI-only / library-only / refactor — the cost of scaffolding + bringing up containers without a runtime need is pure overhead.
+
+   The compose project name `docker-runner` will use is `<task-id>-<slug>` (the branch name with `task/` stripped); the `Stop` hook (`hooks/teardown-docker-env.sh`) tears down anything matching that project at session end. **Never** ask `docker-runner` to use a different project name — that would orphan containers past session end.
 6. **Enforce the retry budget via `retry-with-logs`.** Per [PLAN.md §8](PLAN.md), every specialist attempt that fails goes through the `retry-with-logs` skill, which writes the per-attempt log to `<worktree>/.task-log/<ISO-timestamp>-<NN>.md`, counts logs to date, and returns the next-action decision (`continue` | `reset` | `hard-stop`). The orchestrator does **not** decide the retry policy itself — it invokes the skill on every failure and acts on the returned decision:
    - `continue` → re-invoke the failing specialist with all `.task-log/*.md` files injected as context.
    - `reset` → preserve `.task-log/` outside the worktree, run the `git-wt` cycle (`rm` + re-`switch`), restore the logs, then re-invoke the failing specialist. Attempt 04 begins on the fresh worktree.
