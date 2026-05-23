@@ -104,6 +104,45 @@ ok()       { printf '    %s%s✓ %s%s\n'  "$_C_BOLD$_C_GREEN" "" "$*" "$_C_RESET
 
 has() { command -v "$1" >/dev/null 2>&1; }
 
+# M7.1.F3: offer to update an outdated base dep. The decision to detect
+# outdatedness is per-dep / per-OS (see callers in phase_a_*) — this helper
+# only handles the prompt + the gated update execution. Defaults:
+#   - ATELIER_SKIP_UPDATE_PROMPTS=1 → silent skip (info line only).
+#   - --yes / no TTY                → silent skip (info line only).
+#   - Interactive Y                 → run `update_cmd` via eval (the cmd is
+#                                     a string built by the caller, e.g.
+#                                     "brew upgrade gh" or "fnm install
+#                                     --lts && fnm default lts-latest").
+#   - Anything else                 → no-op (info line only).
+# Args: $1 dep_name, $2 current_version, $3 latest_version, $4 update_cmd.
+_offer_dep_update() {
+  local dep="$1" current="$2" latest="$3" update_cmd="$4"
+  local notice
+  notice="$dep $current (latest $latest available)"
+  if [ "${ATELIER_SKIP_UPDATE_PROMPTS:-}" = "1" ]; then
+    step_skip "$notice — skipped via ATELIER_SKIP_UPDATE_PROMPTS=1"
+    return
+  fi
+  if $NONINTERACTIVE || [ ! -t 0 ]; then
+    step_skip "$notice — non-interactive run; run \`$update_cmd\` manually to update"
+    return
+  fi
+  printf '    %s↷%s %s — update now via %s\`%s\`%s? [y/N]: ' \
+    "$_C_YELLOW" "$_C_RESET" "$notice" "$_C_BOLD" "$update_cmd" "$_C_RESET"
+  local upd_choice=""
+  read -r upd_choice
+  case "$upd_choice" in
+    y|Y|yes|YES)
+      sublog "running: $update_cmd"
+      eval "$update_cmd"
+      step_ok "updated $dep"
+      ;;
+    *)
+      step_skip "$dep update declined — operator can run \`$update_cmd\` later"
+      ;;
+  esac
+}
+
 # ---------- platform detection ----------
 
 detect_os() {
@@ -136,18 +175,14 @@ OPTIONS:
                         check refuses (rather than prompts) if the target
                         config dir already has unrelated content.
   --help, -h            Show this help and exit.
-
-PREFLIGHT BEHAVIOUR (M5.0.2):
-  Before any install step, install.sh inspects the resolved
-  \$ATELIER_CONFIG_DIR:
-    - empty / non-existent → proceed (will be created in Phase C.1)
-    - contains the \`.atelier-managed\` marker or \`plugins/<*>/atelier/\`
-      → recognised as a previous atelier install, proceed (idempotent)
-    - contains other content → STOP. Interactive: prompt for an
-      alternative path. Non-interactive: error out with the resolution
-      options above.
 EOF
 }
+
+# M7.1.F1: the preflight + marker design contract (formerly printed in
+# `--help`) lives as code comments instead — see `preflight_check()`,
+# `mark_install_started()`, and `phase_0_preflight()` for the canonical
+# state machine and the `--yes` non-interactive branch. Operator-facing
+# help should not leak internal design-doc text.
 
 parse_args() {
   while [ $# -gt 0 ]; do
@@ -307,11 +342,33 @@ phase_0_preflight() {
         fi
 
         # Interactive: ask operator for an alternative.
-        printf "    pick an alternative path (e.g. ~/.claude-atelier/, ~/.atelier/): " >&2
+        # M7.1.F8: sample paths shown WITHOUT trailing slash. Operators tend
+        # to copy the pattern; storing the path with `/` suffix produces
+        # `//` everywhere it's concatenated.
+        printf "    pick an alternative path (e.g. ~/.claude-atelier, ~/.atelier): " >&2
         local answer=""
         read -r answer
+        # M7.1.F8: format validation BEFORE storing. Empty / whitespace /
+        # tilde-resolve / trailing-slash strip / non-directory rejection.
+        # Failed validations re-prompt (continue) — no death-spiral exits.
         [ -n "$answer" ] || { warn "empty path, try again"; continue; }
+        case "$answer" in
+          *[[:space:]]*)
+            warn "path contains whitespace; please use a path without spaces"
+            continue
+            ;;
+        esac
+        # Expand leading `~` to $HOME so subsequent checks see the real path.
         answer="${answer/#\~/$HOME}"
+        # Strip trailing `/` so concatenations don't produce `//`.
+        answer="${answer%/}"
+        # Reject explicit non-directory existing entries (a file at this path
+        # would break `mkdir -p` later, or worse, get treated as the config
+        # root). Non-existent paths are fine — Phase C.1 creates them.
+        if [ -e "$answer" ] && [ ! -d "$answer" ]; then
+          warn "$answer exists but is not a directory; please pick a different path"
+          continue
+        fi
         ATELIER_CONFIG_DIR="$answer"
         export ATELIER_CONFIG_DIR
         sublog "trying $ATELIER_CONFIG_DIR ..."
@@ -340,6 +397,25 @@ phase_a_mac_deps() {
   if [ ${#missing[@]} -gt 0 ]; then
     sublog "installing via brew: ${missing[*]}"
     brew install "${missing[@]}"
+  fi
+
+  # M7.1.F3: offer updates for the brew-installed deps atelier cares about
+  # most (gh + fnm — most likely to drift; git/jq/fzf are stable enough that
+  # a stale version doesn't change atelier's behavior). A single
+  # `brew outdated --json --formula` call lists outdated formulae; we
+  # iterate the ones we care about + ask the operator per formula.
+  if has brew; then
+    local outdated_json
+    outdated_json="$(brew outdated --json --formula 2>/dev/null || printf '{}')"
+    local pkg
+    for pkg in gh fnm; do
+      if has "$pkg" && printf '%s' "$outdated_json" | jq -e --arg p "$pkg" '.formulae[]? | select(.name == $p)' >/dev/null 2>&1; then
+        local current latest
+        current="$(printf '%s' "$outdated_json" | jq -r --arg p "$pkg" '.formulae[] | select(.name == $p) | .installed_versions[0] // ""')"
+        latest="$(printf '%s' "$outdated_json" | jq -r --arg p "$pkg" '.formulae[] | select(.name == $p) | .current_version // ""')"
+        [ -n "$current" ] && [ -n "$latest" ] && _offer_dep_update "$pkg" "$current" "$latest" "brew upgrade $pkg"
+      fi
+    done
   fi
 }
 
@@ -390,6 +466,23 @@ phase_a_linux_deps() {
     curl -fsSL https://fnm.vercel.app/install | bash -s -- --skip-shell
     # Make fnm available for the remainder of this script run.
     export PATH="${HOME}/.local/share/fnm:${PATH}"
+  fi
+
+  # M7.1.F3: offer update for gh on apt-based systems. `apt list
+  # --upgradable` lists upgradable packages; we grep for `gh/` and parse the
+  # versions to feed _offer_dep_update. fnm is not apt-managed (curl
+  # installer above), so it's skipped here — operator updates via the same
+  # curl|bash with a new version.
+  if has apt-get && has gh; then
+    local upgradable_line
+    upgradable_line="$(apt list --upgradable 2>/dev/null | grep -E '^gh/' | head -1 || true)"
+    if [ -n "$upgradable_line" ]; then
+      local latest current
+      # Format: gh/now 2.92.0 amd64 [upgradable from: 2.85.0]
+      latest="$(printf '%s' "$upgradable_line" | awk '{print $2}')"
+      current="$(printf '%s' "$upgradable_line" | sed -n 's/.*upgradable from: \([^]]*\)\].*/\1/p')"
+      [ -n "$current" ] && [ -n "$latest" ] && _offer_dep_update gh "$current" "$latest" "sudo apt-get update && sudo apt-get install -y gh"
+    fi
   fi
 }
 
@@ -619,7 +712,32 @@ phase_b_claude_login() {
   # the idempotency hinge — re-runs of install.sh on an already-logged-in
   # machine short-circuit here without touching the browser.
   if claude auth status >/dev/null 2>&1; then
-    step_skip "Claude Code already authenticated"
+    # M7.1.F4: offer to switch accounts. Skip the prompt in non-interactive
+    # mode (--yes / no TTY) — keep the existing account silently.
+    if $NONINTERACTIVE || [ ! -t 0 ]; then
+      step_skip "Claude Code already authenticated (keeping existing account)"
+      return
+    fi
+    local current=""
+    current="$(claude auth status 2>&1 | grep -Eio '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' | head -1 || true)"
+    if [ -n "$current" ]; then
+      printf '    Claude Code already authenticated as %s%s%s. Keep (Y) or switch to another account (s)? [Y/s]: ' "$_C_BOLD" "$current" "$_C_RESET"
+    else
+      printf '    Claude Code already authenticated. Keep current account (Y) or switch (s)? [Y/s]: '
+    fi
+    local switch_choice=""
+    read -r switch_choice
+    case "$switch_choice" in
+      s|S|switch|SWITCH)
+        sublog "logging out current Claude account, fresh login coming up"
+        claude auth logout 2>/dev/null || true
+        sublog "starting Claude Code login (a browser tab will open)"
+        claude auth login
+        ;;
+      *)
+        step_skip "Claude Code already authenticated (keeping existing account)"
+        ;;
+    esac
     return
   fi
   sublog "starting Claude Code login (a browser tab will open)"
@@ -675,8 +793,32 @@ phase_b_atelier_gh_login() {
   mkdir -p "$cfg"
 
   if GH_CONFIG_DIR="$cfg" gh auth status --hostname github.com >/dev/null 2>&1; then
-    step_skip "atelier gh ($role) already authenticated at $cfg"
-    return
+    # M7.1.F4: offer to switch accounts. Skip the prompt in non-interactive
+    # mode (--yes / no TTY) — keep the existing account silently.
+    if $NONINTERACTIVE || [ ! -t 0 ]; then
+      step_skip "atelier gh ($role) already authenticated (keeping existing account)"
+      return
+    fi
+    local current_login=""
+    current_login="$(GH_CONFIG_DIR="$cfg" gh api user --jq .login 2>/dev/null || true)"
+    if [ -n "$current_login" ]; then
+      printf '    atelier gh (%s) already authenticated as %s@%s%s. Keep (Y) or switch to another account (s)? [Y/s]: ' "$role" "$_C_BOLD" "$current_login" "$_C_RESET"
+    else
+      printf '    atelier gh (%s) already authenticated. Keep current account (Y) or switch (s)? [Y/s]: ' "$role"
+    fi
+    local switch_choice=""
+    read -r switch_choice
+    case "$switch_choice" in
+      s|S|switch|SWITCH)
+        sublog "logging out current gh $role account, fresh login coming up"
+        GH_CONFIG_DIR="$cfg" gh auth logout --hostname github.com 2>/dev/null || true
+        # Fall through to the login block below.
+        ;;
+      *)
+        step_skip "atelier gh ($role) already authenticated (keeping existing account)"
+        return
+        ;;
+    esac
   fi
 
   sublog "atelier gh login: $role — $purpose"
