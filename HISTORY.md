@@ -8,6 +8,83 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F12 — End-of-install "first steps" guide for the operator — 2026-05-23
+**PR:** _pending_
+
+Before F12, a successful install ended with a single line — `==> install.sh done. Open a new terminal (or run source ~/.zshrc) to use task and task-status.` — that left a non-technical operator with no idea what to do next (set up a project? run doctor? start a task? uninstall?). F12 replaces it with a structured, copy-pasteable next-steps block.
+
+**Delivered:**
+
+- **`install.sh` — new `print_first_steps`** function (called from `main()` after `mark_install_complete`). Six numbered steps: reload shell → verify install via `/atelier:doctor` → set up first project via `/atelier:setup-project <path>` → start first task via `task` → find docs (README, PLAN.md §12, dogfood-guide) → uninstall safely (`atelier-uninstall` / `--purge`). Each step has a bold heading + a cyan command on its own line, indented for readability.
+- **`main()` simplified** — removed the old one-line `install.sh done…` log; `print_first_steps` is now the closing signal.
+
+**Decisions captured:**
+
+- **`phase "Install complete"` as the closing bookend.** Reuses the F2 phase header style so the end of install matches the rest of the script visually. Cleaner than a custom box-drawing separator.
+- **Hard-coded numbered steps.** No conditional logic (e.g. "only show step 2 if Phase B succeeded"). Trade-off: simpler + predictable for the operator; warnings from earlier phases already surface in-place.
+
+### M7.1.F10 — Suppress git-wt sub-installer's "installation complete" epilogue — 2026-05-23
+**PR:** _pending_
+
+Phase C.1 delegates to `/tmp/git-wt/install.sh --skill-for=claude`. The upstream installer prints its own `==> installation complete / next steps: Restart your shell…` epilogue, which non-technical operators read as "atelier is done" — while in reality Phase C.1 still has git-identity prompts + helper symlinks + Phase C.2 to go. F10 drops the misleading epilogue without losing the useful per-action confirmations above it.
+
+**Delivered:**
+
+- **`install.sh` — `phase_c_1_git_wt`** pipes the sub-installer's output through `awk 'BEGIN { skip=0 } /^==> installation complete$/ { skip=1 } !skip { print }'`. The four useful lines above the sentinel (`==> installed binary →`, `==> recorded clone path →`, `==> added wrapper to`, `==> installed skill →`) still print; everything from `==> installation complete` onward is suppressed.
+
+**Decisions captured:**
+
+- **awk filter over upstream flag.** ROADMAP allowed either coordinating a `--quiet` flag with upstream (atelier maintains AkaLab-Tech/git-wt) or filtering locally. Local awk is faster to ship and reversible — no cross-repo dependency. If a `--quiet` flag lands upstream later, swapping the implementation is one line.
+- **`set -o pipefail` preserved.** The pipe to awk inherits `set -o pipefail`; a failed git-wt installer still aborts `install.sh` (awk doesn't mask exit codes).
+
+### M7.1.F5 — Phase B: explain GitHub permission requirements before each `gh auth login` — 2026-05-23
+**PR:** _pending_
+
+Before F5, each `gh auth login` invocation printed a one-line role description (`atelier gh login: author — the GitHub account…`) and went straight into the device-code OAuth flow. Operators frequently authenticated with whatever account was convenient — sometimes one without push access to the target repo, or not a member of the project's GitHub org — causing silent failures later when pushes / PRs / approvals were rejected.
+
+**Delivered:**
+
+- **`install.sh` — new `_phase_b_print_gh_permissions`** helper called from `phase_b_atelier_gh_login` right before `gh auth login`. Prints a yellow-headlined block per role:
+  - **author**: "atelier commits + pushes + opens PRs + manages issues under this account. Required access: push on every project repo."
+  - **reviewer**: "atelier-reviewer agent approves PRs opened by the author identity. Required access: at least read + review on every project repo. MUST be a DIFFERENT GitHub account than author (PLAN.md dogfood-1 Finding #11)."
+  - Org reminder for both: "must be a member or invited collaborator BEFORE this login — otherwise pushes/PRs/approvals fail later."
+- **Explicit Enter to proceed** — operator presses Enter to confirm they've read the block before the device-code page opens; Ctrl+C aborts cleanly.
+
+**Decisions captured:**
+
+- **Block prints unconditionally** when the role's gh dir is not yet authenticated. On a re-run where `step_skip "atelier gh ($role) already authenticated"` short-circuits, the block does NOT print — so idempotent re-runs stay quiet.
+- **Per-role differentiation in a single helper.** A `case "$role" in author|reviewer)` keeps both copies of the block close together so future changes (additional scopes, new role) stay aligned.
+
+### M7.1.F2 — `install.sh` output legibility (colors, section headers, progress markers) — 2026-05-23
+**PR:** _pending_
+
+The pre-F2 output was monochrome and flat: Phases A / B / C.1 / C.2 blurred together; sub-steps had no visual hierarchy; success / skip / fail looked identical. For a non-technical operator following a multi-minute install, it was hard to tell where they were or whether something quietly broke. F2 introduces ANSI color + Unicode markers with automatic degradation when stdout is not a TTY or `NO_COLOR` is set.
+
+**Delivered:**
+
+- **`install.sh` — new logging helpers** in the M7.1.F2 block:
+  - Color detection: `[ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ -z "${ATELIER_NO_COLOR:-}" ]` toggles eight `_C_*` constants between ANSI escape codes and empty strings. Cached once at script load so every helper reads the same state.
+  - `phase()` — phase header with leading blank line, bold cyan `==> Phase X`. Used for Phase 0 / A / B / C.1 / C.2 / Verification / Install complete.
+  - `log()` — generic banner (no leading blank line).
+  - `sublog()` — indented sub-step, plain text. Unchanged signature, no marker.
+  - `step_ok()` — indented `✓` in green for confirmations within a phase.
+  - `step_skip()` — indented `↷` in dim for explicit no-ops (already installed, already configured, etc.).
+  - `step_fail()` — indented `✗` in red, written to stderr. Non-fatal.
+  - `warn()` — yellow `!!` prefix, stderr.
+  - `die()` — bold red `!! ERROR:` prefix, stderr, exit 1.
+  - `ok()` — bold green `✓` end-of-phase marker.
+- **Call-site updates throughout `install.sh`**:
+  - All six phase entries converted: `log "Phase X …"` → `phase "Phase X …"`.
+  - Idempotent dep checks converted: ~13 `sublog "X already installed"` / `sublog "X detected"` lines → `step_skip` / `step_ok` (Phase A deps, Phase B already-authenticated checks, Phase C.1 git-wt SHA check, Phase C.2 marketplace + plugin idempotency).
+  - Phase B identity captures use `step_ok` (`atelier identities OK: …`, `atelier-author git identity captured: …`).
+  - Old `VERIFY_OK` / `VERIFY_FAIL` constants in `verify_cmd` / `verify_plugin` (Phase Verification) removed — both helpers now route through `step_ok` / `step_fail` so colors + markers stay consistent end-to-end.
+
+**Decisions captured:**
+
+- **Non-ASCII markers (`✓ ↷ ✗`) ARE used** despite the original "ASCII-only" comment. The convention block was updated to reflect the new policy: modern terminals on macOS + apt-Linux render UTF-8 cleanly; the `commands/doctor.md` slash command already used these markers; and the `NO_COLOR` / non-TTY auto-degrade still produces clean plain output for log capture.
+- **`step_ok` for "detected" vs `step_skip` for "already installed".** Both are idempotent, but "detected" reads as "we needed this and found it" (positive confirmation) while "already installed" reads as "we would have installed this if you didn't have it" (skipped a possible action). Visually the operator sees a quick scan: lots of `↷` = idempotent re-run; lots of `✓` = first install hitting fresh dependencies.
+- **Operator override via `ATELIER_NO_COLOR=1`** in addition to the standard `NO_COLOR`. Matches the `--yes` / `ATELIER_AUTO` style of atelier-specific flags so a CI run can force plain output even when running on a TTY.
+
 ### M7.1.F11 — Document `$ATELIER_CONFIG_DIR` lookup order + add `/doctor` check — 2026-05-23
 **PR:** [#70](https://github.com/AkaLab-Tech/atelier/pull/70)
 
