@@ -8,6 +8,51 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M5.0.4 — Release policy + versioning convention for atelier plugins — 2026-05-23
+**PR:** _pending_
+
+Captures atelier's first written release policy. The `v0.1.0` releases cut ad-hoc on 2026-05-22 to recover `/atelier:doctor`'s drift detection exposed a missing convention; this milestone closes that gap with seven decisions materialized as authoritative `PLAN.md` §14, marked `✅ agreed`.
+
+**Decisions (full text in `PLAN.md` §14):**
+
+- **§14.1 Release trigger** — per-PR merge to main; each PR ships exactly one release with the appropriate `plugin.json:version` bump per §14.2. Manual `gh release create` for now; automation deferred to a future milestone (§14.8).
+- **§14.2 SemVer mapping** — patch (`0.1.x`) = docs/chore/bug-fix; minor (`0.x.0`) = new agent/skill/command/hook/MCP or material agent prompt change; major (`x.0.0`) = breaking permission model or agent dispatch contract change. First `1.0.0` reserved for "production-ready" — separate discussion when atelier reaches that bar.
+- **§14.3 Tag format** — `v`-prefixed (e.g. `v0.1.0`), consistent with the initial three releases. `/doctor` strips leading `v` so both formats compare equal in the drift check.
+- **§14.4 Release notes** — PR-body-driven (copy the PR's `## Summary` + `## Delivered` + `## Decisions captured` into the release). Operator-readable, zero additional drafting work.
+- **§14.5 Cross-plugin synchronization** — independent. `atelier` and `claude-roadmap-tools` each carry their own version + cadence (the repos share no code; lockstep would distort the version number).
+- **§14.6 `marketplace.json` and versions** — no version pinning, resolves to `main` HEAD (status quo). Revisit when operators need reproducible pinned installs.
+- **§14.7 `git-wt` versioning** — same rules as atelier. Cadence determined by `git-wt` repo's own PR activity (currently low; expect long stretches of "up to date" against existing tags).
+
+**Delivered:**
+
+- `PLAN.md` (+60 lines, new §14) — eight sub-sections (`§14.1`–`§14.8`) capturing the 7 decisions plus `§14.8 Out of scope` listing follow-up milestones (automation workflow, pre-merge bump gate, 1.0.0 transition checklist).
+- `ROADMAP.md` (−28 lines) — M5.0.4 entry moved to `HISTORY.md` per same-PR tracking-flow rule.
+- `IN_PROGRESS.md` — cleared.
+
+**Tests:**
+
+- `markdown` parses cleanly (no broken links, headings, or list structures).
+- §14 reads end-to-end as authoritative reference (each sub-section under `## 14.x` has a `✅` marker per `PLAN.md`'s convention).
+- No regression in `/doctor`'s drift check: the policy is fully consistent with the existing comparison logic (local `plugin.json:version` vs upstream `releases/latest` tag with `v` strip). The three existing `v0.1.0` releases already conform to §14.3 (tag format) and §14.5 (independent per-repo).
+
+**Decisions captured (process):**
+
+- **Per-PR merge wins over per-milestone.** Per-milestone reads cleaner but requires defining "milestone-closing PR" precisely (the close commit is usually `chore(history): close MX.X`, separate from the feat commit). Per-PR is mechanical and unambiguous. Operator visibility wins: every merged commit corresponds to a release; no gap between "merged" and "released".
+- **Independent per-repo > lockstep.** Lockstep would force `claude-roadmap-tools` to bump on every `atelier` PR (and vice versa), even with zero code change in the unaffected repo. That distorts the version number; operators reading `claude-roadmap-tools v0.5.0` would assume substantial activity there, when actually `atelier` did all the work. Independent versioning is the truth.
+- **No marketplace.json pinning yet.** Pinning adds operator control but doubles the bump work (PR bumps `plugin.json` AND marketplace.json). For a single-operator project, that overhead isn't justified. Revisit when reproducible installs become a real ask.
+- **`v`-prefix sticky.** Could have switched to bare `0.1.0` for consistency with `plugin.json:version`, but `/doctor` already handles both, and retagging the existing three releases would be destructive. Cost ≈ 0 to stay with `v`-prefixed; cost > 0 to migrate.
+
+**Acceptance status:** **fully passed.** Both criteria from the ROADMAP entry verified:
+
+1. A new `PLAN.md §N` documents answers to all 7 open questions, marked `✅ agreed` — done as `§14`.
+2. `/doctor` continues to report `up to date` after the policy is materialized — verified statically (no code change in `/doctor`; the policy locks in the format the existing logic already handles).
+
+**Follow-ups (out of scope for this milestone, listed in §14.8):**
+
+- **Automation milestone** — GH Actions workflow on merge to `main` that verifies the bump and creates the tag + release with notes from the PR body. Will be captured as a separate roadmap entry when the manual workflow becomes friction.
+- **Pre-merge CI bump gate** — defensive check that refuses merge of a PR meeting bump criteria but lacking the `plugin.json:version` change. Catches drift between code state and release state.
+- **Pre-1.0 → 1.0 transition checklist** — criteria for cutting the first `1.0.0`. Not a versioning rule; a release-management ritual for "production-ready".
+
 ### M5.0.3 — `atelier-uninstall` with chat-session preservation — 2026-05-22
 **PR:** _pending_
 
