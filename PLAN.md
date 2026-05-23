@@ -530,3 +530,63 @@ Phases are sequential. Each phase ends with a verifiable milestone.
 ## 13. Next step
 
 Start **Phase 1**. First piece: repo skeleton + `install.sh` Phase A (dependencies).
+
+---
+
+## 14. Release policy ✅
+
+Captured 2026-05-23 as the outcome of M5.0.4. Authoritative for atelier, `claude-roadmap-tools`, and `git-wt` (all three repos under `AkaLab-Tech`).
+
+### 14.1 Release trigger ✅
+
+**Per-PR merge to main.** Each PR that lands on `main` produces exactly one release. The PR itself **must** include the appropriate bump of `plugin.json:version` (or the equivalent version reference for `git-wt`) coherent with the change it ships, per the SemVer mapping in §14.2. Releases are tagged + cut as part of the same PR's effects — manually for now (M5.0.5 may automate later via a GH Actions workflow on merge).
+
+**Why per-PR and not per-milestone**: per-milestone reads cleaner but requires defining "milestone-closing PR" precisely (the close commit is usually `chore(history): close MX.X`, separate from the feat commit). Per-PR is mechanical and unambiguous: every merged commit on main has a corresponding release. Operators always see the version that matches what's actually deployed, with no gap between "feature shipped" and "release cut".
+
+**Tradeoff accepted**: docs-only / chore PRs (`docs(roadmap): ...`, `chore(history): backfill ...`) produce patch releases that are mostly noise. Mitigation: skip releasing when the PR's diff is purely `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` whitespace-or-link edits (no functional change). This is judgment-call territory; default to release when in doubt.
+
+### 14.2 SemVer mapping ✅
+
+- **`patch`** (`0.1.x`) — docs / chore / bug fix that does **not** change agent prompts, slash commands, hooks, MCP servers, or the permission model (`templates/settings.template.json`).
+- **`minor`** (`0.x.0`) — new agent / skill / slash command / hook / MCP server, OR material change to an existing agent's prompt or capabilities, OR new fields/entries in `templates/settings.template.json` that are additive only.
+- **`major`** (`x.0.0`) — breaking change. Specifically: reshape or shrink of the permission model (`templates/settings.template.json` deny list expansion that breaks existing workflows, `additionalDirectories` layout change), modification to the agent dispatch contract (how `task-orchestrator` invokes specialists), or anything that requires the operator to re-run `/setup-project` against already-bootstrapped projects to pick up the change.
+
+**First major bump (`1.0.0`) is reserved for "production-ready" — separate discussion when atelier reaches that bar.** Pre-1.0, breaking changes still bump major (e.g. `0.5.0` → `1.0.0` is valid pre-production), but the canonical `1.0.0` carries production-ready semantics: stable UX, complete docs, observed operator usage across multiple real projects.
+
+### 14.3 Tag format ✅
+
+**`v`-prefixed** (e.g. `v0.1.0`, `v0.2.0`, `v1.0.0`). The initial three releases (`atelier`, `claude-roadmap-tools`, `git-wt`) use this format; staying consistent costs nothing and `commands/doctor.md` strips the leading `v` before comparing against `plugin.json:version`, so both formats compare equal in the drift check.
+
+### 14.4 Release notes ✅
+
+**PR-body-driven.** The body of the PR that ships the release is the source of truth for release notes. When cutting the release manually (e.g. `gh release create v0.X.Y --notes "..."`), copy the PR body's `## Summary` + `## Delivered` + `## Decisions captured` sections into the release notes. Operator-readable directly; zero additional drafting work per release.
+
+For docs-only / chore PRs that still warrant a release (per §14.1), a one-line release note is sufficient: *"Tracking / housekeeping commit; no functional change since `<previous-tag>`."*
+
+### 14.5 Cross-plugin synchronization ✅
+
+**Independent.** `atelier` and `claude-roadmap-tools` are separate repos in the same marketplace, with no shared code today. Each plugin has its own `plugin.json:version` and its own release cadence — bumped only when *its own* repo lands a PR. `/atelier:doctor` reports two numbers, one per plugin.
+
+**Why independent rather than lockstep**: lockstep would force a re-release of `claude-roadmap-tools` every time `atelier` lands a PR (and vice versa), even with zero code change in the unaffected repo. That distorts the version number — `claude-roadmap-tools` would jump from `0.1.0` to `0.5.0` reflecting `atelier`'s activity, not its own. Independent versioning is the truth.
+
+### 14.6 `marketplace.json` and versions ✅
+
+**No version pinning. Resolves to `main` HEAD (status quo).** `marketplace.json` at `AkaLab-Tech/claude-plugins` continues to list each plugin by name + source-repo, with no `version` field. When the operator runs `/plugin install <name>@akalab-tech`, Claude Code clones the source repo's `main` HEAD.
+
+**Tradeoff accepted**: operators always get the latest `main` HEAD on install, regardless of which tag is "current". The version compared against by `/doctor` is whatever the locally-installed `plugin.json:version` says — which matches `main`'s current `plugin.json:version` because plugin installs are `main`-anchored.
+
+**When to revisit**: if/when operators start pinning to specific atelier versions (e.g. enterprise environments wanting reproducible installs), introduce `marketplace.json:plugins[].version` per plugin (Option C in M5.0.4: pin only major version, resolve to latest minor/patch within). Until then, the simplicity of "always main" wins.
+
+### 14.7 `git-wt` versioning ✅
+
+**Same rules as atelier**: SemVer per §14.2, `v`-prefixed tags per §14.3, per-PR releases per §14.1, PR-body-driven notes per §14.4. Cadence is whatever PR activity `git-wt` sees — currently low (the binary is small and stable), so most months will see no `git-wt` release at all, and `/doctor` reports `up to date` against the existing `v0.1.0` tag indefinitely.
+
+**`install.sh` continues to clone `main` HEAD shallow** (per §14.6 — no pinning). The recorded SHA at `~/.local/state/atelier/git-wt.sha` is whatever `main` HEAD was at install time; `/doctor` drift detection works against this.
+
+### 14.8 Out of scope (future milestones)
+
+The following are recognized as logical follow-ups to the policy in §14, but are not part of M5.0.4. Each becomes its own milestone when picked up:
+
+- **Automation (M5.0.5 — to be captured separately)**: GH Actions workflow on merge to `main` that (a) verifies `plugin.json:version` was bumped in the PR per §14.2's criteria, (b) creates the tag + release with notes from the PR body. Replaces the manual `gh release create` step.
+- **Pre-merge CI bump gate**: refuse merge of a PR that meets bump criteria in §14.2 but did not bump `plugin.json:version`. Defensive, prevents version drift between code state and release state.
+- **Pre-1.0 → 1.0 transition checklist**: criteria for cutting the first `1.0.0` (production-ready). Not a versioning rule — a release-management ritual.
