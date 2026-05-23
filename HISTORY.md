@@ -55,9 +55,58 @@ Behavioural validation (Phase 2 actually invoking `project-profiler` end-to-end)
 
 **Follow-ups:**
 
-- **End-to-end run on a fresh real project** — capture the drafted CLAUDE.md and refine `project-profiler`'s scan order / section structure based on actual output quality.
 - **Per-language scan depth tuning** — current implementation picks the first matching manifest. For polyglot repos, multi-stack support is captured as a future tweak.
 - **`/refresh-claude-md` flow for `update.sh` (M6.1)** — operator may want to refresh root CLAUDE.md after major project changes. A separate slash command that explicitly invokes `project-profiler` with overwrite consent. Out of M4.19 scope.
+
+**Validation artifact** — drafted `CLAUDE.md` captured from the pre-merge end-to-end run (T4-validation, 2026-05-23). Fixture: fresh git repo with `package.json` (vitest + ESLint + TypeScript deps), `tsconfig.json` strict, `src/hello.ts`, `test/hello.test.ts`, `README.md` with non-goals section. Slash command invoked as `claude --plugin-dir <wt> -p "/atelier:setup-project --plugin-root <wt> --yes ."`. Bash helper Phase 1 emitted `atelier-detected-mode=existing` + `atelier-root-claude-md=missing`. Phase 2 dispatched `project-profiler` (Sonnet), which returned a 35-line drafted block; slash command extracted + wrote the file. Total wall time ~90 seconds.
+
+````markdown
+# CLAUDE.md
+
+Minimal TypeScript utility app (`sample-app`) with vitest tests and ESLint. Intended as a lightweight, non-production reference codebase — no UI, no deployment pipeline.
+
+## Stack
+
+- **Language**: TypeScript 5.x (strict mode, target ES2022)
+- **Framework**: none
+- **Package manager**: npm (no lockfile detected — verify before installing)
+- **Test runner**: vitest 1.x
+- **Linter / formatter**: eslint 8.x (no formatter config detected)
+
+## Architecture
+
+Single-module layout under `src/`:
+
+- `src/hello.ts` — sole source file; exports a `hello(name)` string utility
+
+No `lib/` or `app/` directories present.
+
+## Conventions
+
+- **Tests**: `npm test` (runs `vitest run`)
+- **Lint**: `npm run lint` (runs `eslint .`)
+- **Typecheck**: `npm run typecheck` (runs `tsc --noEmit`)
+- **CI**: TBD — no `.github/workflows/` found
+
+## What this project is NOT
+
+- Not a production deployment target
+- Not a UI / frontend project
+
+## Out of scope for AI agents
+
+- TBD
+````
+
+**Quality observations on the drafted content:**
+
+- Stack section: correctly inferred TypeScript 5.x with strict + ES2022 from `tsconfig.json`; vitest 1.x and eslint 8.x from `package.json:devDependencies`; pitched "npm" as package manager with a verify-before-installing caveat (no lockfile detected — accurate signal).
+- Architecture: identified the single source file under `src/` and noted absence of `lib/` / `app/` — matches the scan order in the agent's prompt.
+- Conventions: extracted `npm test`, `npm run lint`, `npm run typecheck` directly from `package.json:scripts`. CI correctly TBD (no `.github/workflows/`).
+- Non-goals: captured *production deployment* and *UI / frontend* from the README's `## Non-goals` section verbatim (paraphrased).
+- Out of scope for AI agents: TBD — correctly left empty rather than fabricated. No signal in the source.
+
+The drafted file is operator-readable, accurate, and ready for the operator's first `/next-task` to use as project context. Any follow-up refinement (e.g., adding more architectural detail when the codebase grows) can happen via the operator's `Edit` to the file directly.
 
 ### M4.17 — `docker-env` skill + `docker-runner` agent (on-demand local containers) — 2026-05-23
 **PR:** _pending_
