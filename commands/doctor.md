@@ -80,6 +80,24 @@ g. **`docker compose` (v2 plugin) reachable (required by `docker-env` skill + `d
    ```
    The skill probes `docker compose version` at first lifecycle call too — this `/doctor` check is purely informational, surfaced before the operator hits the failure during a task.
 
+h. **`$ATELIER_CONFIG_DIR` resolves to an atelier-managed install (M7.1.F11).** The chosen path (default `~/.claude-work/`, or whatever the operator picked in Phase 0 of the last `install.sh` run) is persisted via the shellrc hook block as `export ATELIER_CONFIG_DIR=...`. Downstream tools (`atelier-uninstall`, `atelier-setup-project`) read this env var. Verify the resolution is intact:
+   - `$ATELIER_CONFIG_DIR` is set and the directory exists.
+   - `$ATELIER_CONFIG_DIR/.atelier-managed` exists and JSON-parses.
+   - The marker's `installStatus` field is `complete` (an `in_progress` value means the previous `install.sh` did not finish — see M7.1.F6).
+
+   `✓ atelier config dir <path> (installStatus: complete)` if all three pass. `✗` with the specific failure and one of these fix commands:
+   ```bash
+   # If $ATELIER_CONFIG_DIR is unset: shellrc hook block missing or not sourced.
+   source ~/.zshrc   # or ~/.bashrc
+
+   # If the directory or marker is missing: re-run install.sh to recreate them.
+   /path/to/atelier/install.sh
+
+   # If installStatus is in_progress: a previous install crashed. Re-run
+   # install.sh; Phase 0 will offer to resume (M7.1.F6).
+   /path/to/atelier/install.sh
+   ```
+
 ## Output format
 
 Print exactly this structure (one section per group, blank line between groups). Use only ASCII `✓` (`✓`) and `✗` (`✗`) — no emojis.
@@ -102,6 +120,7 @@ Host checks
     ✓ ~/.claude/.atelier-config.json consistent
     ✓ system Chrome detected
     ✓ docker compose v2 plugin detected
+    ✓ atelier config dir <path> (installStatus: complete)
 
 To apply pending updates, run:
     claude plugin marketplace update akalab-tech
