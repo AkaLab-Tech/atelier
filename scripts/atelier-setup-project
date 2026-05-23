@@ -52,6 +52,13 @@ OPTIONS:
   --yes, -y              Non-interactive mode. Auto-resolves every prompt
                          with the safe default (never overwrite, never
                          weaken). Also honored if \$ATELIER_AUTO is set.
+  --mode <new|existing>  Force the project-mode detection (M4.19) used
+                         by the /setup-project slash command to decide
+                         whether to interview the operator (new) or
+                         scan the codebase (existing). Default is the
+                         heuristic — 0 commits / docs-only files → new,
+                         manifest files / populated src/ / >3 tracked
+                         files → existing.
   --per-task-settings <abs-path>
                          Per-task mode (used by /next-task step 7). Skips
                          the full project bootstrap; only writes
@@ -79,6 +86,7 @@ EOF
 PROJECT_PATH_ARG=""
 PLUGIN_ROOT_FLAG=""
 PER_TASK_SETTINGS_PATH=""
+MODE_OVERRIDE=""           # M4.19: --mode=new|existing forces detection
 NONINTERACTIVE=false
 [ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
 
@@ -94,6 +102,11 @@ while [ $# -gt 0 ]; do
       PER_TASK_SETTINGS_PATH="$2"; shift 2 ;;
     --per-task-settings=*)
       PER_TASK_SETTINGS_PATH="${1#--per-task-settings=}"; shift ;;
+    --mode)
+      [ -n "${2:-}" ] || die "--mode requires a value: new or existing"
+      MODE_OVERRIDE="$2"; shift 2 ;;
+    --mode=*)
+      MODE_OVERRIDE="${1#--mode=}"; shift ;;
     --yes|-y)
       NONINTERACTIVE=true; shift ;;
     --help|-h)
@@ -107,6 +120,14 @@ while [ $# -gt 0 ]; do
       PROJECT_PATH_ARG="$1"; shift ;;
   esac
 done
+
+# ---------- validate --mode value ----------
+if [ -n "$MODE_OVERRIDE" ]; then
+  case "$MODE_OVERRIDE" in
+    new|existing) ;;
+    *) die "--mode must be 'new' or 'existing', got '$MODE_OVERRIDE'" ;;
+  esac
+fi
 
 # ---------- mutual exclusion: --per-task-settings is its own mode ----------
 # Per-task mode is non-interactive by construction. --yes / $ATELIER_AUTO
@@ -257,6 +278,107 @@ GITIGNORE_STATUS=""
 CONFIG_STATUS=""
 SETUP_COMPLETED=""
 SETUP_VERSION=""
+DETECTED_MODE=""           # set by detect_project_mode (new|existing) — M4.19
+ROOT_CLAUDE_MD_STATUS=""   # set by step_root_claude_md_detect (missing|present) — M4.19
+
+# ---------- M4.19: detect project mode (new vs existing) ----------
+# Bash side does detection ONLY. Drafting the root CLAUDE.md (AI work)
+# happens in the /setup-project slash command, which dispatches the
+# `project-profiler` agent based on the mode this function returns.
+#
+# Heuristic per the M4.19 ROADMAP entry:
+#   new       — repo has 0 commits, OR tracks <=3 files all docs-only
+#               (README*, LICENSE*, .gitignore).
+#   existing  — repo has any manifest file (package.json, go.mod,
+#               Cargo.toml, pyproject.toml, Gemfile, build.gradle*,
+#               composer.json, requirements*.txt, mix.exs), OR a
+#               populated source dir (src/, lib/, app/), OR >3 tracked
+#               files.
+#
+# CLI override: --mode=new|existing forces the result and skips the
+# heuristic. MODE_OVERRIDE is set by arg parse.
+detect_project_mode() {
+  local p="$1"
+
+  if [ -n "$MODE_OVERRIDE" ]; then
+    printf '%s\n' "$MODE_OVERRIDE"
+    return
+  fi
+
+  # If the project isn't a git repo, treat as `new` — the operator
+  # hasn't even initialised yet.
+  if [ ! -d "$p/.git" ] && ! git -C "$p" rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'new\n'
+    return
+  fi
+
+  # Count commits. 0 commits → new.
+  local commit_count
+  commit_count="$(git -C "$p" rev-list --count HEAD 2>/dev/null || echo 0)"
+  if [ "$commit_count" = "0" ]; then
+    printf 'new\n'
+    return
+  fi
+
+  # Look for manifest files at the project root → existing.
+  for manifest in package.json go.mod Cargo.toml pyproject.toml Gemfile build.gradle build.gradle.kts composer.json mix.exs; do
+    if [ -f "$p/$manifest" ]; then
+      printf 'existing\n'
+      return
+    fi
+  done
+  # requirements*.txt is glob, handle separately
+  for f in "$p"/requirements*.txt; do
+    if [ -f "$f" ]; then
+      printf 'existing\n'
+      return
+    fi
+  done
+
+  # Populated source dir → existing.
+  for d in src lib app; do
+    if [ -d "$p/$d" ] && [ -n "$(ls -A "$p/$d" 2>/dev/null)" ]; then
+      printf 'existing\n'
+      return
+    fi
+  done
+
+  # Count tracked files. >3 → existing. <=3 of docs-only patterns → new.
+  local tracked_count
+  tracked_count="$(git -C "$p" ls-files | wc -l | tr -d ' ')"
+  if [ "$tracked_count" -gt 3 ]; then
+    printf 'existing\n'
+    return
+  fi
+
+  # 1..3 tracked files. Check they all match docs-only patterns.
+  local non_docs_found=0
+  while IFS= read -r f; do
+    case "$f" in
+      README*|LICENSE*|.gitignore) ;;
+      *) non_docs_found=1; break ;;
+    esac
+  done < <(git -C "$p" ls-files)
+
+  if [ "$non_docs_found" = "0" ]; then
+    printf 'new\n'
+  else
+    printf 'existing\n'
+  fi
+}
+
+# ---------- M4.19: detect root CLAUDE.md presence ----------
+# Idempotent — the slash command reads this status. If `present`, the
+# AI-drafting branch is skipped entirely (never overwrite operator's
+# customizations).
+detect_root_claude_md() {
+  local p="$1"
+  if [ -f "$p/CLAUDE.md" ]; then
+    printf 'present\n'
+  else
+    printf 'missing\n'
+  fi
+}
 
 # ---------- step 3: .claude/settings.json ----------
 step_settings_json() {
@@ -593,6 +715,13 @@ step_npmrc
 step_gitignore
 step_record_setup
 
+# ---------- M4.19: detect project mode + root CLAUDE.md presence ----------
+# Detection runs after the mechanical scaffolding. Drafting the root
+# CLAUDE.md (AI work) is the /setup-project slash command's job —
+# this bash binary only emits the signals.
+DETECTED_MODE="$(detect_project_mode "$PROJECT")"
+ROOT_CLAUDE_MD_STATUS="$(detect_root_claude_md "$PROJECT")"
+
 # ---------- output ----------
 echo ""
 ok "$PROJECT set up for atelier"
@@ -606,5 +735,18 @@ sublog ".gitignore:                     $GITIGNORE_STATUS"
 sublog "$(printf '%s' "$CONFIG_FILE" | sed "s|^$HOME|~|"): $CONFIG_STATUS"
 sublog "setupCompleted:                 $SETUP_COMPLETED"
 sublog "setupVersion:                   $SETUP_VERSION"
+echo ""
+# M4.19: structured marker lines the /setup-project slash command parses
+# to decide whether to dispatch project-profiler (and in which mode).
+# Format is `key=value` so the slash command can do a simple grep.
+printf 'atelier-detected-mode=%s\n' "$DETECTED_MODE"
+printf 'atelier-root-claude-md=%s\n' "$ROOT_CLAUDE_MD_STATUS"
+echo ""
+if [ "$ROOT_CLAUDE_MD_STATUS" = "missing" ]; then
+  sublog "Root CLAUDE.md is missing. The /setup-project slash command will dispatch"
+  sublog "the project-profiler agent in '$DETECTED_MODE' mode to draft it."
+else
+  sublog "Root CLAUDE.md already present — preserved."
+fi
 echo ""
 sublog "Next: cd $PROJECT && run /next-task to claim the first ROADMAP.md item."
