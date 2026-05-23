@@ -391,6 +391,88 @@ phase_a_chrome_optional() {
   esac
 }
 
+phase_a_docker_compose_optional() {
+  # atelier's docker-env skill (M4.17) issues `docker compose -p ... up/down/...`
+  # with v2 syntax. If the docker client lacks the compose plugin, the skill
+  # fails on first lifecycle call. This step pre-flights: detect `docker compose`
+  # v2 reachability; if missing and a TTY is available, prompt; otherwise warn
+  # and continue.
+  #
+  # Note: this step does NOT install a Docker runtime (Docker Desktop / Colima /
+  # OrbStack) — operator's choice per existing policy. Only the compose plugin
+  # is in scope.
+  local os
+  os="$(detect_os)"
+
+  # If `docker` itself isn't on PATH, there's no compose plugin to find. Skip
+  # the check entirely (no atelier task can use docker-env without a runtime).
+  if ! has docker; then
+    sublog "docker CLI not on PATH — skipping docker compose plugin check (install a runtime first)"
+    return
+  fi
+
+  if docker compose version >/dev/null 2>&1; then
+    sublog "docker compose v2 plugin detected (used by docker-env skill)"
+    return
+  fi
+
+  # Plugin missing. Non-interactive (--yes or no TTY): warn + continue.
+  if [ "$NONINTERACTIVE" = true ] || [ ! -t 0 ]; then
+    warn "docker compose v2 plugin not detected — docker-env skill will fail on first lifecycle call until installed"
+    case "$os" in
+      mac)
+        sublog "install later with:"
+        sublog "    brew install docker-compose"
+        sublog "    mkdir -p ~/.docker/cli-plugins"
+        sublog "    ln -sf /opt/homebrew/lib/docker/cli-plugins/docker-compose ~/.docker/cli-plugins/docker-compose"
+        ;;
+      linux)
+        sublog "install later with:"
+        sublog "    sudo apt-get install docker-compose-plugin    # (or your distro's equivalent)"
+        ;;
+    esac
+    sublog "/doctor 4.g will warn you until installed"
+    return
+  fi
+
+  # Interactive prompt path.
+  echo
+  sublog "atelier's docker-env skill needs the docker compose v2 plugin"
+  sublog "for tasks that scaffold containerized services (Postgres, Redis, etc.)."
+  echo
+  case "$os" in
+    mac)
+      local ans
+      read -r -p "    Install docker compose v2 now via 'brew install docker-compose' + symlink? [Y/n]: " ans
+      case "${ans:-Y}" in
+        [Yy]|[Yy][Ee][Ss])
+          sublog "installing docker-compose via brew"
+          if brew install docker-compose; then
+            mkdir -p "$HOME/.docker/cli-plugins"
+            if [ -f "/opt/homebrew/lib/docker/cli-plugins/docker-compose" ]; then
+              ln -sf /opt/homebrew/lib/docker/cli-plugins/docker-compose "$HOME/.docker/cli-plugins/docker-compose"
+              ok "docker compose v2 plugin installed + symlinked"
+            else
+              warn "brew install succeeded but plugin binary not found at expected path — symlink skipped. Run: ln -sf <plugin-binary> ~/.docker/cli-plugins/docker-compose"
+            fi
+          else
+            warn "brew install docker-compose failed — install continues. Install the plugin manually before using docker-env tasks."
+          fi
+          ;;
+        *)
+          sublog "skipped — install later via the commands above. /doctor 4.g will warn you."
+          ;;
+      esac
+      ;;
+    linux)
+      sublog "docker compose plugin install on Linux depends on your distro — install manually if you need docker-env tasks:"
+      sublog "    apt:  sudo apt-get install docker-compose-plugin"
+      sublog "    rpm:  sudo dnf install docker-compose-plugin    # or your distro's equivalent"
+      sublog "/doctor 4.g will warn you until installed."
+      ;;
+  esac
+}
+
 phase_a() {
   log "Phase A — base dependencies + Claude Code"
   local os
@@ -402,6 +484,7 @@ phase_a() {
   phase_a_node_and_pnpm
   phase_a_claude_code
   phase_a_chrome_optional
+  phase_a_docker_compose_optional
   ok "Phase A complete"
 }
 

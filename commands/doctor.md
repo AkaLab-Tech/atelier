@@ -61,6 +61,25 @@ f. **System Chrome present (required by `mcp__plugin_atelier_playwright`).** The
    # alternatively (Linux): use your distro's package manager (apt install google-chrome-stable, etc.)
    ```
 
+g. **`docker compose` (v2 plugin) reachable (required by `docker-env` skill + `docker-runner` agent).** atelier's docker-env skill issues `docker compose -p <project> up/down/...` with v2 syntax. Detect via `docker compose version`:
+   - `✓ docker compose v<version> detected` if exit 0 + stdout contains a version string.
+   - `–` (skipped) if `docker info` fails first (no daemon running — no point checking the plugin if the runtime is offline; suggest starting the runtime as the prerequisite step).
+   - `✗ docker compose plugin not found — docker-env skill will fail on first lifecycle call` with this fix command block:
+   ```bash
+   # macOS (homebrew): the plugin ships with `docker-compose` formula but the
+   # docker client only discovers it from ~/.docker/cli-plugins/. Symlink it:
+   brew install docker-compose  # if not already installed
+   mkdir -p ~/.docker/cli-plugins
+   ln -sf /opt/homebrew/lib/docker/cli-plugins/docker-compose ~/.docker/cli-plugins/docker-compose
+
+   # Linux (Debian/Ubuntu): docker-compose-plugin from Docker's apt repo
+   sudo apt-get install docker-compose-plugin
+
+   # Verify:
+   docker compose version
+   ```
+   The skill probes `docker compose version` at first lifecycle call too — this `/doctor` check is purely informational, surfaced before the operator hits the failure during a task.
+
 ## Output format
 
 Print exactly this structure (one section per group, blank line between groups). Use only ASCII `✓` (`✓`) and `✗` (`✗`) — no emojis.
@@ -82,6 +101,7 @@ Host checks
     ✓ project .npmrc guardrails present
     ✓ ~/.claude/.atelier-config.json consistent
     ✓ system Chrome detected
+    ✓ docker compose v2 plugin detected
 
 To apply pending updates, run:
     claude plugin marketplace update akalab-tech

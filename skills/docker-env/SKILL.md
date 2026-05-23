@@ -63,6 +63,17 @@ docker info >/dev/null 2>&1 || {
   exit 2
 }
 
+# Probe docker compose v2 plugin (the skill uses v2 syntax everywhere)
+docker compose version >/dev/null 2>&1 || {
+  echo "✗ docker compose (v2 plugin) not reachable. The skill requires v2 syntax (\`docker compose ...\`), not the v1 standalone (\`docker-compose ...\`)." >&2
+  echo "  macOS (homebrew):  brew install docker-compose && \\" >&2
+  echo "                    mkdir -p ~/.docker/cli-plugins && \\" >&2
+  echo "                    ln -sf /opt/homebrew/lib/docker/cli-plugins/docker-compose ~/.docker/cli-plugins/docker-compose" >&2
+  echo "  Linux (apt):       sudo apt-get install docker-compose-plugin" >&2
+  echo "  Verify:            docker compose version" >&2
+  exit 2
+}
+
 # Bring up
 docker compose -p "<project_name>" --file "<worktree>/docker-compose.yml" up -d --wait
 ```
