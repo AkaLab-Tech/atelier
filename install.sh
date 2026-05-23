@@ -50,9 +50,23 @@ ATELIER_CONFIG_DIR_FLAG=""
 # target directory has unrelated content.
 NONINTERACTIVE=false
 
-# Resolved by resolve_config_dir() in main() — must NOT be referenced before
-# parse_args + resolve_config_dir have run.
-ATELIER_CONFIG_DIR=""
+# M7.1.F11b: $ATELIER_CONFIG_DIR is intentionally NOT clobbered here.
+# Previous versions had `ATELIER_CONFIG_DIR=""` at this point, which
+# silently broke the F11 lookup chain — the operator's exported env var
+# (typically set by the shellrc hook block written by a previous install)
+# got overwritten with "" before resolve_config_dir() could read it,
+# making the env-var branch unreachable.
+#
+# Either the env var is inherited from the parent shell (the operator's
+# chosen path) or it is unset; either way resolve_config_dir() handles
+# both states via `${ATELIER_CONFIG_DIR:-}` plus the --config-dir flag
+# override plus the default fallback. `set -u` is satisfied because the
+# `:-` expansion never tries to substitute an unset bare reference.
+#
+# Maintainers: do NOT add an unconditional `ATELIER_CONFIG_DIR=""` here.
+# If a future refactor needs a "not-yet-resolved" sentinel, route through
+# a separate ATELIER_CONFIG_DIR_RESOLVED guard variable rather than
+# clobbering the operator-facing one.
 
 # ---------- logging (M7.1.F2) ----------
 

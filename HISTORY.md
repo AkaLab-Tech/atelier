@@ -8,6 +8,33 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F11b — Fix env-var clobber that broke F11 lookup chain — 2026-05-23
+**PR:** _pending_
+
+Discovered during PR-C ([#73](https://github.com/AkaLab-Tech/atelier/pull/73)) live validation: `install.sh` line ~55 unconditionally set `ATELIER_CONFIG_DIR=""` at script load, which silently broke the F11 lookup chain documented in F11's HISTORY entry. The operator's exported env var (typically planted by the shellrc hook block from a previous install — F11's whole persistence mechanism) got overwritten with empty string before `resolve_config_dir` could read it. The env-var branch of the priority chain (`--config-dir flag > $ATELIER_CONFIG_DIR env > default`) was therefore unreachable; install.sh always defaulted to `~/.claude-work` unless `--config-dir` was passed explicitly.
+
+**Effect on the operator**: a previously-chosen alternative path (e.g. `~/.claude-atelier/` picked at a Phase 0 collision prompt) was NOT remembered across `./install.sh` re-runs, even though F11's documentation said it would be. Operators who relied on env-var propagation got silently misrouted.
+
+**Delivered:**
+
+- **`install.sh`** removes the unconditional `ATELIER_CONFIG_DIR=""` initialization. Replaced with a block comment explaining the inheritance contract (env var preserved if set, otherwise resolve_config_dir falls back to `--config-dir` flag or default). `resolve_config_dir` already uses `${ATELIER_CONFIG_DIR:-}` expansion, which handles both unset and empty cases — `set -u` is satisfied without an explicit pre-initialization.
+- **Maintainer comment** warns against re-introducing a top-level clobber. If a future refactor needs an internal "not-yet-resolved" sentinel, the comment recommends routing through a separate guard variable rather than the operator-facing `ATELIER_CONFIG_DIR`.
+
+**Decisions captured:**
+
+- **Removed the line entirely** vs. capturing the env into a sidecar variable. The minimal change (delete the clobber) is enough — every read site already uses `${VAR:-}` defaults. A sidecar (`ATELIER_CONFIG_DIR_ENV`) would add ceremony for no behavioral gain.
+- **No semantic change** beyond restoring the documented F11 contract. The flag-and-default branches behave identically; only the env-var branch is now reachable.
+
+**Tests (5/5 sandbox cases passed):**
+
+| # | Scenario | Asserted | Result |
+|---|---|---|---|
+| T1 | env var SET, no flag | `resolve_config_dir` uses env value | ✓ `/tmp/from-env-var-fixture` |
+| T2 | env var UNSET, no flag | falls back to `~/.claude-work` default | ✓ |
+| T3 | env var SET + flag passed | flag wins (priority chain intact) | ✓ `/tmp/from-flag-fixture` |
+| T4 | env var with `~/` | tilde expanded to `$HOME` | ✓ |
+| T5 | `set -u` + env unset | no nounset error, falls back cleanly | ✓ |
+
 ### M7.1.F8 — Trailing-slash normalization + path-format validation in Phase 0 prompt — 2026-05-23
 **PR:** _pending_
 
