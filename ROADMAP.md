@@ -18,29 +18,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 2–5 — Single-project agent flow + robustness + multi-project foundation.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries — and when an operator can install / uninstall atelier without risking unrelated Claude state.
 
-### M4.14 — Implement↔validate inner loop with iteration budget
-
-The `/next-task` chain currently runs implementation and validation as a single forward pass. Any failure (lint, typecheck, unit tests) falls through to the `retry-with-logs` skill, which resets the worktree and restarts the entire task. There is no cheap inner loop where the implementer can iterate against quick validation before committing to the heavier PR-gate path.
-
-This task introduces an explicit implement↔validate loop driven by `task-orchestrator`, separating fast checks (run on every iteration) from slow checks (run once, before PR):
-
-1. **`/validate`** — new slash command that runs the **fast** validation layer (lint + typecheck + unit/integration tests) and prints a structured result (pass/fail + per-check output). Invocable standalone for manual debug.
-2. **`/validate --full`** — adds the **slow** layer (Playwright e2e + screenshot capture). Run once before `/pr-flow`, never inside the loop.
-3. **`task-orchestrator` loop logic** — after `implementer` returns, the orchestrator calls `/validate`. On fail, it re-invokes `implementer` with the validation output appended to the prompt (so the next attempt sees what failed). The loop counter is anchored to the existing 3+3 retry budget from [PLAN.md §8](PLAN.md): up to 3 inner iterations → trigger `retry-with-logs` worktree reset → up to 3 more inner iterations → hard stop with the existing `blocked` issue path.
-4. **Iteration counter** — persisted at `<worktree>/.task-log/attempt-count` so a session restart does not silently reset the budget.
-
-The hook-driven variant (auto-reprompt on `Stop`) is captured separately as M4.15 — alternative path, not a replacement for the orchestrator-driven loop.
-
-**Acceptance:**
-
-- `/validate` exists as a standalone command and prints a structured pass/fail summary.
-- Running `/next-task` on a task whose first implementation attempt fails lint/typecheck/unit-tests triggers an automatic in-place re-implementation **without** a worktree reset, up to 3 times.
-- On the 4th failure, `retry-with-logs` resets the worktree and iteration 4 begins fresh; iterations 4–6 follow the same inner-loop pattern.
-- On the 7th total failure, the task is marked `[BLOCKED]` with the existing GitHub issue flow (must not regress).
-- `task-orchestrator` prompt explicitly documents the loop contract and the counter location.
-
-**Trigger to revisit:** when an implementation attempt routinely fails on issues that do not require a full worktree reset to fix (typos, missing imports, lint-only). Identified in conversation 2026-05-21 — the current single-pass-then-reset flow over-rotates on full resets when a cheap inner loop would catch most trivial mistakes.
-
 ### M4.17 — `docker-env` skill + `docker-runner` agent (on-demand local containers)
 
 Sonnet agent + skill for on-demand Docker container management during task execution. The agent scaffolds `Dockerfile`/`docker-compose.yml`; the skill drives lifecycle (`up`/`down`/`logs`/`ps`) scoped to the task worktree. Daily-work productivity tool — useful when a task needs to test against Postgres, Redis, or a similar service without contaminating the operator's machine.
@@ -127,6 +104,22 @@ A slash command for the Camino C of the blocked-task lifecycle (operator decides
 **Acceptance:** running `/abandon-task <id>` on a `[BLOCKED]` entry closes the issue with `wontfix`, moves the entry to `HISTORY.md` with `abandoned` mark, and removes the worktree (with confirmation).
 
 **Trigger to revisit:** after M4.2 + M4.3 land and the operator hits a real "I'm not retrying this" situation. Identified while designing M4.2 — deferred because the manual workaround (close issue + edit two markdown files) works fine for the rare case where a task is genuinely abandoned.
+
+### M4.21 — `/validate` Python toolchain in `allowed-tools` frontmatter
+
+`commands/validate.md` (added in [M4.14](HISTORY.md) / PR #65) detects Python-project tooling in its body (`ruff` for lint, `mypy` / `pyright` for typecheck, `pytest` for tests via `pnpm` script) but its `allowed-tools` frontmatter only explicitly grants the JS/TS toolchain (`Bash(eslint:*)`, `Bash(biome:*)`, `Bash(tsc:*)`, `Bash(vitest:*)`, `Bash(jest:*)`, etc.) plus a single `Bash(pytest:*)` and `Bash(playwright:*)`. Missing: `Bash(ruff:*)`, `Bash(mypy:*)`, `Bash(pyright:*)`.
+
+Concrete effect on a Python project: the first time `/validate` tries to invoke any of those three tools, the Claude Code harness prompts the operator for permission ("Allow `Bash(ruff check)` once / always?"). Same outcome as Phase 0 of any new permission — not broken, just interactive. The inner loop ([M4.14](HISTORY.md)) under `claude -p` would stall on that prompt.
+
+**Scope:**
+
+- [ ] Add `Bash(ruff:*)`, `Bash(mypy:*)`, `Bash(pyright:*)` to `commands/validate.md` frontmatter `allowed-tools`.
+- [ ] Sanity check: any other Python-friendly invocations the body uses (e.g. `pnpm` is already covered; if `pdm` / `uv` / `poetry` are later added to the detection logic, allowlist those too).
+- [ ] No behavior change — purely a permission-prompt prevention.
+
+**Acceptance:** running `/atelier:validate` against a Python project (`pyproject.toml` with `[tool.ruff]` + `[tool.mypy]`) under `claude -p` completes without a permission prompt for any of the three tools. Static check: `grep -E "Bash\\(ruff|Bash\\(mypy|Bash\\(pyright" commands/validate.md` returns 3 matches.
+
+**Trigger to revisit:** when the first Python project gets `/atelier:setup-project`-ed and `/validate` runs against it. Until atelier sees a Python project in real use, this is purely defensive — captured here so the next operator who hits the prompt knows the fix is one frontmatter edit. Identified during PR #65 pre-merge review (2026-05-23).
 
 ### M4.15 — `Stop`-hook auto-reprompt on validation failure (exceptional path)
 

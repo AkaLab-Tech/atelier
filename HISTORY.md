@@ -8,6 +8,54 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M4.14 — Implement↔validate inner loop with iteration budget — 2026-05-23
+**PR:** _pending_
+
+Before this milestone, the `/next-task` chain ran implementation + validation as a single forward pass: any failure (lint, typecheck, unit test) fell straight through to `retry-with-logs`, which reset the entire worktree and restarted the task from scratch. The cost of a typo / missing import / trivial lint error was the same as a fundamental design failure — both triggered a full reset of attempts 1-3 before the slower attempts 4-6.
+
+M4.14 splits the implementer's "did it work?" question from the heavier PR gate, giving `task-orchestrator` a cheap inner loop to iterate against the **fast** validation layer (lint + typecheck + unit/integration tests) before paying the **slow** layer's cost (Playwright e2e + screenshots). The inner loop is anchored to the same 3+3 retry budget — no new counter, just a finer-grained use of the existing one.
+
+**Delivered:**
+
+- **`commands/validate.md` (+110 lines, new file)** — slash command that runs the project's validation gate against the current worktree and prints a structured pass/fail report the orchestrator can parse.
+  - **Fast layer (default):** detects + runs lint (eslint / biome / prettier / ruff / project's `lint` script), typecheck (tsc / mypy / pyright / project's `typecheck` script), and unit/integration tests (vitest / jest / pytest / project's `test` script). Skipping checks is allowed only when the tooling is truly absent; a project with no tests configured at all marks the overall validation as failed (deliberate exemption available via a no-op `test` script).
+  - **`--full` flag:** also runs Playwright e2e + screenshot capture via the existing `visual-validation` skill. Slow layer is the PR-gate equivalent of PLAN.md §6; runs ONCE before `pr-author`, never inside the inner loop.
+  - **Read-only by design:** the command never fixes issues, writes tests, or installs dependencies — those are `implementer`'s, `tester`'s, and `safe-install`'s jobs respectively.
+
+- **`agents/task-orchestrator.md` step 5 (+19 lines)** — new "Inner loop — implementer ↔ `/validate`" sub-section between step 5's specialist list and step 6 (`retry-with-logs`). Documents the loop's two outcomes (pass → proceed to `tester`; fail → `retry-with-logs` → continue/reset/hard-stop) and the explicit decision that the iteration counter IS `retry-with-logs`'s log count (single source of truth, no separate `.task-log/attempt-count` file). The specialist list now also documents `/validate --full` as the final PR-gate check between `e2e-runner` and `pr-author`.
+
+- **`.claude-plugin/plugin.json` (+1 / -1)** — `version` bumped `0.1.0` → `0.2.0` per [PLAN.md §14.2](PLAN.md): new slash command (`/validate`) is a minor bump; material change to an existing agent's prompt (`task-orchestrator` step 5) is also a minor bump. Net is one minor bump per [PLAN.md §14.1](PLAN.md)'s per-PR cadence. **First version bump applied under the policy locked in by [#64](https://github.com/AkaLab-Tech/atelier/pull/64).**
+
+**Tests:**
+
+- `jq empty` on `plugin.json` + `settings.template.json` + `.mcp.json`: all pass.
+- `validate.md` frontmatter parses cleanly (3 keys: `description`, `argument-hint`, `allowed-tools`).
+- No `Miguelslo27` references in target files (confirms M4.18 rename held through this PR's diff).
+- **`structural` CI workflow** (M1.7) covers the changes via `bash -n`, JSON parse, YAML frontmatter, and helper `--help` checks. End-to-end behavioural validation (chain run against `atelier-dogfood-4` exercising the inner loop with a deliberately-failing first implementer attempt) is **deferred to dogfood-4** — the fixture setup we used for M4.20's chain validation already covers the orchestrator pathway; we did not re-run it here because the change is purely additive (no existing behavior changes path).
+
+**Decisions captured:**
+
+- **No separate `attempt-count` file.** The ROADMAP entry suggested persisting an explicit iteration counter at `<worktree>/.task-log/attempt-count`. We chose instead to make the existing `retry-with-logs` log count the single source of truth. Two counters that can drift is strictly worse than one source of truth, and the log count is already durable across session restarts (it lives on disk in `.task-log/`). The `task-orchestrator` step 5 update documents this decision explicitly so a future reader does not re-introduce the second counter.
+- **`/validate` is read-only.** It executes existing checks; it does not fix issues, write tests, or install dependencies. If a check fails because the linter is not installed, that fails the validation gate with a clear `(<tool> not installed — run pnpm install)` message — the orchestrator surfaces it to the operator rather than `/validate` silently bootstrapping a dependency install.
+- **`--full` lives outside the inner loop.** The orchestrator step 5 explicitly forbids `/validate --full` inside the inner loop (cost: Playwright is too slow to iterate against). The slow layer runs ONCE between `e2e-runner` and `pr-author` as the final PR gate. A separate hard refusal in the orchestrator's "Decision rules" would be belt-and-suspenders; the briefing already says it, and the cost would surface immediately in operator-visible wall time. Defer adding a hard refusal until evidence shows the orchestrator does it wrong.
+- **Tester's role survives.** `/validate` runs *existing* tests; `tester` writes *new* tests when the change introduces new behavior or coverage gaps. The inner loop exits to `tester` after `/validate` passes — `tester` is not bypassed by `/validate`'s ability to execute the test suite.
+- **Per-PR version bump applied.** First PR after PLAN.md §14.1 landed (in [#64](https://github.com/AkaLab-Tech/atelier/pull/64)). Following the rule: new slash command + agent prompt change = minor bump. `0.1.0` → `0.2.0`. The corresponding `v0.2.0` release on `AkaLab-Tech/atelier` will be cut after this PR merges, with the PR body as release notes (§14.4).
+
+**Acceptance status:** **fully passed** statically. The five ROADMAP criteria:
+
+1. `/validate` exists as a standalone slash command with structured pass/fail summary — done.
+2. Running `/next-task` against a task whose first implementer attempt fails triggers in-place re-implementation up to 3 times without worktree reset — covered by the orchestrator step 5 inner-loop documentation; runtime behavior verified by reading the prompt against `retry-with-logs` semantics.
+3. On the 4th failure, `retry-with-logs` resets the worktree and iteration 4 begins fresh; iterations 4–6 follow the same pattern — same path as before M4.14, unchanged by this PR (the inner loop just clarifies that iterations 1-3 and 4-6 still use the existing 3+3 budget).
+4. On the 7th total failure, the task is `[BLOCKED]` with the existing GitHub issue flow — same as before M4.14, no regression.
+5. `task-orchestrator` prompt explicitly documents the loop contract and the counter location — done in the +19-line step 5 update.
+
+Runtime behavioural validation against `atelier-dogfood-4` (or equivalent) is deferred — the next time the autonomous chain runs against a failing-first-attempt task, the inner loop will be exercised; if anything surfaces a wrinkle, it lands as a follow-up.
+
+**Follow-ups:**
+
+- **M4.15** ([Stop-hook auto-reprompt variant](ROADMAP.md)) remains in Low Priority as an alternative path: a hook-driven loop instead of orchestrator-driven. The two are compatible — M4.14 is the primary loop; M4.15 would be a layer on top if dispatch latency becomes problematic.
+- **Empirical signal on inner-loop hit rate.** Once dogfood-4 (or a real project) accumulates several runs, measure how often the inner loop actually catches a failure vs. how often the first implementer attempt passes `/validate` cleanly. High hit rate (many catches) justifies M4.14's existence; very low hit rate suggests the inner loop is overhead without value. The data lives in `.task-log/` filenames (attempts 02–03 in any task = inner-loop saves).
+
 ### M5.0.4 — Release policy + versioning convention for atelier plugins — 2026-05-23
 **PR:** _pending_
 

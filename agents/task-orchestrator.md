@@ -72,12 +72,31 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
    **Briefing contract — every specialist dispatch must include:** (a) absolute `<worktree-path>`, (b) the task ID + structured task record, (c) one-line cwd reminder: *"Your cwd is NOT inside the worktree; use `git -C <wt>`, `pnpm --dir <wt>`, `gh --repo <owner/name>`, or `cd <wt> && ...` prefix for every `Bash` call against the worktree. See `operator-rules.md` § Operating against the task worktree."* Without this, the specialist's `Bash` calls land in the wrong cwd and fail silently or against the wrong files.
 
    - **`implementer`** writes the code.
+   - **`/validate` (fast layer)** — inner loop gate. See **Inner loop** below.
    - **`tester`** writes / runs unit + integration tests until the push gate is green.
    - **`e2e-runner`** runs Playwright + captures screenshots — **only** when the diff has a UI surface; skip entirely otherwise (`e2e-runner` itself returns `skipped (no UI surface)` for docs/infra/backend-only changes).
+   - **`/validate --full`** — runs ONCE before `pr-author`, replaces the ad-hoc final check the orchestrator used to do inline. Combines fast layer + Playwright e2e + screenshots.
    - **`pr-author`** opens the PR and moves `IN_PROGRESS.md` → `HISTORY.md` in the same PR.
    - **`reviewer`** (Opus, fresh context) posts the structured review with `auto-merge: yes | no`.
    - **`auto-merge` skill** evaluates the six PLAN.md §6 guardrails and squash-merges + cleans up — or reports the PR as held for human review.
    - **`unblocker`** is **not** part of the happy-path chain; it is invoked only when `retry-with-logs` returns `hard-stop` (see step 6). It creates the GitHub `blocked` issue and marks the entry in `IN_PROGRESS.md`.
+
+   ### Inner loop — implementer ↔ `/validate`
+
+   After `implementer` returns, immediately invoke `/validate` (fast layer — lint + typecheck + unit/integration tests) against the worktree. The loop has two outcomes:
+
+   - **`/validate` reports `Overall: pass`** → exit the inner loop, proceed to `tester` (which writes new tests if the change introduces new behavior or coverage gaps). The implementation is structurally sound; `tester` adds whatever the implementer left out.
+   - **`/validate` reports `Overall: fail`** → this is an *implementer attempt failure*. Hand the verbatim `/validate` output to `retry-with-logs` (see step 6) along with the implementer's structured return. The skill writes the attempt log and returns its decision:
+     - `continue` (attempts 01, 02, 04, 05): re-invoke `implementer` with the `/validate` failure output appended to the briefing. The implementer iterates *in the same worktree*; no `git wt rm`. This is the entire point of the inner loop — cheap iteration against fast checks.
+     - `continue` (attempt 03 → 04 transition does **not** happen here; that is the `reset` decision below): N/A.
+     - `reset` (after attempt 03): proceed with the worktree reset per step 6, then re-invoke `implementer` (attempt 04 begins on the fresh worktree, still seeded with logs 01–03).
+     - `hard-stop` (after attempt 06): hand off to `unblocker`. The 6-attempt budget covers the implementer↔`/validate` loop end-to-end; there is no separate budget for the inner loop.
+
+   **Iteration counter — single source of truth.** The "iteration N" of the inner loop IS the same N as `retry-with-logs` counts (one log per failed `/validate` is one attempt). There is **no** separate `.task-log/attempt-count` file — that would create two counters that can drift. The `retry-with-logs` skill is the only authority on "what attempt is this".
+
+   **`/validate --full` runs once, after the inner loop exits clean and after `tester` and (when relevant) `e2e-runner`** — final gate before `pr-author`. The slow layer is too expensive to iterate against; only `/validate` (fast) lives inside the inner loop.
+
+   **Hard refusal — `/validate` inside the inner loop is NEVER `--full`.** If the orchestrator finds itself running the slow layer inside the loop, that is a bug — the slow layer's Playwright + screenshot cost would explode iteration time. Stop and report.
 6. **Enforce the retry budget via `retry-with-logs`.** Per [PLAN.md §8](PLAN.md), every specialist attempt that fails goes through the `retry-with-logs` skill, which writes the per-attempt log to `<worktree>/.task-log/<ISO-timestamp>-<NN>.md`, counts logs to date, and returns the next-action decision (`continue` | `reset` | `hard-stop`). The orchestrator does **not** decide the retry policy itself — it invokes the skill on every failure and acts on the returned decision:
    - `continue` → re-invoke the failing specialist with all `.task-log/*.md` files injected as context.
    - `reset` → preserve `.task-log/` outside the worktree, run the `git-wt` cycle (`rm` + re-`switch`), restore the logs, then re-invoke the failing specialist. Attempt 04 begins on the fresh worktree.
