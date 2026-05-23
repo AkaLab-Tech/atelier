@@ -8,6 +8,65 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M4.17 — `docker-env` skill + `docker-runner` agent (on-demand local containers) — 2026-05-23
+**PR:** _pending_
+
+On-demand Docker Compose stack scoped to the task worktree, without contaminating the operator's host. Lets a task that needs Postgres / Redis / MySQL / MinIO / etc. for integration tests provision a service for the duration of the task and tear it down cleanly at session end — no orphan containers, no manual host installs.
+
+**Two-piece design:**
+
+- **`agents/docker-runner.md`** (Sonnet, new) — authors `Dockerfile` / `docker-compose.yml`. Pins image tags per [PLAN.md §4](PLAN.md) dep-install rules (official images, no `:latest`, no <7-day-old tags), declares healthchecks per service, picks non-default host ports (e.g. `5433:5432` for Postgres) to avoid collision with operator services. Refuses to clobber an existing compose file.
+- **`skills/docker-env/SKILL.md`** (new) — lifecycle operations: `up` (with `--wait` so healthchecks must pass), `down` (keeps volumes), `teardown` (removes volumes + orphans, called by Stop hook + auto-merge), `logs <service>`, `ps`. Compose project name = `<branch>` with `task/` stripped — gives parallel tasks isolated networks + volumes. Probes `docker info` and stops with an actionable message if the daemon is unreachable.
+
+**Stop hook (`hooks/teardown-docker-env.sh`, new + wired in `hooks.json`):**
+
+Tears down the per-task compose project on session end. Three guards make the hook safe on non-atelier sessions:
+
+1. cwd's branch must match `task/<id>-<slug>` (regular operator sessions are no-op).
+2. `docker info` must succeed (no daemon → no-op).
+3. The compose project must have at least one container (idempotent on already-empty projects).
+
+Only when all three guards pass does the hook issue `docker compose -p <project> down --volumes --remove-orphans`. Fails soft on every recoverable error.
+
+**`templates/settings.template.json` deltas:**
+
+- **`ask` shrinks** — `Edit(<worktree>/Dockerfile)`, `Write(<worktree>/Dockerfile)`, `Edit(<worktree>/docker-compose*)`, `Write(<worktree>/docker-compose*)` and the `<worktree>-worktrees/**` variants removed. These paths are now covered by the existing `Edit(<worktree>/**)` / `Write(<worktree>/**)` allow rules (no prompt for `docker-runner` to scaffold inside the worktree).
+- **`ask` keeps** — `Edit(./Dockerfile)` / `Write(./Dockerfile)` / docker-compose* on relative path (cwd ambiguity).
+- **`allow` gains** — `Bash(docker info*)`, `Bash(docker compose*)`, `Bash(docker ps*)`, `Bash(docker logs*)`.
+- **`deny` gains** — `Bash(docker push*)`, `Bash(docker login*)`, `Bash(docker system prune*)`. Defensive.
+- **[PLAN.md §6](PLAN.md) auto-merge block unchanged** — PRs touching `Dockerfile` / `docker-compose*` still fall back to human review.
+
+**`agents/task-orchestrator.md` step 5 update:**
+
+- `docker-runner` added to the specialist dispatch list as a **conditional** specialist — BEFORE `implementer` when the task acceptance criteria mention a containerized service.
+- New "When to dispatch `docker-runner`" sub-section documents the trigger heuristic (explicit service names + phrase patterns) and the skip rule (pure docs / UI-only / refactor tasks).
+
+**`.claude-plugin/plugin.json`:** version `0.2.0` → `0.3.0`. Per [PLAN.md §14.2](PLAN.md), new agent + new skill + new hook = minor bump.
+
+**Tests:**
+
+- `bash -n` on `install.sh` + `scripts/*` + `hooks/*.sh` (including the new `teardown-docker-env.sh`): all pass.
+- `jq empty` on `plugin.json` + `settings.template.json` + `.mcp.json` + `hooks.json`: all pass.
+- YAML frontmatter parses on `docker-runner.md` (5 keys) and `SKILL.md` (2 keys).
+- **End-to-end behavioural validation deferred** — exercising the full `docker-runner` → `docker-env up` → `implementer` → `Stop` hook teardown cycle requires (a) a Docker runtime running and (b) a task whose acceptance criteria actually need a container. Neither is set up in the current dev environment; will be exercised the next time a real project requests Postgres / Redis. Static + structural surface is fully covered by `structural` CI (M1.7).
+
+**Decisions captured:**
+
+- **Two-piece (agent + skill), not one.** Authoring is a judgment call (image / tag / healthcheck) — agent prompt. Lifecycle is mechanical — skill. Mixing would force every `docker compose up -d --wait` through Sonnet, which is slow and wasteful.
+- **Compose project name = branch with `task/` stripped, not directory name.** `docker compose`'s default could collide across worktree directories with similar names. Explicit `-p <project_name>` keyed off the branch is the isolation guarantee.
+- **Stop hook, not auto-merge-only teardown.** Catches operator-interrupted sessions where the chain never completes. Triple-guarded so non-atelier sessions are no-op.
+- **No `/docker-env` slash command yet.** Defer until operator friction surfaces.
+- **`install.sh` does NOT install a Docker runtime.** Operator chooses Docker Desktop / Colima / OrbStack. The skill probes `docker info` and surfaces install commands when missing.
+- **`docker push` / `docker login` / `docker system prune` denied.** Explicit deny entries; defensive against a malicious or buggy agent. Same threshold as the existing deny list.
+
+**Acceptance status:** **fully passed statically.** All five ROADMAP criteria verified by reading the new files against the spec. Runtime confirmation deferred per the "Tests" note above.
+
+**Follow-ups:**
+
+- **`/docker-env` slash command** — operator-facing entry. Captured if/when operators ask for it.
+- **`docker-runner` integration with `safe-install`** — if `safe-install` grows a Docker-image variant, route through it.
+- **End-to-end run on a Python-with-Postgres dogfood project** — when a real task surfaces.
+
 ### M4.14 — Implement↔validate inner loop with iteration budget — 2026-05-23
 **PR:** _pending_
 
