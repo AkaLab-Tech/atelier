@@ -1,7 +1,7 @@
 ---
 description: Initialise a project so the operator can run atelier tasks in it — delegates to the `atelier-setup-project` bash helper installed by `install.sh`, then dispatches `project-profiler` to draft the root `CLAUDE.md`. Idempotent — re-running preserves all existing files.
 argument-hint: "[project-path] [--yes|-y] [--mode=new|existing]"
-allowed-tools: Read, Glob, Grep, Bash(atelier-setup-project:*), AskUserQuestion, Task
+allowed-tools: Read, Glob, Grep, Write, Bash(atelier-setup-project:*), AskUserQuestion, Task
 ---
 
 You are running the `/setup-project` slash command. This command has two phases: (1) delegate mechanical scaffolding to the `atelier-setup-project` bash binary on `$PATH`, then (2) dispatch the `project-profiler` agent to draft the root `CLAUDE.md` based on the mode the bash helper detected.
@@ -34,26 +34,46 @@ Relay the helper's stdout back to the operator verbatim. If the helper exits non
 
 ## Phase 2 — root `CLAUDE.md` draft (M4.19)
 
-After the bash helper completes, parse its stdout for the two marker lines. Apply this decision table:
+After the bash helper completes, parse its stdout for the two marker lines (`atelier-detected-mode=...` and `atelier-root-claude-md=...`). The split:
+
+- **`project-profiler` (read-only)** scans the repo and **returns a drafted `CLAUDE.md` content block** in its report. It does NOT write the file itself — its tools list excludes `Write` by design.
+- **This slash command** takes the drafted content from the agent's report and writes it to `<project>/CLAUDE.md` using the `Write` tool. The session's initial permissions cover this path; the agent's sub-scope does not.
+
+### Decision table (which action this slash command takes)
 
 | `atelier-root-claude-md` | `atelier-detected-mode` | Action |
 | --- | --- | --- |
-| `present` | (ignored) | **Skip** Phase 2. Print: *"Root CLAUDE.md already exists — preserved."* The operator's customizations are sacred. |
-| `missing` | `existing` | **Dispatch `project-profiler`** in `existing` mode. Briefing: `{ mode: "existing", project_path: "<abs>" }`. The agent scans manifest files / src layout / CI configs / README and drafts `<path>/CLAUDE.md`. |
-| `missing` | `new` | **Ask the operator** (via `AskUserQuestion`): *"What is this project about? Describe in your own words — purpose, intended stack if you know, anything else useful."* (free-form, no preset options). Then dispatch `project-profiler` in `new` mode. Briefing: `{ mode: "new", project_path: "<abs>", operator_answer: "<the answer>" }`. The agent converts the answer into a structured `CLAUDE.md` with `TBD` markers for unknowns. |
+| `present` | (ignored) | **Skip Phase 2 entirely.** Print: *"Root CLAUDE.md already exists — preserved."* Do not dispatch any agent, do not write anything. The operator's customizations are sacred. |
+| `missing` | `existing` | **Invoke `Task` with `subagent_type: "project-profiler"`.** Briefing payload: `{ mode: "existing", project_path: "<abs>" }`. The agent scans manifests / src layout / CI configs / README and **returns drafted content in its report**. After it returns, **extract the inner content of the agent's `## Drafted content` fenced block and Write it to `<abs>/CLAUDE.md`.** |
+| `missing` | `new` | **Ask the operator** via `AskUserQuestion`: *"What is this project about? Describe in your own words — purpose, intended stack if you know, anything else useful."* (free-form, no preset options). Then **invoke `Task` with `subagent_type: "project-profiler"`** and briefing `{ mode: "new", project_path: "<abs>", operator_answer: "<the answer>" }`. After it returns, same extract + Write as above. |
+
+After the Write completes, surface the agent's report **verbatim** to the operator (including the `## Drafted content` block) so they can see what was written. Then stop.
 
 ### Non-interactive mode in Phase 2
 
 If `$ARGUMENTS` carries `--yes` / `-y` or `$ATELIER_AUTO` is set:
 
-- `existing` mode: dispatch `project-profiler` normally — no operator input needed for the scan.
+- `existing` mode: dispatch `project-profiler` immediately via `Task` — no operator input needed for the scan. **The `--yes` does NOT change this code path; it is the same dispatch as the interactive case.**
 - `new` mode: **stop and report** — the `AskUserQuestion` for the interview cannot run non-interactively. Print: *"Non-interactive setup of a new project requires `--mode=existing` to skip the interview, or re-run interactively."*
 
 This rule prevents an autonomous chain from drafting a fabricated `CLAUDE.md` from a fabricated answer.
 
-### Project-profiler invocation
+### Mandatory dispatch + Write path
 
-Use the `Task` tool with `subagent_type: "project-profiler"` and a briefing built from the decision table. Surface the agent's report (which includes `status: written | kept-existing` and the sections written / left TBD) verbatim to the operator.
+When the decision table says "dispatch `project-profiler`", the **only** correct implementation is:
+
+```text
+1. Task(subagent_type: "project-profiler", description: "Draft root CLAUDE.md", prompt: <briefing>)
+2. Parse agent's report: locate the ` ```markdown ... ``` ` fenced block under `## Drafted content`.
+3. If status == "drafted": Write(<abs>/CLAUDE.md, <extracted content>).
+4. If status == "kept-existing": skip Write, print preservation note.
+```
+
+The agent's report carries the drafted content as a literal markdown fenced block. Extract the inner markdown (between `` ```markdown `` and `` ``` ``), trim no whitespace, and call `Write(<abs>/CLAUDE.md, <content>)`. The Write succeeds because this slash command's session is the one with `Write` on the project path in its allowed-tools.
+
+If `Task` returns an error (agent not found, dispatch refused, etc.), surface it and stop. Do **not** fall back to inventing CLAUDE.md content from scratch — without the agent's scan, the content would be fabricated.
+
+If the agent's report is missing the `## Drafted content` block (and status is not `kept-existing`), the agent malformed its output: surface the report verbatim and stop. The slash command should not try to "recover" by inventing content.
 
 ## Hard refusals
 
@@ -63,7 +83,9 @@ These all live in the bash helper; documented here so the operator knows what to
 - **Never weaken** an existing `.npmrc` (no `audit-level` downgrade, no `minimum-release-age` reduction).
 - **Never reconfigure under `--yes` / `ATELIER_AUTO`**: re-running on a configured project in non-interactive mode exits with code 2.
 - **Never run `git init`** or any git write — `/setup-project` is for atelier scaffolding only.
-- **Never invoke `Write`, `Edit`, `mkdir`, `sed`, or `jq` directly from this slash command.** All file work happens inside the bash helper or `project-profiler`.
+- **Never draft `CLAUDE.md` content inline from this slash command**, even when the project is "obviously simple". Drafting is `project-profiler`'s job — the agent returns the content; this slash command writes it. The `Write` call from here uses the agent-returned content verbatim; no editorial pass, no embellishment.
+- **Never write `CLAUDE.md` without first dispatching `project-profiler`.** If the agent dispatch fails or returns a malformed report (no `## Drafted content` block when status is `drafted`), surface the failure and stop. Do not fabricate content to "rescue" the flow.
+- **Never invoke `Edit`, `mkdir`, `sed`, or `jq` directly from this slash command.** Phase 1's file work happens inside the bash helper. Phase 2's only allowed writes are: (a) `Write(<abs>/CLAUDE.md, <agent-returned-content>)` and (b) nothing else.
 - **Never dispatch `project-profiler` in `new` mode without an explicit operator answer.** The agent's prompt enforces this defensively but the slash command should refuse to even invoke it (the briefing would carry an empty `operator_answer` field).
 
 ## Hard refusals
