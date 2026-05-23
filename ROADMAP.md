@@ -18,53 +18,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 2–5 — Single-project agent flow + robustness + multi-project foundation.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries — and when an operator can install / uninstall atelier without risking unrelated Claude state.
 
-### M4.19 — `/setup-project` auto-generates root `CLAUDE.md` (interview or codebase scan)
-
-`/setup-project` today writes a placeholder `.claude/CLAUDE.md` from a generic template and leaves the **root** `CLAUDE.md` (the file Claude Code uses to learn project architecture / stack / conventions) entirely up to the operator. Result: agents start every task with effectively zero project context until the operator manually populates that file.
-
-This task makes `/setup-project` populate the root `CLAUDE.md` automatically, branching on whether the project is **new** or **existing**. The atelier-specific `.claude/CLAUDE.md` is **also** managed (current placeholder template stays; existing idempotency rule in `commands/setup-project.md` line 34 still applies — never overwrite if already present).
-
-**Detection (auto, with override):**
-
-- Heuristic on the target path:
-  - **`new`** when the repo has 0 commits OR tracks ≤3 files all matching docs-only patterns (`README*`, `LICENSE*`, `.gitignore`).
-  - **`existing`** when the repo has any manifest file (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `Gemfile`, …), a populated source dir (`src/`, `lib/`, `app/`), or >3 tracked files.
-- CLI override: `atelier-setup-project --mode=new|existing` forces the branch and skips the heuristic. Default is the heuristic.
-
-**`new` branch — single-question interview + AI drafts:**
-
-- One open question to the operator: *"What is this project about? (free-form)"*.
-- A sub-agent converts the answer into a structured root `CLAUDE.md` covering: purpose, anticipated stack, anticipated conventions. Sections with unknown values are explicitly marked `TBD` (e.g., *"Test runner: TBD"*) so a later task can fill them in.
-
-**`existing` branch — `project-profiler` agent (Sonnet, read-only):**
-
-- Tools restricted to `Read`, `Glob`, `Grep`. No execution, no installs, no network — the agent's prompt forbids them explicitly.
-- Scans `README*`, manifest files, top-level dir layout, CI configs (`.github/workflows/*`), test/lint configs (`vitest.config.*`, `eslint.config.*`, `tsconfig.json`, etc.).
-- Writes the root `CLAUDE.md` with: detected stack (from manifests), high-level architecture, conventions (test runner, linter, package manager, deploy target if detectable). Whatever it cannot infer with confidence is left as `TBD` rather than guessed.
-
-**Both branches:**
-
-- Never overwrite an existing root `CLAUDE.md` (same idempotency rule as `.claude/CLAUDE.md`).
-- Status (`written` / `kept-existing`) logged in the `/setup-project` summary block.
-
-**Sub-tasks:**
-
-- [ ] Heuristic function in `scripts/atelier-setup-project` returning `new|existing`.
-- [ ] `--mode=new|existing` CLI flag, overriding the heuristic.
-- [ ] `agents/project-profiler.md` — Sonnet, tools `Read` / `Glob` / `Grep` only, prompt explicitly forbidding execution / install / network.
-- [ ] `templates/project-claude-root.md.template` for the `new` branch (placeholders the interview / AI fills in).
-- [ ] `/setup-project` step 5 extended: branch on detection, run the appropriate path, write the root `CLAUDE.md` only when missing.
-- [ ] `commands/setup-project.md` updated to document the new step + override flag.
-
-**Acceptance:**
-
-- `/setup-project` on an empty repo (0 commits): asks the open question, writes root `CLAUDE.md` reflecting the answer, writes `.claude/CLAUDE.md` from the current placeholder template.
-- `/setup-project` on a populated repo (has `package.json` + `src/`): no interview, `project-profiler` writes root `CLAUDE.md` with detected stack / conventions; `.claude/CLAUDE.md` written from the current template.
-- `atelier-setup-project --mode=new` on a populated repo forces the interview branch (ignores heuristic).
-- Re-running `/setup-project` on a project that already has a root `CLAUDE.md` leaves it untouched (logs `kept-existing`).
-
-**Trigger to revisit:** captured 2026-05-22. Without this, every new project bootstrapped via atelier starts with agents having zero project context until the operator manually writes the root `CLAUDE.md` — friction at exactly the moment the operator is trying to get the project running.
-
 ---
 
 ## Low Priority / Ideas
