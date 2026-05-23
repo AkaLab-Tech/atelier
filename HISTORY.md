@@ -8,6 +8,78 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F11 — Document `$ATELIER_CONFIG_DIR` lookup order + add `/doctor` check — 2026-05-23
+**PR:** _pending_
+
+F11's audit revealed the persistence model already works end-to-end: `phase_c_1_shellrc_hooks` bakes `export ATELIER_CONFIG_DIR=<resolved-path>` into the operator's `~/.zshrc` / `~/.bashrc` (line 991 of `install.sh`), and downstream tooling (`scripts/atelier-uninstall` line 99, `scripts/atelier-setup-project` line 259) already reads the env var with a `~/.claude-work/` fallback. The chain is intact — what was missing was explicit documentation and a verification check.
+
+**Delivered:**
+
+- **`install.sh` — comment on `resolve_config_dir`** explaining the persistence model (resolved path baked into shellrc hook block → downstream tools inherit via env var → lookup order `--config-dir flag > $ATELIER_CONFIG_DIR env > default`).
+- **`commands/doctor.md` — new check `h.`** verifying (1) `$ATELIER_CONFIG_DIR` is set + directory exists, (2) `.atelier-managed` marker present + JSON-parses, (3) marker's `installStatus` is `complete` (an `in_progress` value points at the F6 resume path). Reports `✓ atelier config dir <path> (installStatus: complete)` on success; `✗` with the appropriate `source ~/.zshrc` / `install.sh` fix command otherwise. Output-format example updated.
+
+**Decisions captured:**
+
+- **Env var only, no config file.** The F11 entry allowed either; chose env var to match the existing M5.0 design (no new XDG file to manage). Operators who deliberately edit out the shellrc export get caught by the doctor check, not by silent fallback to `~/.claude-work/`.
+- **Documentation is the deliverable.** No code logic changed — the chain already worked. The fix is making the contract observable (doctor check) and findable (install.sh comment).
+
+### M7.1.F9 — Force HTTPS for marketplace `git clone` (PLAN.md §2 conformance) — 2026-05-23
+**PR:** _pending_
+
+`claude plugin marketplace add AkaLab-Tech/claude-plugins` was defaulting to SSH clone (`Cloning via SSH: git@github.com:AkaLab-Tech/claude-plugins.git`), violating the hard constraint in [PLAN.md §2](PLAN.md) step 5 ("GitHub auth: HTTPS only. **Never** generate, reference, or rely on SSH keys."). Phase C.2 succeeded on machines with SSH keys configured *outside* atelier but would fail with an opaque SSH error on a clean Mac without keys.
+
+**Delivered:**
+
+- **`install.sh` — `ATELIER_MARKETPLACE_SOURCE` constant** changed from the `org/repo` shortcut `"AkaLab-Tech/claude-plugins"` to the full HTTPS URL `"https://github.com/AkaLab-Tech/claude-plugins.git"`. With the URL form, `git clone` no longer guesses the protocol — HTTPS is explicit.
+- **Comment block** at the constant explaining the F9 rationale so a future reader doesn't revert to the shortcut for terseness.
+
+**Decisions captured:**
+
+- **Constant change over env-var override.** The ROADMAP scope listed `GIT_CONFIG_COUNT=...` + `url.https://...insteadOf git@github.com:` as a fallback if the CLI rejected URL form. Tested by inspection: `claude plugin marketplace add` accepts full git URLs directly. The constant change is the minimal, most explicit fix — and it also fixes the operator-facing manual fallback (`phase_c_2_print_manual_commands`) which uses the same constant.
+
+### M7.1.F7a — Capture atelier-author git identity into `$ATELIER_CONFIG_DIR/git-identity.conf` (install side) — 2026-05-23
+**PR:** _pending_
+
+Install-side delivery of M7.1.F7. The end-to-end acceptance (atelier commits authored by atelier-author rather than the operator) splits across two PRs: F7a (install writes the identity file) closed here; F7b (orchestrator + commit-creating subagents adopt the file via `GIT_CONFIG_GLOBAL`) tracked separately on the ROADMAP.
+
+**Delivered:**
+
+- **`install.sh` — new `phase_b_capture_atelier_git_identity`** (called after `phase_b_verify_distinct_identities`). Reads `.login`, `.id`, `.name`, `.email` from `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author gh api user`, then writes `$ATELIER_CONFIG_DIR/git-identity.conf`:
+
+  ```ini
+  [user]
+      name = <gh .name or .login>
+      email = <gh .email or <id>+<login>@users.noreply.github.com>
+  ```
+
+  Tolerant of missing `gh` data: warns + skips (does not fail install).
+
+**Decisions captured:**
+
+- **GitHub no-reply email pattern as default.** Fresh service accounts rarely expose a public email. The `<numeric-id>+<login>@users.noreply.github.com` form is the GitHub-blessed no-reply that survives login renames (the id is the stable key).
+- **Operator's `~/.gitconfig` stays untouched.** F7a writes to atelier's isolated config dir only. F7b will mount the file via `GIT_CONFIG_GLOBAL` so the operator's personal identity is unaffected outside atelier worktrees.
+- **F7 split into F7a + F7b.** F7a is a write-once install step; F7b is cross-cutting orchestrator + agent work. Splitting keeps PR-A focused on install.sh and lets F7b ship as its own reviewable change. ROADMAP entry for F7b explicitly notes `blocked_by: F7a (delivered)`.
+
+### M7.1.F6 — Resumable installs via `install_status: in_progress` marker — 2026-05-23
+**PR:** _pending_
+
+Before F6, `install.sh` planted the `.atelier-managed` marker mid-Phase C.1. Any failure before that point (token expiry mid-Phase B, `Ctrl+C` at any point, Phase C.2 marketplace clone fail, etc.) left `$ATELIER_CONFIG_DIR` partially populated **without** the marker. The next `./install.sh` ran the M5.0.2 preflight collision check on the half-populated dir, failed to find the marker, and refused to reuse the directory — forcing the operator to pick an alternative path even though they actually wanted to retry. Observed in dogfood-2: a Phase B token expiry left `~/.claude-work/{.claude.json,backups,gh}` adrift; the retry rejected the path.
+
+**Delivered:**
+
+- **`install.sh` — two new functions** in the marker block:
+  - `mark_install_started` — runs from `phase_0_preflight` as soon as preflight commits to writing under `$ATELIER_CONFIG_DIR`. Plants the marker with `installStatus: in_progress`, `pid: $$`, `startedAt: <iso8601>`, and `atelierConfigDir`.
+  - `mark_install_complete` — runs from `main()` after `phase_verify` succeeds. Stamps the marker `installStatus: complete` + `completedAt` + `installerVersion`.
+- **`preflight_check`** extended with a third return code: `0` safe / `1` collision / `2` `in_progress` (resumable). The `in_progress` detection is a `grep` for the literal JSON key/value pair in the marker file — robust to whitespace, doesn't drag in a JSON parser.
+- **`phase_0_preflight`** gets a `case` over the new return codes. On `2`: prints `previous atelier install at <path> did not complete` and prompts `resume previous install? [Y/abort]:`. `Y` (or Enter) → `mark_install_started` (refresh pid + timestamp) + proceed. `--yes` non-interactive mode auto-resumes with a `sublog` line. Anything else → `die "aborted by operator"`.
+- **`phase_c_1_claude_config_dir`** simplified — no longer writes the marker (F6's `mark_install_started` planted it earlier). Function now just confirms the directory exists.
+
+**Decisions captured:**
+
+- **JSON marker schema retained.** The M5.0.2 marker was already JSON. F6 swaps the fields (`installedAt` → `startedAt` / `completedAt`, adds `installStatus` + `pid`) without changing the encoding. `grep` for the in_progress sentinel string is good enough — no `jq` dependency needed inside `preflight_check`.
+- **Backwards compat for legacy markers.** A pre-F6 marker (no `installStatus` field) reads as `complete` — `grep` for `in_progress` misses, falls through to the existing-file `return 0`. The next run then rewrites it with the new schema. No migration step required.
+- **Resume refreshes the marker.** On Y, `mark_install_started` runs again with a new `pid` and `startedAt`. This avoids stale-pid confusion if the operator inspects the marker between attempts.
+
 ### M4.19 — `/setup-project` auto-generates root `CLAUDE.md` (interview or codebase scan) — 2026-05-23
 **PR:** _pending_
 

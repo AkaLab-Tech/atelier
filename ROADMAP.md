@@ -12,7 +12,7 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phase 1 — Foundation.** Blocks everything else. A fresh Mac must be able to run `install.sh`, log in to Claude + GitHub, and end with the `atelier` plugin installed and `/doctor` ✅.
 
-> **Install hardening from M7.1 dogfood-2 (2026-05-23).** Findings F1–F12 below surfaced during a full-wipe reinstall on the operator's machine, following [docs/dogfood-guide.md](docs/dogfood-guide.md) Stages 0–1. M7.1 (full task cycle on a real project) is paused until F1–F12 are resolved. Tags in each entry: `[correctness]` = real bug or constraint violation; `[ux-blocking]` = non-technical operator can be misled or blocked; `[noise]` / `[improvement]` = polish / would-be-nice but operator can work around.
+> **Install hardening from M7.1 dogfood-2 (2026-05-23).** Findings F1–F12 surfaced during a full-wipe reinstall on the operator's machine, following [docs/dogfood-guide.md](docs/dogfood-guide.md) Stages 0–1. M7.1 (full task cycle on a real project) is paused until they are resolved. **Progress: F6 + F7a + F9 + F11 closed in PR _pending_ (correctness PR-A). F7b (orchestrator-side adoption of the identity file written by F7a) spawned as a follow-up — see below. Remaining: F1, F2, F3, F4, F5, F7b, F8, F10, F12.** Tags in each entry: `[correctness]` = real bug or constraint violation; `[ux-blocking]` = non-technical operator can be misled or blocked; `[noise]` / `[improvement]` = polish / would-be-nice but operator can work around.
 
 ### M7.1.F1 — Strip M5.0.2 preflight design block from `install.sh` output
 
@@ -89,35 +89,20 @@ Before each `gh auth login`, `install.sh` prints a one-line description of the r
 
 **Acceptance:** running `./install.sh` Phase B prints a labeled permissions-requirements block before each of the two `gh auth login` calls, separated visually from the device-code prompt.
 
-### M7.1.F6 — Resumable installs: plant `install_status: in_progress` marker early
+### M7.1.F7b — Orchestrator-side adoption of `$ATELIER_CONFIG_DIR/git-identity.conf`
 
-`[correctness]` · Source: M7.1 dogfood-2 install run (2026-05-23)
+`[correctness]` · `blocked_by: M7.1.F7a (delivered)` · Source: M7.1 dogfood-2 install run (2026-05-23)
 
-If `install.sh` fails anywhere after touching `$ATELIER_CONFIG_DIR` (token expiry mid-Phase B, `Ctrl+C` at any point, Phase C.1 symlink error, Phase C.2 marketplace clone fail, etc.), the directory is left partially populated **without** the `.atelier-managed` marker that Phase C.1 plants at the end. The next `./install.sh` triggers the M5.0.2 preflight collision check and refuses to reuse the directory — forcing the operator to pick an alternative path even though they actually want to retry the failed install. Observed in dogfood-2: a Phase B token expiry left `~/.claude-work/{.claude.json,backups,gh}` adrift, and the retry rejected the path.
-
-**Scope:**
-
-- [ ] At the very start of Phase 0 (after path resolution, before any other action), write the marker with content `install_status: in_progress` + `pid: $$` + `started_at: <iso8601>`.
-- [ ] Update the M5.0.2 preflight to recognize three marker states: missing → proceed (clean install); `in_progress` → offer `Resume previous install (Y/abort)?`; `complete` → idempotent reuse (current behavior).
-- [ ] At the end of a successful install, rewrite the marker with `install_status: complete` + `completed_at: <iso8601>` + `version: <sha or tag>`.
-- [ ] Document the contract as a top-line comment inside the marker file so a future reader understands the field semantics.
-
-**Acceptance:** simulate a Phase B failure (`kill -INT $$` mid-`gh auth login`). Re-running `./install.sh` finds the `in_progress` marker, offers resume, and proceeds without prompting for an alternative path. After a clean run, the marker reads `install_status: complete`.
-
-### M7.1.F7 — `git user.name` / `user.email` default to `atelier-author` identity, not operator's personal one
-
-`[correctness]` · Source: M7.1 dogfood-2 install run (2026-05-23)
-
-The git-identity prompt at the end of Phase C.1 defaults to the operator's existing global `~/.gitconfig` values (e.g. `Mike` / `miguelmail2006@gmail.com`). Atelier commits will therefore be authored by the operator's personal identity but pushed via the `atelier-author` gh token — a mixed identity that defeats the purpose of the dual-gh-id design (M5.0.1) and makes "who did what" hard to reason about in the commit graph and on GitHub.
+F7a (closed in PR-A) writes `$ATELIER_CONFIG_DIR/git-identity.conf` at install time with the atelier-author identity captured from `gh api user`. F7b is the orchestrator-side adoption that actually makes commits use that identity. Without F7b, F7a's file exists but is unread — commits still author as the operator's personal global identity.
 
 **Scope:**
 
-- [ ] Read the `atelier-author` GitHub user via `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author gh api user --jq '.name // .login, .login, .email'`.
-- [ ] Propose `name = <real name or login>`, `email = <public email or `<id>+<login>@users.noreply.github.com`>` as the prompt defaults.
-- [ ] Decide isolation mechanism: per-project `includeIf` block in `~/.gitconfig` keyed off `$ATELIER_CONFIG_DIR/projects/**` (or whatever atelier registers); OR injected per-commit by `task-orchestrator` via `git -c user.name=... -c user.email=... commit`. The chosen mechanism must NOT overwrite the operator's global `~/.gitconfig` identity.
-- [ ] Document the chosen mechanism in `commands/setup-project.md` and operator-facing docs.
+- [ ] `task-orchestrator` and every commit-creating subagent / skill (`implementer`, `pr-author`, `auto-merge`, `retry-with-logs`, anything else that calls `git commit`) sets `GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf` on the commit invocation so the Author / Committer fields match atelier-author. Choose: env-var wrap (preferred — explicit at the commit site) OR `git -c user.name=... -c user.email=...` per-commit (more verbose; need to read the file at runtime).
+- [ ] The `task` shell function in the shellrc hook block exports `GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf` alongside the existing `CLAUDE_CONFIG_DIR` / `GH_CONFIG_DIR` exports so the operator's interactive session inside `task` inherits the same identity boundary.
+- [ ] Document the chosen mechanism in `commands/setup-project.md` and the operator guide (M6.2). Operator's global `~/.gitconfig` stays untouched — F7a is explicit about that.
+- [ ] Add a doctor check: `$ATELIER_CONFIG_DIR/git-identity.conf` exists and the `[user]` section names / emails match `gh api user` under the author config dir.
 
-**Acceptance:** after install, commits made by atelier inside a managed worktree show `Author: <atelier-author identity>` while commits made by the operator outside that worktree retain the operator's personal identity. Verified via `git log --format='%an <%ae>' -1` from both contexts.
+**Acceptance:** after F7b lands, commits made by atelier inside a managed worktree show `Author: <atelier-author identity>` while commits made by the operator outside that worktree retain the operator's personal identity. Verified via `git log --format='%an <%ae>' -1` from both contexts.
 
 ### M7.1.F8 — Trailing-slash normalization + path-format validation in Phase 0 prompt
 
@@ -134,21 +119,6 @@ The Phase 0 prompt sample text shows paths with a trailing `/` (`pick an alterna
 
 **Acceptance:** entering `~/.claude-atelier/` (with trailing slash) results in the install storing `/Users/<user>/.claude-atelier` and all downstream log lines showing single-slash paths. Entering `/tmp/foo bar` (with space) is rejected with a clear message and re-prompts.
 
-### M7.1.F9 — Force HTTPS for marketplace `git clone` (violates PLAN.md §2 HTTPS-only)
-
-`[correctness]` · Source: M7.1 dogfood-2 install run (2026-05-23)
-
-Phase C.2 prints `Cloning via SSH: git@github.com:AkaLab-Tech/claude-plugins.git` when `claude plugin marketplace add AkaLab-Tech/claude-plugins` runs. This violates the hard constraint in [PLAN.md §2](PLAN.md) step 5 ("GitHub auth: HTTPS only. **Never** generate, reference, or rely on SSH keys."). It succeeded on the dogfood machine only because the operator has SSH keys configured *outside* atelier — on a clean Mac without SSH keys, Phase C.2 would fail with an opaque SSH error.
-
-**Scope:**
-
-- [ ] Determine whether `claude plugin marketplace add` accepts a protocol override flag. If it does, use it from `install.sh`.
-- [ ] If not, set a scoped `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf GIT_CONFIG_VALUE_0=git@github.com:` environment override on the `claude plugin marketplace add` invocation only, so it does not leak into the operator's global git config.
-- [ ] Verify the same protocol enforcement applies to `claude plugin install <plugin>@<marketplace>` invocations.
-- [ ] Extend `commands/doctor.md` to flag any installed marketplace whose remote starts with `git@` as a violation (post-install detection).
-
-**Acceptance:** running `./install.sh` Phase C.2 on a machine with **no** SSH keys configured completes successfully. `git -C ~/.claude*/plugins/marketplaces/akalab-tech remote -v` shows `https://github.com/AkaLab-Tech/claude-plugins.git`, not the `git@github.com:` form.
-
 ### M7.1.F10 — Suppress or wrap git-wt sub-installer's "installation complete" epilogue
 
 `[ux-blocking]` · Source: M7.1 dogfood-2 install run (2026-05-23)
@@ -161,27 +131,6 @@ In the middle of Phase C.1, atelier delegates to the upstream git-wt installer (
 - [ ] Otherwise: pipe git-wt's output through a filter that drops lines from `==> installation complete` to end-of-block, or wrap it in a clearly-labeled sub-section (`---- git-wt sub-installer output ----` / `---- end git-wt sub-installer ----`) so the operator understands the scope.
 
 **Acceptance:** running `./install.sh` shows git-wt's install lines clearly attributed as a sub-step inside Phase C.1, **without** the `installation complete / next steps` epilogue suggesting the whole atelier install is done.
-
-### M7.1.F11 — Persist the operator's `$ATELIER_CONFIG_DIR` choice across runs
-
-`[correctness]` · Source: M7.1 dogfood-2 install run (2026-05-23)
-
-When Phase 0 prompts the operator for an alternative path (because the default `~/.claude-work/` collided), the chosen path appears to be used only in-memory for the current install. Open questions to verify by reading `install.sh` + downstream tooling:
-
-- Does `install.sh` write the chosen path anywhere durable so subsequent `./install.sh` runs default to it?
-- Does `atelier-uninstall` know to look at the alternative path?
-- Does `/atelier:doctor` resolve the alternative path correctly?
-- Does `scripts/atelier-setup-project` write the alternative path into per-task `.claude/settings.json`?
-
-If any answer is "no", the operator who chose `~/.claude-atelier/` ends up with a working install but downstream tools that default back to `~/.claude-work/` and silently miss the real install — a variant of F6 that breaks after the install rather than during it.
-
-**Scope:**
-
-- [ ] Persist the choice in `~/.config/atelier/config` (XDG-ish) **or** as an env var exported by an atelier hook block in `~/.zshrc` (matching how atelier already wires shell hooks during install).
-- [ ] Document the lookup order: explicit `$ATELIER_CONFIG_DIR` env var > config file > default `~/.claude-work/`.
-- [ ] Audit `install.sh`, `scripts/atelier-uninstall`, `commands/doctor.md`, `scripts/atelier-setup-project`, and every reference to `$ATELIER_CONFIG_DIR` to ensure they go through the same resolver.
-
-**Acceptance:** after choosing `~/.claude-atelier/` in a Phase 0 prompt, opening a fresh shell and running `/atelier:doctor` resolves the same path; `atelier-uninstall` defaults to the same path; `./install.sh` re-run skips the Phase 0 prompt and proceeds idempotently (uses the marker semantics from F6).
 
 ### M7.1.F12 — End-of-install "first steps" guide for the operator
 

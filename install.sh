@@ -128,7 +128,17 @@ parse_args() {
 }
 
 resolve_config_dir() {
-  # Priority: --config-dir flag > $ATELIER_CONFIG_DIR env > default.
+  # Persistence model (M7.1.F11): the resolved $ATELIER_CONFIG_DIR is baked
+  # into the shellrc hook block written by phase_c_1_shellrc_hooks. On every
+  # subsequent login, `source ~/.zshrc` (or ~/.bashrc) exports
+  # ATELIER_CONFIG_DIR for the operator's shell. Downstream tools
+  # (atelier-uninstall, atelier-setup-project, /doctor's bash calls) inherit
+  # the env var and resolve the same path.
+  #
+  # Priority: --config-dir flag > $ATELIER_CONFIG_DIR env > default. The env
+  # var branch covers the case where the operator picked an alternative path
+  # in a previous run's Phase 0 prompt: their shellrc now exports that path,
+  # and install.sh on re-run picks it up automatically (no Phase 0 prompt).
   if [ -n "$ATELIER_CONFIG_DIR_FLAG" ]; then
     ATELIER_CONFIG_DIR="$ATELIER_CONFIG_DIR_FLAG"
   elif [ -n "${ATELIER_CONFIG_DIR:-}" ]; then
@@ -141,17 +151,60 @@ resolve_config_dir() {
   export ATELIER_CONFIG_DIR
 }
 
+# ---------- install-status marker (M7.1.F6) ----------
+
+# Plant an in_progress marker as soon as install commits to writing under
+# $ATELIER_CONFIG_DIR. Subsequent install runs read this in preflight_check
+# and offer "Resume previous install?" instead of treating a partially-
+# populated directory as an unrelated-content collision (M5.0.2 trap).
+mark_install_started() {
+  mkdir -p "$ATELIER_CONFIG_DIR"
+  cat > "$ATELIER_CONFIG_DIR/.atelier-managed" <<MARKER
+{
+  "managedBy": "atelier",
+  "installStatus": "in_progress",
+  "pid": $$,
+  "startedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "atelierConfigDir": "$ATELIER_CONFIG_DIR"
+}
+MARKER
+}
+
+# Stamp the marker installStatus=complete after every phase succeeds. Only
+# after this runs does the install count as idempotent-reusable on the next
+# install.sh invocation. Called from main() after phase_verify.
+mark_install_complete() {
+  cat > "$ATELIER_CONFIG_DIR/.atelier-managed" <<MARKER
+{
+  "managedBy": "atelier",
+  "installStatus": "complete",
+  "completedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "installerVersion": "0.1.0",
+  "atelierConfigDir": "$ATELIER_CONFIG_DIR"
+}
+MARKER
+}
+
 # ---------- phase 0: preflight (M5.0.2) ----------
 
-# Return 0 if $1 (path) is safe to use as atelier's config dir; 1 otherwise.
-# Safe states: doesn't exist, exists but empty, exists with atelier markers
-# (the .atelier-managed file or plugins/<*>/atelier/). Unsafe state: exists
-# with unrelated content.
+# Return 0 if $1 (path) is safe to use as atelier's config dir; 1 if it has
+# unrelated content; 2 if it has an in_progress marker from a crashed
+# previous install (M7.1.F6 — resumable). Safe-without-prompt states:
+# doesn't exist, exists but empty, contains a complete/legacy
+# .atelier-managed marker, or contains plugins/<*>/atelier/.
 preflight_check() {
   local dir="$1"
   [ -d "$dir" ] || return 0
   [ -z "$(ls -A "$dir" 2>/dev/null)" ] && return 0
-  [ -f "$dir/.atelier-managed" ] && return 0
+  if [ -f "$dir/.atelier-managed" ]; then
+    # M7.1.F6: in_progress means a previous install crashed mid-flight.
+    # Surface that to phase_0_preflight so it can offer a resume prompt
+    # instead of treating the half-populated dir as opaque collision.
+    if grep -q '"installStatus"[[:space:]]*:[[:space:]]*"in_progress"' "$dir/.atelier-managed" 2>/dev/null; then
+      return 2
+    fi
+    return 0
+  fi
   # Glob expands to nothing if no match; the nullglob behaviour is the
   # safe path. Wrap in a subshell so set -e + nullglob don't leak out.
   if ( shopt -s nullglob; matches=("$dir/plugins"/*/atelier); [ ${#matches[@]} -gt 0 ] ); then
@@ -163,17 +216,46 @@ preflight_check() {
 phase_0_preflight() {
   log "Phase 0 — preflight: atelier config dir collision check"
   while true; do
-    if preflight_check "$ATELIER_CONFIG_DIR"; then
-      sublog "atelier config dir OK: $ATELIER_CONFIG_DIR"
-      return 0
-    fi
+    local pf_status=0
+    preflight_check "$ATELIER_CONFIG_DIR" || pf_status=$?
 
-    warn "atelier wants to install under $ATELIER_CONFIG_DIR but that"
-    warn "directory already contains content that does not look like atelier:"
-    ls -A "$ATELIER_CONFIG_DIR" 2>/dev/null | head -10 | sed 's/^/      /' >&2
+    case $pf_status in
+      0)
+        sublog "atelier config dir OK: $ATELIER_CONFIG_DIR"
+        mark_install_started
+        return 0
+        ;;
+      2)
+        # M7.1.F6: previous install left an in_progress marker. Offer to
+        # resume rather than asking for an alternative path.
+        warn "previous atelier install at $ATELIER_CONFIG_DIR did not complete"
+        warn "(marker says installStatus: in_progress)"
+        if $NONINTERACTIVE; then
+          sublog "non-interactive mode: resuming previous install"
+          mark_install_started
+          return 0
+        fi
+        printf "    resume previous install? [Y/abort]: " >&2
+        local resume=""
+        read -r resume
+        case "$resume" in
+          ""|y|Y|yes|YES)
+            sublog "resuming previous install"
+            mark_install_started
+            return 0
+            ;;
+          *)
+            die "aborted by operator"
+            ;;
+        esac
+        ;;
+      *)
+        warn "atelier wants to install under $ATELIER_CONFIG_DIR but that"
+        warn "directory already contains content that does not look like atelier:"
+        ls -A "$ATELIER_CONFIG_DIR" 2>/dev/null | head -10 | sed 's/^/      /' >&2
 
-    if $NONINTERACTIVE; then
-      die "non-interactive mode refuses to proceed.
+        if $NONINTERACTIVE; then
+          die "non-interactive mode refuses to proceed.
 
    Options:
      1. Re-run with --config-dir <path> pointing at an empty or atelier-
@@ -182,17 +264,19 @@ phase_0_preflight() {
      3. Manually clear / move \$ATELIER_CONFIG_DIR's contents and re-run.
      4. Re-run install.sh interactively (without --yes / -y) to be
         prompted for an alternative path."
-    fi
+        fi
 
-    # Interactive: ask operator for an alternative.
-    printf "    pick an alternative path (e.g. ~/.claude-atelier/, ~/.atelier/): " >&2
-    local answer=""
-    read -r answer
-    [ -n "$answer" ] || { warn "empty path, try again"; continue; }
-    answer="${answer/#\~/$HOME}"
-    ATELIER_CONFIG_DIR="$answer"
-    export ATELIER_CONFIG_DIR
-    sublog "trying $ATELIER_CONFIG_DIR ..."
+        # Interactive: ask operator for an alternative.
+        printf "    pick an alternative path (e.g. ~/.claude-atelier/, ~/.atelier/): " >&2
+        local answer=""
+        read -r answer
+        [ -n "$answer" ] || { warn "empty path, try again"; continue; }
+        answer="${answer/#\~/$HOME}"
+        ATELIER_CONFIG_DIR="$answer"
+        export ATELIER_CONFIG_DIR
+        sublog "trying $ATELIER_CONFIG_DIR ..."
+        ;;
+    esac
   done
 }
 
@@ -590,6 +674,48 @@ phase_b_verify_distinct_identities() {
   fi
 }
 
+# M7.1.F7a (install side): capture the atelier-author GitHub identity into a
+# git-config file under $ATELIER_CONFIG_DIR. Orchestrator-driven commits
+# (the F7b follow-up) will read this via
+# GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf so atelier commits
+# are authored by atelier-author rather than the operator's personal global
+# identity. The operator's ~/.gitconfig is intentionally NOT modified.
+phase_b_capture_atelier_git_identity() {
+  local identity_file="$ATELIER_CONFIG_DIR/git-identity.conf"
+  local login id name email
+
+  login="$(GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api user --jq .login 2>/dev/null || true)"
+  id="$(GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"    gh api user --jq .id    2>/dev/null || true)"
+  name="$(GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"  gh api user --jq -r '.name // empty'  2>/dev/null || true)"
+  email="$(GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api user --jq -r '.email // empty' 2>/dev/null || true)"
+
+  if [ -z "$login" ] || [ -z "$id" ]; then
+    warn "could not read atelier-author identity from gh — skipping $identity_file"
+    warn "orchestrator-driven commits will fall back to the operator's global git identity"
+    return
+  fi
+
+  # Defaults when GitHub exposes neither a real name nor a public email
+  # (the common case for fresh service accounts). The no-reply pattern
+  # uses the numeric account id so renamed logins still route mail.
+  : "${name:=$login}"
+  : "${email:=${id}+${login}@users.noreply.github.com}"
+
+  cat > "$identity_file" <<CFG
+# atelier-author git identity (M7.1.F7) — read by orchestrator-driven
+# commits via GIT_CONFIG_GLOBAL=$identity_file so the Author: field of
+# atelier-managed commits matches the GitHub account that pushes them
+# (M5.0.1 dual-gh-id). DO NOT edit by hand — install.sh rewrites this
+# every run from \`gh api user\`. The operator's personal global git
+# identity (~/.gitconfig) is intentionally untouched.
+[user]
+    name = $name
+    email = $email
+CFG
+  sublog "atelier-author git identity captured: $name <$email>"
+  sublog "  -> $identity_file"
+}
+
 phase_b() {
   log "Phase B — authentication"
 
@@ -612,6 +738,7 @@ phase_b() {
   phase_b_atelier_author_login
   phase_b_atelier_reviewer_login
   phase_b_verify_distinct_identities
+  phase_b_capture_atelier_git_identity
   ok "Phase B complete"
 }
 
@@ -660,28 +787,16 @@ phase_c_1_instantiate_templates() {
 }
 
 phase_c_1_claude_config_dir() {
-  # Create atelier's isolated config root if it does not yet exist (M5.0),
-  # then write a small marker file so future preflight runs (M5.0.2) can
-  # recognise this directory as atelier-managed without false-positive
-  # collision warnings. The marker is refreshed on every install, so its
-  # `installedAt` reflects the most recent install timestamp (not the
-  # original — keep the install state observable but minimal).
+  # The .atelier-managed marker is planted by mark_install_started in
+  # Phase 0 (installStatus=in_progress) and stamped installStatus=complete
+  # by mark_install_complete at the end of main() — see M7.1.F6. This phase
+  # now just confirms the directory is present and logs it for the operator.
   if [ ! -d "$ATELIER_CONFIG_DIR" ]; then
     mkdir -p "$ATELIER_CONFIG_DIR"
     sublog "created atelier config root: $ATELIER_CONFIG_DIR"
   else
     sublog "atelier config root already exists: $ATELIER_CONFIG_DIR"
   fi
-
-  cat > "$ATELIER_CONFIG_DIR/.atelier-managed" <<MARKER
-{
-  "managedBy": "atelier",
-  "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "installerVersion": "0.1.0",
-  "atelierConfigDir": "$ATELIER_CONFIG_DIR"
-}
-MARKER
-  sublog "wrote $ATELIER_CONFIG_DIR/.atelier-managed marker"
 }
 
 phase_c_1_git_wt() {
@@ -968,7 +1083,12 @@ phase_c_1() {
 # Plugins atelier installs from the shared AkaLab-Tech catalog. Listed here
 # (not inlined below) so the manual-fallback message and the install loop
 # stay in sync.
-ATELIER_MARKETPLACE_SOURCE="AkaLab-Tech/claude-plugins"
+#
+# M7.1.F9: this MUST be the full https://...git URL, not the org/repo
+# shortcut. With the shortcut, `claude plugin marketplace add` defaults to
+# SSH (git@github.com:...) and fails on a clean machine without SSH keys —
+# a direct violation of PLAN.md §2 step 5 (HTTPS only, no SSH).
+ATELIER_MARKETPLACE_SOURCE="https://github.com/AkaLab-Tech/claude-plugins.git"
 ATELIER_MARKETPLACE_NAME="akalab-tech"
 ATELIER_PLUGIN_IDS=("atelier@akalab-tech" "claude-roadmap-tools@akalab-tech")
 
@@ -1101,6 +1221,11 @@ main() {
   phase_c_1
   phase_c_2
   phase_verify
+  # M7.1.F6: stamp the marker installStatus=complete only after every phase
+  # succeeds. A crash before this point leaves installStatus=in_progress so
+  # the next install.sh run offers a resume rather than treating the
+  # partially-populated $ATELIER_CONFIG_DIR as an opaque collision.
+  mark_install_complete
   log "install.sh done. Open a new terminal (or run \`source ~/.zshrc\`) to use \`task\` and \`task-status\`."
 }
 
