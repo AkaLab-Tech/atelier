@@ -12,7 +12,7 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phase 1 — Foundation.** Blocks everything else. A fresh Mac must be able to run `install.sh`, log in to Claude + GitHub, and end with the `atelier` plugin installed and `/doctor` ✅.
 
-> **Install hardening from M7.1 dogfood-2 (2026-05-23).** Findings F1–F12 surfaced during a full-wipe reinstall on the operator's machine, following [docs/dogfood-guide.md](docs/dogfood-guide.md) Stages 0–1. M7.1 (full task cycle on a real project) is paused until they are resolved. **Progress: F6 + F7a + F9 + F11 closed in PR _pending_ (correctness PR-A). F7b (orchestrator-side adoption of the identity file written by F7a) spawned as a follow-up — see below. Remaining: F1, F2, F3, F4, F5, F7b, F8, F10, F12.** Tags in each entry: `[correctness]` = real bug or constraint violation; `[ux-blocking]` = non-technical operator can be misled or blocked; `[noise]` / `[improvement]` = polish / would-be-nice but operator can work around.
+> **Install hardening from M7.1 dogfood-2 (2026-05-23).** Findings F1–F12 surfaced during a full-wipe reinstall on the operator's machine, following [docs/dogfood-guide.md](docs/dogfood-guide.md) Stages 0–1. M7.1 (full task cycle on a real project) is paused until they are resolved. **Progress: correctness PR-A ([#70](https://github.com/AkaLab-Tech/atelier/pull/70), v0.4.2) closed F6 + F7a + F9 + F11. UX-blocking PR-B (PR _pending_) closes F2 + F5 + F10 + F12. F7b (orchestrator-side adoption of the identity file written by F7a) spawned as a follow-up — see below. Remaining: F1, F3, F4, F7b, F8.** Tags in each entry: `[correctness]` = real bug or constraint violation; `[ux-blocking]` = non-technical operator can be misled or blocked; `[noise]` / `[improvement]` = polish / would-be-nice but operator can work around.
 
 ### M7.1.F1 — Strip M5.0.2 preflight design block from `install.sh` output
 
@@ -26,22 +26,6 @@ The end of `install.sh` prints a multi-line block titled `PREFLIGHT BEHAVIOUR (M
 - [ ] Audit the rest of `install.sh` for similar design-doc leakage (any `==>` / `!!` blocks that explain internal contracts rather than reporting operator-relevant state).
 
 **Acceptance:** running `./install.sh` end-to-end on a clean system produces no output mentioning `PREFLIGHT BEHAVIOUR`, milestone IDs (`M5.0.2`, etc.), or other internal design framing.
-
-### M7.1.F2 — `install.sh` output legibility (colors, section headers, progress markers)
-
-`[ux-blocking]` · Source: M7.1 dogfood-2 install run (2026-05-23)
-
-Current output is monochrome and flat — Phases A / B / C.1 / C.2 blur together, sub-steps lack visual hierarchy, and success / skip / fail are not visually distinct. For a non-technical operator following a multi-minute install, it is hard to tell where they are or whether something quietly broke.
-
-**Scope:**
-
-- [ ] Introduce ANSI color, auto-disabled when `[ -t 1 ]` is false or `NO_COLOR` is set in env (so logs piped to a file stay clean).
-- [ ] Bold / colored phase headers (`==> Phase A`, `==> Phase B`, …).
-- [ ] Unicode markers: ✓ success, → in progress, ↷ skipped (no-op), ✗ failed.
-- [ ] Clear visual separators between phases (rule line + blank line).
-- [ ] Consistent indent so the phase-level vs step-level vs sub-step hierarchy is obvious at a glance.
-
-**Acceptance:** a side-by-side comparison of the current and new outputs on the same install path shows phase boundaries and success / skip / fail are scannable in <5 seconds without reading every line.
 
 ### M7.1.F3 — Phase A: detect outdated base deps and offer update
 
@@ -71,23 +55,6 @@ Phase B currently prints `Claude Code already authenticated` and proceeds silent
 - [ ] Default to "keep" on Enter so the typical re-run stays fast.
 
 **Acceptance:** running `./install.sh` on a machine where Claude + both gh identities are already authenticated produces three prompts (one per credential) each offering keep / switch with the existing identity displayed.
-
-### M7.1.F5 — Phase B: explain GitHub permission requirements before each `gh auth login`
-
-`[ux-blocking]` · Source: M7.1 dogfood-2 install run (2026-05-23)
-
-Before each `gh auth login`, `install.sh` prints a one-line description of the role (`author` / `reviewer`) but does not explain what GitHub permissions the soon-to-be-authenticated account must have. Non-technical operators frequently authenticate with a personal account that does not have access to their organization's repositories, causing silent failures later when pushes / PRs / approvals fail without an obvious root cause.
-
-**Scope:**
-
-- [ ] Print before each `gh auth login` invocation:
-  - **Role purpose**: author = push + PR open + issue ops; reviewer = PR approve + comment.
-  - **Required GitHub access**: the account must have **push** access to the project repos (author) or at least **read + review** (reviewer).
-  - **Org reminder**: if the project lives under a GitHub org, the account must be a member or invited collaborator *before* this login.
-  - **Pointer**: link to the operator-facing docs section on org membership / repo access.
-- [ ] Pause for an explicit Enter to confirm the operator has read the block before the device-code flow opens.
-
-**Acceptance:** running `./install.sh` Phase B prints a labeled permissions-requirements block before each of the two `gh auth login` calls, separated visually from the device-code prompt.
 
 ### M7.1.F7b — Orchestrator-side adoption of `$ATELIER_CONFIG_DIR/git-identity.conf`
 
@@ -119,38 +86,6 @@ The Phase 0 prompt sample text shows paths with a trailing `/` (`pick an alterna
 
 **Acceptance:** entering `~/.claude-atelier/` (with trailing slash) results in the install storing `/Users/<user>/.claude-atelier` and all downstream log lines showing single-slash paths. Entering `/tmp/foo bar` (with space) is rejected with a clear message and re-prompts.
 
-### M7.1.F10 — Suppress or wrap git-wt sub-installer's "installation complete" epilogue
-
-`[ux-blocking]` · Source: M7.1 dogfood-2 install run (2026-05-23)
-
-In the middle of Phase C.1, atelier delegates to the upstream git-wt installer (`/tmp/git-wt/install.sh`). That installer prints its own `==> installation complete / next steps: 1. Restart your shell …` epilogue — but this is the *sub-installer's* completion, not atelier's. To a non-technical operator following along, it looks like the entire install just finished, while in reality Phase C.1 still has git-identity prompts + helper symlink wiring + Phase C.2 to go.
-
-**Scope:**
-
-- [ ] If the git-wt installer exposes a quiet / no-epilogue flag (`--quiet`, `--no-next-steps`, etc.), use it from atelier's invocation. Coordinate upstream if needed (atelier maintains the AkaLab-Tech/git-wt fork — adding the flag is in our control).
-- [ ] Otherwise: pipe git-wt's output through a filter that drops lines from `==> installation complete` to end-of-block, or wrap it in a clearly-labeled sub-section (`---- git-wt sub-installer output ----` / `---- end git-wt sub-installer ----`) so the operator understands the scope.
-
-**Acceptance:** running `./install.sh` shows git-wt's install lines clearly attributed as a sub-step inside Phase C.1, **without** the `installation complete / next steps` epilogue suggesting the whole atelier install is done.
-
-### M7.1.F12 — End-of-install "first steps" guide for the operator
-
-`[ux-blocking]` · Source: M7.1 dogfood-2 install run (2026-05-23)
-
-After a successful install, `install.sh` prints only: `==> install.sh done. Open a new terminal (or run source ~/.zshrc) to use task and task-status.`. A non-technical operator has no idea what to do next — what command sets up a project, how to start a task, how to ask the doctor for status, how to uninstall if something goes wrong.
-
-**Scope:**
-
-- [ ] At the end of a successful install, print a clearly-formatted "First steps" block:
-  1. Reload your shell: `source ~/.zshrc`.
-  2. Verify the install: open Claude Code and run `/atelier:doctor`.
-  3. Set up your first project: `/atelier:setup-project <path-to-project>`.
-  4. Start your first task: open the project's Claude session and run `/atelier:next-task`.
-  5. Where to find docs: pointer to `docs/operator-guide.md` once M6.2 lands (or the in-repo README until then).
-  6. How to undo the install: `atelier-uninstall` (or `atelier-uninstall --purge` to also wipe `$ATELIER_CONFIG_DIR`).
-- [ ] Use clear visual hierarchy (header, numbered steps, code-block style for commands).
-- [ ] Keep it copy-pasteable: no soft-wrap, no embedded variables the operator has to substitute mentally.
-
-**Acceptance:** running `./install.sh` end-to-end ends with a "First steps" section the operator can follow without opening any other documentation.
 
 ---
 

@@ -12,8 +12,10 @@
 #
 # Conventions:
 #   - strict mode: `set -euo pipefail` and a defensive IFS.
-#   - logging via log() / sublog() / warn() / die() / ok() helpers (ASCII-only,
-#     to stay terminal-portable).
+#   - logging via phase() / log() / sublog() / step_ok() / step_skip() /
+#     step_fail() / ok() / warn() / die() helpers (M7.1.F2). ANSI color +
+#     Unicode markers (✓ / ↷ / ✗) when stdout is a TTY and NO_COLOR is
+#     unset; auto-degrades to plain output otherwise.
 #   - all idempotent: every install step short-circuits if the tool is already
 #     present on PATH or in its expected install location.
 #   - all installs are user-scope (no `sudo` on macOS; minimal `sudo` on apt-
@@ -52,13 +54,51 @@ NONINTERACTIVE=false
 # parse_args + resolve_config_dir have run.
 ATELIER_CONFIG_DIR=""
 
-# ---------- logging ----------
+# ---------- logging (M7.1.F2) ----------
 
-log()    { printf '==> %s\n' "$*"; }
-sublog() { printf '    %s\n' "$*"; }
-warn()   { printf '!!  %s\n' "$*" >&2; }
-die()    { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
-ok()     { printf '    OK: %s\n' "$*"; }
+# Color support detection. Cached once at script load so every helper reads
+# the same constants. Honors the https://no-color.org convention plus an
+# atelier-specific override (ATELIER_NO_COLOR=1) for parity with --yes /
+# ATELIER_AUTO style flags. When color is off, all _C_* expand to empty
+# strings — the printf templates stay valid; the output is just plain text.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ -z "${ATELIER_NO_COLOR:-}" ]; then
+  _C_RESET=$'\033[0m'
+  _C_BOLD=$'\033[1m'
+  _C_DIM=$'\033[2m'
+  _C_RED=$'\033[31m'
+  _C_GREEN=$'\033[32m'
+  _C_YELLOW=$'\033[33m'
+  _C_CYAN=$'\033[36m'
+else
+  _C_RESET=""; _C_BOLD=""; _C_DIM=""
+  _C_RED=""; _C_GREEN=""; _C_YELLOW=""; _C_CYAN=""
+fi
+
+# phase()  : top-of-phase header. Blank line + bold cyan ==> banner. Use this
+#            for "Phase 0 / A / B / C.1 / C.2 / Verification" etc.
+# log()    : generic top-level message (no implied phase boundary). Bold cyan
+#            ==> banner without the leading blank line.
+# sublog() : indented sub-step, plain text. Use for narrative ("cloning
+#            git-wt..." style lines).
+# step_ok(): indented sub-step with a green ✓ — confirms a presence/install
+#            check, an idempotent skip, or a single success inside a phase.
+# step_skip(): indented sub-step with a dim ↷ — explicitly marks a no-op or
+#            skipped check (already installed, already configured, etc.).
+# step_fail(): indented sub-step with a red ✗, written to stderr. Non-fatal —
+#            use die() for fatal errors.
+# warn()   : non-fatal warning, yellow !! prefix, to stderr.
+# die()    : fatal error, red !!ERROR prefix, to stderr, exit 1.
+# ok()     : end-of-phase confirmation, bold green "OK: ..." marker. Pairs
+#            with phase() to bracket each phase visually.
+phase() { printf '\n%s%s==> %s%s\n' "$_C_BOLD" "$_C_CYAN" "$*" "$_C_RESET"; }
+log()      { printf '%s%s==> %s%s\n'    "$_C_BOLD" "$_C_CYAN"  "$*" "$_C_RESET"; }
+sublog()   { printf '    %s\n' "$*"; }
+step_ok()  { printf '    %s✓%s %s\n'    "$_C_GREEN"  "$_C_RESET" "$*"; }
+step_skip(){ printf '    %s↷%s %s\n'    "$_C_DIM"    "$_C_RESET" "$*"; }
+step_fail(){ printf '    %s✗%s %s\n'    "$_C_RED"    "$_C_RESET" "$*" >&2; }
+warn()     { printf '%s!!%s %s\n'        "$_C_YELLOW" "$_C_RESET" "$*" >&2; }
+die()      { printf '%s%s!! ERROR: %s%s\n' "$_C_BOLD" "$_C_RED" "$*" "$_C_RESET" >&2; exit 1; }
+ok()       { printf '    %s%s✓ %s%s\n'  "$_C_BOLD$_C_GREEN" "" "$*" "$_C_RESET"; }
 
 # ---------- tiny utilities ----------
 
@@ -214,7 +254,7 @@ preflight_check() {
 }
 
 phase_0_preflight() {
-  log "Phase 0 — preflight: atelier config dir collision check"
+  phase "Phase 0 — preflight: atelier config dir collision check"
   while true; do
     local pf_status=0
     preflight_check "$ATELIER_CONFIG_DIR" || pf_status=$?
@@ -291,7 +331,7 @@ phase_a_mac_deps() {
   local missing=()
   for f in "${formulas[@]}"; do
     if has "$f"; then
-      sublog "$f already installed"
+      step_skip "$f already installed"
     else
       missing+=("$f")
     fi
@@ -314,7 +354,7 @@ phase_a_linux_deps() {
   local missing_apt=()
   for p in "${apt_packages[@]}"; do
     if has "$p"; then
-      sublog "$p already installed"
+      step_skip "$p already installed"
     else
       missing_apt+=("$p")
     fi
@@ -328,7 +368,7 @@ phase_a_linux_deps() {
 
   # gh: official GitHub repo (the apt default is often outdated).
   if has gh; then
-    sublog "gh already installed"
+    step_skip "gh already installed"
   else
     sublog "installing gh from GitHub's official apt repo"
     sudo install -d -m 0755 /etc/apt/keyrings
@@ -344,7 +384,7 @@ phase_a_linux_deps() {
   # fnm: no apt package; use the official installer. `--skip-shell` keeps the
   # shellrc edits out of Phase A — Phase C.1 owns shellrc injection.
   if has fnm; then
-    sublog "fnm already installed"
+    step_skip "fnm already installed"
   else
     sublog "installing fnm via its official installer (no shellrc edit yet)"
     curl -fsSL https://fnm.vercel.app/install | bash -s -- --skip-shell
@@ -369,11 +409,11 @@ phase_a_node_and_pnpm() {
     # Re-activate so the freshly installed node lands on PATH.
     eval "$(fnm env --shell bash)"
   else
-    sublog "node already available ($(node --version))"
+    step_skip "node already available ($(node --version))"
   fi
 
   if has pnpm; then
-    sublog "pnpm already installed ($(pnpm --version))"
+    step_skip "pnpm already installed ($(pnpm --version))"
   else
     sublog "enabling pnpm via corepack"
     corepack enable
@@ -385,7 +425,7 @@ phase_a_claude_code() {
   if has claude; then
     local v
     v="$(claude --version 2>/dev/null || echo unknown)"
-    sublog "Claude Code already installed ($v)"
+    step_skip "Claude Code already installed ($v)"
     return
   fi
 
@@ -423,7 +463,7 @@ phase_a_chrome_optional() {
   esac
 
   if $chrome_found; then
-    sublog "system Chrome detected (used by mcp__plugin_atelier_playwright)"
+    step_ok "system Chrome detected (used by mcp__plugin_atelier_playwright)"
     return
   fi
 
@@ -496,7 +536,7 @@ phase_a_docker_compose_optional() {
   fi
 
   if docker compose version >/dev/null 2>&1; then
-    sublog "docker compose v2 plugin detected (used by docker-env skill)"
+    step_ok "docker compose v2 plugin detected (used by docker-env skill)"
     return
   fi
 
@@ -558,7 +598,7 @@ phase_a_docker_compose_optional() {
 }
 
 phase_a() {
-  log "Phase A — base dependencies + Claude Code"
+  phase "Phase A — base dependencies + Claude Code"
   local os
   os="$(detect_os)"
   case "$os" in
@@ -579,7 +619,7 @@ phase_b_claude_login() {
   # the idempotency hinge — re-runs of install.sh on an already-logged-in
   # machine short-circuit here without touching the browser.
   if claude auth status >/dev/null 2>&1; then
-    sublog "Claude Code already authenticated"
+    step_skip "Claude Code already authenticated"
     return
   fi
   sublog "starting Claude Code login (a browser tab will open)"
@@ -595,6 +635,38 @@ phase_b_claude_login() {
 # Args: $1 = role (`author` | `reviewer`), $2 = human-friendly purpose string
 #       used in the prompt so the operator knows which account they're signing
 #       in with on this round.
+# M7.1.F5: before each `gh auth login`, print a labeled requirements block
+# so the non-technical operator knows what GitHub account to pick and what
+# access it must have. Different access requirements per role:
+#   - author   : push + PR open + issue ops on every repo atelier will touch.
+#   - reviewer : at minimum read + review (approve / comment) on the same
+#                repos; must be a DIFFERENT GitHub account than author so
+#                approvals are honoured (PLAN.md dogfood-1 Finding #11).
+# Org reminder applies to both. The operator hits Enter to confirm they've
+# read the block before the device-code prompt opens.
+_phase_b_print_gh_permissions() {
+  local role="$1"
+  printf '\n'
+  printf '    %s%sBefore you sign in (role: %s):%s\n' "$_C_BOLD" "$_C_YELLOW" "$role" "$_C_RESET"
+  case "$role" in
+    author)
+      printf '      - Purpose: atelier commits + pushes + opens PRs + manages issues under this account.\n'
+      printf '      - Required access: %spush%s on every project repo atelier will touch.\n' "$_C_BOLD" "$_C_RESET"
+      ;;
+    reviewer)
+      printf '      - Purpose: atelier-reviewer agent approves PRs opened by the author identity.\n'
+      printf '      - Required access: at least %sread + review%s on every project repo.\n' "$_C_BOLD" "$_C_RESET"
+      printf '      - MUST be a DIFFERENT GitHub account than the author identity (PLAN.md dogfood-1 Finding #11).\n'
+      ;;
+  esac
+  printf '      - If the project lives under a GitHub org, this account must be a member or invited collaborator BEFORE this login — otherwise pushes/PRs/approvals fail later with confusing errors.\n'
+  printf '      - Docs: see PLAN.md §2 step 5 (HTTPS-only, OAuth scopes) and M6.4 troubleshooting (when added).\n'
+  printf '\n'
+  printf '    Press Enter when ready, or Ctrl+C to abort and adjust the account: '
+  local _ack=""
+  read -r _ack
+}
+
 phase_b_atelier_gh_login() {
   local role="$1"
   local purpose="$2"
@@ -603,12 +675,15 @@ phase_b_atelier_gh_login() {
   mkdir -p "$cfg"
 
   if GH_CONFIG_DIR="$cfg" gh auth status --hostname github.com >/dev/null 2>&1; then
-    sublog "atelier gh ($role) already authenticated at $cfg"
+    step_skip "atelier gh ($role) already authenticated at $cfg"
     return
   fi
 
   sublog "atelier gh login: $role — $purpose"
   sublog "credentials will be stored under $cfg (isolated from ~/.config/gh/)"
+  # M7.1.F5: explain GitHub access requirements + wait for explicit Enter
+  # so the operator picks the right account on the device-code page.
+  _phase_b_print_gh_permissions "$role"
   # --web              browser-based OAuth.
   # --git-protocol https  HTTPS only — atelier never uses SSH (PLAN.md §2 step 5).
   # --skip-ssh-key     defense-in-depth: even if a future flag combo would
@@ -670,7 +745,7 @@ phase_b_verify_distinct_identities() {
     warn "  GH_CONFIG_DIR=\"$ATELIER_CONFIG_DIR/gh/reviewer\" gh auth logout --hostname github.com"
     warn "  $0   # rerun and pick the second account at the reviewer prompt"
   else
-    sublog "atelier identities OK: author=@$author, reviewer=@$reviewer (distinct)"
+    step_ok "atelier identities OK: author=@$author, reviewer=@$reviewer (distinct)"
   fi
 }
 
@@ -712,12 +787,12 @@ phase_b_capture_atelier_git_identity() {
     name = $name
     email = $email
 CFG
-  sublog "atelier-author git identity captured: $name <$email>"
+  step_ok "atelier-author git identity captured: $name <$email>"
   sublog "  -> $identity_file"
 }
 
 phase_b() {
-  log "Phase B — authentication"
+  phase "Phase B — authentication"
 
   # Phase B is the only interactive phase: it depends on browser-based OAuth
   # and a human at the keyboard. When install.sh runs without a TTY (CI, a
@@ -805,7 +880,7 @@ phase_c_1_git_wt() {
   # Fully provisioned: git-wt on PATH and a SHA is on file. Skip clone +
   # install + re-record.
   if has git-wt && [ -s "$sha_file" ]; then
-    sublog "git-wt already installed (recorded SHA: $(head -c 12 "$sha_file"))"
+    step_skip "git-wt already installed (recorded SHA: $(head -c 12 "$sha_file"))"
     return
   fi
 
@@ -823,7 +898,15 @@ phase_c_1_git_wt() {
 
   if ! has git-wt; then
     sublog "running git-wt installer (--skill-for=claude)"
-    /tmp/git-wt/install.sh --skill-for=claude
+    # M7.1.F10: drop the upstream installer's "==> installation complete /
+    # next steps:" epilogue. That epilogue is the SUB-installer's notion of
+    # "done" and misleads operators into thinking atelier's whole install
+    # finished here — it has not (Phase C.1 still has git-identity prompts
+    # + helper symlinks + Phase C.2 below). The per-action lines
+    # ("==> installed binary →", "==> recorded clone path →", etc.) above
+    # the epilogue stay — they're useful confirmations.
+    /tmp/git-wt/install.sh --skill-for=claude 2>&1 \
+      | awk 'BEGIN { skip=0 } /^==> installation complete$/ { skip=1 } !skip { print }'
   else
     sublog "git-wt already on PATH — clone only to backfill SHA"
   fi
@@ -1058,7 +1141,7 @@ BLOCK
       continue
     fi
     if grep -qF "$sentinel_start" "$f"; then
-      sublog "atelier hooks already present in $(basename "$f")"
+      step_skip "atelier hooks already present in $(basename "$f")"
     else
       printf '\n%s\n' "$block" >> "$f"
       sublog "appended atelier hooks to $(basename "$f")"
@@ -1067,7 +1150,7 @@ BLOCK
 }
 
 phase_c_1() {
-  log "Phase C.1 — host-OS configuration"
+  phase "Phase C.1 — host-OS configuration"
   phase_c_1_claude_config_dir
   phase_c_1_instantiate_templates
   phase_c_1_git_wt
@@ -1109,7 +1192,7 @@ phase_c_2_marketplace() {
   # akalab-tech` manually and re-runs install.sh.
   if claude plugin marketplace list --json 2>/dev/null \
       | jq -e --arg name "$ATELIER_MARKETPLACE_NAME" '.[] | select(.name == $name)' >/dev/null; then
-    sublog "marketplace $ATELIER_MARKETPLACE_NAME already added"
+    step_skip "marketplace $ATELIER_MARKETPLACE_NAME already added"
   else
     sublog "adding marketplace $ATELIER_MARKETPLACE_SOURCE"
     claude plugin marketplace add "$ATELIER_MARKETPLACE_SOURCE"
@@ -1120,7 +1203,7 @@ phase_c_2_install_plugin() {
   local plugin_id="$1"
   if claude plugin list --json 2>/dev/null \
       | jq -e --arg id "$plugin_id" '.[] | select(.id == $id)' >/dev/null; then
-    sublog "$plugin_id already installed"
+    step_skip "$plugin_id already installed"
   else
     sublog "installing $plugin_id"
     claude plugin install "$plugin_id"
@@ -1128,7 +1211,7 @@ phase_c_2_install_plugin() {
 }
 
 phase_c_2() {
-  log "Phase C.2 — plugin install"
+  phase "Phase C.2 — plugin install"
 
   # Guard: claude CLI must be on PATH (Phase A installs it) and authenticated
   # (Phase B handles this). If Phase B skipped because no TTY was available,
@@ -1157,18 +1240,17 @@ phase_c_2() {
 # ---------- final verification ----------
 
 # Plain Unicode glyphs (not emojis) — match how `git-wt`'s installer reports.
-VERIFY_OK='\xe2\x9c\x93'   # ✓
-VERIFY_FAIL='\xe2\x9c\x97' # ✗
-
 # verify_cmd <label> <cmd...>
-# Runs `cmd...` quietly; prints ✓ on exit 0, ✗ on non-zero. Never aborts the
-# script — verification only reports state.
+# Runs `cmd...` quietly; prints step_ok on exit 0, step_fail on non-zero.
+# Never aborts the script — verification only reports state. M7.1.F2 routes
+# the markers through the shared color/marker helpers so phase_verify's
+# output matches the rest of the script.
 verify_cmd() {
   local label="$1"; shift
   if "$@" >/dev/null 2>&1; then
-    printf "    ${VERIFY_OK} %s\n" "$label"
+    step_ok "$label"
   else
-    printf "    ${VERIFY_FAIL} %s\n" "$label" >&2
+    step_fail "$label"
   fi
 }
 
@@ -1178,14 +1260,14 @@ verify_plugin() {
   local plugin_id="$1"
   if claude plugin list --json 2>/dev/null \
       | jq -e --arg id "$plugin_id" '.[] | select(.id == $id)' >/dev/null; then
-    printf "    ${VERIFY_OK} plugin: %s\n" "$plugin_id"
+    step_ok "plugin: $plugin_id"
   else
-    printf "    ${VERIFY_FAIL} plugin: %s\n" "$plugin_id" >&2
+    step_fail "plugin: $plugin_id"
   fi
 }
 
 phase_verify() {
-  log "Verification"
+  phase "Verification"
   verify_cmd    "claude --version"        claude --version
   verify_cmd    "claude auth status"      claude auth status
   # M5.0.1: verify both atelier-isolated gh identities. `env VAR=val cmd ...`
@@ -1196,6 +1278,41 @@ phase_verify() {
   verify_plugin "atelier@akalab-tech"
   verify_plugin "claude-roadmap-tools@akalab-tech"
   sublog "(\`/doctor\` slash command lands with M1.6 / M2.x — not invoked here)"
+}
+
+# ---------- first-steps guide (M7.1.F12) ----------
+
+# Prints the operator-facing "what to do next" block at the end of a
+# successful install. Replaces the older one-line "install.sh done. Open a
+# new terminal..." summary which left non-technical operators without a clear
+# path forward. Numbered steps cover: reload shell, verify install, set up
+# the first project, start the first task, find docs, undo the install.
+# Commands are kept copy-pasteable (no embedded variables to substitute).
+print_first_steps() {
+  phase "Install complete"
+  printf '\n'
+  printf '  %sNext steps:%s\n\n' "$_C_BOLD" "$_C_RESET"
+
+  printf '    1. %sReload your shell%s so the atelier hooks take effect:\n' "$_C_BOLD" "$_C_RESET"
+  printf '         %ssource ~/.zshrc%s   # or ~/.bashrc\n\n' "$_C_CYAN" "$_C_RESET"
+
+  printf '    2. %sVerify the install%s — open Claude Code and run:\n' "$_C_BOLD" "$_C_RESET"
+  printf '         %s/atelier:doctor%s\n\n' "$_C_CYAN" "$_C_RESET"
+
+  printf '    3. %sSet up your first project%s — from a Claude Code session inside the project dir:\n' "$_C_BOLD" "$_C_RESET"
+  printf '         %s/atelier:setup-project <path-to-project>%s\n\n' "$_C_CYAN" "$_C_RESET"
+
+  printf '    4. %sStart your first task%s — `task` reads the next ROADMAP entry and opens a Claude session:\n' "$_C_BOLD" "$_C_RESET"
+  printf '         %stask%s\n\n' "$_C_CYAN" "$_C_RESET"
+
+  printf '    5. %sDocs%s:\n' "$_C_BOLD" "$_C_RESET"
+  printf '         - README.md (operator guide)\n'
+  printf '         - PLAN.md §12 (architecture + milestone roadmap)\n'
+  printf '         - docs/dogfood-guide.md (full-flow integration test)\n\n'
+
+  printf '    6. %sUninstall safely%s — when you no longer need atelier:\n' "$_C_BOLD" "$_C_RESET"
+  printf '         %satelier-uninstall%s             # preserves chat history\n' "$_C_CYAN" "$_C_RESET"
+  printf '         %satelier-uninstall --purge%s     # also wipes $ATELIER_CONFIG_DIR\n\n' "$_C_CYAN" "$_C_RESET"
 }
 
 # ---------- entry point ----------
@@ -1226,7 +1343,7 @@ main() {
   # the next install.sh run offers a resume rather than treating the
   # partially-populated $ATELIER_CONFIG_DIR as an opaque collision.
   mark_install_complete
-  log "install.sh done. Open a new terminal (or run \`source ~/.zshrc\`) to use \`task\` and \`task-status\`."
+  print_first_steps
 }
 
 main "$@"
