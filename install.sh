@@ -708,23 +708,17 @@ phase_c_1_git_identity() {
   sublog "git identity set: $new_name <$new_email>"
 }
 
-phase_c_1_setup_project_helper() {
-  # Symlink scripts/atelier-setup-project into ~/.local/bin so:
-  #   - the /atelier:setup-project slash command can invoke it via
-  #     Bash(atelier-setup-project:*) from inside Claude Code;
-  #   - the operator can also run it directly from any terminal.
-  #
-  # Why a symlink and not a copy: the operator already has the atelier
-  # checkout (from `git clone`), and `install.sh` is re-run when atelier is
-  # updated. A symlink ensures every script change is picked up without a
-  # separate "copy step". The link target is absolute so it survives the
-  # operator's cwd changing between install runs.
-  local src="$ATELIER_REPO_ROOT/scripts/atelier-setup-project"
+_phase_c_1_symlink_helper() {
+  # Helper that symlinks one of atelier's bin scripts into ~/.local/bin.
+  # Idempotent: re-link if the existing symlink points elsewhere; leave
+  # plain files alone (operator may have pinned a manual copy).
+  local helper_name="$1"
+  local src="$ATELIER_REPO_ROOT/scripts/$helper_name"
   local bin_dir="${HOME}/.local/bin"
-  local dest="$bin_dir/atelier-setup-project"
+  local dest="$bin_dir/$helper_name"
 
   if [ ! -f "$src" ]; then
-    warn "expected $src — skipping atelier-setup-project install"
+    warn "expected $src — skipping $helper_name install"
     warn "this likely means install.sh is being run from outside the atelier checkout"
     return
   fi
@@ -733,13 +727,11 @@ phase_c_1_setup_project_helper() {
     chmod +x "$src"
   fi
 
-  mkdir -p "$bin_dir"
-
   if [ -L "$dest" ]; then
     local current
     current="$(readlink "$dest")"
     if [ "$current" = "$src" ]; then
-      sublog "atelier-setup-project already symlinked ($dest -> $src)"
+      sublog "$helper_name already symlinked ($dest -> $src)"
     else
       ln -sfn "$src" "$dest"
       sublog "updated symlink: $dest -> $src (was -> $current)"
@@ -753,6 +745,26 @@ phase_c_1_setup_project_helper() {
     ln -s "$src" "$dest"
     sublog "linked $dest -> $src"
   fi
+}
+
+phase_c_1_setup_project_helper() {
+  # Symlink scripts/atelier-setup-project and scripts/atelier-uninstall into
+  # ~/.local/bin so:
+  #   - the /atelier:setup-project slash command can invoke setup-project
+  #     via Bash(atelier-setup-project:*) from inside Claude Code;
+  #   - the operator can run either binary directly from any terminal
+  #     (notably `atelier-uninstall` to decommission atelier — see M5.0.3).
+  #
+  # Why a symlink and not a copy: the operator already has the atelier
+  # checkout (from `git clone`), and `install.sh` is re-run when atelier is
+  # updated. A symlink ensures every script change is picked up without a
+  # separate "copy step". The link target is absolute so it survives the
+  # operator's cwd changing between install runs.
+  local bin_dir="${HOME}/.local/bin"
+  mkdir -p "$bin_dir"
+
+  _phase_c_1_symlink_helper atelier-setup-project
+  _phase_c_1_symlink_helper atelier-uninstall
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it
