@@ -27,6 +27,10 @@
       "Bash(pnpm publish*)",
       "Bash(npm publish*)",
 
+      "Bash(docker push*)",
+      "Bash(docker login*)",
+      "Bash(docker system prune*)",
+
       "Bash(curl * | sh*)",
       "Bash(curl * | bash*)",
       "Bash(wget * | sh*)",
@@ -74,18 +78,10 @@
       "Write(<worktree>-worktrees/**/.env*)",
 
       "Edit(./Dockerfile)",
-      "Edit(<worktree>/Dockerfile)",
-      "Edit(<worktree>-worktrees/**/Dockerfile)",
       "Write(./Dockerfile)",
-      "Write(<worktree>/Dockerfile)",
-      "Write(<worktree>-worktrees/**/Dockerfile)",
 
       "Edit(./docker-compose*)",
-      "Edit(<worktree>/docker-compose*)",
-      "Edit(<worktree>-worktrees/**/docker-compose*)",
       "Write(./docker-compose*)",
-      "Write(<worktree>/docker-compose*)",
-      "Write(<worktree>-worktrees/**/docker-compose*)",
 
       "Bash(gh pr close*)"
     ],
@@ -167,6 +163,11 @@
       "Bash(prettier*)",
       "Bash(tsc*)",
       "Bash(biome*)",
+
+      "Bash(docker info*)",
+      "Bash(docker compose*)",
+      "Bash(docker ps*)",
+      "Bash(docker logs*)",
 
       "Bash(ls*)",
       "Bash(mkdir -p*)",
