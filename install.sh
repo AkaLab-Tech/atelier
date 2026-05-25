@@ -1250,10 +1250,18 @@ fi
 # the session to atelier's author identity (M5.0.1). The `reviewer` agent
 # overrides this inline with $ATELIER_CONFIG_DIR/gh/reviewer for its own
 # gh calls so its approvals are honoured as a distinct GitHub identity.
-# The operator's normal shell (outside `task`) is unaffected by this export.
+# GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf pins every `git
+# commit` (and any other git invocation that reads global config) to the
+# atelier-author identity captured at install time (M7.1.F7a). This makes
+# the Author / Committer fields of atelier-driven commits match the
+# atelier-author GitHub account that pushes them (M5.0.1 dual-gh-id)
+# rather than mixing operator personal identity with the atelier-author
+# push token. The operator's ~/.gitconfig stays untouched (M7.1.F7b).
+# The operator's normal shell (outside `task`) is unaffected by these exports.
 task() {
   CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" \
     GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" \
+    GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
     claude "/next-task $*"
 }
 # `task-status`: list atelier-author's open PRs across all repos. Prefixed with
