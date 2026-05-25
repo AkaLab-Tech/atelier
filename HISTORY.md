@@ -8,6 +8,35 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F16b — Doctor narrative must use `Read` tool, not `cat`, for file reads — 2026-05-25
+**PR:** _pending_
+
+Follow-up fix to **F16** ([PR #77](https://github.com/AkaLab-Tech/atelier/pull/77), v0.5.1). The original F16 added `Bash(cat:*)` to doctor.md's `allowed-tools` along with other read-only patterns, expecting it would suppress all permission prompts. But during the dogfood-3 v0.5.1 doctor run, two prompts STILL appeared — both for `cat <path> 2>/dev/null || echo "MISSING"` patterns reading `~/.local/state/atelier/git-wt.sha` and `~/.claude/settings.json`.
+
+**Root cause**: Claude Code routes `cat <path>` through a path-scoped read-approval check that bypasses the `Bash(cat:*)` allow-list. The prompt format ("Yes, allow reading from <dir>/ from this project") confirms this is the file-read approval pipeline, not the Bash command-pattern pipeline. Other compounds in doctor (`gh api … || gh api … || echo …`, `command -v X && echo "FOUND" || echo "MISSING"`, `[ -d Y ] && echo …`) all worked because their first commands (`gh api`, `command -v`, `[` aka `test`) are NOT subject to the file-read interception — only `cat` is.
+
+**Delivered:**
+
+- **New `## Tool guidance (M7.1.F16b)` section in `commands/doctor.md`**, just below the intro:
+  - "For reading any file contents (markers, configs, SHAs, JSON files): use the `Read` tool, NOT `cat`."
+  - "For checking file existence: use `Bash(test -f <path>)` or `Bash(test -d <path>)`."
+  - "Avoid compound shell expressions with `cat`. Instead: (1) `test -f` to check existence, (2) `Read` tool to get content, (3) emit `✗` row directly if missing."
+  - All other compound `||` / `&&` fallbacks are documented as fine — only `cat` is special.
+- **`### 3. SHA drift — git-wt` check rewritten** to use the new pattern: `test -f` → `Read` tool, no `cat` invocation.
+- **`Bash(cat:*)` kept in `allowed-tools` for backward-compatibility** in case future doctor extensions need it for genuinely non-path cases (piped input, stdin). The narrative steers the LLM away from it for file reads.
+- **`.claude-plugin/plugin.json`** bumped **0.5.1 → 0.5.2** (patch — continues the F16 fix series).
+
+**Decisions captured:**
+
+- **Read tool over restructured Bash patterns.** Alternative considered: add explicit per-path Bash allows (`Bash(cat ~/.local/state/atelier/git-wt.sha:*)`). Rejected — that approach doesn't scale (every new path needs a new pattern), wouldn't help with the file-read interception anyway, and bypasses Claude Code's intentional file-read approval semantics.
+- **Narrative-level fix.** The LLM running doctor follows the markdown narrative; explicit "use Read, not cat" instructions are the leverage point. The frontmatter `allowed-tools` is necessary but not sufficient — for path-sensitive commands, the narrative has to specify the canonical tool.
+- **Don't relitigate the F16 frontmatter.** The frontmatter list from F16 stays as-is; this PR adds narrative guidance + one rewrite of the git-wt SHA check as a worked example. Future doctor edits will follow the same pattern by convention.
+
+**Test plan:**
+
+- [x] `jq empty plugin.json` valid + version=0.5.2.
+- [ ] **(post-merge)** Operator runs `claude plugin update atelier@akalab-tech` to v0.5.2, opens fresh `atelier /atelier:doctor` session, verifies NO permission prompts for any check — including the previously-prompting SHA + settings.json reads.
+
 ### M7.1.F16 — `commands/doctor.md` missing `allowed-tools` frontmatter — 2026-05-25
 **PR:** _pending_
 
