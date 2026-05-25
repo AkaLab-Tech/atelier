@@ -8,6 +8,58 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F20 + F21 — `/atelier:doctor` echo/env prompts + git-identity false-positive drift — 2026-05-25
+**PR:** _pending_
+
+Two findings batched in one PR-K, both surfaced during the M7.1 dogfood-3 full fresh-install validation (post-v0.5.4 doctor run on the freshly-installed environment).
+
+**F20 — Permission prompts still appear for `echo` + env-var-prefix commands.**
+
+F16 ([PR #77](https://github.com/AkaLab-Tech/atelier/pull/77)) added comprehensive `allowed-tools` to doctor.md; F16b ([PR #78](https://github.com/AkaLab-Tech/atelier/pull/78)) added narrative guidance away from `cat`. Both fixes addressed the file-read interception, but two more patterns still prompted in v0.5.4:
+
+- `echo "${ATELIER_CONFIG_DIR:-UNSET}"` — `echo` not in allow-list at all (oversight in F16). Plus Claude Code flags any command containing `"${...}"` as "Contains expansion" even when the base command is allowlisted.
+- `GH_CONFIG_DIR=/path/to/gh gh api user --jq '...'` — the leading shell-form env-var assignment (`GH_CONFIG_DIR=value`) makes the first word the assignment, not `gh`. `Bash(gh api:*)` only matches when `gh` is the first word.
+
+**Delivered (F20):**
+
+- **`commands/doctor.md` `allowed-tools`** gains: `Bash(env:*), Bash(echo:*), Bash(printenv:*)`.
+- **`commands/doctor.md` Tool guidance section** gains a new sub-section explicitly documenting the env-var-prefix gotcha + the canonical alternatives:
+  - For env-prefixed gh / commands: use `env VAR=value cmd ...` (first word becomes `env`, matched by `Bash(env:*)`). Shell-form `VAR=value cmd ...` prompts.
+  - For env var introspection: use `printenv VAR` (matched by `Bash(printenv:*)`). `echo "${VAR:-…}"` triggers "Contains expansion" even with `Bash(echo:*)`.
+
+**F21 — Doctor check `i.` reports false-positive drift when install used the no-reply email derivation.**
+
+During the dogfood-3 v0.5.4 doctor run, the check fired:
+
+```
+✗ atelier-author git identity drift: git-identity.conf has
+  780063+Miguelslo27@users.noreply.github.com but gh api user
+  returns miguelmail2006@gmail.com
+```
+
+Both representations refer to the **same** GitHub account (`Miguelslo27`, id `780063`). install.sh F7a writes the no-reply form when `gh api user --jq '.email // empty'` returns empty at install time (operator's email visibility setting + token scopes determine when `.email` is exposed). At doctor time, gh may return the public `.email` even though it was empty at install time. The literal `==` comparison flags this as drift, misleading operators into thinking their install is broken when it's actually fine.
+
+**Delivered (F21):**
+
+- **`commands/doctor.md` check `i.` rewritten** to accept EITHER:
+  - **Form A — public email**: literal equality with `gh api user .email` (when non-empty).
+  - **Form B — GitHub no-reply pattern**: `<id>+<login>@users.noreply.github.com` derived from `gh api user .id` + `.login`.
+- The check fails ONLY when the stored email matches NEITHER — i.e. the file points at a fundamentally different account (e.g. operator re-authenticated with a new gh login but never re-ran install.sh).
+- Decision-rule guidance added inline so future maintainers don't re-introduce strict equality: "The check passes if EITHER form matches."
+
+**Plugin scope:** yes — `commands/doctor.md` is plugin content. Patch bump **0.5.4 → 0.5.5** per PLAN.md §14.2 (bug fix in plugin scope).
+
+**Decisions captured:**
+
+- **F20 + F21 batched in one PR-K.** Both surfaced in the same doctor run; both small docs/frontmatter fixes; same release cycle. Splitting would have shipped two patch releases back-to-back with the same friction surface.
+- **Don't enforce email form preference in install.sh** (would be a separate PR). install.sh's "prefer public, fall back to no-reply" already does the right thing; the drift is on doctor's comparison side, not install.sh's selection side.
+- **`Bash(echo:*)` added defensively** even though the narrative steers away from it. Future doctor extensions may use it for non-expanded constants (e.g. `echo "GROUP: Plugins"` as a literal header). Keeping it in the allow-list is harmless.
+- **`env` as the canonical env-prefix form.** Alternative considered: `export VAR=...; cmd; unset VAR` but that's verbose and leaks scope to subsequent calls in the same Bash invocation if not careful. `env VAR=val cmd` is the most idiomatic and pattern-matches cleanly.
+
+**Spawned from dogfood-3 also captured (no fix in this PR — observation only):**
+
+- The operator authenticated `gh/author` with their personal account (`Miguelslo27`) rather than a dedicated atelier-author bot. This collapses the F7b dual-identity benefit (commits via `task` author as `Miguelslo27` same as their personal global git config). Functionally fine — reviewer is still distinct (`AtelierReviewer`), so dogfood-1 Finding #11 doesn't trigger. Not a bug; design choice.
+
 ### M7.1.F19 — `/atelier:setup-project` argument-hint suggested `<project-path>` was required — 2026-05-25
 **PR:** _pending_
 

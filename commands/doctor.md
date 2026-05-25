@@ -1,6 +1,6 @@
 ---
 description: Health check for atelier — detects drift against upstream for `atelier`, `claude-roadmap-tools`, and `git-wt`, plus auxiliary host checks (legacy hooks, shellrc, .npmrc, .atelier-config.json). Reports findings and prints the exact commands the operator must run; never applies updates automatically.
-allowed-tools: Read, Glob, Grep, Bash(claude plugin list:*), Bash(claude plugin marketplace list:*), Bash(gh api:*), Bash(cat:*), Bash(grep:*), Bash(jq:*), Bash(command -v:*), Bash(awk:*), Bash(docker compose version:*), Bash(docker info:*), Bash(uname:*), Bash(test:*), Bash(head:*), Bash(tail:*), Bash(wc:*)
+allowed-tools: Read, Glob, Grep, Bash(claude plugin list:*), Bash(claude plugin marketplace list:*), Bash(gh api:*), Bash(env:*), Bash(echo:*), Bash(printenv:*), Bash(cat:*), Bash(grep:*), Bash(jq:*), Bash(command -v:*), Bash(awk:*), Bash(docker compose version:*), Bash(docker info:*), Bash(uname:*), Bash(test:*), Bash(head:*), Bash(tail:*), Bash(wc:*)
 ---
 
 You are running the `/doctor` health check for atelier.
@@ -18,6 +18,17 @@ To run prompt-free under the `allowed-tools` list above:
 - All other Bash invocations (`claude plugin list`, `gh api`, `command -v`, `[ -d ... ]`, `docker compose version`, `jq`, etc.) ARE matched cleanly by the allow-list and can use compound `||` / `&&` fallbacks without prompting.
 
 When a check needs file contents, prefer the sequence: `test -f path` → if ✓ → `Read` tool → parse content. Never wrap `Read` calls in shell pipelines.
+
+### Env-var prefix invocations (M7.1.F20)
+
+Claude Code's Bash pattern matcher inspects the first word of a command. Shell-form env-var prefixes (`GH_CONFIG_DIR=value gh api ...`) make the first word `GH_CONFIG_DIR=value` — not `gh` — so `Bash(gh api:*)` does NOT match and the operator gets a permission prompt. To run prompt-free, **always use the `env` form** when an invocation needs custom env vars:
+
+- ✗ `GH_CONFIG_DIR=/path gh api user` — prompts (first word is the assignment)
+- ✓ `env GH_CONFIG_DIR=/path gh api user` — clean (first word is `env`, matched by `Bash(env:*)`)
+
+Similarly:
+
+- For inspecting an env var's value, use `printenv VAR` (matched by `Bash(printenv:*)`), not `echo "${VAR:-…}"` — `echo "${...}"` triggers a "Contains expansion" prompt even with `Bash(echo:*)` allowed.
 
 ## Checks to run (in this order)
 
@@ -111,10 +122,14 @@ h. **`$ATELIER_CONFIG_DIR` resolves to an atelier-managed install (M7.1.F11).** 
    /path/to/atelier/install.sh
    ```
 
-i. **`$ATELIER_CONFIG_DIR/git-identity.conf` matches the atelier-author GitHub account (M7.1.F7a + F7b).** install.sh Phase B writes a `[user]` block to this file from `gh api user` under the atelier-author config dir; orchestrator-driven commits read it via `GIT_CONFIG_GLOBAL` so the commit's Author / Committer fields match the atelier-author GitHub identity (not the operator's personal global git config). Verify:
+i. **`$ATELIER_CONFIG_DIR/git-identity.conf` matches the atelier-author GitHub account (M7.1.F7a + F7b).** install.sh Phase B writes a `[user]` block to this file from `gh api user` under the atelier-author config dir; orchestrator-driven commits read it via `GIT_CONFIG_GLOBAL` so the commit's Author / Committer fields match the atelier-author GitHub identity (not the operator's personal global git config). Run the gh query with the env-prefix form to avoid the M7.1.F20 prompt: `env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api user --jq '.email // empty, .id, .login'`. Then verify:
    - `$ATELIER_CONFIG_DIR/git-identity.conf` exists and is readable.
    - The file has a `[user]` section with non-empty `name = …` and `email = …` lines.
-   - The `email` matches what `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author gh api user --jq '.email // empty'` returns, OR (when `gh` returns null for `.email`) the GitHub no-reply pattern `<id>+<login>@users.noreply.github.com` derived from `gh api user --jq '.id, .login'`.
+   - The `email` matches **either** of these valid forms (M7.1.F21 — accept any representation of the SAME account):
+     - **Form A — public email**: literal equality with `gh api user .email` (when gh returns a non-empty `.email`).
+     - **Form B — GitHub no-reply pattern**: `<id>+<login>@users.noreply.github.com`, derived from `gh api user .id` + `.login`. install.sh falls back to this form when `gh api user .email` is null/empty at install time (operator's email visibility may be hidden, or the gh token's scopes don't expose `.email`).
+
+     The check passes if EITHER form matches. Reporting drift requires that the stored email matches NEITHER — i.e. the file points at a different account entirely (e.g. the operator re-authenticated with a new gh login but never re-ran install.sh to refresh the conf).
 
    `✓ atelier-author git identity captured: <name> <<email>>` when all three pass. `✗` with one of these fix commands:
    ```bash
