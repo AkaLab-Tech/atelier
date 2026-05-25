@@ -1,10 +1,12 @@
 ---
-description: Initialise a project so the operator can run atelier tasks in it — delegates to the `atelier-setup-project` bash helper installed by `install.sh`, then dispatches `project-profiler` to draft the root `CLAUDE.md`. Idempotent — re-running preserves all existing files.
-argument-hint: "[project-path] [--yes|-y] [--mode=new|existing]"
+description: Initialise a project so the operator can run atelier tasks in it — delegates to the `atelier-setup-project` bash helper installed by `install.sh`, then dispatches `project-profiler` to draft the root `CLAUDE.md`. Idempotent — re-running preserves all existing files. Typical usage is just `/atelier:setup-project` from inside the project directory; passing a path is only for the uncommon case of configuring a project from outside it.
+argument-hint: "[--yes|-y] [--mode=new|existing] [project-path-if-not-cwd]"
 allowed-tools: Read, Glob, Grep, Write, Bash(atelier-setup-project:*), AskUserQuestion, Task
 ---
 
 You are running the `/setup-project` slash command. This command has two phases: (1) delegate mechanical scaffolding to the `atelier-setup-project` bash binary on `$PATH`, then (2) dispatch the `project-profiler` agent to draft the root `CLAUDE.md` based on the mode the bash helper detected.
+
+**Typical invocation is `$ARGUMENTS = empty`** (M7.1.F19) — the operator runs `/atelier:setup-project` from inside the project directory they want to configure, and the helper resolves the project path to `pwd` automatically. A positional `<project-path>` is only used when configuring a project from outside it; the argument-hint puts it last so operators don't reflexively pass `.` as a "required" path.
 
 ## Phase 1 — bash helper
 
@@ -16,7 +18,7 @@ atelier-setup-project $ARGUMENTS
 
 That single command does **all** of the mechanical work:
 
-1. Resolves the project path (defaults to `.` if `$ARGUMENTS` is empty); refuses `$HOME`, `/`, `/etc`, `/usr`, `/Applications`, `/bin`, `/sbin`, `/var`, `/opt`, `/private`, and the plugin root itself.
+1. Resolves the project path — **defaults to the current working directory** when `$ARGUMENTS` is empty (the typical case: operator is inside the project they want to configure). Only resolves to an explicit `<project-path>` when one is passed. Refuses dangerous targets: `$HOME`, `/`, `/etc`, `/usr`, `/Applications`, `/bin`, `/sbin`, `/var`, `/opt`, `/private`, and the plugin root itself.
 2. Detects non-interactive mode via `--yes` / `-y` in `$ARGUMENTS`, or `$ATELIER_AUTO`.
 3. Reads `$ATELIER_CONFIG_DIR/projects.json` (atelier's project registry). If the project is already configured: interactive → ask to reconfigure; non-interactive → refuse with exit code 2.
 4. Writes `<path>/.claude/settings.json` from `$ATELIER_CONFIG_DIR/templates/settings.template.json` with `<worktree>` substituted. Validates the result parses with `jq empty` and that no literal `<worktree>` token remains.
