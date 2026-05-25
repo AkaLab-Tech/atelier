@@ -7,6 +7,18 @@ You are running the `/doctor` health check for atelier.
 
 Your job is to produce a single structured report with `✓`/`✗` per check, followed by **exact commands** the operator must run to fix anything that's `✗`. **Never run an update or fix yourself** — print the commands and stop. The operator decides what to apply.
 
+## Tool guidance (M7.1.F16b)
+
+To run prompt-free under the `allowed-tools` list above:
+
+- **For reading any file contents** (markers, configs, SHAs, JSON files): use the `Read` tool, NOT `cat`. Claude Code routes `cat <path>` through a path-scoped read-approval check that bypasses the `Bash(cat:*)` allow; the `Read` tool is the canonical read path with its own pre-approved scope.
+- **For checking file existence**: use `Bash(test -f <path>)` or `Bash(test -d <path>)` — both allowlisted as `Bash(test:*)`.
+- **For binary presence**: `Bash(command -v <binary>)` is allowlisted as `Bash(command -v:*)`.
+- **Avoid compound shell expressions with `cat`** like `cat X 2>/dev/null || echo "MISSING"`. Instead: (1) check existence with `test -f`, (2) if exists, use `Read` to get content, (3) otherwise emit the `✗` row directly in the report. The compound form triggers a permission prompt even though `Bash(cat:*)` is listed.
+- All other Bash invocations (`claude plugin list`, `gh api`, `command -v`, `[ -d ... ]`, `docker compose version`, `jq`, etc.) ARE matched cleanly by the allow-list and can use compound `||` / `&&` fallbacks without prompting.
+
+When a check needs file contents, prefer the sequence: `test -f path` → if ✓ → `Read` tool → parse content. Never wrap `Read` calls in shell pipelines.
+
 ## Checks to run (in this order)
 
 ### 1. Plugin drift — `atelier`
@@ -31,7 +43,7 @@ claude plugin update claude-roadmap-tools@akalab-tech
 
 `git-wt` is not a native Claude Code plugin, so it has its own mechanism:
 
-1. Read the recorded SHA: `cat ~/.local/state/atelier/git-wt.sha`. If the file is missing or empty: `✗ git-wt SHA not recorded` with the message "re-run `install.sh` to record it".
+1. Read the recorded SHA: check `test -f ~/.local/state/atelier/git-wt.sha` first; if it exists, use the `Read` tool on that path (do NOT `cat` it — see the Tool guidance above). If the file is missing or empty: `✗ git-wt SHA not recorded` with the message "re-run `install.sh` to record it".
 2. Read the upstream HEAD SHA: `gh api repos/AkaLab-Tech/git-wt/commits/main --jq '.sha'`.
 3. Compare full SHAs. If equal: `✓ git-wt <short-sha> (up to date)`. If different: `✗ git-wt <local-short> → <upstream-short>` and add this command block:
    ```bash
