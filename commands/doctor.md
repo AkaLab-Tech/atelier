@@ -1,5 +1,5 @@
 ---
-description: Health check for atelier — detects drift against upstream for `atelier`, `claude-roadmap-tools`, and `git-wt`, plus auxiliary host checks (legacy hooks, shellrc, .npmrc, .atelier-config.json, Chrome, docker compose, `$ATELIER_CONFIG_DIR`, git-identity.conf). Reports findings and prints the exact commands the operator must run; never applies updates automatically.
+description: Health check for atelier — detects drift against upstream for `atelier`, `claude-roadmap-tools`, and `git-wt`, plus auxiliary host checks (legacy hooks, shellrc, .npmrc, Chrome, docker compose, `$ATELIER_CONFIG_DIR`, git-identity.conf). Reports findings and prints the exact commands the operator must run; never applies updates automatically.
 allowed-tools: Bash(atelier-doctor:*)
 ---
 
@@ -51,7 +51,6 @@ Host checks
     ✓ git-wt on PATH (<path>)
     ✓ atelier shellrc hooks active (~/.zshrc)
     – project .npmrc guardrails (no .npmrc in project directory)
-    ✓ ~/.claude/.atelier-config.json consistent
     ✓ system Chrome detected
     ✓ docker compose v<version> detected
     ✓ atelier config dir <path> (installStatus: complete)

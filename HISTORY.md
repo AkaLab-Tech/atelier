@@ -8,6 +8,46 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F24 — `/atelier:doctor` removes stale `check_atelier_config_json` (legacy path + wrong schema) — 2026-05-25
+**PR:** _pending_
+
+Surfaced immediately after v0.5.6's F23 refactor stabilized the doctor permission-gate loop. During M7.1 dogfood-3 verification, the operator ran the new binary on a clean install (post-uninstall `--purge`) and got one persistent `✗`:
+
+```
+✗ ~/.claude/.atelier-config.json missing setupCompleted or setupVersion
+```
+
+Investigation revealed the check itself is broken — and has been broken since the M5.0.1 dual-config-dir refactor, but was masked in most environments because the legacy file had been wiped along with installs.
+
+**Root cause — two compounded errors in `check_atelier_config_json`:**
+
+1. **Wrong path.** The check reads `$HOME/.claude/.atelier-config.json`, which was the pre-M5.0.1 location. Since M5.0.1 introduced `$ATELIER_CONFIG_DIR` and the env-var lookup chain, `atelier-setup-project` writes to `$ATELIER_CONFIG_DIR/projects.json` (= `~/.claude-work/projects.json` in this operator's environment), confirmed at `scripts/atelier-setup-project:267` (`CONFIG_FILE="$ATELIER_CONFIG_DIR/projects.json"`).
+2. **Wrong schema.** The check expects top-level `.setupCompleted` and `.setupVersion`. The actual schema is nested per project: `.projects[<path>].setupCompleted` and `.projects[<path>].setupVersion`. This schema is consistent across both the legacy file (when present) and the current `projects.json` — the schema never changed, only the path did.
+3. **Wrong remediation.** The check's fix block suggested `/atelier:setup-project --reconfigure`. Even running that command writes to `~/.claude-work/projects.json` (current path), not to `~/.claude/.atelier-config.json` (check path) — so the `✗` would have persisted forever after every `--reconfigure`.
+
+The operator's environment had a legacy `~/.claude/.atelier-config.json` file (281 bytes, dated 2026-05-20) containing valid records for `atelier-dogfood-3` and `atelier-dogfood-4` — with the nested schema. That file survived `atelier-uninstall --purge` because uninstall by design does not touch `~/.claude/` (the operator's personal Claude config dir, distinct from `$ATELIER_CONFIG_DIR`). So the check saw a file it didn't expect, read it with the wrong schema, and reported a `✗` for fields that exist nested but not at top level.
+
+**Delivered:**
+
+- **`scripts/atelier-doctor`** — `check_atelier_config_json` function and its call site removed entirely (lines 214-229 and the invocation at line 387 in v0.5.6). The check covered no real invariant: per-project setup state is visible via `/atelier:status` from inside a project, and the host install's health is already validated by `check_atelier_config_dir` (`installStatus: complete`).
+- **`commands/doctor.md`** — description frontmatter no longer lists `.atelier-config.json` among auxiliary host checks. Reference output block removes the corresponding line.
+- **`.claude-plugin/plugin.json`** bumped **0.5.6 → 0.5.7** (patch — bug fix in plugin scope per PLAN.md §14.2).
+
+**Decisions captured:**
+
+- **Remove rather than repurpose.** Three alternatives considered: (A) delete the check, (B) repoint it at `$ATELIER_CONFIG_DIR/projects.json` and report number of projects registered (informational only, never fail), (C) keep the `✗` but rewrite the message to mark legacy state. (A) chosen — the check had no underlying invariant. Adding a new "projects registered" informational check (B) would have introduced a check whose definition of "healthy" is unclear ("zero projects = unhealthy?" — no, that's just a fresh install). The host-install invariant is already covered by `check_atelier_config_dir`.
+- **Legacy file cleanup is out of scope for this PR.** The operator manually removed `~/.claude/.atelier-config.json` during diagnosis. Sweeping legacy paths automatically belongs to a future `atelier-uninstall` enhancement (provisionally **F25** if a clean-install audit surfaces it as worth doing).
+- **Documentation hygiene.** Each binary-check removed must also remove its mention from the slash command's `description` frontmatter and any reference-output block. Future check removals should follow the same three-file pattern (`scripts/atelier-doctor` + `commands/doctor.md` description + reference output).
+
+**Test plan (executed pre-merge):**
+
+- [x] `bash -n scripts/atelier-doctor` syntax check passes.
+- [x] Function definition and call site both removed (grep verifies no stragglers).
+- [x] `jq empty .claude-plugin/plugin.json` passes at version `0.5.7`.
+- [x] `commands/doctor.md` description frontmatter no longer references `.atelier-config.json`.
+- [x] Reference output in `commands/doctor.md` no longer shows the removed line.
+- [ ] **(post-merge)** Operator runs `claude plugin update atelier@akalab-tech` to v0.5.7 + `git pull` on dotfiles + restart Claude + retries `atelier /atelier:doctor`. Expect: same 9 checks as v0.5.6 (minus the removed one) = 9 total host-check lines, exit code 0, "All checks passed. atelier is up to date."
+
 ### M7.1.F23 — `/atelier:doctor` architectural refactor: move all check logic into a bash binary — 2026-05-25
 **PR:** _pending_
 

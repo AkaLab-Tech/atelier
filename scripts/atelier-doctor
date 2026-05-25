@@ -211,23 +211,6 @@ check_project_npmrc() {
   fi
 }
 
-check_atelier_config_json() {
-  local cfg="$HOME/.claude/.atelier-config.json"
-  if [ ! -f "$cfg" ]; then
-    push_host "$SKIP ~/.claude/.atelier-config.json (not present)"
-    return
-  fi
-  local setup_completed setup_version
-  setup_completed="$(jq -r '.setupCompleted // empty' "$cfg" 2>/dev/null)"
-  setup_version="$(jq -r '.setupVersion // empty' "$cfg" 2>/dev/null)"
-  if [ -n "$setup_completed" ] && [ -n "$setup_version" ]; then
-    push_host "$OK ~/.claude/.atelier-config.json consistent"
-  else
-    push_host "$FAIL ~/.claude/.atelier-config.json missing setupCompleted or setupVersion"
-    push_fix "/atelier:setup-project --reconfigure"
-  fi
-}
-
 check_chrome() {
   local os
   os="$(uname -s)"
@@ -401,7 +384,6 @@ check_legacy_hooks
 check_git_wt_path
 check_shellrc_hooks
 check_project_npmrc
-check_atelier_config_json
 check_chrome
 check_docker_compose
 check_atelier_config_dir
