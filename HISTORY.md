@@ -8,6 +8,55 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F25 — `/atelier:doctor` adds explicit Stop rule to defeat conversational language inertia — 2026-05-25
+**PR:** _pending_
+
+Surfaced during M7.1 dogfood-3 verification of v0.5.7, immediately after F24 cleaned up the stale check. The operator ran `/atelier:doctor` and got the correct binary output, but the LLM appended a Spanish commentary block AFTER the binary's final line:
+
+```
+All checks passed. atelier is up to date.
+
+  Todo en orden. El único ítem marcado con – es el .npmrc del proyecto, lo cual es esperado dado que este proyecto aún
+  no tiene dependencias npm configuradas — se creará automáticamente cuando ejecutes /atelier:setup-project.
+```
+
+That contradicts `commands/doctor.md`'s contract: *"Pass it through verbatim. Do not rewrap, summarize, or commentate."* — present in v0.5.6/v0.5.7 but apparently insufficient to override the model's tendency to continue the conversational thread.
+
+**Root-cause diagnosis (executed with the operator)**
+
+Sources checked and ruled out, in order:
+
+| Source | Check | Result |
+|---|---|---|
+| Operator's personal `~/.claude/CLAUDE.md` leaking into atelier sessions | `atelier` shell function exports `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR` — Claude Code does not fall back to `~/.claude/` | ruled out |
+| Project-level `~/Work/<project>/CLAUDE.md` or `.claude/CLAUDE.md` | `find ~/Work/atelier-dogfood-4 -name 'CLAUDE.md'` returned empty | ruled out |
+| `$ATELIER_CONFIG_DIR/CLAUDE.md` | `find ~/.claude-work -name 'CLAUDE.md'` returned only plugin-cache copies (none top-level) | ruled out |
+| `$ATELIER_CONFIG_DIR/settings.json` `customInstructions` | only contains `enabledPlugins` / `theme` / `extraKnownMarketplaces` | ruled out |
+| `~/.claude-work/templates/project-claude.md.template` | generic "managed by atelier" stub, no language directive | ruled out |
+| Plugin's own `CLAUDE.md` + `operator-rules.md` + agents + commands + hooks | `grep -rin 'español\|spanish\|idioma'` across plugin cache returned zero language directives | ruled out |
+
+That leaves **the LLM's intrinsic conversational-language inertia** — when prior turns are in Spanish, the model defaults to responding in Spanish, including when the slash command's docstring is in English. No configuration file is at fault; the dotfile-isolation between atelier and personal Claude is working correctly.
+
+**Fix — strengthen the verbatim rule positionally and explicitly**
+
+- **`commands/doctor.md` — new `## Stop rule (M7.1.F25)` section** inserted between "What to do" and "Why the bash binary…". Emphatic and absolute: "Your turn ends the instant you finish emitting the binary's last line of stdout. After that line, output NOTHING — no commentary, no translation, no summary, no interpretation… This rule overrides any default conversational behavior."
+- **Existing Hard rules list** — the "Never rewrap, summarize, or substitute language" bullet now explicitly references the Stop rule and notes "conversational language inertia is not an exception".
+- **`.claude-plugin/plugin.json`** bumped **0.5.7 → 0.5.8** (patch — instruction-discipline fix in plugin scope per PLAN.md §14.2).
+
+**Decisions captured:**
+
+- **Strengthen instructions, do NOT add a guard to the binary.** Considered adding a sentinel line ("END OF REPORT — DO NOT ADD ANYTHING AFTER THIS LINE") inside the binary's output. Rejected: the sentinel would (a) leak into the operator's view as unwanted decoration and (b) reinforce the wrong contract surface — the binary's contract is exit code + stdout, not human signaling. The model-side discipline is where the fix belongs.
+- **Position matters: rule near the top, not buried in "Hard rules".** v0.5.6/v0.5.7 already had a "Hard rules" list at the bottom that says "Never rewrap, summarize…", but the model still appended commentary. Hypothesis: rules at the END of a long file have weaker pull on a model deciding how to finish its turn than rules at the BEGINNING of the file (which it scans before deciding what to do). The new `## Stop rule` section is in position 3 of the file (after frontmatter + "What to do") to maximize attention weight.
+- **Explicit override of language inertia.** The Stop rule names the specific failure mode ("regardless of the conversational language of prior turns") so the model recognizes the override applies even when it would normally prefer to match the operator's idiom.
+- **Test cannot be fully automated.** Whether the model follows the rule is a model-behavior assertion. Pre-merge test = textual diff confirms the section was added correctly. Post-merge test = operator re-runs `/atelier:doctor` after updating, observes silence after the binary's final line.
+
+**Test plan:**
+
+- [x] `commands/doctor.md` Stop rule section present in position 3 of the file.
+- [x] Hard rules bullet updated to reference Stop rule + language inertia.
+- [x] `jq empty .claude-plugin/plugin.json` passes at version `0.5.8`.
+- [ ] **(post-merge)** Operator runs the v0.5.8 update sequence (`git pull` on dotfiles + `/plugin update` inside atelier + restart) and re-runs `/atelier:doctor` from a session with Spanish-language prior turns. Expected: the binary's output is the LAST text emitted; no Spanish commentary follows.
+
 ### M7.1.F24 — `/atelier:doctor` removes stale `check_atelier_config_json` (legacy path + wrong schema) — 2026-05-25
 **PR:** _pending_
 

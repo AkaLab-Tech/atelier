@@ -15,6 +15,18 @@ atelier-doctor
 
 Then output whatever the binary printed, unchanged. The report already has its own structure (`atelier /doctor — health check` header, three sections, optional fix block). Do **not** rewrap, summarize, or commentate — the operator wants the raw report.
 
+## Stop rule (M7.1.F25)
+
+Your turn ends the instant you finish emitting the binary's last line of stdout. After that line, output NOTHING — no commentary, no translation, no summary, no interpretation, no "everything looks good", no clarification of the `–` SKIP lines, no follow-up suggestion. Regardless of:
+
+- the conversational language of prior turns (Spanish, English, or anything else),
+- whether checks passed, failed, or were skipped,
+- whether the operator might "find a summary helpful".
+
+The binary already includes everything the operator needs: status lines + (when applicable) a "To apply pending fixes" block with copy-pasteable commands. Anything you add is noise that contradicts this command's contract and can mislead the operator if your interpretation diverges from the binary's actual report.
+
+This rule overrides any default conversational behavior. If you find yourself about to write a sentence after the binary's output — stop and delete it.
+
 ## Why the bash binary instead of inline checks (M7.1.F23)
 
 Prior versions of this command ran each check as a separate `Bash(...)` invocation from inside the slash command. Each iteration surfaced a different Claude Code permission gate that prompted the operator interactively:
@@ -64,7 +76,7 @@ If any check is `✗`, the binary follows the report with a "To apply pending fi
 ## Hard rules
 
 - **Never** invoke any tool other than `Bash(atelier-doctor)`. The binary handles every check internally.
-- **Never** rewrap, summarize, or substitute language in the binary's output. Pass it through verbatim.
+- **Never** rewrap, summarize, translate, or substitute language in the binary's output. Pass it through verbatim. See the "Stop rule" above — conversational language inertia is not an exception.
 - **Never** run any command from the "To apply pending fixes" block yourself. The operator runs them.
 
 If the binary itself fails to run (exit ≥ 2, or `atelier-doctor: command not found`), report the error verbatim and suggest the operator re-run `install.sh` to re-symlink the binary.
