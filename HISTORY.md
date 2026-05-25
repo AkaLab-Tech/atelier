@@ -8,6 +8,52 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F22 — `/atelier:doctor` compound shell expressions trigger "shell operators" safety gate — 2026-05-25
+**PR:** _pending_
+
+Discovered during M7.1 dogfood-3 v0.5.5 doctor retry. Despite F16 + F16b + F20 + F21 closing every known prompt vector, the v0.5.5 doctor still prompted on three patterns sharing the SAME root: **compound shell expressions** (`&&`, `||`, `()`, complex redirection).
+
+Claude Code applies an additional **"This command uses shell operators that require approval for safety"** gate on top of pattern-based `allowed-tools` matching. Even when every individual command in a compound is allowlisted, the compound triggers the gate.
+
+Examples from the dogfood-3 v0.5.5 run:
+
+- `test -d "/Applications/Google Chrome.app" && echo "FOUND" || (test -d "$HOME/Applications/Google Chrome.app" && echo "FOUND" || echo "NOTFOUND")` — both `test` and `echo` are allowlisted; the `&&` + `||` + subshell still gate.
+- `docker compose version 2>/dev/null || echo "DOCKER_COMPOSE_MISSING"` — even with `Bash(docker compose version:*)`.
+- `grep -c '# >>> atelier hooks ...' ~/.zshrc 2>/dev/null || echo "0"` — gates AND triggers the file-read path-scope check (similar to `cat`'s F16b behavior).
+
+These were not caught earlier (F16/F16b/F20/F21) because each prior fix targeted a different mechanism: file-read interception, expansion warning, env-var-prefix mismatch, comparison form. F22 is the FIFTH distinct gate we've documented.
+
+**Delivered:**
+
+- **`commands/doctor.md` Tool guidance** gains a new "Avoid compound shell expressions (M7.1.F22)" sub-section that:
+  - Explicitly documents the "shell operators require approval for safety" gate.
+  - Lists representative ✗ examples (compound `test`, compound `docker`, compound `gh api`, compound `grep`).
+  - Prescribes the **canonical fix**: split into sequential single-command Bash calls; let the LLM running doctor interpret each call's exit code / output between calls to decide the next step.
+  - Includes a worked example for the Chrome detection on macOS (two sequential `test -d` calls).
+- **Existing prose updated** at the previous "all other Bash invocations can use compound fallbacks" line — that statement was wrong (it was true at the time of F16 but Claude Code has tightened since). Replaced with: "prefer single-command form … do NOT chain commands with shell operators just to provide a fallback string."
+- **Check `c.` (shellrc hooks)** rewritten to use `Read` tool on `~/.zshrc`/`~/.bashrc` instead of `grep -c ... 2>/dev/null || echo "0"`. The Read-tool path avoids both the file-read interception AND the compound-operator gate.
+- **Check `f.` (Chrome)** rewritten as two sequential `test -d` Bash calls + LLM exit-code interpretation, instead of `[ -d X ] || [ -d Y ]`.
+- **Check `g.` (docker compose)** rewritten as `docker info` step 1 + `docker compose version` step 2 (only if step 1 succeeded), instead of `docker info >/dev/null && docker compose version || echo …`.
+- **`.claude-plugin/plugin.json`** bumped **0.5.5 → 0.5.6** (patch per PLAN.md §14.2 — bug fix in plugin scope).
+
+**Decisions captured:**
+
+- **Narrative-only fix, allowed-tools unchanged.** The frontmatter already allows every individual command. The fix is at the LLM-instruction layer: tell the LLM to NOT combine them with shell operators. Adding more tools to allow-list wouldn't help — the gate is on the compound form, not the individual commands.
+- **Don't redesign doctor as a single Bash script.** Alternative considered: ship doctor as a single `atelier-doctor` bash binary that does all checks internally + returns a structured result the LLM just formats. Rejected for now — it would mean another install-side script + plugin permission, and the current per-check architecture lets future doctor extensions add checks without invalidating the allow-list. Captured for v2 consideration.
+- **Don't add `|| true` or similar.** That's still a compound shell expression — would also gate. The canonical fix is `Bash cmd` (single call) + LLM interpretation.
+
+**Spawned from dogfood-3 doctor evolution timeline** (for the M7.1 HISTORY narrative):
+
+| PR | Version | Gate fixed |
+|---|---|---|
+| #77 | v0.5.1 | F16 — missing `allowed-tools` frontmatter |
+| #78 | v0.5.2 | F16b — `cat <path>` file-read path-scope interception |
+| #81 | v0.5.5 | F20 — `echo "${VAR:-X}"` expansion + `VAR=value cmd` env-prefix mismatch |
+| #81 | v0.5.5 | F21 — check `i.` false-positive drift (strict `==` vs Form A/B) |
+| **this** | **v0.5.6** | **F22 — compound shell operators (`&&`, `||`, `()`) safety gate** |
+
+Five distinct gates → five patches. Doctor is now (we hope) fully prompt-free; the LLM-narrative model bumps against Claude Code's permission heuristics in subtle ways but each one is now captured in the narrative.
+
 ### M7.1.F20 + F21 — `/atelier:doctor` echo/env prompts + git-identity false-positive drift — 2026-05-25
 **PR:** _pending_
 

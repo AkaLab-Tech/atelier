@@ -15,9 +15,35 @@ To run prompt-free under the `allowed-tools` list above:
 - **For checking file existence**: use `Bash(test -f <path>)` or `Bash(test -d <path>)` — both allowlisted as `Bash(test:*)`.
 - **For binary presence**: `Bash(command -v <binary>)` is allowlisted as `Bash(command -v:*)`.
 - **Avoid compound shell expressions with `cat`** like `cat X 2>/dev/null || echo "MISSING"`. Instead: (1) check existence with `test -f`, (2) if exists, use `Read` to get content, (3) otherwise emit the `✗` row directly in the report. The compound form triggers a permission prompt even though `Bash(cat:*)` is listed.
-- All other Bash invocations (`claude plugin list`, `gh api`, `command -v`, `[ -d ... ]`, `docker compose version`, `jq`, etc.) ARE matched cleanly by the allow-list and can use compound `||` / `&&` fallbacks without prompting.
+- **For all other Bash invocations**: prefer single-command form. Compound shell operators (`&&`, `||`, `()`, `2>/dev/null` redirection) **trigger Claude Code's "shell operators require approval for safety" gate (M7.1.F22) even when every individual command in the compound is allowlisted.** Use one Bash call per intent and let the LLM interpret exit codes between calls; do NOT chain commands with shell operators just to provide a fallback string.
 
 When a check needs file contents, prefer the sequence: `test -f path` → if ✓ → `Read` tool → parse content. Never wrap `Read` calls in shell pipelines.
+
+### Avoid compound shell expressions (M7.1.F22)
+
+This is the most surprising gotcha — even with every individual command in an allowlist, a compound shell expression triggers a separate safety gate. Examples that **DO prompt** despite proper allow-list coverage:
+
+- ✗ `test -d X && echo "FOUND" || echo "NOTFOUND"` — even with `Bash(test:*)` + `Bash(echo:*)`.
+- ✗ `docker compose version 2>/dev/null || echo "MISSING"` — even with `Bash(docker compose version:*)`.
+- ✗ `gh api ... || gh api ...` — fallback chain across two `gh api` calls.
+- ✗ `grep X file 2>/dev/null || echo "0"` — counting matches with a fallback.
+
+Pattern: any `&&`, `||`, `(...)` subshell, or non-trivial redirection in the same Bash invocation. The safety gate's prompt reads "This command uses shell operators that require approval for safety".
+
+**Canonical fix**: split into sequential single-command Bash calls, and let YOU (the LLM running doctor) interpret each command's exit code / output between calls to decide the next step. Example for the Chrome check:
+
+```
+Step 1: Bash `test -d /Applications/Google Chrome.app`
+   → Exit 0: Chrome found in /Applications. Emit ✓ row. Skip step 2.
+   → Exit non-0: continue.
+Step 2: Bash `test -d $HOME/Applications/Google Chrome.app`
+   → Exit 0: Chrome found in $HOME/Applications. Emit ✓ row.
+   → Exit non-0: emit ✗ row with the install hint.
+```
+
+For commands that may not exist (`docker compose version`): run the simple form once. If exit non-0, emit `✗` directly — no `|| echo "MISSING"` shell fallback needed because YOUR turn handles the missing case via the exit code.
+
+For grep over operator-config files like `~/.zshrc`: use the `Read` tool to load the file content, then count matches with the LLM's own pattern matching. `grep -c X ~/.zshrc` triggers BOTH the file-read path-scope check (like `cat`) AND, when combined with `|| echo "0"`, the compound-operator gate.
 
 ### Env-var prefix invocations (M7.1.F20)
 
@@ -70,12 +96,12 @@ For each of the following, report `✓` (everything is fine) or `✗` (with the 
 
 a. **No legacy atelier hooks leaking into `~/.claude/settings.json`.** Read that file (if it exists) and check that nothing under `hooks` references a path matching `*/atelier/*` or `*/.claude-personal/atelier/*`. If found, report `✗` and suggest opening the file to remove the stale entries (the live hooks now ship via the plugin's `hooks/hooks.json`, not via the user's `settings.json`).
 b. **`git-wt` binary on PATH.** Run `command -v git-wt`. `✓` if exit 0; `✗` with "re-run `install.sh`" otherwise.
-c. **`fnm env --use-on-cd` active in the operator's shell.** Look for the sentinel `# >>> atelier hooks (managed by install.sh) >>>` in `~/.zshrc` and `~/.bashrc` (whichever exists). `✓` if found in the operator's default shell rc; `✗` with "re-run `install.sh`" otherwise.
+c. **`fnm env --use-on-cd` active in the operator's shell.** Look for the sentinel `# >>> atelier hooks (managed by install.sh) >>>` in `~/.zshrc` and `~/.bashrc`. **Use the `Read` tool, NOT `grep` with shell pipes** (M7.1.F22 — grep over operator-config files triggers both the file-read path-scope check AND the compound-operator gate if combined with `|| echo "0"`). Sequence: (1) `Bash test -f ~/.zshrc`; if exit 0, use `Read` on `~/.zshrc` and search for the sentinel substring in-memory. (2) Same for `~/.bashrc` if needed. `✓` if found in the operator's default shell rc; `✗` with "re-run `install.sh`" otherwise.
 d. **Current project's `.npmrc` guardrails present** (only if a `.npmrc` exists in `$CLAUDE_PROJECT_DIR` or the cwd). Confirm all three of `ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate` are present. `✓` if all three; `✗` listing which are missing, with the suggestion to re-run `/setup-project`.
 e. **Per-project `~/.claude/.atelier-config.json` consistency** (only if the file exists). Confirm it parses as JSON and contains both `setupCompleted` (ISO timestamp) and `setupVersion` (string). `✓` if both; `✗` with "re-run `/setup-project --reconfigure`".
-f. **System Chrome present (required by `mcp__plugin_atelier_playwright`).** The playwright MCP that atelier ships uses the operator's system Chrome by default; first call fails with an actionable error if Chrome is missing. Detect platform via `uname -s` and check accordingly:
-   - **macOS** (`Darwin`): `[ -d "/Applications/Google Chrome.app" ] || [ -d "$HOME/Applications/Google Chrome.app" ]`.
-   - **Linux**: `command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/dev/null 2>&1`.
+f. **System Chrome present (required by `mcp__plugin_atelier_playwright`).** The playwright MCP that atelier ships uses the operator's system Chrome by default; first call fails with an actionable error if Chrome is missing. Detect platform via `uname -s`, then run sequential single-command checks (M7.1.F22 — never combine with `||`):
+   - **macOS** (`Darwin`): run `Bash test -d "/Applications/Google Chrome.app"`. If exit 0, Chrome is found; emit `✓` and stop. If exit non-0, run `Bash test -d "$HOME/Applications/Google Chrome.app"`. If exit 0, emit `✓`. If non-0, emit `✗`.
+   - **Linux**: run `Bash command -v google-chrome`. If exit 0, emit `✓`. If non-0, run `Bash command -v google-chrome-stable`. If exit 0, emit `✓`. If non-0, emit `✗`.
    - Any other OS: skip the check with `–` and a one-line note ("Chrome presence check not implemented for <os>").
 
    `✓ system Chrome detected` if found. `✗ system Chrome not found — mcp__plugin_atelier_playwright will fail on first call` with this fix command block:
@@ -85,9 +111,9 @@ f. **System Chrome present (required by `mcp__plugin_atelier_playwright`).** The
    # alternatively (Linux): use your distro's package manager (apt install google-chrome-stable, etc.)
    ```
 
-g. **`docker compose` (v2 plugin) reachable (required by `docker-env` skill + `docker-runner` agent).** atelier's docker-env skill issues `docker compose -p <project> up/down/...` with v2 syntax. Detect via `docker compose version`:
-   - `✓ docker compose v<version> detected` if exit 0 + stdout contains a version string.
-   - `–` (skipped) if `docker info` fails first (no daemon running — no point checking the plugin if the runtime is offline; suggest starting the runtime as the prerequisite step).
+g. **`docker compose` (v2 plugin) reachable (required by `docker-env` skill + `docker-runner` agent).** atelier's docker-env skill issues `docker compose -p <project> up/down/...` with v2 syntax. Use **two sequential single-command Bash calls** (M7.1.F22 — never `docker info >/dev/null && docker compose version || echo …`):
+   - Step 1: `Bash docker info` (suppress stderr only if you must, but do NOT add `&&` or `||`). If exit non-0, daemon is offline → emit `–` (skipped) with the prerequisite hint.
+   - Step 2 (only if step 1 succeeded): `Bash docker compose version`. If exit 0 + stdout has a version: emit `✓ docker compose v<version> detected`. If exit non-0: emit `✗` with the fix command block.
    - `✗ docker compose plugin not found — docker-env skill will fail on first lifecycle call` with this fix command block:
    ```bash
    # macOS (homebrew): the plugin ships with `docker-compose` formula but the
