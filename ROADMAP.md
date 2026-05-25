@@ -12,7 +12,44 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phase 1 — Foundation.** Blocks everything else. A fresh Mac must be able to run `install.sh`, log in to Claude + GitHub, and end with the `atelier` plugin installed and `/doctor` ✅.
 
-> **Install hardening from M7.1 dogfood-2 + dogfood-3 (2026-05-23 / 2026-05-25).** Findings F1–F12 surfaced during the dogfood-2 full-wipe reinstall. F11b discovered during PR-C validation. F13 + F7c discovered during dogfood-3 first-project setup. Closed: PR-A [#70](https://github.com/AkaLab-Tech/atelier/pull/70) (F6+F7a+F9+F11, v0.4.2), PR-B [#72](https://github.com/AkaLab-Tech/atelier/pull/72) (F2+F5+F10+F12), PR-C [#73](https://github.com/AkaLab-Tech/atelier/pull/73) (F1+F3+F4+F8), PR-D [#74](https://github.com/AkaLab-Tech/atelier/pull/74) (F11b), PR-E [#75](https://github.com/AkaLab-Tech/atelier/pull/75) (F7b, v0.5.0). PR-F (PR _pending_) closes F13 (atelier() shortcut function). F7c (shellrc upgrade detection) remains as a follow-up. After F13 merges + shellrc rerun, M7.1 task cycle resumes on `~/Work/atelier-dogfood-4`.
+> **Install hardening from M7.1 dogfood-2 + dogfood-3 (2026-05-23 / 2026-05-25).** Findings F1–F12 surfaced during dogfood-2 full-wipe reinstall. F11b discovered during PR-C validation. F13 + F7c discovered during dogfood-3 setup. F14 + F15 + F16 discovered during the dogfood-3 first `/atelier:doctor` run. Closed: PR-A [#70](https://github.com/AkaLab-Tech/atelier/pull/70) (F6+F7a+F9+F11, v0.4.2), PR-B [#72](https://github.com/AkaLab-Tech/atelier/pull/72) (F2+F5+F10+F12), PR-C [#73](https://github.com/AkaLab-Tech/atelier/pull/73) (F1+F3+F4+F8), PR-D [#74](https://github.com/AkaLab-Tech/atelier/pull/74) (F11b), PR-E [#75](https://github.com/AkaLab-Tech/atelier/pull/75) (F7b, v0.5.0), PR-F [#76](https://github.com/AkaLab-Tech/atelier/pull/76) (F13 atelier() shortcut). PR-G (PR _pending_) closes F16 (doctor.md allowed-tools, v0.5.1). F7c + F14 + F15 remain as follow-ups (see entries below).
+
+### M7.1.F14 — `/atelier:doctor` drift checks should read marketplace, not source repo API
+
+`[correctness]` · Source: M7.1 dogfood-3 first `/atelier:doctor` run (2026-05-25)
+
+The plugin-drift checks in `commands/doctor.md` query `gh api repos/AkaLab-Tech/atelier/releases/latest` (and same for `claude-roadmap-tools`) to detect upstream drift. This fails with 404 when the source repo is private and `@AtelierAuthor` is not a member of the org — exactly the dogfood-3 starting state. The doctor then enters a recovery loop trying alternate endpoints (`tags`, `contents/.claude-plugin/marketplace.json`), each also failing or stalling.
+
+Symptom from dogfood-3: doctor printed `gh: Not Found (HTTP 404)` for the atelier repo + got cancelled in the middle of parallel calls. Worked around by making `AkaLab-Tech/atelier` public; the source repo's privacy is no longer the gating factor, but the doctor's architecture remains fragile.
+
+**Scope:**
+
+- [ ] Read the upstream plugin version from the **local marketplace clone** (`$ATELIER_CONFIG_DIR/plugins/marketplaces/akalab-tech/atelier/.claude-plugin/plugin.json`) instead of the source repo's GitHub releases API. The marketplace IS the canonical source of truth for "what version is published to operators" — bypassing the source repo eliminates the private-repo / org-membership dependency entirely.
+- [ ] Fall back to the source repo's `releases/latest` (existing behavior) only when the local marketplace clone is missing or corrupt; surface a `↷` skip in that case rather than cascading the failure.
+- [ ] Same approach for `claude-roadmap-tools` drift check.
+- [ ] Update the doctor's check-1 / check-2 narrative to document the marketplace-first behavior.
+
+**Acceptance:** running `/atelier:doctor` on a system where `AkaLab-Tech/atelier` is private and the doctor's gh identity lacks org access still reports `✓ atelier <version> (up to date)` — drift detection works without requiring API access to the source repo.
+
+**Trigger to revisit:** before the next M7.1 dogfood iteration where atelier might run against a private repo with a non-member identity. Captured 2026-05-25 immediately after F14 was bypassed by flipping `AkaLab-Tech/atelier` to public — the underlying architectural fragility remains.
+
+### M7.1.F15 — `/atelier:doctor` parallel checks should fail independently, not cascade-cancel
+
+`[ux-blocking]` · Source: M7.1 dogfood-3 first `/atelier:doctor` run (2026-05-25)
+
+When doctor launches its checks in parallel and one fails (e.g. the F14 404), the Claude Code session cancels every other in-flight parallel call with `Cancelled: parallel tool call Bash(gh api repos/AkaLab-Tech/atelier/release…) errored`. The operator sees a partial report — no plugin versions, no git-wt SHA, no host checks — and the session enters an uncertain state trying to "recover" from the failure rather than completing all the *other* checks that would have worked fine.
+
+This is a Claude Code default-behavior issue (parallel tool calls share a fate), but `doctor.md` can mitigate it by:
+
+**Scope:**
+
+- [ ] Run checks **sequentially**, not in parallel. Doctor's checks have no real interdependency — sequential adds maybe 1-2s on a clean run but produces a complete report regardless of individual failures.
+- [ ] Each check uses an explicit `|| true` or `|| echo "<failure-text>"` so a non-zero exit doesn't bubble up to the harness.
+- [ ] The check-narrative in `doctor.md` updated to emphasize the `✓ / ✗ / —` per-check independence: an `✗` on one row never affects the others.
+
+**Acceptance:** running `/atelier:doctor` on a system where one check intentionally fails (e.g. `gh api` rate-limited, docker daemon down) produces a full report — all other checks complete and are marked individually `✓ / ✗ / —`.
+
+**Trigger to revisit:** captured 2026-05-25 alongside F14. Same dogfood-3 run that surfaced F14 also surfaced this — operator's first doctor was interrupted with partial output, requiring manual re-runs.
 
 ### M7.1.F7c — Shellrc block needs versioning + auto re-injection on install.sh re-run
 

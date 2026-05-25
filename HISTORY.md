@@ -8,6 +8,36 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F16 — `commands/doctor.md` missing `allowed-tools` frontmatter — 2026-05-25
+**PR:** _pending_
+
+Discovered during M7.1 **dogfood-3** first `/atelier:doctor` run on `~/Work/atelier-dogfood-4`. Every other slash command in the plugin (`/next-task`, `/finish-task`, `/resume-task`, `/setup-project`, `/status`, `/validate`) had a populated `allowed-tools:` field in its frontmatter — listing the specific `Bash(…)` patterns the command needs pre-approved so the operator isn't prompted for every tool invocation. **`/atelier:doctor` was the only one missing this field** (an oversight from the original M1.6 / doctor.md implementation). Result: each `gh api`, `claude plugin list`, `cat`, `jq`, `docker compose version` etc. that doctor runs triggers an interactive permission prompt for the operator.
+
+For a slash command that's strictly read-only and explicitly documents "**Never** modify files based on a check result. Reporting only.", the prompt storm is pure friction.
+
+**Delivered:**
+
+- **`commands/doctor.md` frontmatter** gains an `allowed-tools` list with every read-only tool doctor uses:
+
+  ```yaml
+  allowed-tools: Read, Glob, Grep, Bash(claude plugin list:*), Bash(claude plugin marketplace list:*), Bash(gh api:*), Bash(cat:*), Bash(grep:*), Bash(jq:*), Bash(command -v:*), Bash(awk:*), Bash(docker compose version:*), Bash(docker info:*), Bash(uname:*), Bash(test:*), Bash(head:*), Bash(tail:*), Bash(wc:*)
+  ```
+
+  Coverage: plugin-list + marketplace queries, all `gh api` calls (broad — they're all read-only), file reads (`cat`, `head`, `tail`, `wc`), JSON parsing (`jq`), text search (`grep`, `awk`), binary presence (`command -v`), system identity (`uname`), file-existence checks (`test`), and docker read-only probes. No write-capable tools (`Edit`, `Write`, `Bash(echo > …)`, etc.) are included.
+- **`.claude-plugin/plugin.json`** bumped **0.5.0 → 0.5.1** (patch per PLAN.md §14.2 — bug fix in plugin scope).
+
+**Decisions captured:**
+
+- **Broad `Bash(gh api:*)` over per-endpoint allow-listing.** Every `gh api` call doctor makes is read-only; listing each endpoint explicitly would balloon the frontmatter and break every time doctor's check set evolves. The `gh` CLI's permission boundary (the token's scopes) is the real safety net, not the per-call pattern.
+- **`Bash(cat:*)` allowed**. `cat` is read-only — no risk of accidental writes via this pattern. Same reasoning for `head`, `tail`, `wc`, `grep`, `awk` — all read-only stream-processing utilities.
+- **`Bash(jq:*)` allowed without restricting flags.** `jq` can technically write via `-r` + redirection, but the redirection is bash-side not jq-side; the `Bash(jq:*)` allow doesn't grant redirection rights (those are a separate permission boundary).
+- **`Read` tool included.** Even though `cat` covers most file reads, the `Read` tool is more efficient for large files and is read-only by definition.
+
+**Spawned follow-ups** (captured in ROADMAP, deferred):
+
+- **F14** — doctor's drift checks query `gh api repos/AkaLab-Tech/<repo>/releases/latest`, which fails 404 when the source repo is private and the gh identity lacks org access (exactly what happened in dogfood-3 before `AkaLab-Tech/atelier` was flipped to public). Fix: read from the local marketplace clone instead.
+- **F15** — doctor's parallel checks cascade-cancel when any one fails (Claude Code default behavior). Fix: run sequentially or wrap each in `|| true`.
+
 ### M7.1.F13 — `atelier()` shell function for general-purpose atelier-managed Claude sessions — 2026-05-25
 **PR:** _pending_
 

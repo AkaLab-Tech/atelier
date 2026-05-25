@@ -1,5 +1,6 @@
 ---
 description: Health check for atelier — detects drift against upstream for `atelier`, `claude-roadmap-tools`, and `git-wt`, plus auxiliary host checks (legacy hooks, shellrc, .npmrc, .atelier-config.json). Reports findings and prints the exact commands the operator must run; never applies updates automatically.
+allowed-tools: Read, Glob, Grep, Bash(claude plugin list:*), Bash(claude plugin marketplace list:*), Bash(gh api:*), Bash(cat:*), Bash(grep:*), Bash(jq:*), Bash(command -v:*), Bash(awk:*), Bash(docker compose version:*), Bash(docker info:*), Bash(uname:*), Bash(test:*), Bash(head:*), Bash(tail:*), Bash(wc:*)
 ---
 
 You are running the `/doctor` health check for atelier.
