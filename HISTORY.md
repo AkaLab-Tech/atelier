@@ -8,6 +8,24 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M2.5 — Extend static permission matrix with destructive-command synonyms — 2026-05-25
+**PR:** [#86](https://github.com/AkaLab-Tech/atelier/pull/86)
+
+Captured during the design conversation that converged on a three-layer defense-in-depth permission model. Layer 1 (the static `settings.template.json` matrix) had clear gaps for destructive-command synonyms an agent could emit — equivalent destructive behavior under non-matching syntax. This entry extends layer 1 with those gaps before any layer-3 work (deferred to M2.6) starts, so the cheap deterministic layer carries its full weight.
+
+**Delivered:**
+- `templates/settings.template.json` `deny`: low-level destructive utilities (`dd`, `shred`, `truncate -s 0`), find-based deletion variants (`find ... -delete`, `find ... -exec rm`), fork-bomb literal, `gh api --method <verb>` synonyms (parallel to existing `-X <verb>`), `gh api -X PUT`.
+- `templates/settings.template.json` `ask`: arbitrary-code interpreters (`node/python/perl/ruby -e or -c`), composition shells (`bash/sh/zsh -c`), `* | sudo *` pipes.
+- `PLAN.md` §3: defense-in-depth paragraph extended with a forward-reference to layer 3 (deferred to M2.6).
+- `PLAN.md` §11 v2.3: refined as "layer 3 of three", citing Anthropic's ~17% false-negative rate for native auto-mode as the rationale for layers 1+2 carrying primary responsibility.
+- `ROADMAP.md`: opens M2.6 spike — native `auto` permission mode vs custom LLM-backed hook.
+
+**Tests:** `python3 -m json.tool templates/settings.template.json` validates; `grep -E "Bash\(dd|shred|node -e|bash -c" templates/settings.template.json` returns the new patterns.
+
+**Follow-ups:**
+- M2.6 (Medium Priority) — spike to decide A/B/C for layer 3.
+- Shell-redirection forms and context-dependent destinations remain layer-3 territory by design (not closed by this work).
+
 ### M7.1.F25 — `/atelier:doctor` adds explicit Stop rule to defeat conversational language inertia — 2026-05-25
 **PR:** _pending_
 
