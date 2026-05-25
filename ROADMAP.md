@@ -12,7 +12,24 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phase 1 — Foundation.** Blocks everything else. A fresh Mac must be able to run `install.sh`, log in to Claude + GitHub, and end with the `atelier` plugin installed and `/doctor` ✅.
 
-> **Install hardening from M7.1 dogfood-2 (2026-05-23).** Findings F1–F12 surfaced during a full-wipe reinstall on the operator's machine, following [docs/dogfood-guide.md](docs/dogfood-guide.md) Stages 0–1. M7.1 (full task cycle on a real project) was paused until they were resolved. **All install-side findings closed.** Correctness PR-A ([#70](https://github.com/AkaLab-Tech/atelier/pull/70), v0.4.2) closed F6 + F7a + F9 + F11. UX-blocking PR-B ([#72](https://github.com/AkaLab-Tech/atelier/pull/72)) closed F2 + F5 + F10 + F12. Noise/improvement PR-C ([#73](https://github.com/AkaLab-Tech/atelier/pull/73)) closed F1 + F3 + F4 + F8. Bug-fix PR-D ([#74](https://github.com/AkaLab-Tech/atelier/pull/74)) closed F11b. Identity-adoption PR-E (PR _pending_) closes F7b — the last install-side finding. M7.1 can resume the full task cycle.
+> **Install hardening from M7.1 dogfood-2 + dogfood-3 (2026-05-23 / 2026-05-25).** Findings F1–F12 surfaced during the dogfood-2 full-wipe reinstall. F11b discovered during PR-C validation. F13 + F7c discovered during dogfood-3 first-project setup. Closed: PR-A [#70](https://github.com/AkaLab-Tech/atelier/pull/70) (F6+F7a+F9+F11, v0.4.2), PR-B [#72](https://github.com/AkaLab-Tech/atelier/pull/72) (F2+F5+F10+F12), PR-C [#73](https://github.com/AkaLab-Tech/atelier/pull/73) (F1+F3+F4+F8), PR-D [#74](https://github.com/AkaLab-Tech/atelier/pull/74) (F11b), PR-E [#75](https://github.com/AkaLab-Tech/atelier/pull/75) (F7b, v0.5.0). PR-F (PR _pending_) closes F13 (atelier() shortcut function). F7c (shellrc upgrade detection) remains as a follow-up. After F13 merges + shellrc rerun, M7.1 task cycle resumes on `~/Work/atelier-dogfood-4`.
+
+### M7.1.F7c — Shellrc block needs versioning + auto re-injection on install.sh re-run
+
+`[ux-blocking]` · Source: M7.1 PR-E ([#75](https://github.com/AkaLab-Tech/atelier/pull/75)) live validation (2026-05-25)
+
+`phase_c_1_shellrc_hooks` is idempotent by sentinel detection: it greps for `# >>> atelier hooks (managed by install.sh) >>>` and short-circuits with `step_skip` when found. Operators upgrading from one atelier version to a later one (e.g. v0.4.2 → v0.5.0, where F7b added `GIT_CONFIG_GLOBAL` to `task()`) will NOT get the new shellrc block automatically — they have to manually strip the block between sentinels and re-run `install.sh`. The block's docstring already mentions this manual procedure, but it's a real UX gap for plugin upgrades.
+
+**Scope:**
+
+- [ ] Embed a `# atelier-hooks-version: N` line inside the heredoc block, incremented each time the block contents change.
+- [ ] `phase_c_1_shellrc_hooks` parses the existing block's version line; if missing or older than the current script's version, strip + re-inject instead of skipping.
+- [ ] Print a clear `→ refreshing atelier shellrc block (vX → vY)` message when the upgrade path triggers, so operators understand why their shellrc changed.
+- [ ] Document the contract inside the block (one-line header comment) so future maintainers know to bump the version when they edit the block contents.
+
+**Acceptance:** running `./install.sh` against a `~/.zshrc` with an older-version atelier block re-injects the current block, replacing the old one in place. The sentinels stay stable so block discovery still works; only the body changes.
+
+**Trigger to revisit:** captured 2026-05-25 during the F7b live validation, when the operator's existing shellrc block lacked the new `GIT_CONFIG_GLOBAL` export and `step_skip "atelier hooks already present in .zshrc"` silently swallowed the upgrade. Manual workaround documented in v0.5.0 release notes; a code fix should land before M7.2 (network allowlist iteration) so subsequent install.sh changes propagate automatically.
 
 ---
 

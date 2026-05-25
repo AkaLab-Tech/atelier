@@ -8,8 +8,48 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M7.1.F7b — Orchestrator-side adoption of `$ATELIER_CONFIG_DIR/git-identity.conf` — 2026-05-25
+### M7.1.F13 — `atelier()` shell function for general-purpose atelier-managed Claude sessions — 2026-05-25
 **PR:** _pending_
+
+Discovered during M7.1 **dogfood-3** setup (the first real-project task cycle, run on `AtelierAuthor/atelier-dogfood-4`). The operator needed to run `/atelier:setup-project` on the new project, but the existing shellrc hook block only defined `task()` — which hardcodes `claude "/next-task $*"`. There was **no shortcut** to open a Claude session under `$ATELIER_CONFIG_DIR` for any other slash command (`/atelier:doctor`, `/atelier:setup-project`, or bare interactive exploration). Plain `claude` defaulted to `~/.claude-personal` so the atelier plugin wasn't loaded — and the operator only saw their personal skills, not `/atelier:*` commands.
+
+**Effect on the operator**: every non-`/next-task` interaction required manually typing the full env chain (`CLAUDE_CONFIG_DIR=… GH_CONFIG_DIR=… GIT_CONFIG_GLOBAL=… claude …`). Onboarding (first `/atelier:setup-project`) was blocked.
+
+**Delivered:**
+
+- **`install.sh` `phase_c_1_shellrc_hooks` heredoc** — new `atelier()` shell function alongside the existing `task()`:
+
+  ```bash
+  atelier() {
+    CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" \
+      GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" \
+      GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
+      claude "$@"
+  }
+  ```
+
+  Same env chain as `task()`, but passes through arbitrary arguments to `claude` instead of hardcoding `/next-task`. Operators can now:
+  - `atelier` — bare interactive session under atelier config.
+  - `atelier /atelier:setup-project <path>` — bootstrap a new project.
+  - `atelier /atelier:doctor` — health check without remembering the env chain.
+  - `atelier <any-other-slash-command>` — works for any current or future plugin surface.
+
+- **`install.sh print_first_steps`** — step 2 + step 3 of the post-install "Next steps" block now use the `atelier` shortcut explicitly, so a fresh-install operator never has to type the env chain manually:
+  - Step 2: `atelier /atelier:doctor` (was: `/atelier:doctor` with the implicit "you figure out how to open claude under atelier config")
+  - Step 3: `cd <path-to-project>` + `atelier /atelier:setup-project .` (was: `/atelier:setup-project <path-to-project>` ambient)
+
+**Decisions captured:**
+
+- **`atelier()` over `claude-atelier` alias.** A shell function passes `"$@"` cleanly through quoting boundaries; an alias would split args naively. The function form also lets future extensions (e.g. cwd-aware project resolution per M5.3) live inside the function body without breaking the call site.
+- **`task()` left untouched.** It still hardcodes `/next-task` because that IS its job — the per-task cycle entry point. `atelier` and `task` are siblings: `task` is `atelier /next-task` essentially, but specialized.
+- **Sandbox-validated with a `claude` shim** rather than executing the real CLI, to avoid opening a Claude session during automated testing. Three invocation patterns confirmed correctly: bare `atelier`, `atelier /atelier:setup-project <path>`, `atelier /atelier:doctor`.
+
+**Spawned follow-up:** **M7.1.F7c** — operators upgrading from v0.5.0 to the version that introduces this fix will NOT automatically receive the new `atelier()` function because `phase_c_1_shellrc_hooks` is idempotent by sentinel detection. Manual workaround: strip the existing block between sentinels and re-run `install.sh`. Captured in ROADMAP as a separate follow-up to address the upgrade-detection mechanism systematically.
+
+**Plugin scope:** install.sh-only; no `agents/` / `skills/` / `commands/` / `hooks/` / `.claude-plugin/plugin.json` changes. **No plugin version bump** for PR-F.
+
+### M7.1.F7b — Orchestrator-side adoption of `$ATELIER_CONFIG_DIR/git-identity.conf` — 2026-05-25
+**PR:** [#75](https://github.com/AkaLab-Tech/atelier/pull/75)
 
 F7a (closed in PR-A [#70](https://github.com/AkaLab-Tech/atelier/pull/70) / v0.4.2) wrote `$ATELIER_CONFIG_DIR/git-identity.conf` at install time with the atelier-author identity captured from `gh api user`. F7b is the orchestrator-side adoption that actually makes commits use that identity. Before F7b, F7a's file existed but was never read — commits still authored under the operator's personal global git config (e.g. `Mike <miguelmail2006@gmail.com>`) while being pushed via the atelier-author gh token, defeating the M5.0.1 dual-gh-id design.
 
