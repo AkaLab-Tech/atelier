@@ -1,193 +1,71 @@
 ---
-description: Health check for atelier — detects drift against upstream for `atelier`, `claude-roadmap-tools`, and `git-wt`, plus auxiliary host checks (legacy hooks, shellrc, .npmrc, .atelier-config.json). Reports findings and prints the exact commands the operator must run; never applies updates automatically.
-allowed-tools: Read, Glob, Grep, Bash(claude plugin list:*), Bash(claude plugin marketplace list:*), Bash(gh api:*), Bash(env:*), Bash(echo:*), Bash(printenv:*), Bash(cat:*), Bash(grep:*), Bash(jq:*), Bash(command -v:*), Bash(awk:*), Bash(docker compose version:*), Bash(docker info:*), Bash(uname:*), Bash(test:*), Bash(head:*), Bash(tail:*), Bash(wc:*)
+description: Health check for atelier — detects drift against upstream for `atelier`, `claude-roadmap-tools`, and `git-wt`, plus auxiliary host checks (legacy hooks, shellrc, .npmrc, .atelier-config.json, Chrome, docker compose, `$ATELIER_CONFIG_DIR`, git-identity.conf). Reports findings and prints the exact commands the operator must run; never applies updates automatically.
+allowed-tools: Bash(atelier-doctor:*)
 ---
 
-You are running the `/doctor` health check for atelier.
+You are running the `/atelier:doctor` health check.
 
-Your job is to produce a single structured report with `✓`/`✗` per check, followed by **exact commands** the operator must run to fix anything that's `✗`. **Never run an update or fix yourself** — print the commands and stop. The operator decides what to apply.
+## What to do
 
-## Tool guidance (M7.1.F16b)
+Run the `atelier-doctor` bash binary and pass its stdout to the operator verbatim. That's the entire job — the binary contains all check logic and produces the final formatted report.
 
-To run prompt-free under the `allowed-tools` list above:
-
-- **For reading any file contents** (markers, configs, SHAs, JSON files): use the `Read` tool, NOT `cat`. Claude Code routes `cat <path>` through a path-scoped read-approval check that bypasses the `Bash(cat:*)` allow; the `Read` tool is the canonical read path with its own pre-approved scope.
-- **For checking file existence**: use `Bash(test -f <path>)` or `Bash(test -d <path>)` — both allowlisted as `Bash(test:*)`.
-- **For binary presence**: `Bash(command -v <binary>)` is allowlisted as `Bash(command -v:*)`.
-- **Avoid compound shell expressions with `cat`** like `cat X 2>/dev/null || echo "MISSING"`. Instead: (1) check existence with `test -f`, (2) if exists, use `Read` to get content, (3) otherwise emit the `✗` row directly in the report. The compound form triggers a permission prompt even though `Bash(cat:*)` is listed.
-- All other Bash invocations (`claude plugin list`, `gh api`, `command -v`, `[ -d ... ]`, `docker compose version`, `jq`, etc.) ARE matched cleanly by the allow-list and can use compound `||` / `&&` fallbacks without prompting.
-
-When a check needs file contents, prefer the sequence: `test -f path` → if ✓ → `Read` tool → parse content. Never wrap `Read` calls in shell pipelines.
-
-### Env-var prefix invocations (M7.1.F20)
-
-Claude Code's Bash pattern matcher inspects the first word of a command. Shell-form env-var prefixes (`GH_CONFIG_DIR=value gh api ...`) make the first word `GH_CONFIG_DIR=value` — not `gh` — so `Bash(gh api:*)` does NOT match and the operator gets a permission prompt. To run prompt-free, **always use the `env` form** when an invocation needs custom env vars:
-
-- ✗ `GH_CONFIG_DIR=/path gh api user` — prompts (first word is the assignment)
-- ✓ `env GH_CONFIG_DIR=/path gh api user` — clean (first word is `env`, matched by `Bash(env:*)`)
-
-Similarly:
-
-- For inspecting an env var's value, use `printenv VAR` (matched by `Bash(printenv:*)`), not `echo "${VAR:-…}"` — `echo "${...}"` triggers a "Contains expansion" prompt even with `Bash(echo:*)` allowed.
-
-## Checks to run (in this order)
-
-### 1. Plugin drift — `atelier`
-
-1. Read the installed version: run `claude plugin list --json` and find the entry whose `id` is exactly `atelier@akalab-tech`. Take its `version` field. If the entry is missing entirely, the check is `✗` with the message "atelier plugin not installed — re-run `install.sh`".
-2. Read the latest upstream tag: run `gh api repos/AkaLab-Tech/atelier/releases/latest --jq '.tag_name'` (fall back to `gh api repos/AkaLab-Tech/atelier/tags --jq '.[0].name'` if there are no releases). Strip any leading `v`.
-3. Compare. If equal: `✓ atelier <version> (up to date)`. If different: `✗ atelier <local> → <upstream>` and add this command block to the "to apply" section at the end:
-   ```bash
-   claude plugin marketplace update akalab-tech
-   claude plugin update atelier@akalab-tech
-   ```
-
-### 2. Plugin drift — `claude-roadmap-tools`
-
-Identical procedure as check 1, but against `claude-roadmap-tools@akalab-tech` and `gh api repos/AkaLab-Tech/claude-roadmap-tools/releases/latest`. The remediation command block reuses the same `marketplace update` line:
 ```bash
-claude plugin marketplace update akalab-tech   # only print once if both plugins are stale
-claude plugin update claude-roadmap-tools@akalab-tech
+atelier-doctor
 ```
 
-### 3. SHA drift — `git-wt`
+Then output whatever the binary printed, unchanged. The report already has its own structure (`atelier /doctor — health check` header, three sections, optional fix block). Do **not** rewrap, summarize, or commentate — the operator wants the raw report.
 
-`git-wt` is not a native Claude Code plugin, so it has its own mechanism:
+## Why the bash binary instead of inline checks (M7.1.F23)
 
-1. Read the recorded SHA: check `test -f ~/.local/state/atelier/git-wt.sha` first; if it exists, use the `Read` tool on that path (do NOT `cat` it — see the Tool guidance above). If the file is missing or empty: `✗ git-wt SHA not recorded` with the message "re-run `install.sh` to record it".
-2. Read the upstream HEAD SHA: `gh api repos/AkaLab-Tech/git-wt/commits/main --jq '.sha'`.
-3. Compare full SHAs. If equal: `✓ git-wt <short-sha> (up to date)`. If different: `✗ git-wt <local-short> → <upstream-short>` and add this command block:
-   ```bash
-   git clone --depth 1 https://github.com/AkaLab-Tech/git-wt.git /tmp/git-wt
-   /tmp/git-wt/install.sh --skill-for=claude
-   git -C /tmp/git-wt rev-parse HEAD > ~/.local/state/atelier/git-wt.sha
-   rm -rf /tmp/git-wt
-   ```
+Prior versions of this command ran each check as a separate `Bash(...)` invocation from inside the slash command. Each iteration surfaced a different Claude Code permission gate that prompted the operator interactively:
 
-### 4. Auxiliary host checks (each independent)
+| Gate | Closed in |
+|---|---|
+| Missing `allowed-tools` frontmatter | v0.5.1 (F16) |
+| `cat <path>` file-read path-scope interception | v0.5.2 (F16b) |
+| `echo "${VAR:-X}"` expansion warning | v0.5.5 (F20) |
+| `VAR=value cmd` env-prefix mismatch | v0.5.5 (F20) |
+| Check `i.` strict-equality drift false positive | v0.5.5 (F21) |
+| Compound shell operators (`&&` / `||` / `()`) safety gate | v0.5.6 (F23 — this) |
 
-For each of the following, report `✓` (everything is fine) or `✗` (with the exact fix command). These are reporting-only — never modify anything yourself.
+After five narrative patches, the architectural fix was clear: move every compound shell expression INSIDE a bash binary the LLM never reads. The slash command's allow-list collapses to `Bash(atelier-doctor:*)` (one entry, ENFORCED) and the binary's exit code + stdout are the contract.
 
-a. **No legacy atelier hooks leaking into `~/.claude/settings.json`.** Read that file (if it exists) and check that nothing under `hooks` references a path matching `*/atelier/*` or `*/.claude-personal/atelier/*`. If found, report `✗` and suggest opening the file to remove the stale entries (the live hooks now ship via the plugin's `hooks/hooks.json`, not via the user's `settings.json`).
-b. **`git-wt` binary on PATH.** Run `command -v git-wt`. `✓` if exit 0; `✗` with "re-run `install.sh`" otherwise.
-c. **`fnm env --use-on-cd` active in the operator's shell.** Look for the sentinel `# >>> atelier hooks (managed by install.sh) >>>` in `~/.zshrc` and `~/.bashrc` (whichever exists). `✓` if found in the operator's default shell rc; `✗` with "re-run `install.sh`" otherwise.
-d. **Current project's `.npmrc` guardrails present** (only if a `.npmrc` exists in `$CLAUDE_PROJECT_DIR` or the cwd). Confirm all three of `ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate` are present. `✓` if all three; `✗` listing which are missing, with the suggestion to re-run `/setup-project`.
-e. **Per-project `~/.claude/.atelier-config.json` consistency** (only if the file exists). Confirm it parses as JSON and contains both `setupCompleted` (ISO timestamp) and `setupVersion` (string). `✓` if both; `✗` with "re-run `/setup-project --reconfigure`".
-f. **System Chrome present (required by `mcp__plugin_atelier_playwright`).** The playwright MCP that atelier ships uses the operator's system Chrome by default; first call fails with an actionable error if Chrome is missing. Detect platform via `uname -s` and check accordingly:
-   - **macOS** (`Darwin`): `[ -d "/Applications/Google Chrome.app" ] || [ -d "$HOME/Applications/Google Chrome.app" ]`.
-   - **Linux**: `command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/dev/null 2>&1`.
-   - Any other OS: skip the check with `–` and a one-line note ("Chrome presence check not implemented for <os>").
-
-   `✓ system Chrome detected` if found. `✗ system Chrome not found — mcp__plugin_atelier_playwright will fail on first call` with this fix command block:
-   ```bash
-   npx @playwright/mcp@latest install-browser chrome
-   # alternatively (macOS): brew install --cask google-chrome
-   # alternatively (Linux): use your distro's package manager (apt install google-chrome-stable, etc.)
-   ```
-
-g. **`docker compose` (v2 plugin) reachable (required by `docker-env` skill + `docker-runner` agent).** atelier's docker-env skill issues `docker compose -p <project> up/down/...` with v2 syntax. Detect via `docker compose version`:
-   - `✓ docker compose v<version> detected` if exit 0 + stdout contains a version string.
-   - `–` (skipped) if `docker info` fails first (no daemon running — no point checking the plugin if the runtime is offline; suggest starting the runtime as the prerequisite step).
-   - `✗ docker compose plugin not found — docker-env skill will fail on first lifecycle call` with this fix command block:
-   ```bash
-   # macOS (homebrew): the plugin ships with `docker-compose` formula but the
-   # docker client only discovers it from ~/.docker/cli-plugins/. Symlink it:
-   brew install docker-compose  # if not already installed
-   mkdir -p ~/.docker/cli-plugins
-   ln -sf /opt/homebrew/lib/docker/cli-plugins/docker-compose ~/.docker/cli-plugins/docker-compose
-
-   # Linux (Debian/Ubuntu): docker-compose-plugin from Docker's apt repo
-   sudo apt-get install docker-compose-plugin
-
-   # Verify:
-   docker compose version
-   ```
-   The skill probes `docker compose version` at first lifecycle call too — this `/doctor` check is purely informational, surfaced before the operator hits the failure during a task.
-
-h. **`$ATELIER_CONFIG_DIR` resolves to an atelier-managed install (M7.1.F11).** The chosen path (default `~/.claude-work/`, or whatever the operator picked in Phase 0 of the last `install.sh` run) is persisted via the shellrc hook block as `export ATELIER_CONFIG_DIR=...`. Downstream tools (`atelier-uninstall`, `atelier-setup-project`) read this env var. Verify the resolution is intact:
-   - `$ATELIER_CONFIG_DIR` is set and the directory exists.
-   - `$ATELIER_CONFIG_DIR/.atelier-managed` exists and JSON-parses.
-   - The marker's `installStatus` field is `complete` (an `in_progress` value means the previous `install.sh` did not finish — see M7.1.F6).
-
-   `✓ atelier config dir <path> (installStatus: complete)` if all three pass. `✗` with the specific failure and one of these fix commands:
-   ```bash
-   # If $ATELIER_CONFIG_DIR is unset: shellrc hook block missing or not sourced.
-   source ~/.zshrc   # or ~/.bashrc
-
-   # If the directory or marker is missing: re-run install.sh to recreate them.
-   /path/to/atelier/install.sh
-
-   # If installStatus is in_progress: a previous install crashed. Re-run
-   # install.sh; Phase 0 will offer to resume (M7.1.F6).
-   /path/to/atelier/install.sh
-   ```
-
-i. **`$ATELIER_CONFIG_DIR/git-identity.conf` matches the atelier-author GitHub account (M7.1.F7a + F7b).** install.sh Phase B writes a `[user]` block to this file from `gh api user` under the atelier-author config dir; orchestrator-driven commits read it via `GIT_CONFIG_GLOBAL` so the commit's Author / Committer fields match the atelier-author GitHub identity (not the operator's personal global git config). Run the gh query with the env-prefix form to avoid the M7.1.F20 prompt: `env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api user --jq '.email // empty, .id, .login'`. Then verify:
-   - `$ATELIER_CONFIG_DIR/git-identity.conf` exists and is readable.
-   - The file has a `[user]` section with non-empty `name = …` and `email = …` lines.
-   - The `email` matches **either** of these valid forms (M7.1.F21 — accept any representation of the SAME account):
-     - **Form A — public email**: literal equality with `gh api user .email` (when gh returns a non-empty `.email`).
-     - **Form B — GitHub no-reply pattern**: `<id>+<login>@users.noreply.github.com`, derived from `gh api user .id` + `.login`. install.sh falls back to this form when `gh api user .email` is null/empty at install time (operator's email visibility may be hidden, or the gh token's scopes don't expose `.email`).
-
-     The check passes if EITHER form matches. Reporting drift requires that the stored email matches NEITHER — i.e. the file points at a different account entirely (e.g. the operator re-authenticated with a new gh login but never re-ran install.sh to refresh the conf).
-
-   `✓ atelier-author git identity captured: <name> <<email>>` when all three pass. `✗` with one of these fix commands:
-   ```bash
-   # If git-identity.conf is missing: re-run install.sh — Phase B
-   # (phase_b_capture_atelier_git_identity) writes it after the gh logins.
-   /path/to/atelier/install.sh
-
-   # If the [user] block drifted from gh (e.g. atelier-author renamed the
-   # GitHub account or changed its public email): re-run install.sh to
-   # rewrite the file from the current `gh api user` output.
-   /path/to/atelier/install.sh
-   ```
+The binary is installed at `~/.local/bin/atelier-doctor` (symlinked from the atelier checkout's `scripts/atelier-doctor` by `install.sh` Phase C.1, same mechanism as `atelier-setup-project` / `atelier-uninstall`).
 
 ## Output format
 
-Print exactly this structure (one section per group, blank line between groups). Use only ASCII `✓` (`✓`) and `✗` (`✗`) — no emojis.
+Below is what `atelier-doctor` prints on a clean install. Use it as a reference for what the operator should see — but DO NOT regenerate this if any check changed; always emit the binary's actual stdout. Each `✓` / `✗` / `–` line is generated by the binary's check functions; the optional "To apply pending fixes" block contains copy-pasteable remediation commands.
 
 ```
 atelier /doctor — health check
 
 Plugins (compared against AkaLab-Tech/claude-plugins marketplace)
-    ✓ atelier <version>
-    ✗ claude-roadmap-tools <local> → <upstream>
+    ✓ atelier@akalab-tech <version> (up to date)
+    ✓ claude-roadmap-tools@akalab-tech <version> (up to date)
 
 External tooling
-    ✗ git-wt <local-short> → <upstream-short>
+    ✓ git-wt <short-sha> (up to date)
 
 Host checks
     ✓ no legacy atelier hooks in ~/.claude/settings.json
-    ✓ git-wt on PATH
-    ✓ atelier shellrc hooks active
-    ✓ project .npmrc guardrails present
+    ✓ git-wt on PATH (<path>)
+    ✓ atelier shellrc hooks active (~/.zshrc)
+    – project .npmrc guardrails (no .npmrc in project directory)
     ✓ ~/.claude/.atelier-config.json consistent
     ✓ system Chrome detected
-    ✓ docker compose v2 plugin detected
+    ✓ docker compose v<version> detected
     ✓ atelier config dir <path> (installStatus: complete)
     ✓ atelier-author git identity captured: <name> <<email>>
 
-To apply pending updates, run:
-    claude plugin marketplace update akalab-tech
-    claude plugin update claude-roadmap-tools@akalab-tech
-    git clone --depth 1 https://github.com/AkaLab-Tech/git-wt.git /tmp/git-wt
-    /tmp/git-wt/install.sh --skill-for=claude
-    git -C /tmp/git-wt rev-parse HEAD > ~/.local/state/atelier/git-wt.sha
-    rm -rf /tmp/git-wt
-```
-
-If everything is `✓`, replace the final block with the single line:
-
-```
 All checks passed. atelier is up to date.
 ```
 
-If a check is skipped because its precondition isn't met (e.g. no `.npmrc` in the project, no `~/.claude/.atelier-config.json`), use `–` (an em-dash) in place of `✓`/`✗` and add a one-line note in parentheses explaining why.
+If any check is `✗`, the binary follows the report with a "To apply pending fixes, run:" block listing the copy-pasteable fix commands. The operator runs them; this slash command never modifies anything.
 
 ## Hard rules
 
-- **Never** run any of the printed "to apply" commands yourself. The operator runs them.
-- **Never** modify files based on a check result. Reporting only.
-- **Never** invent a check that isn't listed above. If you discover something that looks off but isn't in this list, mention it as a single trailing note after the structured report.
-- Run the checks **in the listed order**. The plugin drift checks share a `claude plugin marketplace update akalab-tech` line — print it once, not twice, if both plugins are stale.
+- **Never** invoke any tool other than `Bash(atelier-doctor)`. The binary handles every check internally.
+- **Never** rewrap, summarize, or substitute language in the binary's output. Pass it through verbatim.
+- **Never** run any command from the "To apply pending fixes" block yourself. The operator runs them.
+
+If the binary itself fails to run (exit ≥ 2, or `atelier-doctor: command not found`), report the error verbatim and suggest the operator re-run `install.sh` to re-symlink the binary.

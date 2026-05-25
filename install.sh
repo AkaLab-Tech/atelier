@@ -1202,6 +1202,11 @@ phase_c_1_setup_project_helper() {
 
   _phase_c_1_symlink_helper atelier-setup-project
   _phase_c_1_symlink_helper atelier-uninstall
+  # M7.1.F23: atelier-doctor bash binary — replaces the 10 inline Bash
+  # checks the /atelier:doctor slash command used to run, each of which
+  # surfaced a different Claude Code permission gate. With this binary
+  # the slash command's allow-list collapses to `Bash(atelier-doctor:*)`.
+  _phase_c_1_symlink_helper atelier-doctor
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it
