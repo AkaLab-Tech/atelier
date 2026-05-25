@@ -1264,6 +1264,23 @@ task() {
     GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
     claude "/next-task $*"
 }
+# `atelier`: general-purpose entry point that opens a Claude Code session
+# under atelier's isolated config root, optionally with arbitrary arguments
+# passed through to `claude`. Unlike `task`, this does NOT auto-invoke a
+# slash command — operators use it for `atelier /atelier:setup-project
+# <path>` (M7.1 dogfood-3 first-project bootstrap), `atelier /atelier:doctor`
+# (health check), `atelier` (bare — interactive exploration under atelier
+# config), or any other slash command the plugin ships (M7.1.F13). Same
+# CLAUDE_CONFIG_DIR + GH_CONFIG_DIR + GIT_CONFIG_GLOBAL env chain as `task`
+# so the loaded plugin sees the atelier-managed marketplace and the right
+# identities — agents/skills/commands behave consistently across both
+# entry points.
+atelier() {
+  CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" \
+    GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" \
+    GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
+    claude "$@"
+}
 # `task-status`: list atelier-author's open PRs across all repos. Prefixed with
 # GH_CONFIG_DIR so it runs under the atelier-isolated identity (M5.0.1) — the
 # operator's primary ~/.config/gh/ is not touched by install.sh, so a plain
@@ -1460,13 +1477,14 @@ print_first_steps() {
   printf '    1. %sReload your shell%s so the atelier hooks take effect:\n' "$_C_BOLD" "$_C_RESET"
   printf '         %ssource ~/.zshrc%s   # or ~/.bashrc\n\n' "$_C_CYAN" "$_C_RESET"
 
-  printf '    2. %sVerify the install%s — open Claude Code and run:\n' "$_C_BOLD" "$_C_RESET"
-  printf '         %s/atelier:doctor%s\n\n' "$_C_CYAN" "$_C_RESET"
+  printf '    2. %sVerify the install%s — run the atelier-managed doctor (M7.1.F13: `atelier` is the new shortcut that opens Claude Code under $ATELIER_CONFIG_DIR; bare `claude` would load your personal config and would NOT see atelier`s commands):\n' "$_C_BOLD" "$_C_RESET"
+  printf '         %satelier /atelier:doctor%s\n\n' "$_C_CYAN" "$_C_RESET"
 
-  printf '    3. %sSet up your first project%s — from a Claude Code session inside the project dir:\n' "$_C_BOLD" "$_C_RESET"
-  printf '         %s/atelier:setup-project <path-to-project>%s\n\n' "$_C_CYAN" "$_C_RESET"
+  printf '    3. %sSet up your first project%s — `cd` into the project then run setup-project:\n' "$_C_BOLD" "$_C_RESET"
+  printf '         %scd <path-to-project>%s\n' "$_C_CYAN" "$_C_RESET"
+  printf '         %satelier /atelier:setup-project .%s\n\n' "$_C_CYAN" "$_C_RESET"
 
-  printf '    4. %sStart your first task%s — `task` reads the next ROADMAP entry and opens a Claude session:\n' "$_C_BOLD" "$_C_RESET"
+  printf '    4. %sStart your first task%s — `task` reads the next ROADMAP entry from the current project and runs the full task cycle:\n' "$_C_BOLD" "$_C_RESET"
   printf '         %stask%s\n\n' "$_C_CYAN" "$_C_RESET"
 
   printf '    5. %sDocs%s:\n' "$_C_BOLD" "$_C_RESET"
