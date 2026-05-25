@@ -8,6 +8,26 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F19 — `/atelier:setup-project` argument-hint suggested `<project-path>` was required — 2026-05-25
+**PR:** _pending_
+
+Discovered during M7.1 dogfood-3 setup-project resumption (post-F18 fix). Operator asked: "¿Por qué `/setup-project` lleva el punto al final? No se supone que ya estoy dentro de un proyecto?". The argument-hint `[project-path] [--yes|-y] [--mode=new|existing]` leads with the positional → operators (including the agent writing the handoff) reflexively interpret it as "I have to pass a path". In reality the helper has defaulted to `pwd` since M4.19 (`PROJECT_PATH_ARG=""` then `resolve_project_path` does `local input="${PROJECT_PATH_ARG:-.}"`). Pure documentation gap.
+
+**Delivered:**
+
+- **`commands/setup-project.md` frontmatter**:
+  - `description` gains: "Typical usage is just `/atelier:setup-project` from inside the project directory; passing a path is only for the uncommon case of configuring a project from outside it."
+  - `argument-hint` reordered: `[--yes|-y] [--mode=new|existing] [project-path-if-not-cwd]` — flags first, positional renamed to make optionality + "outside-only use case" explicit.
+- **`commands/setup-project.md` intro** gains a `**Typical invocation is $ARGUMENTS = empty**` paragraph immediately after the two-phase summary, with the F19 reference.
+- **Phase 1 step 1 narrative** rewritten: "Resolves the project path — **defaults to the current working directory** when `$ARGUMENTS` is empty (the typical case: operator is inside the project they want to configure). Only resolves to an explicit `<project-path>` when one is passed."
+- **`.claude-plugin/plugin.json`** bumped **0.5.3 → 0.5.4** (patch — documentation fix in plugin scope).
+
+**Decisions captured:**
+
+- **Docs-only fix.** The helper already prints `sublog "project:     $PROJECT"` after path resolution (line 693) — operators DO see which directory got configured, so there's no actual behavior gap, only a discoverability gap in the slash command's hint text.
+- **`[project-path-if-not-cwd]` rename in argument-hint.** Alternative considered: dropping the positional from the hint entirely so the help line just says `[--yes|-y] [--mode=new|existing]`. Rejected — the positional IS still supported and configuring from outside the project is a legitimate use case (e.g. operator at `~` wants to bootstrap a new project at `~/projects/foo`). Keeping it in the hint but renaming to signal "only if not cwd" is the middle ground.
+- **No change to the helper.** Both the default-to-`pwd` resolution and the operator-visible `project:` sublog line already work as intended. Only the slash command's narrative was misleading.
+
 ### M7.1.F18 — `/atelier:setup-project` failed on empty `--plugin-root` from unset `$CLAUDE_PLUGIN_ROOT` — 2026-05-25
 **PR:** _pending_
 
