@@ -8,10 +8,10 @@ You are running the `/setup-project` slash command. This command has two phases:
 
 ## Phase 1 — bash helper
 
-Invoke the bash helper, passing through the operator's arguments verbatim and the plugin root from `$CLAUDE_PLUGIN_ROOT`:
+Invoke the bash helper, passing through the operator's arguments verbatim. **Do NOT pass `--plugin-root` from the slash command** (M7.1.F18): `$CLAUDE_PLUGIN_ROOT` is only auto-set by Claude Code for hook invocations, not for Bash tool calls inside slash commands. Passing `--plugin-root ""` (the empty expansion of an unset env var) used to make the helper die with `"--plugin-root requires a path"`. The helper now auto-discovers its own plugin root via the symlink chain (`~/.local/bin/atelier-setup-project` → `<dotfiles>/scripts/atelier-setup-project`, parent dir is the atelier checkout containing `templates/` + `.claude-plugin/`), so the slash command just calls:
 
 ```bash
-atelier-setup-project --plugin-root "$CLAUDE_PLUGIN_ROOT" $ARGUMENTS
+atelier-setup-project $ARGUMENTS
 ```
 
 That single command does **all** of the mechanical work:

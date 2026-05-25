@@ -8,6 +8,45 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F18 — `/atelier:setup-project` failed on empty `--plugin-root` from unset `$CLAUDE_PLUGIN_ROOT` — 2026-05-25
+**PR:** _pending_
+
+Discovered during M7.1 **dogfood-3** first `/atelier:setup-project .` run on `~/Work/atelier-dogfood-4`. The slash command died with `!! ERROR: --plugin-root requires a path`, then the LLM cascaded into recovery (`echo "${CLAUDE_PLUGIN_ROOT:-UNSET}"`, `claude plugin list --json | python3 ...`) that triggered three more permission prompts.
+
+**Root cause** — two-part:
+
+1. **Claude Code does NOT auto-set `$CLAUDE_PLUGIN_ROOT` for Bash tool invocations inside slash commands** (only sets it for plugin hook scripts). Atelier's `commands/setup-project.md` line 14 invoked `atelier-setup-project --plugin-root "$CLAUDE_PLUGIN_ROOT" $ARGUMENTS` — but `$CLAUDE_PLUGIN_ROOT` expanded to the empty string.
+2. **The helper's `--plugin-root` arg parser was strict**: line 96 of `scripts/atelier-setup-project` did `[ -n "${2:-}" ] || die "--plugin-root requires a path"`, so an empty value killed the helper before its fallback chain (`$ATELIER_PLUGIN_ROOT` env → script-relative discovery → `$ATELIER_CONFIG_DIR/plugins/*/atelier`) could find the plugin root.
+
+**Delivered:**
+
+- **`commands/setup-project.md` Phase 1 narrative** rewritten: don't pass `--plugin-root` from the slash command at all. Just `atelier-setup-project $ARGUMENTS`. Comment explains why (Claude Code's hook-vs-Bash distinction for `$CLAUDE_PLUGIN_ROOT`).
+- **`scripts/atelier-setup-project` arg parser** loosened: `--plugin-root <empty>` now treated as "flag not given" (`PLUGIN_ROOT_FLAG="${2:-}"`) instead of fatal. Backward-compatible with intentional empty calls; the fallback chain in `resolve_plugin_root()` takes over.
+- **`.claude-plugin/plugin.json`** bumped **0.5.2 → 0.5.3** (patch — bug fix in plugin scope per PLAN.md §14.2).
+
+**Operator workflow post-merge:**
+
+```bash
+# Plugin side (slash command fix):
+claude plugin update atelier@akalab-tech    # under $ATELIER_CONFIG_DIR
+# then restart any open Claude session.
+
+# Helper side (the slash command STILL invokes the bash binary, which is
+# symlinked to the dotfiles checkout, so the operator also needs to pull
+# main on dotfiles):
+git -C /Users/mike/Work/work-setup/dotfiles pull --ff-only
+```
+
+The plugin-side fix is what makes the slash command stop passing the empty `--plugin-root`. The helper-side fix is defensive — even with the old slash command (or operators invoking the bash binary directly with `--plugin-root ""` for some reason), the helper now tolerates it.
+
+**Decisions captured:**
+
+- **Drop `--plugin-root` from the slash command entirely**, rather than gating on `[ -n "$CLAUDE_PLUGIN_ROOT" ]` inside the Bash invocation. Cleaner — the helper's fallback chain (`$ATELIER_PLUGIN_ROOT` env → script-relative via symlink chain → `$ATELIER_CONFIG_DIR/plugins/*/atelier` glob) is the canonical discovery path, and forcing the slash command to participate in that resolution is a layering violation.
+- **Helper accepts empty value** instead of dying. Strict arg parsing is good defensive programming for direct CLI use, but breaks transparent forwarding from a wrapper that's working with shell expansion semantics. The fallback chain inside `resolve_plugin_root()` is the right place to enforce "plugin root must be findable somewhere."
+- **Script-relative discovery is sufficient** for the dogfood-3 install layout (symlink `~/.local/bin/atelier-setup-project` → `<dotfiles>/scripts/atelier-setup-project` → parent has `templates/` + `.claude-plugin/`). The marketplace-cache discovery (step 4 of the fallback chain) wasn't exercised here; whether its glob `plugins/*/atelier` correctly matches the real cache layout (`plugins/cache/<marketplace>/<plugin>/<version>/`) is a separate concern — captured implicitly by the deferred F14 follow-up.
+
+**Cascading prompt cleanup** — F18 also resolves the secondary prompts the operator saw during recovery (`echo "${CLAUDE_PLUGIN_ROOT:-UNSET}"`, `claude plugin list --json | python3 ...`). Those only fired because the initial `--plugin-root` failure put the LLM into a discovery dance. With F18 the slash command succeeds on the first call → no recovery → no extra prompts.
+
 ### M7.1.F16b — Doctor narrative must use `Read` tool, not `cat`, for file reads — 2026-05-25
 **PR:** _pending_
 
