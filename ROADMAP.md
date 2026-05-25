@@ -74,6 +74,29 @@ This is a Claude Code default-behavior issue (parallel tool calls share a fate),
 
 > **Phases 2–5 — Single-project agent flow + robustness + multi-project foundation.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries — and when an operator can install / uninstall atelier without risking unrelated Claude state.
 
+### M2.6 — Spike: native `auto` permission mode as layer 3 vs custom LLM-backed hook
+
+`[security-design]` · Source: design conversation (2026-05-25) · `blocked_by: M2.5`
+
+Three-layer permission model from M2.5 leaves layer 3 (semantic judgment for commands the static matrix and pattern hooks don't enumerate) as an open question. Two real options exist:
+
+- **Option A — Native auto-mode.** Claude Code's built-in `auto` permission mode (Anthropic-maintained classifier, ~17% false negative rate per official docs). Activated globally via `~/.claude/settings.json` `"defaultMode": "auto"`. Zero implementation cost.
+- **Option B — Custom `PreToolUse` LLM hook.** The original v2.3 plan: `PermissionRequest` Bash hook calling Haiku 4.5, no cache, project-scoped, integrates with `<worktree>/.task-log/hook-decisions.jsonl`.
+- **Option C — Both** as defense in depth.
+
+**Investigation surface:**
+
+- [ ] **Composition with the static matrix.** Does `auto` mode respect `deny`/`allow` patterns from `settings.json`, or override them? If override, A is incompatible with atelier's matrix-driven security model.
+- [ ] **Per-task vs global scope.** Auto-mode lives in `~/.claude/settings.json` (global); atelier's per-task settings are written to `<worktree>/.claude/settings.json`. Document whether enabling auto-mode globally is acceptable for the non-technical operator, given it affects all Claude sessions (including non-atelier ones).
+- [ ] **17% false-negative profile.** Where does auto-mode miss? Pull Anthropic's published examples; categorize the misses (composition? semantic ambiguity? novel commands?). Compare against what the M2.5-extended matrix already catches.
+- [ ] **Latency.** Benchmark auto-mode overhead vs no-permission-mode baseline on a typical 30-command task.
+
+**Deliverable:** `docs/research/permission-layer-3.md` with a recommendation (A / B / C) and the rationale. Updates [PLAN.md §11 v2.3](PLAN.md) accordingly — A makes v2.3 obsolete; B keeps v2.3 as planned; C reshapes v2.3 to ship alongside auto-mode.
+
+**Acceptance:** `docs/research/permission-layer-3.md` exists with all four investigation sections populated. PLAN.md §11 v2.3 is updated with `Decided in: docs/research/permission-layer-3.md` and the option that was picked.
+
+**Trigger to revisit:** captured 2026-05-25 after discovering auto-mode is available on Max (and all plans), contrary to earlier assumption. Spike runs before any v2.3 implementation work — building a custom hook when Anthropic's classifier is good enough would be waste; relying solely on auto-mode when its 17% FN rate matters would be unsafe.
+
 ### M4.22 — Spike: Coolify VPS integration research
 
 Research spike to inform a future implementation (M4.23). Atelier today has no path to deploy or manage apps on a VPS-hosted Coolify instance. Before committing to an implementation, audit what already exists in the ecosystem and document Coolify's API surface so the impl task starts from concrete options rather than guesses.
