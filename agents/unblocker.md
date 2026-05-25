@@ -165,7 +165,11 @@ If the body exceeds GitHub's issue-body limit (65 536 chars), the 6 logs are too
    cd <main-wt>
    git checkout -b docs/blocked-<task-id>
    git add IN_PROGRESS.md
-   git commit -m "docs(tracking): mark task <task-id> [BLOCKED] (see #<issue-number>)"
+   # M7.1.F7b: commit under atelier-author identity, not the operator's
+   # personal global git config. The env-var prefix scopes the override
+   # to this single invocation.
+   GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
+     git commit -m "docs(tracking): mark task <task-id> [BLOCKED] (see #<issue-number>)"
    git push origin docs/blocked-<task-id>
    gh pr create \
      --title "docs(tracking): mark task <task-id> [BLOCKED] (see #<issue-number>)" \

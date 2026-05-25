@@ -8,6 +8,41 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F7b — Orchestrator-side adoption of `$ATELIER_CONFIG_DIR/git-identity.conf` — 2026-05-25
+**PR:** _pending_
+
+F7a (closed in PR-A [#70](https://github.com/AkaLab-Tech/atelier/pull/70) / v0.4.2) wrote `$ATELIER_CONFIG_DIR/git-identity.conf` at install time with the atelier-author identity captured from `gh api user`. F7b is the orchestrator-side adoption that actually makes commits use that identity. Before F7b, F7a's file existed but was never read — commits still authored under the operator's personal global git config (e.g. `Mike <miguelmail2006@gmail.com>`) while being pushed via the atelier-author gh token, defeating the M5.0.1 dual-gh-id design.
+
+**Delivered:**
+
+- **`skills/pr-flow/SKILL.md`** documents the canonical pattern: `GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" git commit -m …` for every commit on a `task/<id>-<slug>` branch. The env-var prefix scopes the override to the single `git` invocation — operator's `~/.gitconfig` stays untouched (F7a's explicit promise).
+- **`agents/pr-author.md`** applies the prefix to its HEREDOC `git commit` template.
+- **`agents/unblocker.md`** applies it to the `docs/blocked-<task-id>` tracking commit.
+- **`commands/resume-task.md`** applies it to the `docs/resume-<id>` tracking commit (mirrors unblocker).
+- **`commands/finish-task.md`** unchanged at the call site — the actual commit logic lives in pr-flow which is now updated; finish-task delegates via `Skill`.
+- **`install.sh` `phase_c_1_shellrc_hooks` `task()` function** now exports `GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf"` alongside the existing `CLAUDE_CONFIG_DIR` + `GH_CONFIG_DIR` exports. This makes the operator-facing interactive `task` session inherit the same identity boundary — Claude Code's Bash tool invocations from inside `task` see the env var and inherit the atelier-author identity for any `git commit` they run.
+- **`commands/doctor.md`** new check `h.` for env-var resolution was F11's; new check `i.` for `$ATELIER_CONFIG_DIR/git-identity.conf` validates: file exists + `[user]` section has `name=` + `email=` lines + email matches `gh api user` under the atelier-author config dir (or the no-reply pattern derived from `.id` + `.login`). Output-format example block updated with the new line.
+- **`.claude-plugin/plugin.json`** bumped 0.4.2 → **0.5.0** (minor per PLAN.md §14.2 — modifies multiple existing plugin surfaces: 2 agents, 1 command, 1 skill, 1 doctor check).
+
+**Decisions captured:**
+
+- **`GIT_CONFIG_GLOBAL` env-var prefix** chosen over `git -c user.name=... -c user.email=...` per-commit. The ROADMAP listed both. Env-var wraps the entire `git` invocation (cleaner — no need to re-read the file at runtime for every commit) and survives all the subprocess subtleties of HEREDOC quoting. Per-commit `-c` flags would also bypass git hooks that read user.name/email; env-var doesn't.
+- **`task()` shellrc export** is belt-and-suspenders — the agent-level prefixes already cover orchestrator-driven commits, but operators who run `git commit` themselves from inside a `task` session (rare but possible) also get the right identity. Outside `task` (the operator's normal shell), `GIT_CONFIG_GLOBAL` is unset → their own `~/.gitconfig` applies as before.
+- **Pre-existing `~/.gitconfig` prompt in Phase C.1 unchanged.** `phase_c_1_git_identity` still prompts for and writes the OPERATOR's personal global git identity. That's a separate concern from atelier-author's identity — the operator may want their global git config set for non-atelier work and that prompt isn't disturbed.
+- **Fallback behavior when `git-identity.conf` is missing**: `GIT_CONFIG_GLOBAL` pointing at a non-existent file is a hard error in git (since 2.30). Doctor check `i.` flags it; operator re-runs install.sh to recreate. The agents/skills don't try to soft-fall-back to operator identity — that would silently re-introduce the F7 problem.
+
+**Tests (5/5 sandbox cases passed):**
+
+| # | Scenario | Asserted | Result |
+|---|---|---|---|
+| T1 | bare `git commit` (no env override) | uses operator's global `~/.gitconfig` identity | ✓ control case |
+| T2 | `GIT_CONFIG_GLOBAL=<f> git commit` | commit Author = `<f>`'s `[user]` (AtelierAuthor) | ✓ override applies |
+| T3 | post-T2 inspection | operator's `~/.gitconfig` unchanged | ✓ no side effect on global |
+| T4 | subsequent bare `git commit` | reverts to operator identity (no leak) | ✓ scope contained |
+| T5 | install.sh `task()` shellrc | exports `GIT_CONFIG_GLOBAL` alongside `CLAUDE_CONFIG_DIR` + `GH_CONFIG_DIR` | ✓ wired in |
+
+**Acceptance met:** the canonical F7 acceptance — "commits made by atelier inside a managed worktree show Author: <atelier-author identity> while commits made by the operator outside that worktree retain the operator's personal identity, verified via `git log --format='%an <%ae>' -1` from both contexts" — is satisfied by T2 + T3 + T4 in combination.
+
 ### M7.1.F11b — Fix env-var clobber that broke F11 lookup chain — 2026-05-23
 **PR:** _pending_
 

@@ -98,6 +98,23 @@ h. **`$ATELIER_CONFIG_DIR` resolves to an atelier-managed install (M7.1.F11).** 
    /path/to/atelier/install.sh
    ```
 
+i. **`$ATELIER_CONFIG_DIR/git-identity.conf` matches the atelier-author GitHub account (M7.1.F7a + F7b).** install.sh Phase B writes a `[user]` block to this file from `gh api user` under the atelier-author config dir; orchestrator-driven commits read it via `GIT_CONFIG_GLOBAL` so the commit's Author / Committer fields match the atelier-author GitHub identity (not the operator's personal global git config). Verify:
+   - `$ATELIER_CONFIG_DIR/git-identity.conf` exists and is readable.
+   - The file has a `[user]` section with non-empty `name = …` and `email = …` lines.
+   - The `email` matches what `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author gh api user --jq '.email // empty'` returns, OR (when `gh` returns null for `.email`) the GitHub no-reply pattern `<id>+<login>@users.noreply.github.com` derived from `gh api user --jq '.id, .login'`.
+
+   `✓ atelier-author git identity captured: <name> <<email>>` when all three pass. `✗` with one of these fix commands:
+   ```bash
+   # If git-identity.conf is missing: re-run install.sh — Phase B
+   # (phase_b_capture_atelier_git_identity) writes it after the gh logins.
+   /path/to/atelier/install.sh
+
+   # If the [user] block drifted from gh (e.g. atelier-author renamed the
+   # GitHub account or changed its public email): re-run install.sh to
+   # rewrite the file from the current `gh api user` output.
+   /path/to/atelier/install.sh
+   ```
+
 ## Output format
 
 Print exactly this structure (one section per group, blank line between groups). Use only ASCII `✓` (`✓`) and `✗` (`✗`) — no emojis.
@@ -121,6 +138,7 @@ Host checks
     ✓ system Chrome detected
     ✓ docker compose v2 plugin detected
     ✓ atelier config dir <path> (installStatus: complete)
+    ✓ atelier-author git identity captured: <name> <<email>>
 
 To apply pending updates, run:
     claude plugin marketplace update akalab-tech

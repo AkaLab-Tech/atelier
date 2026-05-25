@@ -76,10 +76,10 @@ You inherit the session's default `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"
 - **Never** skip step 3 (the `IN_PROGRESS.md → HISTORY.md` tracking commit). It is part of the PR — not an afterthought, not the `auto-merge` skill's job, not a follow-up commit on `main`. A PR opened without the move is malformed and must be amended before the `reviewer` agent runs.
 - **Never** edit the **main** worktree's copy of `IN_PROGRESS.md` / `HISTORY.md`. You are always operating in the per-task worktree (`task/<id>-<slug>` branch). The edits live on that branch; the squash-merge brings them to `main`. Editing the main worktree copy would leave uncommitted bookkeeping on the protected branch that no agent is allowed to push.
 - If the change touches `package.json`, `pnpm-lock.yaml`, `Dockerfile`, `docker-compose*`, or `.github/workflows/**`, **say so explicitly in the PR description** so reviewers and the (eventual) auto-merge gate know this PR must go through a human.
-- Use a HEREDOC for the commit message and the PR body to preserve formatting:
+- Use a HEREDOC for the commit message and the PR body to preserve formatting. **Always prefix `git commit` with `GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf`** (M7.1.F7b) so the commit's Author / Committer fields match the atelier-author GitHub identity, not the operator's personal global git config:
 
   ```bash
-  git commit -m "$(cat <<'EOF'
+  GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" git commit -m "$(cat <<'EOF'
   <type>(<scope>): <subject>
 
   <body>

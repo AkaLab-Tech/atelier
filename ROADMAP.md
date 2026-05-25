@@ -12,22 +12,7 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phase 1 — Foundation.** Blocks everything else. A fresh Mac must be able to run `install.sh`, log in to Claude + GitHub, and end with the `atelier` plugin installed and `/doctor` ✅.
 
-> **Install hardening from M7.1 dogfood-2 (2026-05-23).** Findings F1–F12 surfaced during a full-wipe reinstall on the operator's machine, following [docs/dogfood-guide.md](docs/dogfood-guide.md) Stages 0–1. M7.1 (full task cycle on a real project) is paused until they are resolved. **Progress: correctness PR-A ([#70](https://github.com/AkaLab-Tech/atelier/pull/70), v0.4.2) closed F6 + F7a + F9 + F11. UX-blocking PR-B ([#72](https://github.com/AkaLab-Tech/atelier/pull/72)) closed F2 + F5 + F10 + F12. Noise/improvement PR-C ([#73](https://github.com/AkaLab-Tech/atelier/pull/73)) closed F1 + F3 + F4 + F8. Bug-fix PR-D (PR _pending_) closes F11b (env-var clobber bug discovered during PR-C validation). F7b (orchestrator-side adoption of the identity file written by F7a) is the only remaining install-side finding — see below.** Tags in each entry: `[correctness]` = real bug or constraint violation; `[ux-blocking]` = non-technical operator can be misled or blocked; `[noise]` / `[improvement]` = polish / would-be-nice but operator can work around.
-
-### M7.1.F7b — Orchestrator-side adoption of `$ATELIER_CONFIG_DIR/git-identity.conf`
-
-`[correctness]` · `blocked_by: M7.1.F7a (delivered)` · Source: M7.1 dogfood-2 install run (2026-05-23)
-
-F7a (closed in PR-A) writes `$ATELIER_CONFIG_DIR/git-identity.conf` at install time with the atelier-author identity captured from `gh api user`. F7b is the orchestrator-side adoption that actually makes commits use that identity. Without F7b, F7a's file exists but is unread — commits still author as the operator's personal global identity.
-
-**Scope:**
-
-- [ ] `task-orchestrator` and every commit-creating subagent / skill (`implementer`, `pr-author`, `auto-merge`, `retry-with-logs`, anything else that calls `git commit`) sets `GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf` on the commit invocation so the Author / Committer fields match atelier-author. Choose: env-var wrap (preferred — explicit at the commit site) OR `git -c user.name=... -c user.email=...` per-commit (more verbose; need to read the file at runtime).
-- [ ] The `task` shell function in the shellrc hook block exports `GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf` alongside the existing `CLAUDE_CONFIG_DIR` / `GH_CONFIG_DIR` exports so the operator's interactive session inside `task` inherits the same identity boundary.
-- [ ] Document the chosen mechanism in `commands/setup-project.md` and the operator guide (M6.2). Operator's global `~/.gitconfig` stays untouched — F7a is explicit about that.
-- [ ] Add a doctor check: `$ATELIER_CONFIG_DIR/git-identity.conf` exists and the `[user]` section names / emails match `gh api user` under the author config dir.
-
-**Acceptance:** after F7b lands, commits made by atelier inside a managed worktree show `Author: <atelier-author identity>` while commits made by the operator outside that worktree retain the operator's personal identity. Verified via `git log --format='%an <%ae>' -1` from both contexts.
+> **Install hardening from M7.1 dogfood-2 (2026-05-23).** Findings F1–F12 surfaced during a full-wipe reinstall on the operator's machine, following [docs/dogfood-guide.md](docs/dogfood-guide.md) Stages 0–1. M7.1 (full task cycle on a real project) was paused until they were resolved. **All install-side findings closed.** Correctness PR-A ([#70](https://github.com/AkaLab-Tech/atelier/pull/70), v0.4.2) closed F6 + F7a + F9 + F11. UX-blocking PR-B ([#72](https://github.com/AkaLab-Tech/atelier/pull/72)) closed F2 + F5 + F10 + F12. Noise/improvement PR-C ([#73](https://github.com/AkaLab-Tech/atelier/pull/73)) closed F1 + F3 + F4 + F8. Bug-fix PR-D ([#74](https://github.com/AkaLab-Tech/atelier/pull/74)) closed F11b. Identity-adoption PR-E (PR _pending_) closes F7b — the last install-side finding. M7.1 can resume the full task cycle.
 
 ---
 

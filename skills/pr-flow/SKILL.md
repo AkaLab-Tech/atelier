@@ -67,10 +67,10 @@ Format:
   - The acceptance criteria, in 1–3 bullets.
   - For dependency additions: the PLAN.md §4 justification (self-question + ≥2 alternatives compared + why this choice).
 
-**Always pass the message via a HEREDOC** so multi-line bodies survive shell quoting:
+**Always pass the message via a HEREDOC** so multi-line bodies survive shell quoting. **Always prefix `git commit` with `GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf`** (M7.1.F7b) so the commit's Author / Committer fields match the atelier-author GitHub identity (M5.0.1 dual-gh-id), not the operator's personal global git config:
 
 ```sh
-git commit -m "$(cat <<'EOF'
+GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" git commit -m "$(cat <<'EOF'
 feat(reports): add CSV export at /reports
 
 Closes #42.
@@ -80,6 +80,8 @@ Closes #42.
 EOF
 )"
 ```
+
+The identity file is written at install time by `install.sh` Phase B (`phase_b_capture_atelier_git_identity`) — `[user] name = AtelierAuthor` + `email = <id>+<login>@users.noreply.github.com`. The env-var prefix scopes the override to this single `git` invocation; the operator's `~/.gitconfig` is never modified. If the file is missing (shouldn't be — `/atelier:doctor` flags it), commits fall back to the operator's global identity, which works but mixes attribution with the atelier-author push token; surface a `warn` to the operator and continue.
 
 ### 3. Push only to `origin task/<id>-<slug>`
 
