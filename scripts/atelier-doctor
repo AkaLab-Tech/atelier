@@ -1,0 +1,435 @@
+#!/usr/bin/env bash
+#
+# atelier-doctor — health check binary for atelier (M7.1.F23).
+#
+# Previously implemented as the body of commands/doctor.md (a Claude Code
+# slash command with per-check Bash invocations). That approach kept
+# surfacing different Claude Code permission gates — file-read path-scope
+# (F16/F16b), expansion warnings (F20), env-prefix mismatch (F20),
+# false-positive drift (F21), shell-operator safety gate (F22). After five
+# narrative-level patches we cut the loop: move ALL check logic into this
+# bash binary. The slash command now just runs `atelier-doctor` (one
+# allowlisted call), receives the formatted report on stdout, and passes
+# it through to the operator verbatim. Compound shell operators happen
+# INSIDE this script, never reaching Claude Code's permission heuristics.
+#
+# Usage:
+#   atelier-doctor             # run all checks, print human-readable report
+#   atelier-doctor --help      # show help
+#
+# Exit code:
+#   0   all checks ✓ (or only ↷ skipped)
+#   1   one or more checks ✗
+#   2   unrecoverable error before the report could be produced
+#
+# Output format mirrors the legacy slash-command report:
+#   atelier /doctor — health check
+#
+#   Plugins (compared against AkaLab-Tech/claude-plugins marketplace)
+#       ✓ atelier <version>
+#       ✗ claude-roadmap-tools <local> → <upstream>
+#
+#   External tooling
+#       ✓ git-wt <short-sha>
+#
+#   Host checks
+#       ✓ no legacy atelier hooks in ~/.claude/settings.json
+#       ✗ ...
+#
+#   To apply pending fixes, run:
+#       <copy-pasteable command block>
+
+set -uo pipefail
+# Note: no `set -e` — individual checks may fail and we must keep running.
+
+# ---------- constants ----------
+
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+
+# ---------- output formatting ----------
+
+OK="✓"
+FAIL="✗"
+SKIP="–"
+
+# Sections accumulated as we go; printed at the end so the final report
+# is one coherent block instead of interleaved across checks.
+declare -a SECTION_PLUGINS=()
+declare -a SECTION_EXTERNAL=()
+declare -a SECTION_HOST=()
+declare -a FIX_BLOCKS=()
+EXIT_STATUS=0
+
+push_plugin()   { SECTION_PLUGINS+=("    $*"); }
+push_external() { SECTION_EXTERNAL+=("    $*"); }
+push_host()     { SECTION_HOST+=("    $*"); }
+push_fix() {
+  # One element per fix block; printed under "To apply pending fixes, run:"
+  FIX_BLOCKS+=("$*")
+  EXIT_STATUS=1
+}
+
+# Strip leading "v" from a version tag if present.
+strip_v() { printf '%s' "${1#v}"; }
+
+# ---------- checks ----------
+
+check_plugin_drift() {
+  local plugin_id="$1" repo="$2"
+  local local_v upstream_v
+
+  local_v="$(claude plugin list --json 2>/dev/null \
+    | jq -r --arg id "$plugin_id" '.[] | select(.id == $id) | .version // empty')"
+
+  if [ -z "$local_v" ]; then
+    push_plugin "$FAIL $plugin_id not installed"
+    push_fix "claude plugin install $plugin_id"
+    return
+  fi
+
+  # Try releases/latest first, fall back to tags[0]. Each gh api call is
+  # a SEPARATE bash invocation when run as a slash command (compound-shell
+  # gate); inside this binary, the fallback chain is internal — no gates.
+  upstream_v="$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null)"
+  if [ -z "$upstream_v" ]; then
+    upstream_v="$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null)"
+  fi
+  upstream_v="$(strip_v "$upstream_v")"
+
+  if [ -z "$upstream_v" ]; then
+    push_plugin "$SKIP $plugin_id $local_v (upstream check failed)"
+    return
+  fi
+
+  if [ "$local_v" = "$upstream_v" ]; then
+    push_plugin "$OK $plugin_id $local_v (up to date)"
+  else
+    push_plugin "$FAIL $plugin_id $local_v → $upstream_v"
+    push_fix "claude plugin marketplace update akalab-tech
+claude plugin update $plugin_id"
+  fi
+}
+
+check_git_wt_drift() {
+  local sha_file="$HOME/.local/state/atelier/git-wt.sha"
+  local recorded_sha upstream_sha
+
+  if [ ! -f "$sha_file" ]; then
+    push_external "$FAIL git-wt SHA not recorded"
+    push_fix "# re-run install.sh to record the git-wt SHA
+/path/to/atelier/install.sh"
+    return
+  fi
+
+  recorded_sha="$(<"$sha_file")"
+  if [ -z "$recorded_sha" ]; then
+    push_external "$FAIL git-wt SHA file empty"
+    push_fix "/path/to/atelier/install.sh"
+    return
+  fi
+
+  upstream_sha="$(gh api repos/AkaLab-Tech/git-wt/commits/main --jq '.sha' 2>/dev/null)"
+  if [ -z "$upstream_sha" ]; then
+    push_external "$SKIP git-wt ${recorded_sha:0:7} (upstream check failed)"
+    return
+  fi
+
+  if [ "$recorded_sha" = "$upstream_sha" ]; then
+    push_external "$OK git-wt ${recorded_sha:0:7} (up to date)"
+  else
+    push_external "$FAIL git-wt ${recorded_sha:0:7} → ${upstream_sha:0:7}"
+    push_fix "git clone --depth 1 https://github.com/AkaLab-Tech/git-wt.git /tmp/git-wt
+/tmp/git-wt/install.sh --skill-for=claude
+git -C /tmp/git-wt rev-parse HEAD > ~/.local/state/atelier/git-wt.sha
+rm -rf /tmp/git-wt"
+  fi
+}
+
+check_legacy_hooks() {
+  local settings="$HOME/.claude/settings.json"
+  if [ ! -f "$settings" ]; then
+    push_host "$OK no legacy atelier hooks in ~/.claude/settings.json (file absent)"
+    return
+  fi
+  # Look for path strings containing atelier under hooks.
+  if jq -e '.hooks // {} | tostring | test("atelier|\\.claude-personal/atelier")' "$settings" >/dev/null 2>&1; then
+    push_host "$FAIL legacy atelier hooks found in ~/.claude/settings.json"
+    push_fix "# open ~/.claude/settings.json and remove entries under \"hooks\"
+# referencing atelier paths — live hooks ship via the plugin manifest now."
+  else
+    push_host "$OK no legacy atelier hooks in ~/.claude/settings.json"
+  fi
+}
+
+check_git_wt_path() {
+  if command -v git-wt >/dev/null 2>&1; then
+    local bin
+    bin="$(command -v git-wt)"
+    push_host "$OK git-wt on PATH ($bin)"
+  else
+    push_host "$FAIL git-wt not on PATH"
+    push_fix "/path/to/atelier/install.sh"
+  fi
+}
+
+check_shellrc_hooks() {
+  local sentinel="# >>> atelier hooks (managed by install.sh) >>>"
+  local found_in=""
+  if [ -f "$HOME/.zshrc" ] && grep -qF "$sentinel" "$HOME/.zshrc" 2>/dev/null; then
+    found_in=".zshrc"
+  elif [ -f "$HOME/.bashrc" ] && grep -qF "$sentinel" "$HOME/.bashrc" 2>/dev/null; then
+    found_in=".bashrc"
+  fi
+  if [ -n "$found_in" ]; then
+    push_host "$OK atelier shellrc hooks active (~/$found_in)"
+  else
+    push_host "$FAIL atelier shellrc hooks not found in ~/.zshrc or ~/.bashrc"
+    push_fix "/path/to/atelier/install.sh"
+  fi
+}
+
+check_project_npmrc() {
+  local npmrc=""
+  if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -f "$CLAUDE_PROJECT_DIR/.npmrc" ]; then
+    npmrc="$CLAUDE_PROJECT_DIR/.npmrc"
+  elif [ -f "$PWD/.npmrc" ]; then
+    npmrc="$PWD/.npmrc"
+  fi
+  if [ -z "$npmrc" ]; then
+    push_host "$SKIP project .npmrc guardrails (no .npmrc in project directory)"
+    return
+  fi
+  local missing=()
+  grep -qE '^ignore-scripts[[:space:]]*=[[:space:]]*true' "$npmrc" || missing+=("ignore-scripts=true")
+  grep -qE '^minimum-release-age[[:space:]]*=[[:space:]]*10080' "$npmrc" || missing+=("minimum-release-age=10080")
+  grep -qE '^audit-level[[:space:]]*=[[:space:]]*moderate' "$npmrc" || missing+=("audit-level=moderate")
+  if [ ${#missing[@]} -eq 0 ]; then
+    push_host "$OK project .npmrc guardrails present"
+  else
+    push_host "$FAIL .npmrc missing: ${missing[*]}"
+    push_fix "# re-run /atelier:setup-project to refresh .npmrc with the three PLAN.md §4 guardrails."
+  fi
+}
+
+check_atelier_config_json() {
+  local cfg="$HOME/.claude/.atelier-config.json"
+  if [ ! -f "$cfg" ]; then
+    push_host "$SKIP ~/.claude/.atelier-config.json (not present)"
+    return
+  fi
+  local setup_completed setup_version
+  setup_completed="$(jq -r '.setupCompleted // empty' "$cfg" 2>/dev/null)"
+  setup_version="$(jq -r '.setupVersion // empty' "$cfg" 2>/dev/null)"
+  if [ -n "$setup_completed" ] && [ -n "$setup_version" ]; then
+    push_host "$OK ~/.claude/.atelier-config.json consistent"
+  else
+    push_host "$FAIL ~/.claude/.atelier-config.json missing setupCompleted or setupVersion"
+    push_fix "/atelier:setup-project --reconfigure"
+  fi
+}
+
+check_chrome() {
+  local os
+  os="$(uname -s)"
+  case "$os" in
+    Darwin)
+      if [ -d "/Applications/Google Chrome.app" ]; then
+        push_host "$OK system Chrome detected"
+      elif [ -d "$HOME/Applications/Google Chrome.app" ]; then
+        push_host "$OK system Chrome detected (per-user install)"
+      else
+        push_host "$FAIL system Chrome not found"
+        push_fix "npx @playwright/mcp@latest install-browser chrome
+# alternatively: brew install --cask google-chrome"
+      fi
+      ;;
+    Linux)
+      if command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/dev/null 2>&1; then
+        push_host "$OK system Chrome detected"
+      else
+        push_host "$FAIL system Chrome not found"
+        push_fix "npx @playwright/mcp@latest install-browser chrome
+# alternatively (Linux): apt install google-chrome-stable"
+      fi
+      ;;
+    *)
+      push_host "$SKIP Chrome presence check not implemented for $os"
+      ;;
+  esac
+}
+
+check_docker_compose() {
+  # Probe daemon first; skip the rest if daemon is offline.
+  if ! docker info >/dev/null 2>&1; then
+    push_host "$SKIP docker compose check (daemon offline)"
+    return
+  fi
+  local v
+  v="$(docker compose version --short 2>/dev/null)"
+  if [ -z "$v" ]; then
+    # Some older docker compose versions don't support --short.
+    v="$(docker compose version 2>/dev/null | head -1 | awk '{print $NF}')"
+  fi
+  if [ -n "$v" ]; then
+    push_host "$OK docker compose v$v detected"
+  else
+    push_host "$FAIL docker compose plugin not found"
+    push_fix "# macOS (homebrew):
+brew install docker-compose
+mkdir -p ~/.docker/cli-plugins
+ln -sf /opt/homebrew/lib/docker/cli-plugins/docker-compose ~/.docker/cli-plugins/docker-compose
+
+# Linux (Debian/Ubuntu):
+sudo apt-get install docker-compose-plugin"
+  fi
+}
+
+check_atelier_config_dir() {
+  # M7.1.F11 — verify the env-var lookup chain resolves to an atelier
+  # install (marker present + installStatus complete).
+  if [ -z "${ATELIER_CONFIG_DIR:-}" ]; then
+    push_host "$FAIL \$ATELIER_CONFIG_DIR unset (shellrc hook block missing or not sourced)"
+    push_fix "source ~/.zshrc   # or ~/.bashrc"
+    return
+  fi
+  if [ ! -d "$ATELIER_CONFIG_DIR" ]; then
+    push_host "$FAIL atelier config dir $ATELIER_CONFIG_DIR does not exist"
+    push_fix "/path/to/atelier/install.sh"
+    return
+  fi
+  local marker="$ATELIER_CONFIG_DIR/.atelier-managed"
+  if [ ! -f "$marker" ]; then
+    push_host "$FAIL marker file missing at $marker"
+    push_fix "/path/to/atelier/install.sh"
+    return
+  fi
+  local status
+  status="$(jq -r '.installStatus // empty' "$marker" 2>/dev/null)"
+  case "$status" in
+    complete)
+      push_host "$OK atelier config dir $ATELIER_CONFIG_DIR (installStatus: complete)"
+      ;;
+    in_progress)
+      push_host "$FAIL atelier config dir $ATELIER_CONFIG_DIR (installStatus: in_progress — install crashed)"
+      push_fix "# install.sh Phase 0 will offer to resume (M7.1.F6)
+/path/to/atelier/install.sh"
+      ;;
+    *)
+      push_host "$FAIL atelier config dir $ATELIER_CONFIG_DIR (marker corrupt or unrecognized installStatus)"
+      push_fix "/path/to/atelier/install.sh"
+      ;;
+  esac
+}
+
+check_git_identity() {
+  # M7.1.F7a + F7b + F21 — accept either public-email form OR no-reply
+  # derivation from gh api user .id + .login (both are valid for the
+  # same account).
+  local conf="$ATELIER_CONFIG_DIR/git-identity.conf"
+  if [ ! -f "$conf" ]; then
+    push_host "$FAIL atelier-author git-identity.conf missing"
+    push_fix "/path/to/atelier/install.sh"
+    return
+  fi
+  local conf_name conf_email
+  conf_name="$(awk -F'= ' '/^[[:space:]]*name = /{print $2}' "$conf")"
+  conf_email="$(awk -F'= ' '/^[[:space:]]*email = /{print $2}' "$conf")"
+  if [ -z "$conf_name" ] || [ -z "$conf_email" ]; then
+    push_host "$FAIL git-identity.conf missing [user] name= or email="
+    push_fix "/path/to/atelier/install.sh"
+    return
+  fi
+  # gh api user under the author config dir
+  local gh_dir="$ATELIER_CONFIG_DIR/gh/author"
+  if [ ! -d "$gh_dir" ]; then
+    push_host "$FAIL atelier-author gh dir missing ($gh_dir) — cannot cross-check identity"
+    push_fix "/path/to/atelier/install.sh"
+    return
+  fi
+  local gh_login gh_id gh_email
+  gh_login="$(env GH_CONFIG_DIR="$gh_dir" gh api user --jq .login 2>/dev/null)"
+  gh_id="$(env GH_CONFIG_DIR="$gh_dir" gh api user --jq .id 2>/dev/null)"
+  gh_email="$(env GH_CONFIG_DIR="$gh_dir" gh api user --jq -r '.email // empty' 2>/dev/null)"
+  if [ -z "$gh_login" ] || [ -z "$gh_id" ]; then
+    push_host "$SKIP git-identity.conf cross-check (could not read gh api user)"
+    return
+  fi
+  # Form A: literal equality with gh api .email
+  if [ -n "$gh_email" ] && [ "$conf_email" = "$gh_email" ]; then
+    push_host "$OK atelier-author git identity captured: $conf_name <$conf_email>"
+    return
+  fi
+  # Form B: no-reply derivation from .id + .login
+  local noreply="${gh_id}+${gh_login}@users.noreply.github.com"
+  if [ "$conf_email" = "$noreply" ]; then
+    push_host "$OK atelier-author git identity captured: $conf_name <$conf_email>"
+    return
+  fi
+  # Neither form matches → real drift
+  push_host "$FAIL atelier-author git identity drift: conf has $conf_email but gh api returns $gh_email (id=$gh_id login=$gh_login)"
+  push_fix "# git-identity.conf doesn't match the currently-authenticated gh account.
+# Re-run install.sh — Phase B will rewrite it from `gh api user`:
+/path/to/atelier/install.sh"
+}
+
+# ---------- main ----------
+
+usage() {
+  cat <<EOF
+atelier-doctor — health check binary for atelier.
+
+USAGE:
+  atelier-doctor             Run all checks and print the report.
+  atelier-doctor --help      Show this help.
+
+EXIT CODES:
+  0   All checks ✓ (or only ↷ skipped).
+  1   One or more checks ✗.
+  2   Unrecoverable error before the report could be produced.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
+# Run checks in deterministic order.
+check_plugin_drift "atelier@akalab-tech"               "AkaLab-Tech/atelier"
+check_plugin_drift "claude-roadmap-tools@akalab-tech"  "AkaLab-Tech/claude-roadmap-tools"
+check_git_wt_drift
+check_legacy_hooks
+check_git_wt_path
+check_shellrc_hooks
+check_project_npmrc
+check_atelier_config_json
+check_chrome
+check_docker_compose
+check_atelier_config_dir
+check_git_identity
+
+# ---------- emit the report ----------
+
+printf 'atelier /doctor — health check\n\n'
+
+printf 'Plugins (compared against AkaLab-Tech/claude-plugins marketplace)\n'
+for line in "${SECTION_PLUGINS[@]}"; do printf '%s\n' "$line"; done
+printf '\n'
+
+printf 'External tooling\n'
+for line in "${SECTION_EXTERNAL[@]}"; do printf '%s\n' "$line"; done
+printf '\n'
+
+printf 'Host checks\n'
+for line in "${SECTION_HOST[@]}"; do printf '%s\n' "$line"; done
+printf '\n'
+
+if [ ${#FIX_BLOCKS[@]} -gt 0 ]; then
+  printf 'To apply pending fixes, run:\n\n'
+  for block in "${FIX_BLOCKS[@]}"; do
+    printf '%s\n\n' "$block"
+  done
+else
+  printf 'All checks passed. atelier is up to date.\n'
+fi
+
+exit $EXIT_STATUS

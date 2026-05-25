@@ -8,6 +8,65 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F23 — `/atelier:doctor` architectural refactor: move all check logic into a bash binary — 2026-05-25
+**PR:** _pending_
+
+Operator pushback during M7.1 dogfood-3 v0.5.5 doctor retry made the architectural problem explicit: each narrative patch (F16 → F16b → F20 → F21 → F22) closed a different Claude Code permission gate, but each fix was at the LLM-instruction layer — a behavior steering, not a mechanical constraint. The LLM could ignore the guidance and re-introduce compound shell expressions, file-read interception, env-prefix mismatches, etc. **Five patches in, the operator asked: "does this DEFINITIVELY fix F22?"** The honest answer was no — narrative-level fixes don't ENFORCE anything; they nudge.
+
+**The architectural fix:** move every check's logic into a bash binary the LLM never reads. The slash command collapses to one allowlisted invocation (`Bash(atelier-doctor:*)`). Compound shell operators, file reads, env-var prefixes — all happen INSIDE the binary, never touching Claude Code's permission system.
+
+**Delivered:**
+
+- **`scripts/atelier-doctor` (new, ~310 lines)** — full bash binary implementing all 10 checks from the previous narrative:
+  1. Plugin drift `atelier@akalab-tech` vs `gh api repos/AkaLab-Tech/atelier/releases/latest`.
+  2. Plugin drift `claude-roadmap-tools@akalab-tech` (same shape).
+  3. SHA drift `git-wt` vs `gh api repos/AkaLab-Tech/git-wt/commits/main`.
+  4a. Legacy atelier hooks in `~/.claude/settings.json`.
+  4b. `git-wt` binary on `PATH`.
+  4c. Shellrc hooks sentinel in `~/.zshrc` / `~/.bashrc`.
+  4d. Project `.npmrc` guardrails (`ignore-scripts`, `minimum-release-age`, `audit-level`).
+  4e. `~/.claude/.atelier-config.json` schema (setupCompleted + setupVersion).
+  4f. System Chrome presence (macOS / Linux paths).
+  4g. `docker compose v2` reachable.
+  4h. `$ATELIER_CONFIG_DIR` lookup chain + marker installStatus (M7.1.F11).
+  4i. `git-identity.conf` matches `gh api user` — accepts Form A (public email) OR Form B (no-reply derivation), preserving F21's robustness.
+
+  Output mirrors the legacy slash-command report format (three sections + optional "To apply pending fixes" block). Exit code: `0` = all ✓, `1` = any ✗, `2` = unrecoverable.
+
+- **`commands/doctor.md`** simplified from ~140 lines of narrative + per-check Bash instructions to ~50 lines explaining "run `atelier-doctor`, pass output verbatim". `allowed-tools` collapses to `Bash(atelier-doctor:*)` (one entry) — versus v0.5.5's 18-entry allow-list that still leaked prompts.
+
+- **`install.sh phase_c_1_setup_project_helper`** adds `_phase_c_1_symlink_helper atelier-doctor` so the binary lands at `~/.local/bin/atelier-doctor` alongside the existing `atelier-setup-project` / `atelier-uninstall` symlinks.
+
+- **`.claude-plugin/plugin.json`** bumped **0.5.5 → 0.5.6** (patch — bug fix in plugin scope per PLAN.md §14.2).
+
+**Doctor evolution timeline (consolidated):**
+
+| PR | Version | Gate fixed | Approach |
+|---|---|---|---|
+| #77 | v0.5.1 | F16 — missing `allowed-tools` frontmatter | narrative |
+| #78 | v0.5.2 | F16b — `cat <path>` file-read path-scope interception | narrative |
+| #81 | v0.5.5 | F20 — `echo "${VAR:-X}"` expansion + `VAR=val cmd` env-prefix | narrative |
+| #81 | v0.5.5 | F21 — check `i.` strict-equality false-positive drift | narrative |
+| #82 *closed* | (would have been v0.5.6) | F22 — compound shell operators safety gate | narrative — operator rejected as band-aid |
+| **this** | **v0.5.6** | **F23 — architectural refactor into bash binary** | **architectural / enforced** |
+
+**Decisions captured:**
+
+- **`Bash(atelier-doctor:*)` as the sole allow-list entry.** Five iterations of frontmatter polish (F16 → F20) accumulated 18 entries trying to cover every primitive doctor might use. Each new primitive surfaced a different gate. Collapsing to one entry that wraps the entire check logic is structurally simpler and prompt-free by construction.
+- **Bash binary, not Python / Node / etc.** atelier's host-OS layer is bash-first (`install.sh`, `atelier-setup-project`, `atelier-uninstall`). Doctor joins the family. No new runtime dependency.
+- **Output format unchanged from v0.5.5.** Operators who memorized the v0.5.5 report see the same shape post-F23. The binary's `printf` calls reproduce the legacy header / sections / fix block exactly.
+- **Exit code is the contract.** `0` = healthy, `1` = needs attention, `2` = unrecoverable runtime error. Slash command (or operator from terminal) can branch on this. No structured JSON yet — kept simple for v1; revisit if downstream tooling wants programmatic consumption.
+- **Operator workflow post-merge**: `claude plugin update atelier@akalab-tech` (brings new doctor.md) + `git pull` on dotfiles (brings the new bash script — same `~/.local/bin/atelier-doctor` symlink target) + restart Claude. The next `atelier /atelier:doctor` is one Bash call, prompt-free.
+- **Closed PR #82 (F22 narrative band-aid) without merge.** The narrative fix was correct in principle but kept the underlying architectural problem: doctor was an LLM-narrated multi-step script when it could be a single bash binary. F23 is the right layer.
+
+**Test plan (executed pre-merge):**
+
+- [x] `bash -n scripts/atelier-doctor` syntax check passes.
+- [x] Smoke run against operator's current install (with `CLAUDE_CONFIG_DIR=~/.claude-work ATELIER_CONFIG_DIR=~/.claude-work GH_CONFIG_DIR=~/.claude-work/gh/author`): 10 checks emitted, 9 ✓ + 1 ✗ (`~/.claude/.atelier-config.json` legacy file from pre-M5.0.2 era), exit code 1. Output format matches v0.5.5's expectations.
+- [x] Plugin / external / host sections correctly ordered + populated.
+- [x] git-identity F21 logic preserved: operator's no-reply form `780063+Miguelslo27@users.noreply.github.com` correctly resolves as ✓ via Form B match.
+- [ ] **(post-merge)** Operator runs `claude plugin update atelier@akalab-tech` to v0.5.6 + `git pull` on dotfiles + restart Claude + retries `atelier /atelier:doctor`. Expect: ONE `Bash(atelier-doctor)` invocation, zero prompts, identical report content to v0.5.5.
+
 ### M7.1.F20 + F21 — `/atelier:doctor` echo/env prompts + git-identity false-positive drift — 2026-05-25
 **PR:** _pending_
 
