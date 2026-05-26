@@ -211,7 +211,7 @@ If you're still stuck:
 - Check GitHub for issues with the `blocked` label — atelier creates those when it can't finish.
 - Re-run the installer: `cd ~/atelier && ./install.sh`. It's safe to re-run; it picks up where it left off.
 
-A dedicated troubleshooting doc is in progress (atelier milestone M6.4). For now, the doctor + `blocked` issues cover most cases.
+For symptom-indexed common problems (`task: command not found`, a hook blocked an edit, auto-merge skipped a PR, reviewer's approval shows as a comment, etc.) see [troubleshooting.md](troubleshooting.md).
 
 ---
 

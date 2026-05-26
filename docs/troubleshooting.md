@@ -1,0 +1,189 @@
+# Troubleshooting
+
+Quick reference for when something doesn't work. Symptoms first — search this page for what you see on screen, then read the fix.
+
+If you can't find your symptom here, the most recent entries in `HISTORY.md` and the dogfood-test logs in `docs/dogfood-guide.md` cover many real failures with their fixes.
+
+---
+
+## Always first: run the doctor
+
+```bash
+atelier /atelier:doctor
+```
+
+Each `✗` line in the doctor's report carries the fix command. Copy-paste the command and re-run the doctor. Most setup-level issues surface here and self-resolve.
+
+For checks the doctor cannot perform (it can't reach the network, your shell hasn't loaded the hooks yet, etc.), see the sections below.
+
+---
+
+## Setup-time problems
+
+Issues that come up while running `install.sh` or right after.
+
+### `task: command not found` after install
+
+**Symptom:** Install finished cleanly. Running `task` in a new terminal gives `command not found`.
+
+**Cause:** The shell hasn't loaded atelier's shell functions yet.
+
+**Fix:** Run `source ~/.zshrc` (or `~/.bashrc` on bash). Alternative: open a fresh terminal — same effect.
+
+### `install.sh` fails on Phase A (system tools)
+
+**Symptom:** Install stops with a Homebrew (Mac) or apt (Linux) error before reaching the "Phase B" output.
+
+**Cause:** A base dependency (`git`, `gh`, `fnm`, `pnpm`, `jq`, `fzf`) couldn't install.
+
+**Fix:** Install the failing tool by hand using your package manager, then re-run `./install.sh`. The installer is idempotent: it picks up where it left off (M7.1.F6).
+
+### `install.sh` keeps prompting to log in with the same GitHub account
+
+**Symptom:** During Phase B, after logging in to GitHub for the "author" identity, the install rejects the same identity for the "reviewer" with a "same as 5a" error.
+
+**Cause:** Your browser remained logged in to one GitHub account between the two prompts. atelier needs **two separate** GitHub accounts: one for the agent that writes code, one for the agent that approves it. Same-identity approvals get downgraded to comments by GitHub itself (see "Auto-merge skipped my PR" below).
+
+**Fix:** Open https://github.com/logout in the browser, then sign in with your second account when the next prompt fires. If you don't have a second account, [create one](https://github.com/signup) — it's free.
+
+### `install.sh` finishes but Claude still loads the wrong config
+
+**Symptom:** `claude` in a new terminal doesn't show atelier's slash commands like `/atelier:doctor`.
+
+**Cause:** Bare `claude` loads your personal Claude config, not atelier's isolated one. atelier ships the `atelier` shell function that pins `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR` before invoking `claude`.
+
+**Fix:** Always launch atelier sessions with `atelier ...` (not `claude ...`). The slash commands (`/atelier:doctor`, `/atelier:setup-project`, etc.) only appear when the atelier-isolated config is loaded.
+
+---
+
+## Runtime problems
+
+Issues that come up while running a task.
+
+### `task` opens but immediately exits / picker doesn't fire
+
+**Symptom:** Running `task` returns to the shell prompt without launching Claude.
+
+**Cause:** `atelier-task-resolve` is missing from `PATH`, or `~/.local/bin` isn't on `PATH` yet.
+
+**Fix:** Re-run `./install.sh` from the atelier checkout — this refreshes the symlinks at `~/.local/bin/atelier-*`. Then `source ~/.zshrc`.
+
+### `atelier-task-resolve` says "no projects registered" but you have set up a project
+
+**Symptom:** Running `task` from anywhere prints `atelier: no projects registered yet. Run /atelier:setup-project <path> first.`
+
+**Cause:** `$ATELIER_CONFIG_DIR/projects.json` is missing or unreadable. This happens if `atelier-uninstall --purge` was run and then a project was set up without re-registering it.
+
+**Fix:** From inside the project folder, run `atelier /atelier:setup-project .` again. It's idempotent and only writes the registry entry if it doesn't exist.
+
+### `pnpm install` rejected because of `minimum-release-age`
+
+**Symptom:** A dependency install fails with a `minimum-release-age` error mentioning a 10080-minute (7-day) threshold.
+
+**Cause:** atelier's per-project `.npmrc` (created by `/atelier:setup-project`) enforces a 7-day cool-off for new package versions — defense against supply-chain attacks where a malicious version is published and removed before maintainers notice (PLAN.md §4).
+
+**Fix (recommended):** Wait until the version is 7+ days old, or pick a slightly older known-good version.
+
+**Fix (override, only when you've personally vetted the package):** Edit the project's `.npmrc` and comment out the `minimum-release-age` line, install, then restore the line. Don't commit the change.
+
+### A hook blocked an edit / commit you expected to work
+
+**Symptom:** An edit, write, or commit fails with a hook message like "blocked by `scan-edit-write`" or "blocked by `block-env-commit`".
+
+**Cause:** One of the M2.4 PreToolUse hooks intercepted the operation:
+- `block-env-commit` — refuses any commit that touches `.env*` files.
+- `scan-edit-write` — refuses an edit/write whose content matches a sensitive-pattern catalog.
+- `scan-git-add` — refuses a `git add` that stages a `.env*` file.
+- `safe-package-change` — refuses a `pnpm add/install/update` for a too-new package or unauthorized post-install scripts.
+- `safe-commit` — refuses a commit when lint or tests fail.
+
+**Fix:** Read the hook's message — it cites the specific pattern that triggered it. Address the underlying issue (remove the sensitive content, wait out the cool-off, fix the failing test, etc.). The pattern catalogs are read-only and live at `~/.claude-work/plugins/cache/akalab-tech/atelier/<version>/hooks/patterns/*.json` if you want to understand the trigger.
+
+### Auto-merge skipped my PR
+
+**Symptom:** The pull request was opened and reviewed, but atelier didn't auto-merge it.
+
+**Cause:** This is by design (PLAN.md §6). Auto-merge holds back any PR that:
+- Touches `package.json` / `pnpm-lock.yaml`
+- Touches `Dockerfile` / `docker-compose*`
+- Touches `.github/workflows/**`
+- Is larger than 500 lines
+- Has pending human review comments
+- Has a `request-changes` from the reviewer
+
+**Fix:** Review the PR yourself and merge it manually (`gh pr merge <N> --squash --delete-branch`). The held-back rules protect dependencies, CI, and large changes from going in without a human check.
+
+### Reviewer's `gh pr review --approve` shows as a comment, not an approval
+
+**Symptom:** The reviewer agent ran `gh pr review --approve` but the PR still shows zero approvals in `gh pr view`. Auto-merge is held.
+
+**Cause:** Author and reviewer are the same GitHub identity. GitHub silently downgrades approvals when the reviewer is the PR author — there's no way to override this server-side. This is **dogfood-1 finding #11**.
+
+**Fix (recommended):** Re-run `./install.sh`, log out from GitHub in the browser between the two prompts, and sign in with a different account for the reviewer identity.
+
+**Fix (single-developer pattern):** Accept that single-account projects merge manually. Memorize:
+```bash
+gh pr merge <N> --squash --delete-branch
+```
+
+### Task is stuck — atelier created a `blocked` GitHub issue
+
+**Symptom:** atelier opened a GitHub issue labeled `blocked` and stopped working on a task.
+
+**Cause:** This is the failure-recovery path (PLAN.md §8). atelier tried up to three implementation attempts, reset the worktree, tried three more, and gave up. The issue contains the `.task-log/<timestamp>-<attempt>.md` files describing each failure.
+
+**Fix:** Read the latest `.task-log` excerpt in the issue to understand what went wrong. Decide:
+- **(a) Retry:** refine the task description in `ROADMAP.md`, close the `blocked` issue, then run `task` again.
+- **(b) Abandon:** close the `blocked` issue with a `wontfix` comment, manually mark the task `[x]` in `ROADMAP.md` (or move to `HISTORY.md`). Optionally remove the worktree with `git wt rm <name>`.
+
+### Edits succeed on a deny-listed path after a worktree reset
+
+**Symptom:** During retry attempts 04–06 (after the first reset between attempts 03 and 04), Claude completes an `Edit` call on a path that's in the project's deny list. Earlier attempts (01–03) on the same path were correctly refused.
+
+**Cause:** Claude Code's permission cache is stale. When `retry-with-logs` removes and recreates the worktree, the harness's per-session deny patterns don't always re-evaluate the recreated directory. This is **dogfood-1 finding B** — a Claude Code harness limitation, not an atelier bug.
+
+**Mitigation until Claude Code fixes the harness:** When the orchestrator triggers a reset between attempt 03 and 04, **restart your Claude Code session** before continuing. The fresh session loads `.claude/settings.json` clean and the deny patterns apply correctly.
+
+### `git-wt` commands fail
+
+**Symptom:** `task` opens Claude but task-orchestrator errors with "command not found: git-wt" or "git-wt: invalid usage".
+
+**Cause:** The external `git-wt` binary at `~/.local/bin/git-wt` is missing, outdated, or shadowed by a different `git-wt` on `PATH`.
+
+**Fix:** Run `atelier /atelier:doctor` — it will flag the issue with the exact fix. The fix is the snippet from `install.sh:check_git_wt_drift` (clone, run `install.sh --skill-for=claude`, record the SHA). Or simply re-run `./install.sh` from the atelier checkout.
+
+### `atelier-hooks-version` mismatch warning during install
+
+**Symptom:** `./install.sh` prints `→ refreshing atelier shellrc block (v0 → v1)` (or similar version pair).
+
+**Cause:** This is **expected behavior** when upgrading atelier from one version to a later one (M7.1.F7c). The shellrc block in your `~/.zshrc` is older than the current `install.sh` ships; the installer strips the old block and re-injects the new one in place.
+
+**Fix:** Nothing. The message is informational. After `source ~/.zshrc`, the new shell functions (`task`, `atelier`) are active.
+
+---
+
+## When all else fails
+
+If the doctor passes but tasks still fail or atelier behaves unexpectedly:
+
+1. **Capture the doctor output:** `atelier /atelier:doctor > /tmp/doctor.txt`
+2. **Find the failing worktree:** look at `IN_PROGRESS.md` to identify the active task; the worktree lives at `~/Work/<project>-worktrees/<task>/`.
+3. **Read the most recent task log:** `cat ~/Work/<project>-worktrees/<task>/.task-log/*.md | tail -200`. The log records each attempt with full agent output.
+4. **Check the `blocked` GitHub issues:** `gh issue list --label blocked` shows tasks that hit the retry budget.
+5. **Open a bug report:** https://github.com/AkaLab-Tech/atelier/issues/new — paste the doctor output and the last task log entry.
+
+---
+
+## Reset everything (nuclear option)
+
+If atelier is in a state you cannot unwind from the steps above, you can wipe and reinstall. Your project files and any `.claude/` folders inside your projects are **not** touched.
+
+```bash
+atelier-uninstall --purge          # removes ~/.claude-work entirely (atelier's config root)
+rm -rf ~/atelier                   # removes the downloaded source
+git clone https://github.com/AkaLab-Tech/atelier ~/atelier
+cd ~/atelier
+./install.sh
+```
+
+After re-install, re-register each project with `atelier /atelier:setup-project <path>` (idempotent — won't overwrite existing files).
