@@ -73,6 +73,20 @@ push_fix() {
 strip_v() { printf '%s' "${1#v}"; }
 
 # ---------- checks ----------
+#
+# CONTRACT (M7.1.F15): every check function below MUST be independent.
+#   - Handle errors internally with `2>/dev/null` + conditional logic.
+#   - Never rely on `set -e` (it is intentionally OFF — see top of file).
+#   - Never call `exit` from inside a check; use `push_fix` to set
+#     EXIT_STATUS=1 and `return` so the failure surfaces in the report
+#     without aborting the rest.
+#   - A failing check must produce ONE status line via `push_plugin`,
+#     `push_external`, or `push_host` so the report stays complete and
+#     every check the binary attempted is visible to the operator.
+#
+# This is what makes the report deterministic: the operator (and CI)
+# sees every check, in deterministic order, regardless of which ones
+# fail. New checks added below must follow the same discipline.
 
 check_plugin_drift() {
   local plugin_id="$1" repo="$2"

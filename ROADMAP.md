@@ -33,24 +33,6 @@ Symptom from dogfood-3: doctor printed `gh: Not Found (HTTP 404)` for the atelie
 
 **Trigger to revisit:** before the next M7.1 dogfood iteration where atelier might run against a private repo with a non-member identity. Captured 2026-05-25 immediately after F14 was bypassed by flipping `AkaLab-Tech/atelier` to public — the underlying architectural fragility remains.
 
-### M7.1.F15 — `/atelier:doctor` parallel checks should fail independently, not cascade-cancel
-
-`[ux-blocking]` · Source: M7.1 dogfood-3 first `/atelier:doctor` run (2026-05-25)
-
-When doctor launches its checks in parallel and one fails (e.g. the F14 404), the Claude Code session cancels every other in-flight parallel call with `Cancelled: parallel tool call Bash(gh api repos/AkaLab-Tech/atelier/release…) errored`. The operator sees a partial report — no plugin versions, no git-wt SHA, no host checks — and the session enters an uncertain state trying to "recover" from the failure rather than completing all the *other* checks that would have worked fine.
-
-This is a Claude Code default-behavior issue (parallel tool calls share a fate), but `doctor.md` can mitigate it by:
-
-**Scope:**
-
-- [ ] Run checks **sequentially**, not in parallel. Doctor's checks have no real interdependency — sequential adds maybe 1-2s on a clean run but produces a complete report regardless of individual failures.
-- [ ] Each check uses an explicit `|| true` or `|| echo "<failure-text>"` so a non-zero exit doesn't bubble up to the harness.
-- [ ] The check-narrative in `doctor.md` updated to emphasize the `✓ / ✗ / —` per-check independence: an `✗` on one row never affects the others.
-
-**Acceptance:** running `/atelier:doctor` on a system where one check intentionally fails (e.g. `gh api` rate-limited, docker daemon down) produces a full report — all other checks complete and are marked individually `✓ / ✗ / —`.
-
-**Trigger to revisit:** captured 2026-05-25 alongside F14. Same dogfood-3 run that surfaced F14 also surfaced this — operator's first doctor was interrupted with partial output, requiring manual re-runs.
-
 ### M7.1.F7c — Shellrc block needs versioning + auto re-injection on install.sh re-run
 
 `[ux-blocking]` · Source: M7.1 PR-E ([#75](https://github.com/AkaLab-Tech/atelier/pull/75)) live validation (2026-05-25)
