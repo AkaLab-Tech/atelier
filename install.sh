@@ -1218,10 +1218,20 @@ phase_c_1_setup_project_helper() {
 }
 
 phase_c_1_shellrc_hooks() {
-  # Idempotent injection via sentinel comments. On re-run, skip if the start
-  # sentinel is already present. To refresh the block manually, remove
-  # everything between the sentinels (inclusive) and re-run install.sh.
+  # Idempotent injection via sentinel comments + a version line embedded inside
+  # the block (M7.1.F7c). On re-run, the function reads `# atelier-hooks-version:`
+  # from any existing block: if it matches `current_version` below, we skip;
+  # if it's older (or missing), we strip the block between sentinels and
+  # re-inject the current heredoc. To force a refresh manually, edit the
+  # version line in the rc file to 0 and re-run install.sh — or just delete
+  # the block between sentinels.
   local sentinel_start='# >>> atelier hooks (managed by install.sh) >>>'
+  local sentinel_end='# <<< atelier hooks (managed by install.sh) <<<'
+  # Bump this number whenever you edit anything inside the BLOCK heredoc
+  # below. Existing operators' rc files carry their version inline; on
+  # install.sh re-run, an older or missing version triggers a strip +
+  # re-inject so the upgrade propagates automatically.
+  local current_version=1
 
   # Heredoc is single-quoted: `$(fnm env --use-on-cd)`, `$*`, and the alias
   # body are written as literal text, expanded later when the shell sources
@@ -1229,6 +1239,9 @@ phase_c_1_shellrc_hooks() {
   local block
   block=$(cat <<'BLOCK'
 # >>> atelier hooks (managed by install.sh) >>>
+# atelier-hooks-version: 1
+# (install.sh reads the version above; bump it when you edit anything between
+#  these sentinels so existing operators get the refreshed block on re-run.)
 # Ensure ~/.local/bin is on PATH so atelier-setup-project (and any future
 # atelier-* CLI helpers installed by install.sh Phase C.1) are runnable from
 # any terminal — including the Bash tool inside a Claude Code session.
@@ -1326,12 +1339,56 @@ BLOCK
       warn "to fix: sudo chown $USER:staff $f && chmod u+w $f, then re-run install.sh"
       continue
     fi
-    if grep -qF "$sentinel_start" "$f"; then
-      step_skip "atelier hooks already present in $(basename "$f")"
-    else
+    if ! grep -qF "$sentinel_start" "$f"; then
+      # No atelier block present — fresh injection.
       printf '\n%s\n' "$block" >> "$f"
-      sublog "appended atelier hooks to $(basename "$f")"
+      sublog "appended atelier hooks to $(basename "$f") (v$current_version)"
+      continue
     fi
+    # Block present — refuse to touch when the end sentinel is missing.
+    # Corrupted state where stripping "start sentinel onward" could remove
+    # more than intended; operator must repair manually.
+    if ! grep -qF "$sentinel_end" "$f"; then
+      warn "$(basename "$f") has the atelier start sentinel but no matching end sentinel — leaving alone"
+      warn "to fix: remove the orphaned start line + everything below it that belongs to atelier, then re-run install.sh"
+      continue
+    fi
+    # Read the existing version line from inside the block. Absent → 0, which
+    # forces a refresh (covers operators upgrading from pre-F7c installs).
+    local existing_version
+    existing_version=$(awk -v s="$sentinel_start" -v e="$sentinel_end" '
+      index($0, s) { in_block=1; next }
+      index($0, e) { in_block=0 }
+      in_block && /^# atelier-hooks-version:[[:space:]]*[0-9]+/ {
+        sub(/^# atelier-hooks-version:[[:space:]]*/, "")
+        sub(/[^0-9].*/, "")
+        print; exit
+      }
+    ' "$f")
+    existing_version=${existing_version:-0}
+    if [ "$existing_version" = "$current_version" ]; then
+      step_skip "atelier hooks already present in $(basename "$f") (v$current_version)"
+      continue
+    fi
+    if [ "$existing_version" -gt "$current_version" ] 2>/dev/null; then
+      warn "atelier hooks in $(basename "$f") are v$existing_version, newer than install.sh's v$current_version — leaving alone"
+      continue
+    fi
+    # Older or missing version → strip the existing block in place + append the
+    # current heredoc. Atomic via tempfile-then-mv so a crash mid-edit cannot
+    # leave the rc file half-written.
+    sublog "→ refreshing atelier shellrc block (v$existing_version → v$current_version) in $(basename "$f")"
+    local tmp
+    if ! tmp=$(mktemp "${f}.atelier.XXXXXX"); then
+      warn "could not create temp file for $f — skipping refresh"
+      continue
+    fi
+    awk -v s="$sentinel_start" -v e="$sentinel_end" '
+      index($0, s) { skip=1 }
+      !skip
+      index($0, e) { skip=0; next }
+    ' "$f" > "$tmp" && mv "$tmp" "$f"
+    printf '\n%s\n' "$block" >> "$f"
   done
 }
 
