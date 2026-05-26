@@ -8,6 +8,25 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M6.4 — Symptom-indexed troubleshooting doc — 2026-05-26
+**PR:** [#92](https://github.com/AkaLab-Tech/atelier/pull/92)
+
+PLAN.md §12 Phase 6 M6.4 deliverable. Companion to M6.2's operator guide: when the happy path breaks, this is where the operator looks first. Symptom-first format because operators search for what they see on screen, not the underlying internals.
+
+**Delivered:**
+- `docs/troubleshooting.md` (~200 lines). 13 named failure modes covering both setup-time and runtime problems, framed by "always first: run the doctor", "when all else fails" (5-step capture + bug-report path), and a "reset everything" nuclear-option section. Both dogfood-1 findings cited in the ROADMAP are covered verbatim — #11 (same-identity self-approval) and B (permission-cache mis-alignment after worktree reset).
+- `docs/operator-guide.md`: "If something goes wrong" link replaces the "coming soon" placeholder.
+- `README.md`: "Other docs" section now lists `troubleshooting.md` first.
+- `install.sh:print_first_steps`: adds `docs/troubleshooting.md` to the docs list printed at end of install.
+
+**Coverage by category:**
+- Setup-time (4): `task: command not found`, install.sh Phase A failures, same-GitHub-identity prompt loop, claude-vs-atelier config mix-up.
+- Runtime (9): picker not firing, missing `projects.json`, `pnpm minimum-release-age` rejects, hook blocks (5 hooks named individually), auto-merge holds, reviewer approval downgraded, blocked GitHub issue path, deny-list re-evaluation post-reset, git-wt drift, `atelier-hooks-version` refresh notice.
+
+**Out of scope:**
+- Screenshots / video — text-only for v1.
+- Automated bug-report CLI — operators capture state manually per the "when all else fails" steps.
+
 ### M6.2 — Jr-friendly operator guide — 2026-05-26
 **PR:** [#91](https://github.com/AkaLab-Tech/atelier/pull/91)
 
