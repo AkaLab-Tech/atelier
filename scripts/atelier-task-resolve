@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+#
+# atelier-task-resolve — given a cwd, decide which atelier project to act on
+# (M5.3). Used by the `task()` shell function in install.sh phase_c_1_shellrc_hooks.
+#
+# Algorithm:
+#   1. If cwd is inside any registered project (longest-prefix path match),
+#      print that project path on stdout and exit 0.
+#   2. Else, if there are registered projects, launch an fzf picker
+#      sorted by setupCompleted desc (most recent first); print the
+#      chosen path on stdout and exit 0. Operator cancel (Esc / Ctrl-C)
+#      exits non-zero with no output.
+#   3. Else (no projects registered, or the registry is empty), print
+#      an actionable hint on stderr and exit 1.
+#
+# Usage:
+#   atelier-task-resolve <cwd>
+#   atelier-task-resolve --help
+#
+# Exit codes:
+#   0   project path printed on stdout
+#   1   no resolution possible (no projects registered, or operator cancelled)
+#   2   usage error
+#
+# The reader (the `task()` shell function) captures stdout, cds into the
+# path, and invokes `claude /next-task ...`.
+
+set -uo pipefail
+
+CONFIG_FILE="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}/projects.json"
+
+usage() {
+  cat <<EOF
+atelier-task-resolve — resolve which atelier project to act on, given a cwd.
+
+USAGE:
+  atelier-task-resolve <cwd>
+  atelier-task-resolve --help
+
+EXIT CODES:
+  0   project path printed on stdout
+  1   could not resolve (no projects registered, or operator cancelled picker)
+  2   usage error
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  '')        usage >&2; exit 2 ;;
+esac
+
+cwd="$1"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+  printf 'atelier: no projects registered yet at %s.\n' "$CONFIG_FILE" >&2
+  printf '         run /atelier:setup-project <path> to register the first one.\n' >&2
+  exit 1
+fi
+
+paths=$(jq -r '.projects // {} | keys[]?' "$CONFIG_FILE" 2>/dev/null)
+if [ -z "$paths" ]; then
+  printf 'atelier: %s exists but has no projects yet.\n' "$CONFIG_FILE" >&2
+  printf '         run /atelier:setup-project <path> to register the first one.\n' >&2
+  exit 1
+fi
+
+# Step 1: longest-prefix match against cwd. Handles nested projects
+# (e.g. an outer monorepo with an inner registered sub-project) by picking
+# the most specific match.
+matched=""
+matched_len=0
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  case "$cwd" in
+    "$p"|"$p"/*)
+      if [ ${#p} -gt $matched_len ]; then
+        matched="$p"
+        matched_len=${#p}
+      fi
+      ;;
+  esac
+done <<< "$paths"
+
+if [ -n "$matched" ]; then
+  printf '%s\n' "$matched"
+  exit 0
+fi
+
+# Step 2: picker.
+if ! command -v fzf >/dev/null 2>&1; then
+  printf 'atelier: cwd is not inside a registered project, and fzf is not on PATH.\n' >&2
+  printf '         registered projects:\n' >&2
+  while IFS= read -r p; do
+    [ -n "$p" ] && printf '           %s\n' "$p" >&2
+  done <<< "$paths"
+  printf '         re-run from inside one of them, or install fzf for an interactive picker.\n' >&2
+  exit 1
+fi
+
+# Build a fzf-friendly listing sorted by setupCompleted desc. Old entries
+# missing the `name` field (pre-M5.1 schema) fall back to the basename of
+# the path so the picker still renders them correctly.
+listing=$(jq -r '
+  .projects // {}
+  | to_entries
+  | sort_by(.value.setupCompleted // "")
+  | reverse
+  | .[]
+  | "\(.value.name // (.key | split("/") | last))\t\(.key)"
+' "$CONFIG_FILE" 2>/dev/null)
+
+if [ -z "$listing" ]; then
+  printf 'atelier: failed to enumerate projects from %s.\n' "$CONFIG_FILE" >&2
+  exit 1
+fi
+
+choice=$(printf '%s\n' "$listing" | fzf \
+  --prompt='Atelier project: ' \
+  --height=40% \
+  --reverse \
+  --header='Pick the project to run /next-task against (Esc to cancel)' \
+  --delimiter=$'\t' \
+  --with-nth=1,2)
+
+# Operator cancelled (Esc, Ctrl-C, empty selection): exit 1 with no output.
+[ -n "$choice" ] || exit 1
+
+# Extract the path (second tab-delimited column).
+selected_path="${choice#*$'\t'}"
+[ -n "$selected_path" ] || exit 1
+printf '%s\n' "$selected_path"

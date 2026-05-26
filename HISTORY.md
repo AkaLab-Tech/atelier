@@ -8,6 +8,45 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M5.3 — `task` alias resolves project from cwd — 2026-05-26
+**PR:** [#90](https://github.com/AkaLab-Tech/atelier/pull/90)
+
+The `task()` shell function previously invoked `claude /next-task` against whatever directory the operator happened to be in, with no awareness of registered projects. This entry adds project resolution.
+
+**Delivered:**
+- `scripts/atelier-task-resolve` (new binary, symlinked into `~/.local/bin` by `install.sh`). Longest-prefix match against `$ATELIER_CONFIG_DIR/projects.json`; falls back to an `fzf` picker sorted by `setupCompleted` desc; surfaces an actionable error when no projects are registered or fzf is missing.
+- `task()` in the install.sh shellrc heredoc rewritten to call the resolver, `cd` into the chosen project, then invoke `claude /next-task`. `atelier-hooks-version` bumped 1 → 2 so existing operators get the new `task()` body automatically on the next `install.sh` re-run (M7.1.F7c contract).
+
+**Tests:** 6 scenarios in `/tmp/test_m5_resolver.sh` covering registry-absent, exact match, subdir match, no-fzf fallback, empty registry, and nested projects (longest-prefix). All passed first try.
+
+**Follow-ups:**
+- `lastTask` timestamp on registry entries — defer until the picker wants to sort by recency.
+
+### M5.2 — `/setup-project` full bootstrap — 2026-05-26
+**PR:** [#90](https://github.com/AkaLab-Tech/atelier/pull/90)
+
+Audit during the ship-path sweep confirmed that `/setup-project` (delivered incrementally through M2.3, M4.16, M4.19) already covers the full M5.2 deliverable: writes `.claude/settings.json` from the template, `ROADMAP.md` + `IN_PROGRESS.md` + `HISTORY.md`, project `.claude/CLAUDE.md`, project `.npmrc` (pnpm guardrails per PLAN.md §4), `.gitignore` entries, plus the `step_record_setup` registry write. This entry formally closes the milestone — no functional change beyond the M5.1 schema addition (the `name` field).
+
+**Delivered (already in place from M2.3/M4.16/M4.19, formally closed here):**
+- `.claude/settings.json` instantiation from `$ATELIER_CONFIG_DIR/templates/settings.template.json` with `<worktree>` substitution.
+- `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md` skeletons.
+- Project `.claude/CLAUDE.md` (M4.19 interview + codebase-scan modes).
+- `.npmrc` with `ignore-scripts`, `minimum-release-age`, `audit-level` (PLAN.md §4 guardrails).
+- `.gitignore` entries.
+- `projects.json` registry write via `step_record_setup`.
+
+### M5.1 — Project registry at `$ATELIER_CONFIG_DIR/projects.json` — 2026-05-26
+**PR:** [#90](https://github.com/AkaLab-Tech/atelier/pull/90)
+
+Audit during the ship-path sweep found `step_record_setup` had been writing to `projects.json` since M2.3 with fields `setupCompleted` + `setupVersion`. This entry formally closes the milestone and adds the `name` field required by the M5.3 picker.
+
+**Delivered:**
+- `name` field (basename of the project path) added to `step_record_setup`'s jq merge in `scripts/atelier-setup-project`. New shape: `{ name, setupCompleted, setupVersion }`. Old entries without `name` keep working — the M5.3 picker falls back to `key | split("/") | last` when reading them.
+- Already-in-place infrastructure (M2.3) formally documented here: idempotent `is_configured()` probe, create-or-update semantics in `step_record_setup`, lookup at `$ATELIER_CONFIG_DIR/projects.json`.
+
+**Follow-ups:**
+- `lastTask` timestamp — defer until the picker (or any other consumer) needs it.
+
 ### M7.1.F14 — Unauthenticated GitHub API fallback for plugin-drift upstream probe — 2026-05-26
 **PR:** [#89](https://github.com/AkaLab-Tech/atelier/pull/89)
 
