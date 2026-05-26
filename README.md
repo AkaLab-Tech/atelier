@@ -22,6 +22,7 @@ For the full setup (recommended), run [`install.sh`](install.sh) per the [Operat
 ## Other docs
 
 - [docs/troubleshooting.md](docs/troubleshooting.md) — symptom-indexed guide for when something doesn't work.
+- [docs/measurements/autonomous-merge-rate.md](docs/measurements/autonomous-merge-rate.md) — methodology for the Phase 7 ship-gate metric.
 - [PLAN.md](PLAN.md) — full design source of truth (architecture, milestones, decisions).
 - [docs/dogfood-guide.md](docs/dogfood-guide.md) — integration-test guide for end-to-end validation on a real machine.
 - [ROADMAP.md](ROADMAP.md) — what's queued, what's open, what's blocked.

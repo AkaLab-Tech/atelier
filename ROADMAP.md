@@ -177,10 +177,6 @@ Run a full task cycle on an actual project. Capture friction.
 
 Grow the allowlist organically based on what M7.1 needs. Document each addition with a one-line justification.
 
-### M7.3 — Measure autonomous merge rate
-
-Sample 10 real tasks; compute the % that reach merged state without human intervention. Target ≥80%.
-
 ### v2 ideas (deferred)
 
 Per [PLAN.md §11](PLAN.md). Revisit only after v1 is stable.

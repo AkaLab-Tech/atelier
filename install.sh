@@ -1212,6 +1212,11 @@ phase_c_1_setup_project_helper() {
   # against cwd, fzf picker fallback when cwd is outside every
   # registered project.
   _phase_c_1_symlink_helper atelier-task-resolve
+  # M7.3: atelier-measure-merge-rate samples the N most-recently merged
+  # PRs and classifies each as autonomous vs intervention required. Used
+  # to evaluate the Phase 7 ship gate (≥80% autonomous on a sample of 10
+  # atelier-driven tasks).
+  _phase_c_1_symlink_helper atelier-measure-merge-rate
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it

@@ -245,6 +245,7 @@ Quick lookup once you've used atelier a few times.
 | `atelier` | Open a Claude session under atelier's configuration |
 | `atelier /atelier:setup-project .` | Set up the current folder as an atelier project |
 | `atelier /atelier:doctor` | Run a health check |
+| `atelier-measure-merge-rate` | Measure the % of recent PRs that merged autonomously (see [methodology](measurements/autonomous-merge-rate.md)) |
 | `atelier-uninstall` | Remove atelier (preserves history) |
 | `atelier-uninstall --purge` | Remove atelier and wipe all settings |
 
@@ -259,4 +260,4 @@ Quick lookup once you've used atelier a few times.
 **Files atelier stores outside your projects**:
 
 - `~/.claude-work/` — atelier's own configuration, separate from your personal Claude config.
-- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, and `atelier-task-resolve` commands.
+- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, and `atelier-measure-merge-rate` commands.

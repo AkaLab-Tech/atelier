@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+#
+# atelier-measure-merge-rate — compute the % of recently merged PRs that
+# completed autonomously, per PLAN.md §12 Phase 7 M7.3.
+#
+# A PR is classified "autonomous" iff ALL of the following hold:
+#   1. PR author == --author handle (atelier-author).
+#   2. There is at least one APPROVED review from --reviewer handle.
+#   3. No review comments or change-request reviews exist from any account
+#      OTHER than --author or --reviewer (such a comment would have held
+#      auto-merge per PLAN.md §6 guardrail #6).
+#
+# Anything else is "intervention required". This is permissive (a human
+# could have nudged the work between attempts without leaving a GitHub
+# trace — e.g. restarting a Claude session), so the autonomous count is
+# an UPPER BOUND on true autonomy. See docs/measurements/autonomous-merge-rate.md
+# for the methodology and limits.
+#
+# Usage:
+#   atelier-measure-merge-rate [--sample N] [--repo OWNER/NAME] \
+#                              [--author HANDLE] [--reviewer HANDLE] \
+#                              [--threshold PCT]
+#
+# Defaults:
+#   --sample      10
+#   --repo        $(gh repo view --json nameWithOwner --jq .nameWithOwner)
+#   --author      $(GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author gh api user --jq .login)
+#   --reviewer    $(GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/reviewer gh api user --jq .login)
+#   --threshold   80   (per PLAN.md Phase 7 ship gate)
+#
+# Output: markdown table on stdout, exit 0 if rate ≥ threshold, 1 otherwise.
+
+set -uo pipefail
+
+SAMPLE=10
+REPO=""
+AUTHOR=""
+REVIEWER=""
+THRESHOLD=80
+
+usage() {
+  cat <<EOF
+atelier-measure-merge-rate — autonomous merge-rate metric (M7.3).
+
+USAGE:
+  atelier-measure-merge-rate [--sample N] [--repo OWNER/NAME] \\
+                             [--author HANDLE] [--reviewer HANDLE] \\
+                             [--threshold PCT]
+
+FLAGS:
+  --sample N         Number of most recent merged PRs to sample (default 10).
+  --repo OWNER/NAME  Repository to inspect (default: gh repo view from cwd).
+  --author HANDLE    atelier-author GitHub handle. Defaults to whoami under
+                     \$ATELIER_CONFIG_DIR/gh/author.
+  --reviewer HANDLE  atelier-reviewer GitHub handle. Defaults to whoami under
+                     \$ATELIER_CONFIG_DIR/gh/reviewer.
+  --threshold PCT    Pass/fail threshold (default 80, per PLAN.md Phase 7).
+  -h, --help         Show this help.
+
+EXIT CODES:
+  0   Autonomous rate ≥ threshold.
+  1   Autonomous rate < threshold (more intervention than the gate allows).
+  2   Usage error or unrecoverable runtime error.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --sample)     SAMPLE="${2:-}"; shift 2 ;;
+    --repo)       REPO="${2:-}"; shift 2 ;;
+    --author)     AUTHOR="${2:-}"; shift 2 ;;
+    --reviewer)   REVIEWER="${2:-}"; shift 2 ;;
+    --threshold)  THRESHOLD="${2:-}"; shift 2 ;;
+    -h|--help)    usage; exit 0 ;;
+    *)            printf 'atelier-measure-merge-rate: unknown flag %q\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+# Validate numeric flags.
+case "$SAMPLE" in
+  ''|*[!0-9]*) printf 'atelier-measure-merge-rate: --sample must be a positive integer (got %q)\n' "$SAMPLE" >&2; exit 2 ;;
+esac
+case "$THRESHOLD" in
+  ''|*[!0-9]*) printf 'atelier-measure-merge-rate: --threshold must be an integer (got %q)\n' "$THRESHOLD" >&2; exit 2 ;;
+esac
+[ "$SAMPLE" -ge 1 ] || { printf 'atelier-measure-merge-rate: --sample must be >= 1\n' >&2; exit 2; }
+
+# Resolve --repo from cwd if not provided.
+if [ -z "$REPO" ]; then
+  REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || {
+    printf 'atelier-measure-merge-rate: could not detect --repo from cwd; pass --repo OWNER/NAME explicitly.\n' >&2
+    exit 2
+  }
+fi
+
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+
+# Resolve --author + --reviewer from atelier-isolated gh dirs if not provided.
+if [ -z "$AUTHOR" ]; then
+  AUTHOR="$(env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api user --jq .login 2>/dev/null)" || true
+fi
+if [ -z "$REVIEWER" ]; then
+  REVIEWER="$(env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh api user --jq .login 2>/dev/null)" || true
+fi
+
+if [ -z "$AUTHOR" ] || [ -z "$REVIEWER" ]; then
+  printf 'atelier-measure-merge-rate: could not auto-detect --author / --reviewer.\n' >&2
+  printf '  Pass them explicitly: --author HANDLE --reviewer HANDLE\n' >&2
+  printf '  Or ensure $ATELIER_CONFIG_DIR/gh/{author,reviewer}/ are populated by install.sh Phase B.\n' >&2
+  exit 2
+fi
+
+# ---------- fetch the sample ----------
+
+# `gh pr list` returns PRs newest-first by default. We ask for state:merged.
+# `reviews` includes every review's author + state. `comments` covers
+# top-level PR comments (review-thread comments are inside reviews already).
+prs_json="$(gh pr list \
+  --repo "$REPO" \
+  --state merged \
+  --limit "$SAMPLE" \
+  --json number,title,author,mergedAt,reviews,comments 2>/dev/null)" || {
+  printf 'atelier-measure-merge-rate: gh pr list failed for repo %s.\n' "$REPO" >&2
+  exit 2
+}
+
+actual_count="$(printf '%s' "$prs_json" | jq 'length' 2>/dev/null)"
+actual_count="${actual_count:-0}"
+
+if [ "$actual_count" = "0" ]; then
+  printf 'atelier-measure-merge-rate: no merged PRs found in %s.\n' "$REPO" >&2
+  exit 2
+fi
+
+# ---------- classify each PR ----------
+
+# Outputs lines: "<verdict>|<number>|<title>|<reason>"
+# Verdict: "autonomous" or "intervention".
+classify=$(printf '%s' "$prs_json" | jq -r --arg author "$AUTHOR" --arg reviewer "$REVIEWER" '
+  .[] | {
+    number: .number,
+    title: .title,
+    pr_author: .author.login,
+    approvals_from_reviewer: ([.reviews[]? | select(.state == "APPROVED" and .author.login == $reviewer)] | length),
+    foreign_review_actors: ([
+      .reviews[]?
+      | select(.state == "COMMENTED" or .state == "CHANGES_REQUESTED")
+      | .author.login
+      | select(. != $author and . != $reviewer)
+    ] | unique),
+    foreign_comment_actors: ([
+      .comments[]?
+      | .author.login
+      | select(. != $author and . != $reviewer)
+    ] | unique)
+  }
+  | (
+      ((.pr_author != $author) | not) as $author_match
+    | (.approvals_from_reviewer > 0) as $has_approval
+    | ((.foreign_review_actors | length) == 0 and (.foreign_comment_actors | length) == 0) as $no_human_chatter
+    | if $author_match and $has_approval and $no_human_chatter then
+        "autonomous|\(.number)|\(.title)|author=\($author) approvals_from=\($reviewer)"
+      elif (.pr_author != $author) then
+        "intervention|\(.number)|\(.title)|author=\(.pr_author) (not \($author))"
+      elif (.approvals_from_reviewer == 0) then
+        "intervention|\(.number)|\(.title)|no approval from \($reviewer)"
+      else
+        "intervention|\(.number)|\(.title)|foreign actors: reviews=\(.foreign_review_actors|join(",")) comments=\(.foreign_comment_actors|join(","))"
+      end
+  )
+')
+
+# ---------- tally + report ----------
+
+autonomous_count=$(printf '%s\n' "$classify" | grep -c '^autonomous|' || true)
+intervention_count=$(printf '%s\n' "$classify" | grep -c '^intervention|' || true)
+total="$actual_count"
+[ "$total" -gt 0 ] || { printf 'no classifiable rows.\n' >&2; exit 2; }
+
+# Integer percentage (avoid bc dependency).
+pct=$(( autonomous_count * 100 / total ))
+
+# Print markdown report.
+printf '# atelier — autonomous merge rate\n\n'
+printf -- '- **Repository:** %s\n' "$REPO"
+printf -- '- **Sample:** last %s merged PR(s)\n' "$total"
+printf -- '- **Author identity:** `%s`\n' "$AUTHOR"
+printf -- '- **Reviewer identity:** `%s`\n' "$REVIEWER"
+printf -- '- **Threshold:** %s%%\n\n' "$THRESHOLD"
+
+printf '## Per-PR classification\n\n'
+printf '| PR | Verdict | Title | Reason |\n'
+printf '|---|---|---|---|\n'
+printf '%s\n' "$classify" | while IFS='|' read -r verdict number title reason; do
+  case "$verdict" in
+    autonomous) emoji='✓' ;;
+    intervention) emoji='✗' ;;
+    *) emoji='?' ;;
+  esac
+  # Escape pipes in title/reason so they don't break markdown table cells.
+  safe_title="${title//|/\\|}"
+  safe_reason="${reason//|/\\|}"
+  printf '| #%s | %s %s | %s | %s |\n' "$number" "$emoji" "$verdict" "$safe_title" "$safe_reason"
+done
+
+printf '\n## Summary\n\n'
+printf -- '- Autonomous: **%d / %d** (%d%%)\n' "$autonomous_count" "$total" "$pct"
+printf -- '- Intervention required: **%d / %d**\n\n' "$intervention_count" "$total"
+
+if [ "$pct" -ge "$THRESHOLD" ]; then
+  printf '**Result:** PASS (≥%s%% threshold)\n' "$THRESHOLD"
+  exit 0
+else
+  printf '**Result:** below threshold (%d%% < %s%%) — further dogfood needed before claiming the Phase 7 ship gate.\n' "$pct" "$THRESHOLD"
+  exit 1
+fi
