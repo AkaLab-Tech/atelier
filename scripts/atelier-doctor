@@ -88,6 +88,36 @@ strip_v() { printf '%s' "${1#v}"; }
 # sees every check, in deterministic order, regardless of which ones
 # fail. New checks added below must follow the same discipline.
 
+# fetch_upstream_version <repo> — probe a four-step chain looking for the
+# latest tag of a GitHub repo (M7.1.F14). Prints the tag on stdout when
+# any probe succeeds; prints nothing when all four fail.
+#
+# Probes in order:
+#   1. `gh api repos/<r>/releases/latest`  — auth via atelier-author identity.
+#   2. `gh api repos/<r>/tags`             — auth fallback for repos without releases.
+#   3. unauthenticated `curl .../releases/latest` — covers PUBLIC repos when
+#      the authenticated identity lacks org/scope (the F14 dogfood-3 trigger).
+#   4. unauthenticated `curl .../tags`     — unauth fallback for releases-less repos.
+#
+# Unauth probes use the 60-req/hour anonymous GitHub API quota. Doctor runs
+# emit two of these per session in the worst case (atelier + roadmap-tools);
+# operators running doctor more than ~30 times per hour will see HTTP 403
+# from rate-limiting — caller treats that as a generic upstream-check
+# failure and surfaces it in the SKIP message.
+fetch_upstream_version() {
+  local repo="$1" v
+  v="$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null)"
+  [ -n "$v" ] && { printf '%s' "$v"; return; }
+  v="$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null)"
+  [ -n "$v" ] && { printf '%s' "$v"; return; }
+  v="$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null \
+        | jq -r '.tag_name // empty' 2>/dev/null)"
+  [ -n "$v" ] && { printf '%s' "$v"; return; }
+  v="$(curl -fsSL "https://api.github.com/repos/$repo/tags" 2>/dev/null \
+        | jq -r '.[0].name // empty' 2>/dev/null)"
+  [ -n "$v" ] && { printf '%s' "$v"; return; }
+}
+
 check_plugin_drift() {
   local plugin_id="$1" repo="$2"
   local local_v upstream_v
@@ -101,17 +131,11 @@ check_plugin_drift() {
     return
   fi
 
-  # Try releases/latest first, fall back to tags[0]. Each gh api call is
-  # a SEPARATE bash invocation when run as a slash command (compound-shell
-  # gate); inside this binary, the fallback chain is internal — no gates.
-  upstream_v="$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null)"
-  if [ -z "$upstream_v" ]; then
-    upstream_v="$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null)"
-  fi
+  upstream_v="$(fetch_upstream_version "$repo")"
   upstream_v="$(strip_v "$upstream_v")"
 
   if [ -z "$upstream_v" ]; then
-    push_plugin "$SKIP $plugin_id $local_v (upstream check failed)"
+    push_plugin "$SKIP $plugin_id $local_v (upstream check failed — tried gh auth + unauth curl; repo may be private without anon access, or GitHub rate-limited)"
     return
   fi
 

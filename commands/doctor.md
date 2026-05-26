@@ -83,6 +83,19 @@ The binary runs every check regardless of any individual check's outcome. Three 
 
 If you see a partial report (fewer rows than the format above), suspect the binary itself failed before completion — re-run `install.sh` to refresh the `~/.local/bin/atelier-doctor` symlink, or invoke the script directly from the atelier checkout to surface the underlying error.
 
+## Plugin-drift probe chain (M7.1.F14)
+
+For the two "Plugins (compared against AkaLab-Tech/claude-plugins marketplace)" rows, the binary tries four upstream-version probes in order, taking the first non-empty result:
+
+1. `gh api repos/<repo>/releases/latest` — authenticated via the operator's atelier-author identity.
+2. `gh api repos/<repo>/tags` — authenticated fallback for repos without releases.
+3. Unauthenticated `curl https://api.github.com/repos/<repo>/releases/latest` — covers the case where the repo is public but the atelier-author identity lacks org/scope (the F14 dogfood-3 trigger).
+4. Unauthenticated `curl https://api.github.com/repos/<repo>/tags` — unauth fallback for releases-less repos.
+
+When all four fail, the row is `↷ <plugin> <local-v> (upstream check failed — tried gh auth + unauth curl; repo may be private without anon access, or GitHub rate-limited)`. The operator's local plugin version stays trusted; the binary doesn't fabricate "up to date" without evidence.
+
+Note: the unauth probes share GitHub's 60-req/hour anonymous quota. A single doctor run emits at most two unauth probes. Operators running doctor dozens of times per hour may see SKIPs from rate-limiting; standard usage stays well under the cap.
+
 ## Hard rules
 
 - **Never** invoke any tool other than `Bash(atelier-doctor)`. The binary handles every check internally.
