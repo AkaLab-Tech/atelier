@@ -8,6 +8,20 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F15 — Document per-check independence in `/atelier:doctor` — 2026-05-26
+**PR:** [#87](https://github.com/AkaLab-Tech/atelier/pull/87)
+
+Captured during M7.1 dogfood-3 (2026-05-25) alongside F14 — the operator's first doctor run was cascade-cancelled when a parallel `gh api` call 404-ed. F23 (PR #83) refactored the slash command into a single bash binary, by construction eliminating the parallel-tool-call cascade. This PR closes F15 at the documentation layer: the per-check independence invariant is now spelled out in both the command and the binary, so a future contributor adding a new check can find the contract before introducing a regression.
+
+**Delivered:**
+- `commands/doctor.md`: new "Per-check independence (M7.1.F15)" section listing three guarantees — sequential execution (no parallel Claude Code tool calls), local failures (`set -e` intentionally off, each check handles errors internally), independent status markers (`✗` or `–` on one row says nothing about the others).
+- `scripts/atelier-doctor`: contract comment above the `# ---------- checks ----------` block. New checks must handle errors with `2>/dev/null` + conditional logic, never call `exit`, never rely on `set -e`, and always push one status line via `push_plugin`/`push_external`/`push_host`.
+
+**Tests:** `env -i PATH=/usr/bin:/bin scripts/atelier-doctor` produced a complete report (10 lines: 4 ✓ / 4 – / 2 ✗) with exit code 1 even when `gh`, `jq`, `claude`, and `docker` were absent. This is F15's acceptance criterion (full report on intentional failure) verified empirically.
+
+**Follow-ups:**
+- A permanent CI guard for the per-check independence property belongs in M1.7 self-CI scope; not blocking.
+
 ### M2.5 — Extend static permission matrix with destructive-command synonyms — 2026-05-25
 **PR:** [#86](https://github.com/AkaLab-Tech/atelier/pull/86)
 
