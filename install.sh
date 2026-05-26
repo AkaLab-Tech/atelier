@@ -1569,6 +1569,7 @@ print_first_steps() {
 
   printf '    5. %sDocs%s:\n' "$_C_BOLD" "$_C_RESET"
   printf '         - docs/operator-guide.md (Jr-friendly walkthrough — start here)\n'
+  printf '         - docs/troubleshooting.md (symptom-indexed: when something does not work)\n'
   printf '         - README.md (overview + plugin-only install)\n'
   printf '         - PLAN.md §12 (architecture + milestone roadmap)\n'
   printf '         - docs/dogfood-guide.md (full-flow integration test)\n\n'
