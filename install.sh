@@ -1568,7 +1568,8 @@ print_first_steps() {
   printf '         %stask%s\n\n' "$_C_CYAN" "$_C_RESET"
 
   printf '    5. %sDocs%s:\n' "$_C_BOLD" "$_C_RESET"
-  printf '         - README.md (operator guide)\n'
+  printf '         - docs/operator-guide.md (Jr-friendly walkthrough — start here)\n'
+  printf '         - README.md (overview + plugin-only install)\n'
   printf '         - PLAN.md §12 (architecture + milestone roadmap)\n'
   printf '         - docs/dogfood-guide.md (full-flow integration test)\n\n'
 

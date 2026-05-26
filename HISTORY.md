@@ -8,6 +8,20 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M6.2 — Jr-friendly operator guide — 2026-05-26
+**PR:** [#91](https://github.com/AkaLab-Tech/atelier/pull/91)
+
+PLAN.md §12 Phase 6 M6.2 deliverable. Closes the "can a Jr clone, install, and run a full task cycle from only the operator guide?" acceptance.
+
+**Delivered:**
+- `docs/operator-guide.md` (~210 lines, plain English). Six numbered steps from `git clone` to `task`. Honest about friction (two GitHub accounts, ~30 min first install). Reference table for the four shell commands and per-project files. Recovery + uninstall covered. Jargon audit: zero `worktree`, `commit`, `merge`, `lint`, `typecheck`. Single `branch` mention in the intro explicitly framing what the operator doesn't need to know.
+- `README.md` restructured as an entry point: brief intro + prominent link to the operator guide + retained terse plugin-only install for already-configured users + cross-links to PLAN.md, ROADMAP.md, dogfood-guide.md.
+- `install.sh:print_first_steps` updated to list `docs/operator-guide.md` as the recommended docs entry (replacing the misleading "README.md (operator guide)" line — README never actually contained the operator guide).
+
+**Follow-ups:**
+- M6.4 (troubleshooting doc) will replace the guide's "coming soon" link with a real reference.
+- Screenshots / video — text-only for v1; revisit if Jr feedback says the steps need visual aids.
+
 ### M5.3 — `task` alias resolves project from cwd — 2026-05-26
 **PR:** [#90](https://github.com/AkaLab-Tech/atelier/pull/90)
 

@@ -165,10 +165,6 @@ Implementation of Coolify VPS integration covering deploy, status/logs, env vars
 
 Incremental updater per [PLAN.md §9](PLAN.md): `git pull` → diff changed files → apply deltas → if `settings.template.json` changed, prompt the operator with a human-readable permissions diff (added / removed / impact) before applying.
 
-### M6.2 — Operator guide
-
-Junior-friendly walkthrough: clone → install → first task. No git/branching/PR jargon.
-
 ### M6.3 — Product owner guide (ROADMAP.md format)
 
 How to write [PLAN.md §5](PLAN.md)-shaped roadmaps: priorities, types, estimates, `blocked_by`, acceptance criteria. With examples.
