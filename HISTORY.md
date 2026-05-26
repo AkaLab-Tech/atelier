@@ -8,6 +8,30 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F14 — Unauthenticated GitHub API fallback for plugin-drift upstream probe — 2026-05-26
+**PR:** [#89](https://github.com/AkaLab-Tech/atelier/pull/89)
+
+dogfood-3 surfaced doctor's plugin-drift checks failing with 404 when the source repo was private and the operator's atelier-author identity lacked org membership. Resolved with a four-step probe chain in `fetch_upstream_version()` that falls back to anonymous GitHub API when the authenticated probe returns nothing. The original ROADMAP design (read upstream version from the local marketplace clone) was rejected after inspection — the `akalab-tech` marketplace is a pointer-style catalog without per-plugin version fields.
+
+**Delivered:**
+
+- `scripts/atelier-doctor` gains `fetch_upstream_version <repo>` — tries `gh api releases/latest` → `gh api tags` → unauth `curl releases/latest` → unauth `curl tags`. First non-empty wins. Unauth probes share GitHub's 60-req/hour anonymous quota; doctor emits at most two per session.
+- `check_plugin_drift` refactored to call the helper. SKIP message rewritten from the vague "(upstream check failed)" to "(upstream check failed — tried gh auth + unauth curl; repo may be private without anon access, or GitHub rate-limited)".
+- `commands/doctor.md` gains a "Plugin-drift probe chain (M7.1.F14)" section documenting the four steps so operators understand the ↷ message.
+
+**Acceptance** (revised — supersedes ROADMAP's original "still reports ✓"):
+
+> Running `/atelier:doctor` on a system where the authenticated `gh` identity gets 404 for `releases/latest` but the source repo is **public** still reports `✓ atelier <version> (up to date)` — the unauth `curl` fallback succeeds. If the repo is genuinely private (no anon access), doctor reports `↷` with an informative message; never fabricates `✓`.
+
+The ROADMAP's literal acceptance ("still reports ✓ for private repos without API access") was rejected as inhonest — the binary refuses to claim "up to date" without evidence.
+
+**Tests:** three worktree scenarios — (1) normal `gh` access reports ✓ for both plugins (baseline preserved); (2) `gh` stubbed to fail on `releases/latest` + `tags` with real `curl` against public api.github.com reports ✓ for both plugins (F14 trigger fixed); (3) both `gh` and `curl` stubbed to fail reports ↷ with the documented SKIP message. All three passed first try.
+
+**Follow-ups:**
+
+- `check_git_wt_drift` (separate function, `commits/main` endpoint) untouched. Same robustness pattern could apply if `git-wt` ever moves to a private repo.
+- Permanent test fixture for the probe chain belongs in M1.7 self-CI scope.
+
 ### M7.1.F7c — Versioned shellrc block with auto re-injection on `install.sh` re-run — 2026-05-26
 **PR:** [#88](https://github.com/AkaLab-Tech/atelier/pull/88)
 
