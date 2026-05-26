@@ -8,6 +8,19 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### Docs follow-up — README "Daily use" manual for dogfood prep — 2026-05-26
+**PR:** [#94](https://github.com/AkaLab-Tech/atelier/pull/94)
+
+Captured as a follow-up immediately after the ship-path sweep closed (M2.5 → M7.3). Trigger: the operator was about to start dogfooding for the M7.3 observational measurement and wanted a copy-paste-friendly reference *inside README itself*, not just in `docs/`. The long-form M6.2 operator-guide stays as the authoritative walkthrough; the README section is its condensed cheat-sheet.
+
+**Delivered:**
+- `README.md` gains a `## Daily use` section between "First time?" and "Already have Claude Code + GitHub set up?". Five numbered steps: setup-project, write task, `task`, inspect, measure (`atelier-measure-merge-rate --sample 10`). Plus "When something doesn't work" cross-link and a Pause / abandon / reset mini-reference.
+- Step 5 surfaces the auto-detection defaults so the copy-paste invocation works without extra flags on a properly-installed system.
+
+**Out of scope:**
+- No code changes; pure README work.
+- Operator guide and troubleshooting doc stay intact.
+
 ### M7.3 — Autonomous merge-rate tooling — 2026-05-26
 **PR:** [#93](https://github.com/AkaLab-Tech/atelier/pull/93)
 
