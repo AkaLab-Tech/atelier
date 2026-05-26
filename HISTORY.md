@@ -8,6 +8,22 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.3 — Autonomous merge-rate tooling — 2026-05-26
+**PR:** [#93](https://github.com/AkaLab-Tech/atelier/pull/93)
+
+PLAN.md §12 Phase 7 M7.3 ships the *tooling* for the Phase 7 ship gate (≥80% autonomous on a sample of 10 atelier-driven tasks). The actual measurement is observational and waits for ≥10 atelier-driven PRs to merge on a live dogfood project — that result is **not** claimed by this PR.
+
+**Delivered:**
+- `scripts/atelier-measure-merge-rate` (bash, ~200 lines). Flags `--sample N` (default 10), `--repo OWNER/NAME` (auto-detect), `--author HANDLE` + `--reviewer HANDLE` (auto-detected from `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/{author,reviewer}`), `--threshold PCT` (default 80). Markdown stdout, exit 0/1/2.
+- Classification heuristic — autonomous iff (a) PR author == `--author`, (b) ≥1 `APPROVED` review from `--reviewer`, (c) no `COMMENTED`/`CHANGES_REQUESTED` reviews or top-level comments from foreign accounts.
+- Symlinked from `install.sh:phase_c_1_setup_project_helper` alongside the other atelier-* helpers.
+- `docs/measurements/autonomous-merge-rate.md` — methodology, classification rules, limits of the heuristic (operator session restarts, verbal direction in-chat — invisible to GitHub data), how to interpret PASS/FAIL, why the smoke run reports 0% on the M2.5→M7.3 maintenance PRs (expected — none were atelier-driven).
+- `docs/operator-guide.md` Reference table + `README.md` Other docs list the new command + methodology doc.
+
+**Tests:** smoke run on `AkaLab-Tech/atelier` (last 10 merged PRs) reported `0 / 10 autonomous` with informative per-row reasons (`no approval from Miguelslo27` for each). The 0% result validates that the tool doesn't fabricate passing data; the per-row reasons validate that the heuristic discriminates correctly between criteria.
+
+**Phase 7 closure (deferred):** the formal ship-gate measurement requires ≥10 atelier-driven PRs on a dogfood project (e.g. `~/Work/atelier-dogfood-4`). When those exist, run `atelier-measure-merge-rate --sample 10 --repo <dogfood-repo>` and record the result in a sibling file under `docs/measurements/`. That observation — not any further milestone — closes Phase 7 and v1.
+
 ### M6.4 — Symptom-indexed troubleshooting doc — 2026-05-26
 **PR:** [#92](https://github.com/AkaLab-Tech/atelier/pull/92)
 
