@@ -590,22 +590,27 @@ step_gitignore() {
 
 # ---------- step 8: record setup in $ATELIER_CONFIG_DIR/projects.json ----------
 step_record_setup() {
-  local now plugin_version tmp
+  local now plugin_version name tmp
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   plugin_version="$(jq -r '.version // "unknown"' "$PLUGIN_ROOT/.claude-plugin/plugin.json")"
+  # M5.1: persist a human-friendly `name` (basename of the project path)
+  # alongside setupCompleted + setupVersion. Consumed by the M5.3 picker
+  # so the operator sees the project's short name in the list, not just
+  # the absolute path.
+  name="$(basename "$PROJECT")"
 
   mkdir -p "$(dirname "$CONFIG_FILE")"
 
   tmp="$(mktemp)"
   if [ -f "$CONFIG_FILE" ]; then
-    jq --arg path "$PROJECT" --arg ts "$now" --arg ver "$plugin_version" \
-      '.projects[$path] = {setupCompleted: $ts, setupVersion: $ver}' \
+    jq --arg path "$PROJECT" --arg ts "$now" --arg ver "$plugin_version" --arg name "$name" \
+      '.projects[$path] = {name: $name, setupCompleted: $ts, setupVersion: $ver}' \
       "$CONFIG_FILE" > "$tmp" \
       || { rm -f "$tmp"; die "failed to merge $CONFIG_FILE — refusing to overwrite"; }
     CONFIG_STATUS="updated"
   else
-    jq -n --arg path "$PROJECT" --arg ts "$now" --arg ver "$plugin_version" \
-      '{projects: {($path): {setupCompleted: $ts, setupVersion: $ver}}}' > "$tmp" \
+    jq -n --arg path "$PROJECT" --arg ts "$now" --arg ver "$plugin_version" --arg name "$name" \
+      '{projects: {($path): {name: $name, setupCompleted: $ts, setupVersion: $ver}}}' > "$tmp" \
       || { rm -f "$tmp"; die "failed to create $CONFIG_FILE"; }
     CONFIG_STATUS="created"
   fi

@@ -1207,6 +1207,11 @@ phase_c_1_setup_project_helper() {
   # surfaced a different Claude Code permission gate. With this binary
   # the slash command's allow-list collapses to `Bash(atelier-doctor:*)`.
   _phase_c_1_symlink_helper atelier-doctor
+  # M5.3: atelier-task-resolve picks which registered project the
+  # `task()` shell function should target — longest-prefix match
+  # against cwd, fzf picker fallback when cwd is outside every
+  # registered project.
+  _phase_c_1_symlink_helper atelier-task-resolve
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it
@@ -1231,7 +1236,7 @@ phase_c_1_shellrc_hooks() {
   # below. Existing operators' rc files carry their version inline; on
   # install.sh re-run, an older or missing version triggers a strip +
   # re-inject so the upgrade propagates automatically.
-  local current_version=1
+  local current_version=2
 
   # Heredoc is single-quoted: `$(fnm env --use-on-cd)`, `$*`, and the alias
   # body are written as literal text, expanded later when the shell sources
@@ -1239,7 +1244,7 @@ phase_c_1_shellrc_hooks() {
   local block
   block=$(cat <<'BLOCK'
 # >>> atelier hooks (managed by install.sh) >>>
-# atelier-hooks-version: 1
+# atelier-hooks-version: 2
 # (install.sh reads the version above; bump it when you edit anything between
 #  these sentinels so existing operators get the refreshed block on re-run.)
 # Ensure ~/.local/bin is on PATH so atelier-setup-project (and any future
@@ -1260,7 +1265,12 @@ export ATELIER_CONFIG_DIR="__ATELIER_CONFIG_DIR__"
 if command -v fnm >/dev/null 2>&1; then
   eval "$(fnm env --use-on-cd)"
 fi
-# `task`: open a Claude session for the next roadmap task in this project.
+# `task`: open a Claude session for the next roadmap task in the project
+# the operator's cwd currently belongs to (M5.3). Resolution is delegated
+# to `atelier-task-resolve <cwd>` (longest-prefix match against the
+# projects registered in $ATELIER_CONFIG_DIR/projects.json; falls back to
+# an fzf picker if cwd is not inside any registered project).
+#
 # CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR pins the session to atelier's
 # config root — separate from the operator's personal Claude config so
 # atelier's autonomous-mode rules don't conflict with personal rules.
@@ -1277,6 +1287,14 @@ fi
 # push token. The operator's ~/.gitconfig stays untouched (M7.1.F7b).
 # The operator's normal shell (outside `task`) is unaffected by these exports.
 task() {
+  local project
+  if ! project="$(atelier-task-resolve "$(pwd)")"; then
+    return 1
+  fi
+  if ! cd "$project" 2>/dev/null; then
+    printf 'atelier: project path no longer exists: %s\n' "$project" >&2
+    return 1
+  fi
   CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" \
     GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" \
     GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
