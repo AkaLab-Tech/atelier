@@ -73,6 +73,16 @@ All checks passed. atelier is up to date.
 
 If any check is `✗`, the binary follows the report with a "To apply pending fixes, run:" block listing the copy-pasteable fix commands. The operator runs them; this slash command never modifies anything.
 
+## Per-check independence (M7.1.F15)
+
+The binary runs every check regardless of any individual check's outcome. Three guarantees the operator can rely on:
+
+1. **Sequential, not parallel.** Each check is a function call inside a single bash process — Claude Code's parallel-tool-call cascade-cancel cannot happen here (the slash command makes a single invocation of `atelier-doctor`; F23 collapsed the previous N-call architecture).
+2. **Failures are local.** `set -e` is intentionally off inside the binary. Each check uses internal error handling (`2>/dev/null`, conditional checks, `||`-fallbacks) and pushes its result through `push_plugin` / `push_external` / `push_host`. A failed check sets the binary's exit code to `1` but does **not** abort the rest of the report.
+3. **Status markers are independent.** A `✗` or `–` on one row says nothing about the others. The report ALWAYS lists every check the binary attempts, in the order they ran.
+
+If you see a partial report (fewer rows than the format above), suspect the binary itself failed before completion — re-run `install.sh` to refresh the `~/.local/bin/atelier-doctor` symlink, or invoke the script directly from the atelier checkout to surface the underlying error.
+
 ## Hard rules
 
 - **Never** invoke any tool other than `Bash(atelier-doctor)`. The binary handles every check internally.
