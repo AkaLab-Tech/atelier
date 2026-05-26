@@ -8,6 +8,25 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F7c — Versioned shellrc block with auto re-injection on `install.sh` re-run — 2026-05-26
+**PR:** [#88](https://github.com/AkaLab-Tech/atelier/pull/88)
+
+Captured 2026-05-25 during F7b live validation: operators upgrading between atelier versions silently kept stale shellrc blocks because `phase_c_1_shellrc_hooks` skipped on sentinel detection without checking content. This PR closes the upgrade-friction gap with an explicit version line inside the block and version-aware re-injection.
+
+**Delivered:**
+
+- `install.sh:phase_c_1_shellrc_hooks` reads `# atelier-hooks-version: N` from any existing block. Outcomes by case: missing/older → strip-and-reinject with `→ refreshing atelier shellrc block (vX → vY)` log; equal → `step_skip "already present (vN)"`; newer → `warn` and leave alone. Strip uses `awk` between start/end sentinels with atomic tempfile-then-mv.
+- Heredoc gains `# atelier-hooks-version: 1` directly under the start sentinel plus a one-line docstring instructing future maintainers to bump the integer when editing block contents.
+- Defensive guard: if the start sentinel is present but the end sentinel is missing (corrupted state), the function refuses to strip and warns the operator to repair manually — never removes more than intended.
+- Defensive guard: if the existing version is *higher* than `current_version`, the function leaves the block alone and warns — protects against an older `install.sh` downgrading a block written by a newer one.
+
+**Tests:** harness at `/tmp/test_f7c.sh` (not checked in) sourced the function definitions from `install.sh` and ran five fixtures covering fresh install, legacy block (no version line), current version (v1), corrupted block (missing end sentinel), and future version (v999). All five matched expected behavior on the first run.
+
+**Follow-ups:**
+
+- The first integer is `1`. Anyone editing the BLOCK heredoc must bump it to `2` and the upgrade auto-propagates.
+- A permanent test fixture in `tests/` belongs in M1.7 self-CI scope; not blocking.
+
 ### M7.1.F15 — Document per-check independence in `/atelier:doctor` — 2026-05-26
 **PR:** [#87](https://github.com/AkaLab-Tech/atelier/pull/87)
 
