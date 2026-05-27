@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M4.24.a — Epic + sub-task ROADMAP convention, epic-aware `task-discovery`, `.atelier.json` `taskDecomposer.enabled` flag — 2026-05-27
-**PR:** _pending_
+**PR:** [#98](https://github.com/AkaLab-Tech/atelier/pull/98)
 
 First half of `M4.24 — Autonomous task decomposition` (the second half, M4.24.b, adds the actual `task-decomposer` agent + the `task-orchestrator` auto-invoke step + the `/atelier:slice-task` slash command). This PR is **format-only**: it formalises the wire-format the engine in M4.24.b will read and write, with no behavioural change to today's chain. Decoupling the format from the engine lets the operator hand-author epics today (and the orchestrator already handles them via the extended `task-discovery`), with the auto-decomposition layer landing on top in M4.24.b without re-litigating the schema.
 
