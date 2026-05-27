@@ -287,7 +287,37 @@ Markdown with nested checkboxes + inline metadata. One file per project, written
 - Sub-bullets: context, repro, acceptance criteria.
 - `[x]` marks completed tasks (kept for history).
 
-The agent picks the first unchecked item of the highest-priority section with no open `blocked_by` dependency.
+### Epic + sub-tasks (M4.24.a)
+
+A single task that would produce a PR larger than the project's size budget (see §6) can be expressed as an **epic** with sub-tasks. The epic acts as a container; each sub-task is an independent unit the orchestrator can claim, implement, and PR separately.
+
+```markdown
+- [ ] `feat` Epic: Landing page editor `#42` `~6h`
+  - [ ] `feat` schema + API endpoints `#42a` `~2h`
+  - [ ] `feat` admin form UI `#42b` `~2h` `blocked_by:#42a`
+  - [ ] `feat` public landing renderer `#42c` `~2h` `blocked_by:#42a`
+```
+
+**Epic conventions:**
+
+- Epic title prefix is the literal token `Epic:` followed by the human-readable title.
+- Sub-tasks are indented **two spaces** under the epic line. Same `- [ ] <type> ...` shape as a top-level item, but the `<id>` uses a **letter suffix** under the epic's id (`#42a`, `#42b`, `#42c`, ...).
+- Sub-tasks may reference each other via `blocked_by:#<sibling-id>`. Cross-epic `blocked_by` (a sub-task blocked by a different epic's task) is allowed but discouraged — usually a signal that the split is wrong.
+- The epic line's checkbox `[ ]` / `[x]` is **derived**, not edited by the operator: it auto-flips to `[x]` when every sub-task is `[x]`. Tooling (`task-discovery` skill) computes this on read; nothing writes the epic checkbox manually.
+- The epic's `~estimate` should be the sum of its sub-tasks' estimates. Drift is harmless but suggests the split changed shape from what was planned.
+
+**Selection order (extended):**
+
+The orchestrator selects work in this order:
+
+1. Highest-priority section (P0 → P1 → P2).
+2. Within a section, the first unchecked top-level item. If that item is an epic, descend into its sub-tasks.
+3. Within an epic, the first unchecked sub-task with no open `blocked_by` (resolved against sibling sub-tasks first, then global tasks).
+4. Sub-tasks marked `[OVERSIZE]` or `[BLOCKED]` are skipped (same as top-level tasks — see M7.1.F26 / M7.1.F27.1).
+
+An epic with **all** sub-tasks `[x]` is fully complete; the epic line itself auto-flips to `[x]` and moves to `HISTORY.md` as a single closing entry referencing each sub-task's PR.
+
+**Auto-decomposition** (M4.24.b, future): a task that triggers the orchestrator's oversize-likely heuristics is run through the `task-decomposer` agent, which rewrites the top-level task as an epic with sub-tasks in place. The operator can pre-empt this by writing the epic structure manually, or disable the auto-pass via `<project>/.atelier.json`'s `taskDecomposer.enabled: false`. See M4.24.a (this section) for the *format*, M4.24.b for the *engine*.
 
 ---
 

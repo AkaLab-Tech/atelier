@@ -20,5 +20,9 @@
       "**/migrations/**",
       "**/*.sql"
     ]
+  },
+  "taskDecomposer": {
+    "_comment": "Autonomous task decomposition (M4.24.a defines the Epic / sub-task format; M4.24.b adds the agent that auto-rewrites large tasks into epics before implementer runs). Set `enabled: false` to turn off the automatic pass — the operator can still invoke /atelier:slice-task <id> manually. The orchestrator's heuristic for `oversize-likely` only fires when this flag is true.",
+    "enabled": true
   }
 }
