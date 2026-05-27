@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M4.24.b — `task-decomposer` agent + `task-orchestrator` step 4 auto-invoke + `/atelier:slice-task` manual override — 2026-05-27
-**PR:** _pending_
+**PR:** [#99](https://github.com/AkaLab-Tech/atelier/pull/99)
 
 Second and final half of `M4.24 — Autonomous task decomposition`. Builds on M4.24.a (PR [#98](https://github.com/AkaLab-Tech/atelier/pull/98)) which formalised the wire-format and the epic-aware parser. This PR wires the **engine**: a new Opus / fresh-context agent that produces the format from a flat task, plus the auto-invocation point in the orchestrator and a slash command for the manual override path.
 
