@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M6.1.a — `atelier-update` engine: `git pull` + delta classification + template refresh + plugin-cache refresh — 2026-05-27
-**PR:** _pending_
+**PR:** [#100](https://github.com/AkaLab-Tech/atelier/pull/100)
 
 First half of `M6.1 — update.sh` (PLAN.md §9). Operators today must remember to run `claude plugin update atelier@akalab-tech` and separately keep their local clone in sync to get the symlinked `~/.local/bin/atelier-*` scripts to the new version. This PR ships the engine (`scripts/atelier-update`) that does both passes in one call. The permission-diff prompt for `settings.template.json` changes and the `/atelier:update` slash command land in M6.1.b.
 
