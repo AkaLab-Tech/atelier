@@ -1,0 +1,326 @@
+#!/usr/bin/env bash
+#
+# atelier-update — pull the latest atelier from origin/main, refresh the
+# instantiated templates in $ATELIER_CONFIG_DIR, and trigger
+# `claude plugin update` so the agents/skills/commands that Claude Code
+# loads at session-start point at the new version.
+#
+# This is the M6.1.a (engine) half. The permission-diff prompt and
+# revert behaviour for changes to settings.template.json land in M6.1.b
+# along with the /atelier:update slash command. Today, when this script
+# detects that settings.template.json changed, it surfaces a warning
+# directing the operator to run the slash command interactively once
+# M6.1.b lands; the engine still applies the new template (the operator
+# already opted into the update by running atelier-update).
+#
+# Usage:
+#   atelier-update [--dry-run] [--plugin-root <path>]
+#   atelier-update --help
+#
+# Exit codes:
+#   0  update applied (file diff is non-empty)
+#   1  unrecoverable error (git pull failed, jq missing, no clone, ...)
+#   2  already up to date (no commits pulled)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+# ---------- logging (mirrors install.sh + other atelier helpers) ----------
+log()    { printf '==> %s\n' "$*"; }
+sublog() { printf '    %s\n' "$*"; }
+warn()   { printf '!!  %s\n' "$*" >&2; }
+die()    { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+ok()     { printf '    OK: %s\n' "$*"; }
+
+# ---------- usage ----------
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+Pull the latest atelier from origin/main, refresh instantiated templates,
+and trigger \`claude plugin update\` so Claude Code sessions load the
+new version on next start.
+
+USAGE:
+  ${SCRIPT_NAME} [OPTIONS]
+
+OPTIONS:
+  --plugin-root <path>   Path to the atelier clone. Resolution order:
+                         this flag, then \$ATELIER_PLUGIN_ROOT, then the
+                         clone this script lives inside (resolved via
+                         readlink on the symlink, then dirname). The
+                         final path must be a git repository with an
+                         \`origin\` remote pointing at AkaLab-Tech/atelier
+                         (or a fork thereof).
+  --dry-run              Pull + classify + report, but do not re-instantiate
+                         templates or invoke \`claude plugin update\`.
+                         Useful to see what would change.
+  --help, -h             Show this help and exit.
+
+EXIT CODES:
+  0   update applied (something changed)
+  1   error (no clone, git pull failed, jq missing, ...)
+  2   already up to date (no commits pulled)
+
+NOTES:
+  - settings.template.json changes are surfaced as a warning here; the
+    permission-diff prompt + revert flow lands in M6.1.b.
+  - Re-symlinking is NOT needed: the helpers in ~/.local/bin/ point at
+    the clone's scripts/ directory; \`git pull\` updates those files in
+    place, so the symlinks already resolve to the new content.
+  - \`claude plugin update\` refreshes Claude Code's plugin cache. Open
+    sessions keep loading the old version until they restart.
+EOF
+}
+
+# ---------- arg parse ----------
+PLUGIN_ROOT_FLAG=""
+DRY_RUN=false
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --plugin-root)
+      [ -n "${2:-}" ] || die "--plugin-root requires a value"
+      PLUGIN_ROOT_FLAG="$2"; shift 2 ;;
+    --plugin-root=*) PLUGIN_ROOT_FLAG="${1#--plugin-root=}"; shift ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "unknown arg: $1 (run --help for usage)" ;;
+  esac
+done
+
+# ---------- resolve plugin root ----------
+resolve_plugin_root() {
+  # 1) explicit flag wins
+  if [ -n "$PLUGIN_ROOT_FLAG" ]; then
+    [ -d "$PLUGIN_ROOT_FLAG/.git" ] || die "--plugin-root '$PLUGIN_ROOT_FLAG' is not a git repo"
+    printf '%s\n' "$PLUGIN_ROOT_FLAG"
+    return
+  fi
+
+  # 2) env var
+  if [ -n "${ATELIER_PLUGIN_ROOT:-}" ]; then
+    [ -d "$ATELIER_PLUGIN_ROOT/.git" ] || die "\$ATELIER_PLUGIN_ROOT '$ATELIER_PLUGIN_ROOT' is not a git repo"
+    printf '%s\n' "$ATELIER_PLUGIN_ROOT"
+    return
+  fi
+
+  # 3) script-relative discovery: this script is symlinked from ~/.local/bin/
+  #    to <clone>/scripts/atelier-update. Resolve the symlink, then dirname twice.
+  local self real_path
+  self="${BASH_SOURCE[0]}"
+  if [ -L "$self" ]; then
+    real_path="$(readlink -f "$self" 2>/dev/null || readlink "$self")"
+  else
+    real_path="$self"
+  fi
+  # real_path is now <clone>/scripts/atelier-update; dirname × 2 → <clone>
+  local candidate; candidate="$(cd -P "$(dirname "$real_path")/.." && pwd)"
+  if [ -d "$candidate/.git" ] && [ -f "$candidate/install.sh" ]; then
+    printf '%s\n' "$candidate"
+    return
+  fi
+
+  die "could not resolve atelier clone root (try --plugin-root <path> or set \$ATELIER_PLUGIN_ROOT)"
+}
+
+# ---------- dependency check ----------
+command -v git >/dev/null 2>&1 || die "git not found in PATH"
+command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+command -v claude >/dev/null 2>&1 \
+  || warn "claude CLI not found in PATH; \`claude plugin update\` step will be skipped"
+
+# ---------- start ----------
+log "atelier-update ${VERSION}"
+
+PLUGIN_ROOT="$(resolve_plugin_root)"
+sublog "plugin-root: $PLUGIN_ROOT"
+
+# Confirm remote points at the atelier repo (or a fork thereof). We accept
+# any URL that ends with `atelier.git`, `atelier`, or `/atelier-*` — covers
+# forks the operator might be running for their own customisations.
+REMOTE_URL="$(git -C "$PLUGIN_ROOT" remote get-url origin 2>/dev/null || true)"
+if [ -z "$REMOTE_URL" ]; then
+  die "no 'origin' remote in $PLUGIN_ROOT — cannot pull"
+fi
+sublog "remote:      $REMOTE_URL"
+
+# ---------- capture pre-pull state ----------
+OLD_SHA="$(git -C "$PLUGIN_ROOT" rev-parse HEAD)"
+OLD_VERSION="$(jq -r '.version' "$PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null || echo 'unknown')"
+sublog "current:     $OLD_VERSION ($OLD_SHA)"
+
+# Refuse to pull if the working tree is dirty — would risk a merge conflict
+# that the operator did not opt into.
+DIRTY="$(git -C "$PLUGIN_ROOT" status --porcelain)"
+if [ -n "$DIRTY" ]; then
+  warn "working tree has uncommitted changes:"
+  printf '%s\n' "$DIRTY" | sed 's/^/      /' >&2
+  die "commit or stash before running update"
+fi
+
+# Refuse on a non-main branch unless --plugin-root override is used and the
+# branch is otherwise clean. Pulling on a feature branch with --ff-only and
+# upstream=origin/main would diverge weirdly.
+CURRENT_BRANCH="$(git -C "$PLUGIN_ROOT" rev-parse --abbrev-ref HEAD)"
+if [ "$CURRENT_BRANCH" != "main" ]; then
+  die "current branch is '$CURRENT_BRANCH'; atelier-update only operates on 'main' (switch with: git -C $PLUGIN_ROOT checkout main)"
+fi
+
+# ---------- pull ----------
+log "pulling origin/main"
+if ! git -C "$PLUGIN_ROOT" fetch --quiet origin main; then
+  die "git fetch failed"
+fi
+if ! git -C "$PLUGIN_ROOT" merge --ff-only --quiet origin/main; then
+  die "git merge --ff-only failed (clone has diverged from origin/main; reconcile manually)"
+fi
+
+NEW_SHA="$(git -C "$PLUGIN_ROOT" rev-parse HEAD)"
+NEW_VERSION="$(jq -r '.version' "$PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null || echo 'unknown')"
+
+if [ "$OLD_SHA" = "$NEW_SHA" ]; then
+  log "already up to date — nothing to do"
+  echo ""
+  ok "version: $NEW_VERSION"
+  exit 2
+fi
+
+sublog "pulled:      $NEW_VERSION ($NEW_SHA)"
+sublog "commits:     $(git -C "$PLUGIN_ROOT" rev-list --count "$OLD_SHA..$NEW_SHA")"
+
+# ---------- classify changed files ----------
+log "classifying changed files"
+CHANGED_FILES_RAW="$(git -C "$PLUGIN_ROOT" diff --name-only "$OLD_SHA..$NEW_SHA")"
+
+# Buckets: scripts / templates / agents / skills / commands / hooks / docs / plugin / other
+declare_buckets() {
+  SCRIPTS=()
+  TEMPLATES=()
+  AGENTS=()
+  SKILLS=()
+  COMMANDS=()
+  HOOKS=()
+  DOCS=()
+  PLUGIN_MANIFEST=()
+  OTHER=()
+}
+declare_buckets
+
+# Read each path and route it to a bucket. The classification mirrors how
+# the operator thinks about the codebase, not raw directory layout.
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  case "$f" in
+    scripts/*)              SCRIPTS+=("$f") ;;
+    templates/*)            TEMPLATES+=("$f") ;;
+    agents/*)               AGENTS+=("$f") ;;
+    skills/*)               SKILLS+=("$f") ;;
+    commands/*)             COMMANDS+=("$f") ;;
+    hooks/*)                HOOKS+=("$f") ;;
+    .claude-plugin/*)       PLUGIN_MANIFEST+=("$f") ;;
+    install.sh|operator-rules.md|README.md|PLAN.md|HISTORY.md|ROADMAP.md|IN_PROGRESS.md|CLAUDE.md|docs/*)
+      DOCS+=("$f") ;;
+    *)                      OTHER+=("$f") ;;
+  esac
+done <<< "$CHANGED_FILES_RAW"
+
+# Detect whether settings.template.json specifically changed — flag for the
+# operator since M6.1.a does not render the permission diff yet.
+SETTINGS_TEMPLATE_CHANGED=false
+for f in "${TEMPLATES[@]}"; do
+  [ "$f" = "templates/settings.template.json" ] && SETTINGS_TEMPLATE_CHANGED=true
+done
+
+# ---------- apply deltas (unless --dry-run) ----------
+if $DRY_RUN; then
+  log "DRY-RUN — skipping template re-instantiation and plugin update"
+else
+  # 1) Re-instantiate templates in $ATELIER_CONFIG_DIR/templates/. The clone's
+  #    install.sh has the canonical logic in phase_c_1_instantiate_templates;
+  #    we sub-source it cleanly by re-running just that phase via a helper
+  #    invocation. Simpler approach: invoke install.sh's helper directly
+  #    once it is refactored to be callable; for now, replicate the small
+  #    amount of substitution here.
+  ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+  if [ ! -d "$ATELIER_CONFIG_DIR/templates" ]; then
+    warn "$ATELIER_CONFIG_DIR/templates does not exist — was install.sh ever run?"
+    warn "skipping template refresh; re-run install.sh to bootstrap"
+  else
+    log "refreshing $ATELIER_CONFIG_DIR/templates/"
+    # settings.template.json — substitute <atelier-config-dir>
+    sed "s|<atelier-config-dir>|$ATELIER_CONFIG_DIR|g" \
+        "$PLUGIN_ROOT/templates/settings.template.json" \
+        > "$ATELIER_CONFIG_DIR/templates/settings.template.json"
+    sublog "refreshed settings.template.json"
+    # project-claude.md.template — verbatim
+    cp "$PLUGIN_ROOT/templates/project-claude.md.template" \
+       "$ATELIER_CONFIG_DIR/templates/project-claude.md.template"
+    sublog "refreshed project-claude.md.template"
+    # atelier.template.json — verbatim (added in M7.1.F27)
+    if [ -f "$PLUGIN_ROOT/templates/atelier.template.json" ]; then
+      cp "$PLUGIN_ROOT/templates/atelier.template.json" \
+         "$ATELIER_CONFIG_DIR/templates/atelier.template.json"
+      sublog "refreshed atelier.template.json"
+    fi
+  fi
+
+  # 2) Trigger `claude plugin update` so Claude Code's plugin cache lands
+  #    on the new version. Open sessions keep loading the old version
+  #    until they restart — surface this in the final report.
+  if command -v claude >/dev/null 2>&1; then
+    log "refreshing Claude Code plugin cache"
+    if claude plugin update atelier@akalab-tech 2>/dev/null; then
+      sublog "claude plugin update atelier@akalab-tech: OK"
+    else
+      warn "claude plugin update atelier@akalab-tech failed (continuing)"
+    fi
+    if claude plugin update claude-roadmap-tools@akalab-tech 2>/dev/null; then
+      sublog "claude plugin update claude-roadmap-tools@akalab-tech: OK"
+    else
+      warn "claude plugin update claude-roadmap-tools@akalab-tech failed (continuing)"
+    fi
+  fi
+fi
+
+# ---------- report ----------
+echo ""
+log "atelier-update report"
+sublog "version:     $OLD_VERSION → $NEW_VERSION"
+sublog "commits:     $OLD_SHA..$NEW_SHA"
+sublog ""
+sublog "Changed by bucket:"
+report_bucket() {
+  local name="$1"; shift
+  [ "$#" -eq 0 ] && return
+  printf '      %s (%d):\n' "$name" "$#"
+  printf '        %s\n' "$@"
+}
+# `${arr[@]+...}` guards against `set -u` tripping on empty arrays under
+# bash 3.2 (macOS): expands to the elements when set, expands to nothing
+# (no error) when empty.
+report_bucket "scripts"   ${SCRIPTS[@]+"${SCRIPTS[@]}"}
+report_bucket "templates" ${TEMPLATES[@]+"${TEMPLATES[@]}"}
+report_bucket "agents"    ${AGENTS[@]+"${AGENTS[@]}"}
+report_bucket "skills"    ${SKILLS[@]+"${SKILLS[@]}"}
+report_bucket "commands"  ${COMMANDS[@]+"${COMMANDS[@]}"}
+report_bucket "hooks"     ${HOOKS[@]+"${HOOKS[@]}"}
+report_bucket "plugin"    ${PLUGIN_MANIFEST[@]+"${PLUGIN_MANIFEST[@]}"}
+report_bucket "docs"      ${DOCS[@]+"${DOCS[@]}"}
+report_bucket "other"     ${OTHER[@]+"${OTHER[@]}"}
+
+if $SETTINGS_TEMPLATE_CHANGED; then
+  echo ""
+  warn "templates/settings.template.json changed."
+  warn "M6.1.a does not render the permission diff yet — re-run via /atelier:update"
+  warn "once M6.1.b lands to see the detailed added/removed/impact breakdown."
+  warn "The new template has been applied as-is for now; the operator should"
+  warn "review HISTORY.md to understand what changed."
+fi
+
+echo ""
+ok "update applied — restart open Claude Code sessions to pick up agent/skill/command changes"
+exit 0

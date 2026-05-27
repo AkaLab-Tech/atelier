@@ -212,6 +212,7 @@
       "Bash(atelier-setup-project:*)",
       "Bash(atelier-setup-project --per-task-settings:*)",
       "Bash(atelier-pr-size-check:*)",
+      "Bash(atelier-update:*)",
 
       "Bash(claude plugin list --json)",
       "Bash(gh api repos/AkaLab-Tech/atelier/releases/latest*)",

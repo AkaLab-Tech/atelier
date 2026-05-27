@@ -8,6 +8,45 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M6.1.a — `atelier-update` engine: `git pull` + delta classification + template refresh + plugin-cache refresh — 2026-05-27
+**PR:** _pending_
+
+First half of `M6.1 — update.sh` (PLAN.md §9). Operators today must remember to run `claude plugin update atelier@akalab-tech` and separately keep their local clone in sync to get the symlinked `~/.local/bin/atelier-*` scripts to the new version. This PR ships the engine (`scripts/atelier-update`) that does both passes in one call. The permission-diff prompt for `settings.template.json` changes and the `/atelier:update` slash command land in M6.1.b.
+
+Motivation: discovered immediately after the M4.24 milestone closed (PRs [#98](https://github.com/AkaLab-Tech/atelier/pull/98) / [#99](https://github.com/AkaLab-Tech/atelier/pull/99)) when the operator's installation was on **5 versions behind** upstream (`0.5.7` vs the new `0.6.0`) and asked for the update path. `install.sh` is intentionally idempotent — it checks plugin presence by id, not version, and skips already-installed plugins — so re-running it does not update anything. Until M6.1 ships, the operator's option was a brittle two-step incantation; this PR collapses it to `atelier-update`.
+
+**Delivered:**
+
+- **New `scripts/atelier-update` (~270 lines bash).** Mirrors the style of the other `atelier-*` host-OS helpers (`atelier-setup-project`, `atelier-doctor`, `atelier-pr-size-check`). Behaviour:
+  - Resolves the atelier clone path: `--plugin-root <path>` flag → `$ATELIER_PLUGIN_ROOT` env var → script-relative discovery via `readlink`-ing the `~/.local/bin/atelier-update` symlink to its target in `<clone>/scripts/atelier-update` and `dirname × 2`.
+  - Refuses to operate on a dirty working tree (would risk merge conflicts) or on a non-`main` branch (would diverge weirdly with `--ff-only` against `origin/main`).
+  - Captures pre-pull SHA + version, runs `git fetch + merge --ff-only origin main`, captures post-pull state. Exit 2 (no error) when nothing was pulled.
+  - Classifies changed files into buckets — `scripts/` / `templates/` / `agents/` / `skills/` / `commands/` / `hooks/` / `.claude-plugin/` / `docs` / `other` — so the operator sees what kind of update happened at a glance.
+  - Re-instantiates the three templates in `$ATELIER_CONFIG_DIR/templates/`: `settings.template.json` (with `<atelier-config-dir>` substituted), `project-claude.md.template` (verbatim), and `atelier.template.json` (verbatim — added in M7.1.F27). Re-creates the same state install.sh would have left after a fresh run.
+  - Invokes `claude plugin update atelier@akalab-tech` and `claude plugin update claude-roadmap-tools@akalab-tech` so Claude Code's plugin cache catches up to the new version. Open sessions keep loading the old version until they restart — surfaced in the final report.
+  - **Surfaces a warning** (does not prompt yet) when `templates/settings.template.json` is in the changed-files list: M6.1.a applies the new template as-is; the permission-diff prompt + revert flow lands in M6.1.b along with the `/atelier:update` slash command.
+  - `--dry-run` skips the post-pull deltas (template refresh, plugin update) but still applies the `git pull` and emits the bucketed report. Useful for inspection.
+  - Exit codes: 0 update applied, 1 error, 2 already up to date.
+- **`install.sh` — new symlink** for `atelier-update` alongside the other `atelier-*` helpers in `phase_c_1_setup_project_helper` (one `_phase_c_1_symlink_helper atelier-update` line; same idempotent symlink pattern that the other helpers use).
+- **`templates/settings.template.json`** — `Bash(atelier-update:*)` added to the `allow` list (one line), so the M6.1.b slash command (when it lands) and operator-invoked `atelier-update` runs from inside Claude Code sessions don't trip a permission prompt.
+
+**Decisions captured:**
+
+- **Refuse dirty-tree + non-main-branch.** Both are user-state assumptions the script can't safely override. A dirty tree could create merge conflicts the operator didn't ask for; a non-main branch would diverge weirdly with `--ff-only`. Better to fail loudly with an explicit recovery command than to apply a half-update.
+- **`--ff-only` over `--rebase`.** Fast-forward is the only safe pull strategy when the operator hasn't made local commits on `main` — and they shouldn't have (atelier's policy is "never commit on `main`"). If `--ff-only` fails, the clone has diverged from upstream and the operator must reconcile manually; `--rebase` would silently rewrite history.
+- **Bucketed report instead of raw `git diff --stat`.** `git diff --stat` is correct but noisy; a non-technical operator reads `scripts (1)` / `templates (2)` / `agents (4)` faster than a 40-line file list. The classification matches how the operator thinks about atelier ("scripts changed", "agents changed") rather than raw directory layout.
+- **`claude plugin update` failures are warned, not fatal.** The git pull is the load-bearing step (the operator's local clone has the new scripts after that). The plugin cache update is convenience — if `claude` isn't authenticated or the network is down, the operator can still use the `atelier-*` host-OS helpers; only the agents/skills/commands loaded by Claude Code sessions stay on the old version until the plugin cache catches up.
+- **Settings-template change handling = warn now, prompt in M6.1.b.** Splitting the engine from the UX kept M6.1.a small enough to dogfood cleanly and gives M6.1.b a single, well-scoped responsibility. The downside: between M6.1.a and M6.1.b landing, an `atelier-update` that changes `settings.template.json` applies silently with only a warning. Acceptable — operators with templates that changed will see the warning and can read `HISTORY.md` for the change rationale; the permission set is additive in the F26/F27/F27.1 lineage, no removed permissions to flag.
+- **Symlinks don't need re-creating after `git pull`.** Each `~/.local/bin/atelier-*` symlink points at `<clone>/scripts/atelier-*`. Pulling new content into those files refreshes them in place — the symlink target is unchanged, so the script just resolves to the new content on next invocation. install.sh's symlink step is `if [ -L "$dest" ]; then; sublog "$dest already linked"; fi`, so re-running it after a pull is also a no-op for the same reason. The first time install.sh ships a *new* `atelier-*` helper (like this PR ships `atelier-update`), the operator needs to either re-run `install.sh` or manually symlink — that's why running `atelier-update` itself does **not** re-symlink (it'd be a chicken-and-egg).
+
+**Plugin scope:** mixed.
+- Host-OS-layer (no separate `plugin.json` bump for these alone): `scripts/atelier-update`, `install.sh`.
+- Plugin-shipped: `templates/settings.template.json`. Plugin patch bump **0.6.0 → 0.6.1** per PLAN.md §14.2 (plugin-scope additive change in the allow list; no behaviour shift for tasks that don't invoke the new helper).
+
+**Verified locally with synthetic scenarios:** A (already up-to-date → exit 2), B (dirty tree → die with file list), C (feature branch → die with switch command), D (2 commits ahead with mixed file changes → exit 0, bucketed report, template refresh applied, settings-changed warning fires). `bash -n` and `shellcheck` clean. The plugin-update step's `claude` failures during synthetic testing are expected (test env has no installed plugin) and confirmed handled with `warn` rather than `die`.
+
+**Follow-up:** M6.1.b lands the permission-diff renderer (`scripts/atelier-permission-diff`), the prompt-and-revert integration in `atelier-update`, the `/atelier:update` slash command, and the docs in `operator-rules.md`. This PR is its blocker.
+
 ### M4.24.b — `task-decomposer` agent + `task-orchestrator` step 4 auto-invoke + `/atelier:slice-task` manual override — 2026-05-27
 **PR:** [#99](https://github.com/AkaLab-Tech/atelier/pull/99)
 
