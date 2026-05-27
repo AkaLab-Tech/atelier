@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M6.1.b — `atelier-permission-diff` + `atelier-update` integration + `/atelier:update` slash command — 2026-05-27
-**PR:** _pending_
+**PR:** [#101](https://github.com/AkaLab-Tech/atelier/pull/101)
 
 Second and final half of `M6.1 — update.sh` (PLAN.md §9). Builds on M6.1.a (PR [#100](https://github.com/AkaLab-Tech/atelier/pull/100)) which shipped the engine — pull, delta classification, template refresh, plugin-cache refresh. This PR adds the **UX** layer: the permission-diff renderer, the prompt-and-revert integration, the `/atelier:update` slash command, and the operator-facing doc.
 
