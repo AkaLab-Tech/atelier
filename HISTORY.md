@@ -8,6 +8,40 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F27.1 — `[OVERSIZE]` marker + orchestrator handles `pr-author`'s `oversized` return as a terminal state, not a retry-able failure — 2026-05-27
+**PR:** [#97](https://github.com/AkaLab-Tech/atelier/pull/97)
+
+Discovered immediately after M7.1.F27 (PR [#96](https://github.com/AkaLab-Tech/atelier/pull/96)) merged. F27 wired the pre-push size gate into `pr-author` step 5 and the auto-merge guardrail #5, but stopped short of teaching `task-orchestrator` what to do when it receives `pr-author`'s new `oversized` return. Net effect for the operator in the post-F27 / pre-F27.1 window: an oversize task chain reaches `pr-author`, the size gate trips, `pr-author` returns `oversized` — and `task-orchestrator` had no branch for it, so the most likely behavior was the failure being routed through `retry-with-logs` (consuming the 6-attempt budget on a deterministic failure that re-running won't fix) and ending in an `unblocker` `blocked` issue that technically mislabels the cause.
+
+This patch closes the gap: oversized is now a first-class **terminal** state for the chain, parallel to `merged` / `held` / `request-changes` / `blocked`, with its own marker (`[OVERSIZE]`) in `IN_PROGRESS.md`, its own resolution paths surfaced to the operator, and explicit instructions across the chain that it must **not** consume retry budget.
+
+**Delivered:**
+
+- **`agents/pr-author.md` step 5** — when `atelier-pr-size-check` exits 1, `pr-author` now (a) prepends `[OVERSIZE]` to the task's heading line in `IN_PROGRESS.md`, (b) commits the marker as `chore(tracking): mark #<id> [OVERSIZE] — see size-check output` on the same task branch, (c) returns the existing `oversized` payload to the orchestrator. The marker becomes visible to `/atelier:status` and to the next `task-orchestrator` invocation immediately.
+- **`agents/task-orchestrator.md`:**
+  - **Step 1 (resume mode / IN_PROGRESS scan)** — adds a `[OVERSIZE]` ignore rule parallel to the existing `[BLOCKED]` rule. The orchestrator filters out oversize entries from `/next-task` so they don't block the operator from advancing.
+  - **Step 5 (delegate)** — `pr-author` description now states explicitly that it may return `oversized` instead of a PR URL, and points to step 7's terminal branch.
+  - **Step 7 (close the loop)** — new `oversized` branch: do NOT invoke `retry-with-logs`, do NOT invoke `unblocker`, do NOT consume the 6-attempt budget, do NOT auto-advance to the next ROADMAP item (unlike `blocked`, since the operator owns the resolution decision). Surface a three-option message to the operator: (a) re-plan into sub-tasks using the tool's slicing hints verbatim, (b) `gh pr create` manually (auto-merge will hold for human review), or (c) raise the budget in `<project>/.atelier.json` and re-invoke. The worktree stays on disk for the operator to act on.
+  - **Decision rules** — explicit "never treat `oversized` as retry-able" entry, with the rationale (re-invoking `implementer` without slicing instructions would regenerate the same diff; size budget is a design constraint, not a flaky check).
+  - **Output format** — the chain's terminal status string gains a new variant: `oversized — <lines>/<files>, branch task/<id>-<slug> pushed without PR`.
+- **`agents/unblocker.md` hard refusals** — new entry refusing to handle `oversized` returns. Defensive: if the orchestrator ever mis-routes an oversized state into `unblocker`, the agent stops and reports the orchestrator-side bug instead of opening a `blocked` issue with the wrong cause.
+- **`commands/status.md`:**
+  - **Section 1 (in-progress tasks)** — now classifies each `IN_PROGRESS.md` entry by marker prefix: no marker / `[BLOCKED]` / `[OVERSIZE]`. Each marker gets its own description of who handles it and how.
+  - **Dashboard template** — new `▶ Oversize (PR refused by size gate)` section parallel to the `▶ Blocked in ROADMAP.md` section. Each oversize entry lists the branch (with the "pushed, no PR" note) and the three resolution options inline so the operator does not need to recall them.
+
+**Decisions captured:**
+
+- **Marker prefix vs separate file.** Considered a `<project>/.task-log/<id>.oversized` sentinel file instead of an in-line marker. Rejected because the existing `[BLOCKED]` convention already proves this pattern works — single source of truth (`IN_PROGRESS.md`), single read for any agent or slash command, no parallel file to keep in sync. The `[OVERSIZE]` marker reads symmetrically with `[BLOCKED]` and `/atelier:status` already had the scanning machinery for one prefix; adding the second is trivial.
+- **Do not auto-advance after `oversized`.** The `blocked` branch in step 7 advances to the next ROADMAP item (because the operator's recovery is async — they look at the issue queue later). Oversize is different: the operator's next action is immediate (split or open manually) and they need the current worktree intact to act on it. Advancing would steal focus.
+- **Marker commit is `chore(tracking)`, not `chore(status)` or `feat`.** Same conventional-commits scope as the existing `chore(tracking)` commits in `pr-author` step 3 and `task-orchestrator` step 3 (the `ROADMAP → IN_PROGRESS` and `IN_PROGRESS → HISTORY` moves). Consistency over fine-grained taxonomy.
+- **No equivalent of `unblocker` for oversize.** Oversize doesn't need a dedicated agent because there's no GitHub issue to open, no `blocked` label to apply, no 6-log evidence pack to attach — just an in-band marker and an operator-visible message. The marking happens inline inside `pr-author` step 5 (which is already the agent that knows it tripped the gate). An "atelier:slicer" agent that auto-splits the diff would belong here in v2 — out of scope for F27.1, captured as follow-up.
+
+**Plugin scope:** plugin-shipped — `agents/pr-author.md`, `agents/task-orchestrator.md`, `agents/unblocker.md`, `commands/status.md` are all loaded by Claude Code from the plugin root. Patch bump **0.5.9 → 0.5.10** per PLAN.md §14.2.
+
+**Follow-up paths (not in this PR):**
+- **`atelier:slicer` agent (v2)** — invoked by `pr-author` on exit 1 from the size check, automatically splits the diff into sub-PRs along the suggested boundaries. Useful only if F27.1's operator-driven slicing flow proves slow in practice.
+- **Preventive splitting in `task-orchestrator`** — estimate task size from the ROADMAP entry and propose sub-tasks *before* delegating to `implementer`. Same milestone idea as the F27 follow-up (`M4.x — Task slicing engine`).
+
 ### M7.1.F27 — PR size budget: AND-gate (200 lines / 10 files post-exemptions) + pre-push gate + per-project `.atelier.json` — 2026-05-27
 **PR:** [#96](https://github.com/AkaLab-Tech/atelier/pull/96)
 

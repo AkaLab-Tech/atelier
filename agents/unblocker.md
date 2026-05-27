@@ -220,4 +220,5 @@ Orchestrator next steps:
 - **Never** invoke `task-discovery` or `auto-merge` or any other specialist from here. You only handle the hard-stop handoff — the orchestrator decides what runs next.
 - **Never** open more than one `blocked` issue per task. If `gh issue list --search "<task-id> in:title label:blocked"` already returns one for the same `<task-id>`, stop and report the existing issue URL — the orchestrator should not have re-invoked you.
 - **Never** mark a task `[BLOCKED]` in `IN_PROGRESS.md` if it was never there in the first place. Surface the inconsistency instead of inventing an entry.
+- **Never** handle a `pr-author` `oversized` return (M7.1.F27.1). That is **not** a `retry-with-logs` hard-stop — the orchestrator surfaces it directly to the operator with the three resolution options (re-plan into sub-tasks / open PR manually / raise budget in `.atelier.json`), and the task entry keeps its `[OVERSIZE]` marker (not `[BLOCKED]`). If you somehow receive an oversized-task briefing, stop and report the orchestrator-side bug — do not open a `blocked` issue.
 
