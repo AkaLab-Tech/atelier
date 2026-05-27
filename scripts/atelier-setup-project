@@ -385,6 +385,32 @@ detect_root_claude_md() {
   fi
 }
 
+# ---------- helpers used by step_settings_json (M7.1.F26) ----------
+# Detect whether $1 looks like an atelier-managed settings.json. Heuristic:
+# top-level .permissions.defaultMode == "acceptEdits" AND .permissions.deny
+# contains the distinctive "Bash(git push --force*)" entry from the template.
+# Robust against operator edits to the allow list (those don't touch these
+# two markers) while still catching pre-atelier or hand-rolled files.
+is_atelier_managed_settings() {
+  local f="$1"
+  [ -f "$f" ] || return 1
+  jq -e '
+    (.permissions.defaultMode // "") == "acceptEdits"
+    and ((.permissions.deny // []) | index("Bash(git push --force*)") != null)
+  ' "$f" >/dev/null 2>&1
+}
+
+# Copy $1 to "$1.bak.<utc-timestamp>" and echo the backup path on stdout.
+# Caller is expected to log the path; this function does not log to stderr
+# so it composes inside command substitutions.
+backup_with_timestamp() {
+  local f="$1"
+  local ts; ts="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+  local bak="${f}.bak.${ts}"
+  cp "$f" "$bak" || die "failed to backup $f to $bak"
+  printf '%s\n' "$bak"
+}
+
 # ---------- step 3: .claude/settings.json ----------
 step_settings_json() {
   local target="$PROJECT/.claude/settings.json"
@@ -399,20 +425,85 @@ step_settings_json() {
 
   mkdir -p "$PROJECT/.claude"
 
-  if [ -f "$target" ] && ! $RECONFIGURE; then
-    SETTINGS_STATUS="preserved"
-    sublog "$target already exists — preserving (not a reconfigure)"
-    return
+  # Decide should_write / needs_backup before building the new file.
+  # Three outcomes for SETTINGS_STATUS: created | updated | preserved.
+  local should_write=false
+  local needs_backup=false
+
+  if [ ! -f "$target" ]; then
+    # No existing file — straightforward create.
+    should_write=true
+  elif $RECONFIGURE; then
+    # Reconfigure path: operator already confirmed "Re-run setup" upstream.
+    # Compare current file against the instantiated template; only prompt
+    # when they actually differ.
+    local tmp_probe; tmp_probe="$(mktemp)"
+    sed "s|<worktree>|$PROJECT|g" "$template" > "$tmp_probe" \
+      || { rm -f "$tmp_probe"; die "sed substitution failed while probing $target"; }
+    if diff -q "$target" "$tmp_probe" >/dev/null 2>&1; then
+      rm -f "$tmp_probe"
+      SETTINGS_STATUS="preserved"
+      return
+    fi
+    rm -f "$tmp_probe"
+
+    if $NONINTERACTIVE; then
+      SETTINGS_STATUS="preserved"
+      warn "$target has local edits — preserved (non-interactive default)"
+      return
+    fi
+    printf "%s has local edits. Overwrite with current template (existing file will be backed up)? [y/N]: " "$target" >&2
+    local ans; read -r ans
+    case "$ans" in
+      y|Y|yes|Yes) should_write=true; needs_backup=true ;;
+      *)           SETTINGS_STATUS="preserved"; return ;;
+    esac
+  else
+    # Target exists, NOT in reconfigure flow. Decide based on whether it
+    # looks atelier-managed. Atelier-managed → preserve (operator likely
+    # has local customizations on top of the template). Non-atelier-managed
+    # (legacy pre-atelier settings.json, or hand-rolled) → prompt before
+    # silently keeping the file, because preserving silently was the M7.1.F26
+    # bug — operators ran /atelier:setup-project, the script reported success,
+    # and then Claude Code still asked for permission for every command
+    # because the template's acceptEdits + allowlist never made it onto disk.
+    if is_atelier_managed_settings "$target"; then
+      SETTINGS_STATUS="preserved"
+      sublog "$target already exists (atelier-managed) — preserving"
+      return
+    fi
+
+    warn "$target exists but is not atelier-managed"
+    warn "(missing atelier's defaultMode=acceptEdits and/or distinctive deny entries)."
+    warn "Likely a pre-atelier settings.json or a hand-edited file."
+
+    if $NONINTERACTIVE; then
+      SETTINGS_STATUS="preserved"
+      warn "Preserving (non-interactive default). Re-run interactively to overwrite."
+      return
+    fi
+
+    printf "Overwrite with current atelier template (existing file will be backed up)? [y/N]: " >&2
+    local ans; read -r ans
+    case "$ans" in
+      y|Y|yes|Yes) should_write=true; needs_backup=true ;;
+      *)
+        SETTINGS_STATUS="preserved"
+        sublog "Operator declined — preserving existing $target"
+        return ;;
+    esac
   fi
 
+  $should_write || { SETTINGS_STATUS="preserved"; return; }
+
+  # Build the instantiated template.
   local tmp; tmp="$(mktemp)"
   # Only <worktree> is substituted here — it's a per-project value. The
   # install-time placeholder <atelier-config-dir> was already substituted
   # by install.sh into the instantiated template at
   # $ATELIER_CONFIG_DIR/templates/ (M5.0.2). If <atelier-config-dir> is
   # still in the template at this point, that's an install bug, not a
-  # runtime concern — surface it explicitly via the second grep check
-  # below.
+  # runtime concern — surface it explicitly via the second grep check below.
   sed "s|<worktree>|$PROJECT|g" "$template" > "$tmp" \
     || { rm -f "$tmp"; die "sed substitution failed for $target"; }
 
@@ -428,24 +519,11 @@ step_settings_json() {
     die "$template still contains literal '<atelier-config-dir>' — install.sh did not instantiate the template under \$ATELIER_CONFIG_DIR/templates/ (re-run install.sh)"
   fi
 
-  if [ -f "$target" ] && $RECONFIGURE; then
-    if ! diff -q "$target" "$tmp" >/dev/null 2>&1; then
-      if $NONINTERACTIVE; then
-        rm -f "$tmp"
-        SETTINGS_STATUS="preserved"
-        warn "$target has local edits — preserved (non-interactive default)"
-        return
-      fi
-      printf "%s has local edits. Overwrite with current template? [y/N]: " "$target" >&2
-      local ans; read -r ans
-      case "$ans" in
-        y|Y|yes|Yes) mv "$tmp" "$target"; SETTINGS_STATUS="updated" ;;
-        *) rm -f "$tmp"; SETTINGS_STATUS="preserved" ;;
-      esac
-    else
-      rm -f "$tmp"
-      SETTINGS_STATUS="preserved"
-    fi
+  if $needs_backup; then
+    local bak; bak="$(backup_with_timestamp "$target")"
+    sublog "Backed up existing settings.json to: $bak"
+    mv "$tmp" "$target"
+    SETTINGS_STATUS="updated"
   else
     mv "$tmp" "$target"
     SETTINGS_STATUS="created"
