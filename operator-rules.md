@@ -147,3 +147,48 @@ attached logs.
 Entry point: the `/next-task` slash command picks the highest-priority
 unblocked item from the project's `ROADMAP.md` and routes it through this
 chain.
+
+## Epic + sub-tasks (M4.24.a)
+
+Large tasks that would produce an oversize PR can be expressed as an
+**epic** with sub-tasks. The epic acts as a container; each sub-task is
+an independent unit the orchestrator claims, implements, and PRs
+separately. See PLAN.md §5 for the full format.
+
+Shape (in `ROADMAP.md`):
+
+```markdown
+- [ ] `feat` Epic: Landing page editor `#42` `~6h`
+  - [ ] `feat` schema + API endpoints `#42a` `~2h`
+  - [ ] `feat` admin form UI `#42b` `~2h` `blocked_by:#42a`
+  - [ ] `feat` public landing renderer `#42c` `~2h` `blocked_by:#42a`
+```
+
+Rules to remember:
+
+- The **epic line is never claimed** directly — the orchestrator
+  descends into sub-tasks and picks the first eligible one.
+- Sub-task ids use a letter suffix under the epic's id: `#42a`, `#42b`,
+  ... Use `blocked_by:#<sibling-id>` between siblings when the order
+  matters (schema before UI, etc.).
+- The epic's `[x]` is **auto-derived** when all sub-tasks are `[x]`.
+  Do not flip the epic checkbox manually — the `task-discovery` skill
+  computes it on read.
+- `[OVERSIZE]` and `[BLOCKED]` markers on a sub-task apply only to that
+  sub-task. The same markers on the epic line apply to the whole epic.
+
+When does the orchestrator auto-decompose? M4.24.b (a follow-up to this
+milestone) wires the `task-decomposer` agent into the orchestrator's
+plan step: tasks that trip oversize-likely heuristics (`~estimate > 4h`,
+acceptance criteria with > 5 distinct bullets, title containing
+`epic`/`system`/`framework`/`platform`, or mention of ≥ 3 top-level
+dirs) are decomposed automatically before `implementer` runs. The
+operator can:
+
+- **Pre-empt**: write the epic structure manually in `ROADMAP.md`.
+  The orchestrator sees it is already shaped as an epic and skips the
+  decomposer step entirely.
+- **Override**: invoke `/atelier:slice-task <id>` to ask the decomposer
+  to act on a task the heuristics did not detect.
+- **Disable**: set `taskDecomposer.enabled: false` in
+  `<project>/.atelier.json` to turn off the automatic pass project-wide.

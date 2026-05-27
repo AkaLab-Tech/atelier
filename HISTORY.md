@@ -8,6 +8,37 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M4.24.a — Epic + sub-task ROADMAP convention, epic-aware `task-discovery`, `.atelier.json` `taskDecomposer.enabled` flag — 2026-05-27
+**PR:** [#98](https://github.com/AkaLab-Tech/atelier/pull/98)
+
+First half of `M4.24 — Autonomous task decomposition` (the second half, M4.24.b, adds the actual `task-decomposer` agent + the `task-orchestrator` auto-invoke step + the `/atelier:slice-task` slash command). This PR is **format-only**: it formalises the wire-format the engine in M4.24.b will read and write, with no behavioural change to today's chain. Decoupling the format from the engine lets the operator hand-author epics today (and the orchestrator already handles them via the extended `task-discovery`), with the auto-decomposition layer landing on top in M4.24.b without re-litigating the schema.
+
+Motivation: M7.1 dogfood-4 surfaced that the size-gate from F27 + F27.1 catches oversize PRs but only **reactively** — the operator pays the implementer + tester cost on a task that was always going to be too large. The structural fix is to express large work as an epic-with-sub-tasks **before** the chain runs, so each sub-task fits the per-project size budget independently and merges autonomously. M4.24.a is the format; M4.24.b is the agent that produces the format from a flat task.
+
+**Delivered:**
+
+- **`PLAN.md §5` — Epic + sub-tasks subsection.** Formalises the wire format: epic line title starts with `Epic:`; sub-tasks indented two spaces; sub-task ids use letter suffixes (`#42a`, `#42b`); `blocked_by` resolves against siblings first, then global scope; epic checkbox is **derived** from sub-task state, not manually edited. Extends the selection order to descend into epics before considering their containers. `[OVERSIZE]` / `[BLOCKED]` markers cascade per-line (on the epic → whole epic skipped; on a sub-task → that sub-task only).
+- **`skills/task-discovery/SKILL.md` — epic-aware parsing.**
+  - **Selection algorithm step 2** now descends into epic blocks: if the first unchecked item is an epic, the candidate is its first eligible sub-task (not the epic itself, which is never claimed directly).
+  - **New step 4** filters out `[OVERSIZE]` / `[BLOCKED]` markers explicitly at this layer (previously implicit via the orchestrator).
+  - **Epic-aware parsing section** documents the recognition rule (title `Epic:` + indented sub-task next line), id-suffix regex (`^#<digits>[a-z]?(-\d+)?$`), auto-derived epic checkbox, indentation tolerance (2 or 4 spaces; tabs normalised; deeper nesting refused with a warning).
+  - **Output record** gains optional `epic_parent` and `epic_siblings` fields, present only when the picked task is a sub-task — the orchestrator uses these to know whether to fast-track the next sibling vs returning to top-level selection after the sub-task merges.
+- **`operator-rules.md` — new "Epic + sub-tasks" section.** Brief operator-facing summary of the format (with the same example as PLAN.md §5) plus the three ways the operator interacts with auto-decomposition (pre-empt by writing the epic manually; override via `/atelier:slice-task`; disable via `.atelier.json`). Forward-references M4.24.b for the engine.
+- **`templates/atelier.template.json` — new `taskDecomposer.enabled` field.** Default `true`. The `_comment` next to it explains the flag's relationship to M4.24.b and that the manual `/atelier:slice-task` stays available regardless of the flag's value.
+- **`commands/setup-project.md`** — step 5 description extended to mention the new `taskDecomposer.enabled` field alongside `prSize.*`.
+
+**Decisions captured:**
+
+- **Format-only PR (this) vs combined PR.** Considered shipping format + engine in a single PR (`M4.24` without the `.a` / `.b` split). Rejected because the combined diff was estimated at ~400 lines / ~10 files — under the AND-gate but borderline, and a single PR cannot dogfood its own splitting. Splitting also means M4.24.a is **immediately useful**: an operator who pre-writes epics gets the orchestrator's epic-aware selection behaviour today, without waiting for M4.24.b.
+- **Sub-task id format: letter suffix (`#42a`) over numeric (`#42-1`).** Both accepted by the parser (regex `^#<digits>[a-z]?(-\d+)?$`); recommended form is the letter suffix because it stays short (max 1 char added) and reads naturally in conversation ("did #42a land yet?"). The numeric suffix is the escape hatch for epics with > 26 sub-tasks — that being said, an epic with > 26 sub-tasks is almost certainly mis-shaped and should be split into multiple epics instead.
+- **Epic checkbox derived, not edited.** Tooling computes `[x]` ⇔ all sub-tasks `[x]` on every read. If the operator manually flips the epic checkbox and the derived state differs, the skill surfaces the inconsistency and trusts the derived value. Rationale: avoids two sources of truth that can drift, especially during the long span when the epic is mid-decomposition (some sub-tasks done, others not).
+- **Two markers cascade per-line, not per-block.** A `[BLOCKED]` on the epic skips the whole epic; the same marker on a sub-task skips only that sub-task. This is symmetric with how `blocked_by` works (resolves against siblings) and lets the operator handle partial-epic blockers without abandoning the entire epic.
+- **`taskDecomposer.enabled` flag default = `true`.** Optimises for the original atelier vision (the non-technical operator who writes tasks without thinking about size). Operators who want manual control can flip the flag to `false`; the choice is per-project (lives in `.atelier.json`, version-controlled).
+
+**Plugin scope:** plugin-shipped — `skills/task-discovery/SKILL.md`, `operator-rules.md`, `commands/setup-project.md`, `templates/atelier.template.json`. `PLAN.md` is repo-internal but counted in the bump rationale because the schema it documents is now load-bearing for the skill. Patch bump **0.5.10 → 0.5.11** per PLAN.md §14.2 (plugin-scope additive change; no behaviour shift for existing flat-task workflows).
+
+**Follow-up:** M4.24.b lands the `task-decomposer` agent + orchestrator auto-invoke step + `/atelier:slice-task` command. This PR is its blocker.
+
 ### M7.1.F27.1 — `[OVERSIZE]` marker + orchestrator handles `pr-author`'s `oversized` return as a terminal state, not a retry-able failure — 2026-05-27
 **PR:** [#97](https://github.com/AkaLab-Tech/atelier/pull/97)
 
