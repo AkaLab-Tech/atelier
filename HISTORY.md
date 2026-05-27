@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M7.1.F27.1 — `[OVERSIZE]` marker + orchestrator handles `pr-author`'s `oversized` return as a terminal state, not a retry-able failure — 2026-05-27
-**PR:** _pending_
+**PR:** [#97](https://github.com/AkaLab-Tech/atelier/pull/97)
 
 Discovered immediately after M7.1.F27 (PR [#96](https://github.com/AkaLab-Tech/atelier/pull/96)) merged. F27 wired the pre-push size gate into `pr-author` step 5 and the auto-merge guardrail #5, but stopped short of teaching `task-orchestrator` what to do when it receives `pr-author`'s new `oversized` return. Net effect for the operator in the post-F27 / pre-F27.1 window: an oversize task chain reaches `pr-author`, the size gate trips, `pr-author` returns `oversized` — and `task-orchestrator` had no branch for it, so the most likely behavior was the failure being routed through `retry-with-logs` (consuming the 6-attempt budget on a deterministic failure that re-running won't fix) and ending in an `unblocker` `blocked` issue that technically mislabels the cause.
 
