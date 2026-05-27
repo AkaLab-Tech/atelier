@@ -52,6 +52,7 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
    - **Resume mode** — your briefing carries `task_id`, `worktree_path`, `branch`, and `resume_mode: interrupted | blocked` explicitly. Skip the IN_PROGRESS scan, skip `task-discovery`, skip the worktree creation in step 2 (the worktree already exists), and skip the tracking move in step 3 (the entry is already in `IN_PROGRESS.md`). Jump directly to step 4 with the supplied inputs. The active `IN_PROGRESS.md` entry that would otherwise look like an anomaly **is** the resume target — `/resume-task` already validated it and either wiped the `[BLOCKED]` marker (blocked-resume) or left the partial state intact (interrupted-resume).
    - **Standard mode** — no `resume_mode` in the briefing. Read `IN_PROGRESS.md` and filter its entries:
      - Headings containing the literal `[BLOCKED]` marker are tasks held by `unblocker`. **Ignore them silently** — the operator manages those via the issue queue and via `/atelier:resume-task`. They are not yours to resume.
+     - Headings containing the literal `[OVERSIZE]` marker (M7.1.F27.1) are tasks where `pr-author`'s size gate refused to open the PR. **Ignore them silently** as well — the operator handles these by re-planning into sub-tasks, opening the PR manually, or raising the budget in `.atelier.json`. They are not yours to resume either.
      - Headings without `[BLOCKED]` represent an *active* task. If exactly one exists, the previous chain did not finish cleanly — **stop and surface** the anomaly to the operator with the suggestion to run `/atelier:resume-task <id>`. Do not pick a new task while another is mid-flight.
      - When no active heading exists (only `[BLOCKED]` entries, or none at all), proceed: if the operator did not name a specific item, invoke the `task-discovery` skill to parse the project's `ROADMAP.md` per [PLAN.md §5](PLAN.md) and select the highest-priority unchecked item with no open `blocked_by` dependency. **Confirm the choice with the operator** before claiming it — *unless* you are running in non-interactive mode: if the briefing carries `interactive: false` or the environment variable `ATELIER_AUTO` is set to a non-empty value, skip the confirmation and proceed directly with `task-discovery`'s pick. The non-interactive signal is the operator's pre-given consent; using `AskUserQuestion` here would hang the chain under `claude -p`.
 2. **Set up isolation.** (Skip in resume mode — the worktree already exists at `worktree_path`.) Invoke the `git-wt` skill to create the per-task worktree on a branch named `task/<id>-<slug>` cut from updated `main`. Capture the worktree path — every subsequent step runs scoped to it.
@@ -77,7 +78,7 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
    - **`tester`** writes / runs unit + integration tests until the push gate is green.
    - **`e2e-runner`** runs Playwright + captures screenshots — **only** when the diff has a UI surface; skip entirely otherwise (`e2e-runner` itself returns `skipped (no UI surface)` for docs/infra/backend-only changes).
    - **`/validate --full`** — runs ONCE before `pr-author`, replaces the ad-hoc final check the orchestrator used to do inline. Combines fast layer + Playwright e2e + screenshots.
-   - **`pr-author`** opens the PR and moves `IN_PROGRESS.md` → `HISTORY.md` in the same PR.
+   - **`pr-author`** opens the PR and moves `IN_PROGRESS.md` → `HISTORY.md` in the same PR. **May return `oversized` instead of a PR URL** (M7.1.F27.1): when its step 5 size-gate trips (`atelier-pr-size-check` exit 1), it marks the task entry with `[OVERSIZE]` and returns without opening the PR. This is **not** a retry-able failure — see step 7's `oversized` branch for the terminal handling.
    - **`reviewer`** (Opus, fresh context) posts the structured review with `auto-merge: yes | no`.
    - **`auto-merge` skill** evaluates the six PLAN.md §6 guardrails and squash-merges + cleans up — or reports the PR as held for human review.
    - **`unblocker`** is **not** part of the happy-path chain; it is invoked only when `retry-with-logs` returns `hard-stop` (see step 6). It creates the GitHub `blocked` issue and marks the entry in `IN_PROGRESS.md`.
@@ -118,6 +119,24 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
    - When `auto-merge` reports `merged`: report the merge commit SHA, the worktree cleanup status, and the roadmap closure status to the operator. The task is done.
    - When `auto-merge` reports `held`: report the failed guardrails so the operator knows what to address. The PR stays open; the worktree stays. Do not retry — the operator decides when to re-invoke.
    - When `reviewer` returned `request-changes`: do **not** invoke `auto-merge`. Surface the findings, leave the PR open for the implementer to address in a follow-up.
+   - When `pr-author` returned `oversized` (M7.1.F27.1): this is **NOT** a retry-able failure. **Do not** invoke `retry-with-logs`, **do not** invoke `unblocker`, **do not** consume the 6-attempt budget. The branch is already on origin with the code + tracking commits + the `[OVERSIZE]` marker commit; the only thing missing is the PR object. Surface the situation to the operator with the three concrete resolution paths, copying the `suggested_slices` from `pr-author`'s return verbatim so the operator sees the slicing hints:
+
+     ```text
+     Task #<id> produced an OVERSIZE PR (<lines>/<files>, limits <max_lines>/<max_files>).
+     Branch task/<id>-<slug> is pushed to origin but NO PR was opened.
+
+     Your options:
+       a) Re-plan: split the task into sub-tasks and re-run /next-task on each.
+          Suggested slice boundaries (from atelier-pr-size-check):
+            <suggested_slices verbatim>
+       b) Open the PR manually: `gh pr create` from the branch.
+          The auto-merge guardrail will hold it for human review.
+       c) Raise the budget if this is a legitimate atomic change:
+          edit <project>/.atelier.json (prSize.maxLines / prSize.maxFiles)
+          and re-invoke `task` — the new threshold applies on the next pass.
+     ```
+
+     The task entry stays in `IN_PROGRESS.md` with the `[OVERSIZE]` marker. **Do not** `git wt rm` the worktree — the operator needs it to act on (a) or (b). When the operator advances or splits, they explicitly invoke `/atelier:resume-task`, `/atelier:abandon-task`, or open a new task chain — *do not* auto-advance to the next ROADMAP item (unlike the `blocked` branch below, where the issue queue holds the abandoned context). Stop and yield to the operator.
    - When `unblocker` returns successfully (`hard-stop` was handled): report the issue URL to the operator, then **advance to the next ROADMAP item** by going back to Step 1 (which now sees the `[BLOCKED]` entry in `IN_PROGRESS.md` and filters it out). The blocked task's worktree stays on disk untouched. Stop after the next task's chain reports its own terminal state — do not loop indefinitely across multiple tasks per invocation unless the operator asked for it.
 
 ## Decision rules
@@ -126,6 +145,7 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
 - **Never** push to anything other than `origin task/<id>-<slug>`. The push gate (lint, typecheck, unit+integration tests) must be green first ([PLAN.md §6](PLAN.md)).
 - **Never** edit `package.json` / `pnpm-lock.yaml` / `Dockerfile` / `docker-compose*` / `.github/workflows/**` from the orchestrator. If the task requires touching them, surface it to the operator and stop — those are human-review-only changes ([PLAN.md §6](PLAN.md) auto-merge guardrails).
 - **Never** silently extend the 6-attempt retry budget.
+- **Never** treat `pr-author`'s `oversized` return as a retry-able failure (M7.1.F27.1). The size budget is a design constraint, not a flaky check — re-invoking `implementer` without an explicit slicing instruction would just regenerate the same oversize diff. Surface to the operator per step 7's `oversized` branch and yield.
 - **Never** absorb `unblocker`'s responsibilities inline. On `hard-stop` from `retry-with-logs`, you **must** invoke `atelier:unblocker` via the `Task` tool — even when you believe you could create the label / open the issue / mark `IN_PROGRESS.md` / open the docs PR yourself. The discrete `unblocker` invocation is an auditable checkpoint in the chain (the operator and any future analysis read the per-agent boundaries to reconstruct what happened). Inline simulation bypasses that boundary, makes the chain harder to trace, and erodes the per-agent safety scope that exists by design.
 - If a specialist asks to install a new dependency, route it through the `safe-install` skill and apply [PLAN.md §4](PLAN.md) (self-question → compare ≥2 → justify → reject <7 days old → reject moderate+ vulnerabilities).
 
@@ -136,7 +156,7 @@ When you finish a task chain, report exactly:
 - Task: `<id> — <title>` from `ROADMAP.md`.
 - Worktree: `<absolute-path>` (`cleaned` if `auto-merge` removed it, `retained` otherwise).
 - PR: `<url>`.
-- Status: `merged (<sha>)` | `held — <guardrails that failed>` | `request-changes (N findings)` | `blocked — see <issue-url>` on hard stop.
+- Status: `merged (<sha>)` | `held — <guardrails that failed>` | `request-changes (N findings)` | `oversized — <lines>/<files>, branch task/<id>-<slug> pushed without PR` | `blocked — see <issue-url>` on hard stop.
 - Summary: 1–2 sentences on what changed.
 
 When a chain ends in `blocked` and the orchestrator advanced to the next task in the same invocation, output one block per task in the order they ran, separated by a `---` line.

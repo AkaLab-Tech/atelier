@@ -11,7 +11,13 @@ Your job is to produce a single compact dashboard the operator can scan in five 
 
 ### 1. In-progress tasks
 
-Read `IN_PROGRESS.md`. For each task block you find, extract `id`, `title`, and (if present) `priority` / `estimate`. If the file is empty (only placeholder comments), report "no active task".
+Read `IN_PROGRESS.md`. For each task block you find, extract `id`, `title`, and (if present) `priority` / `estimate`. Classify by marker prefix on the heading line:
+
+- **No marker** → active task currently being worked on. There should be at most one of these at any time; more than one indicates a chain that did not finish cleanly.
+- **`[BLOCKED]` marker** → task that `unblocker` parked after a hard-stop. The operator manages these via the GitHub issue queue and `/atelier:resume-task`.
+- **`[OVERSIZE]` marker** (M7.1.F27.1) → task whose PR was refused by `pr-author`'s size gate (branch pushed, no PR opened, suggested slice boundaries in `pr-author`'s output and possibly the GitHub branch description). The operator handles these by re-planning into sub-tasks, opening the PR manually, or raising the budget in `.atelier.json`.
+
+If the file is empty (only placeholder comments), report "no active task".
 
 ### 2. Worktrees
 
@@ -47,6 +53,13 @@ Use this exact dashboard shape so the operator can grep / scan reliably:
     Branch:   task/<id>-<slug>
 
   (or: no active task — operator can run /next-task)
+
+▶ Oversize (PR refused by size gate)
+  • <#id> — <title>
+    Branch: task/<id>-<slug> (pushed, no PR)
+    Resolution: re-plan into sub-tasks | open PR manually (`gh pr create`) | raise budget in .atelier.json
+
+  (omit if there are none)
 
 ▶ Open PRs (from task/* branches)
   • #<NN> <title>
