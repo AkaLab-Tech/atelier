@@ -8,6 +8,53 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M6.1.b — `atelier-permission-diff` + `atelier-update` integration + `/atelier:update` slash command — 2026-05-27
+**PR:** [#101](https://github.com/AkaLab-Tech/atelier/pull/101)
+
+Second and final half of `M6.1 — update.sh` (PLAN.md §9). Builds on M6.1.a (PR [#100](https://github.com/AkaLab-Tech/atelier/pull/100)) which shipped the engine — pull, delta classification, template refresh, plugin-cache refresh. This PR adds the **UX** layer: the permission-diff renderer, the prompt-and-revert integration, the `/atelier:update` slash command, and the operator-facing doc.
+
+Without this PR (the post-M6.1.a / pre-M6.1.b window), `atelier-update` applies template changes silently with only a warning that "settings.template.json changed; re-run via /atelier:update once M6.1.b lands to see the diff". This PR closes that loop end-to-end: now the operator sees what permissions changed, what they mean operationally, and explicitly accepts or rejects before the agent's authority is widened or narrowed.
+
+**Delivered:**
+
+- **New `scripts/atelier-permission-diff` (~250 lines bash).** Reads two `settings.template.json` files (`--old <path> --new <path>`), computes the per-category set difference (`allow` / `deny` / `ask`) with jq, renders an operator-facing block matching the shape of PLAN.md §9: `NEW permissions:` / `REMOVED permissions:` / `Impact on your day-to-day:`. Each entry includes a one-line human description from a hardcoded table covering the ~75 entries currently in `settings.template.json` (atelier helpers, pnpm/git/gh/docker commands, the deny-list patterns, the MCP tools); unknown entries are shown verbatim with `(no description — see HISTORY.md for change rationale)` so the diff stays complete even when the table lags behind. ANSI colour by default on TTY; `--no-color` for piping. Exit 0 = no changes, exit 1 = changes rendered, exit 2 = error.
+- **`scripts/atelier-update` — permission-diff integration (M6.1.b extension).** When the classifier marks `settings.template.json` as changed, the helper now: (1) extracts the pre-pull `settings.template.json` from git history via `git show $OLD_SHA:templates/settings.template.json` (no need to stash anything pre-pull), (2) invokes `atelier-permission-diff` against the old + new, (3) prompts `Apply these permission changes? [y/N]` on TTY, (4) on `y`: applies the new template to `$ATELIER_CONFIG_DIR/templates/settings.template.json`; on `N` or non-TTY: **preserves** the old template in `$ATELIER_CONFIG_DIR` so the agent keeps operating under the prior permission set. Either way, the other templates (`project-claude.md.template`, `atelier.template.json`) refresh normally — they don't carry permission semantics. The final report surfaces whether the permission changes were accepted or declined.
+- **New `commands/update.md` (`/atelier:update` slash command).** Thin wrapper around `atelier-update` that exists because the helper's interactive prompt requires a TTY; `claude -p` and some terminal multiplexers don't always provide one. The slash command goes through Claude Code's I/O, which is interactive by construction. Accepts an optional `--dry-run` argument that the helper forwards.
+- **`install.sh` — symlink for `atelier-permission-diff`** in `phase_c_1_setup_project_helper` alongside the other `atelier-*` helpers.
+- **`templates/settings.template.json` — `Bash(atelier-permission-diff:*)` added to the `allow` list** so the slash command and direct invocations don't trip a permission prompt.
+- **`operator-rules.md` — new "Keeping atelier up to date (M6.1)" section.** Brief operator-facing reference covering: when to use the terminal command vs the slash command, what the permission diff looks like, what happens on `N`, the "restart open Claude Code sessions" reminder after a successful update.
+
+**Decisions captured:**
+
+- **Hardcoded description table over inferred descriptions.** Considered parsing the entry pattern with regex/heuristics to derive descriptions. Rejected: the value of the description is *operational meaning* (`pnpm audit` → "audit dependencies for vulnerabilities"), not surface mechanics. A hardcoded table is the cheapest way to get curated descriptions; the cost of maintaining it is one new entry per permission added to `settings.template.json`. Unknown entries still show in the diff with a fallback placeholder, so the table doesn't gate completeness.
+- **Compare templates as un-substituted (`<atelier-config-dir>` placeholders intact).** The diff cares about permission patterns, not the operator's installation path. Comparing the un-substituted clone-local files keeps the diff stable across operators with different config dir paths.
+- **Non-interactive mode refuses to apply, never auto-approves.** When stdin is not a TTY (`claude -p`, scripted pipes), the helper refuses to apply permission changes and tells the operator to re-run interactively. The alternative — auto-approving in non-interactive mode — would silently widen the agent's authority during automated update flows. Refusal is the safer default; the operator can always re-run from a TTY when ready.
+- **Decline preserves only `settings.template.json` in `$ATELIER_CONFIG_DIR`.** Other templates and the clone state are unaffected. Rationale: the diff is about *permissions*; non-permission template changes and code changes don't carry the same authority-widening risk and should refresh on their normal cadence. If the operator wanted to revert *everything*, they'd `git reset --hard HEAD~N` on the clone.
+- **`git show $OLD_SHA:<path>` for the pre-pull content.** Considered stashing the pre-pull file before `git pull`. Rejected: it adds a stateful intermediate, and `git show` against the captured OLD_SHA achieves the same result without touching the working tree.
+- **Description-table fallback shows the entry verbatim + `(no description)`.** Considered hiding unknown entries from the diff. Rejected: hiding would mean a real permission change could slip past the operator's review.
+
+**Plugin scope:** mixed.
+- Host-OS-layer: `scripts/atelier-permission-diff`, `scripts/atelier-update` (modified), `install.sh` (symlink wiring).
+- Plugin-shipped: `commands/update.md`, `templates/settings.template.json`, `operator-rules.md`. Plugin patch bump **0.6.1 → 0.6.2** per PLAN.md §14.2 (plugin-scope additive change in commands + allow list + docs).
+
+**Verified locally with 5 synthetic scenarios:**
+- A (`atelier-permission-diff`): identical files → exit 0, no output.
+- B (`atelier-permission-diff`): 2 additions → exit 1, rendered block, impact summary, 1 NEW line.
+- C (`atelier-permission-diff`): 1 removal → exit 1, rendered block, 0 NEW + 1 REMOVED.
+- D (`atelier-permission-diff`): mixed across `allow` + `deny` + `ask` → exit 1, all three categories surfaced.
+- E (`atelier-update` end-to-end): upstream pushes a `settings.template.json` change → helper detects it → diff rendered → non-interactive refusal → `$ATELIER_CONFIG_DIR/templates/settings.template.json` preserved with the old allow list, while `project-claude.md.template` refreshes normally and the final report flags the declined state.
+
+`bash -n` + `shellcheck` clean on both scripts.
+
+**Closes M6.1 end-to-end.** The full update path the operator asked about is now:
+- `atelier-update` from terminal (non-interactive paths preserve permission state).
+- `/atelier:update` from inside Claude Code (interactive prompt resolves cleanly through the harness).
+- Either way: `git pull` → classify → refresh non-permission templates → permission-diff prompt → apply or preserve → refresh plugin cache → final report.
+
+**Follow-up paths (not in this PR):**
+- **Zsh / bash tab completion for `atelier-*` helpers** — surfaced as friction when the operator typo'd `atelier-uinstall` (missing `n`) and got `command not found`. Cheap follow-up, captured as a future M-series task.
+- **Description table data file** — extract the hardcoded mapping into `templates/permission-descriptions.json` if the table grows much beyond 100 entries. Premature optimisation today; revisit if maintenance friction shows up.
+
 ### M6.1.a — `atelier-update` engine: `git pull` + delta classification + template refresh + plugin-cache refresh — 2026-05-27
 **PR:** [#100](https://github.com/AkaLab-Tech/atelier/pull/100)
 

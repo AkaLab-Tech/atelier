@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+#
+# atelier-permission-diff — compare two settings.template.json files
+# and render a human-readable permission diff in the shape of PLAN.md §9.
+#
+# Invoked by `atelier-update` (M6.1.b) after `git pull` brings in a new
+# settings.template.json, and by `/atelier:update` for the slash-command
+# entry point. The diff distinguishes:
+#   - NEW permissions (in new file, not in old) → the agent can do MORE
+#   - REMOVED permissions (in old file, not in new) → the agent can do LESS
+#   - Each entry gets a one-line human description from a hardcoded table
+#     below; unknown entries are shown verbatim with `(no description)`.
+#
+# Usage:
+#   atelier-permission-diff --old <path> --new <path> [--no-color]
+#   atelier-permission-diff --help
+#
+# Exit codes:
+#   0  no permission changes (allow / deny / ask arrays unchanged)
+#   1  changes detected (diff rendered to stdout)
+#   2  error (missing file, malformed json, jq missing, ...)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+die() { printf '!!  ERROR: %s\n' "$*" >&2; exit 2; }
+
+# ---------- usage ----------
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+Render a human-readable permission diff between two settings.template.json
+files, in the shape of PLAN.md §9.
+
+USAGE:
+  ${SCRIPT_NAME} --old <path> --new <path> [--no-color]
+  ${SCRIPT_NAME} --help
+
+OPTIONS:
+  --old <path>    Path to the previous settings.template.json.
+  --new <path>    Path to the new settings.template.json.
+  --no-color      Suppress ANSI color codes (when piped or in CI).
+  --help, -h      Show this help and exit.
+
+EXIT CODES:
+  0   no permission changes
+  1   changes detected (diff written to stdout)
+  2   error
+
+OUTPUT (when changes detected):
+  Three sections, each omitted when empty:
+    NEW permissions:     entries added in --new
+    REMOVED permissions: entries dropped from --new (were in --old)
+    Impact:              two-line summary the operator can act on
+EOF
+}
+
+# ---------- arg parse ----------
+OLD=""
+NEW=""
+USE_COLOR=true
+[ -t 1 ] || USE_COLOR=false   # auto-disable on non-tty
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --old)        [ -n "${2:-}" ] || die "--old requires a path"; OLD="$2"; shift 2 ;;
+    --old=*)      OLD="${1#--old=}"; shift ;;
+    --new)        [ -n "${2:-}" ] || die "--new requires a path"; NEW="$2"; shift 2 ;;
+    --new=*)      NEW="${1#--new=}"; shift ;;
+    --no-color)   USE_COLOR=false; shift ;;
+    --help|-h)    usage; exit 0 ;;
+    *)            die "unknown arg: $1 (run --help for usage)" ;;
+  esac
+done
+
+[ -n "$OLD" ] && [ -n "$NEW" ] || die "both --old and --new are required"
+[ -f "$OLD" ] || die "--old file does not exist: $OLD"
+[ -f "$NEW" ] || die "--new file does not exist: $NEW"
+command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+jq empty "$OLD" >/dev/null 2>&1 || die "--old is not valid JSON: $OLD"
+jq empty "$NEW" >/dev/null 2>&1 || die "--new is not valid JSON: $NEW"
+
+# ---------- color helpers ----------
+if $USE_COLOR; then
+  C_GREEN=$'\033[32m'; C_RED=$'\033[31m'; C_YELLOW=$'\033[33m'; C_BOLD=$'\033[1m'; C_RESET=$'\033[0m'
+else
+  C_GREEN=""; C_RED=""; C_YELLOW=""; C_BOLD=""; C_RESET=""
+fi
+
+# ---------- description table ----------
+# Hardcoded one-liner descriptions for permission entries. Entries grouped
+# by what operator-facing capability they grant. Update this when adding
+# permissions to settings.template.json. Unknown entries are still shown
+# in the diff with `(no description)` — better than hiding them.
+describe_permission() {
+  local entry="$1"
+  case "$entry" in
+    # ---------- atelier helpers (host-OS layer) ----------
+    "Bash(atelier-setup-project:*)")             echo "bootstrap a project for atelier" ;;
+    "Bash(atelier-setup-project --per-task-settings:*)") echo "regenerate per-task .claude/settings.json" ;;
+    "Bash(atelier-doctor:*)")                    echo "run atelier health checks" ;;
+    "Bash(atelier-uninstall:*)")                 echo "uninstall atelier" ;;
+    "Bash(atelier-task-resolve:*)")              echo "resolve which project a task belongs to" ;;
+    "Bash(atelier-measure-merge-rate:*)")        echo "measure autonomous merge rate (M7.3)" ;;
+    "Bash(atelier-pr-size-check:*)")             echo "check PR size against budget (M7.1.F27)" ;;
+    "Bash(atelier-update:*)")                    echo "update atelier (git pull + plugin cache refresh)" ;;
+    "Bash(atelier-permission-diff:*)")           echo "render permission diff (M6.1.b)" ;;
+    # ---------- pnpm + JS toolchain ----------
+    "Bash(pnpm install*)")                       echo "install dependencies" ;;
+    "Bash(pnpm add*)")                           echo "add a dependency" ;;
+    "Bash(pnpm remove*)")                        echo "remove a dependency" ;;
+    "Bash(pnpm update*)")                        echo "bump dependencies" ;;
+    "Bash(pnpm run *)")                          echo "run a package.json script" ;;
+    "Bash(pnpm test*)")                          echo "run tests via pnpm" ;;
+    "Bash(pnpm audit*)")                         echo "audit dependencies for vulnerabilities" ;;
+    "Bash(pnpm view*)")                          echo "inspect package metadata" ;;
+    "Bash(pnpm exec eslint*)")                   echo "lint with eslint" ;;
+    "Bash(pnpm exec prettier*)")                 echo "format with prettier" ;;
+    "Bash(pnpm exec tsc*)")                      echo "typecheck with tsc" ;;
+    "Bash(pnpm exec vitest*)")                   echo "run vitest" ;;
+    "Bash(pnpm exec jest*)")                     echo "run jest" ;;
+    "Bash(pnpm exec playwright*)")               echo "run playwright e2e" ;;
+    "Bash(pnpm exec tsx*)")                      echo "run tsx scripts" ;;
+    "Bash(vitest*)")                             echo "run vitest directly" ;;
+    "Bash(jest*)")                               echo "run jest directly" ;;
+    "Bash(pytest*)")                             echo "run pytest" ;;
+    "Bash(playwright test*)")                    echo "run playwright tests" ;;
+    "Bash(eslint*)")                             echo "lint with eslint (no pnpm)" ;;
+    "Bash(prettier*)")                           echo "format with prettier (no pnpm)" ;;
+    "Bash(tsc*)")                                echo "typecheck with tsc (no pnpm)" ;;
+    "Bash(biome*)")                              echo "lint/format with biome" ;;
+    # ---------- git ----------
+    "Bash(git status*)")                         echo "show working tree status" ;;
+    "Bash(git diff*)")                           echo "show diffs" ;;
+    "Bash(git log*)")                            echo "show commit history" ;;
+    "Bash(git show*)")                           echo "show commit content" ;;
+    "Bash(git branch*)")                         echo "list / manage branches" ;;
+    "Bash(git blame*)")                          echo "show line authorship" ;;
+    "Bash(git fetch*)")                          echo "fetch from remote" ;;
+    "Bash(git ls-files*)")                       echo "list tracked files" ;;
+    "Bash(git add*)")                            echo "stage files" ;;
+    "Bash(git commit*)")                         echo "create commits" ;;
+    "Bash(git checkout -b *)")                   echo "create + switch to a new branch" ;;
+    "Bash(git switch*)")                         echo "switch branches" ;;
+    "Bash(git worktree*)")                       echo "manage git worktrees" ;;
+    "Bash(git stash*)")                          echo "stash changes" ;;
+    "Bash(git push origin task/*)")              echo "push to the task branch on origin" ;;
+    # ---------- gh ----------
+    "Bash(gh auth status*)")                     echo "check GitHub auth status" ;;
+    "Bash(gh issue *)")                          echo "manage GitHub issues" ;;
+    "Bash(gh label list*)")                      echo "list GitHub labels" ;;
+    "Bash(gh label create*)")                    echo "create GitHub labels" ;;
+    "Bash(gh pr create*)")                       echo "open pull requests" ;;
+    "Bash(gh pr view*)")                         echo "view pull request details" ;;
+    "Bash(gh pr list*)")                         echo "list pull requests" ;;
+    "Bash(gh pr diff*)")                         echo "show PR diff" ;;
+    "Bash(gh pr review*)")                       echo "post PR reviews" ;;
+    "Bash(gh pr comment*)")                      echo "comment on PRs" ;;
+    "Bash(gh pr merge*)")                        echo "merge PRs" ;;
+    "Bash(gh project *)")                        echo "manage GitHub projects" ;;
+    "Bash(gh repo clone*)")                      echo "clone GitHub repos" ;;
+    "Bash(gh repo view*)")                       echo "inspect a GitHub repo" ;;
+    "Bash(gh gist create*)")                     echo "create a GitHub gist" ;;
+    "Bash(gh gist view*)")                       echo "view a GitHub gist" ;;
+    # ---------- docker ----------
+    "Bash(docker info*)")                        echo "show docker info" ;;
+    "Bash(docker compose*)")                     echo "manage compose services" ;;
+    "Bash(docker ps*)")                          echo "list containers" ;;
+    "Bash(docker logs*)")                        echo "tail container logs" ;;
+    # ---------- file ops ----------
+    "Bash(ls*)")                                 echo "list files" ;;
+    "Bash(mkdir -p*)")                           echo "create directories" ;;
+    "Bash(mv*)")                                 echo "move / rename files" ;;
+    "Bash(cp*)")                                 echo "copy files" ;;
+    # ---------- destructive (deny list) ----------
+    "Bash(rm -rf *)")                            echo "BLOCKED: recursive remove" ;;
+    "Bash(rm -fr *)")                            echo "BLOCKED: recursive remove" ;;
+    "Bash(sudo *)")                              echo "BLOCKED: privilege escalation" ;;
+    "Bash(git push --force*)")                   echo "BLOCKED: force push" ;;
+    "Bash(git push -f*)")                        echo "BLOCKED: force push (short flag)" ;;
+    "Bash(git push * main)")                     echo "BLOCKED: push to main" ;;
+    "Bash(git push * master)")                   echo "BLOCKED: push to master" ;;
+    "Bash(git push * develop)")                  echo "BLOCKED: push to develop" ;;
+    "Bash(git push * staging)")                  echo "BLOCKED: push to staging" ;;
+    "Bash(git reset --hard*)")                   echo "BLOCKED: destructive reset" ;;
+    "Bash(gh auth logout*)")                     echo "BLOCKED: GitHub logout" ;;
+    "Bash(pnpm publish*)")                       echo "BLOCKED: publish to registry" ;;
+    "Bash(npm publish*)")                        echo "BLOCKED: publish to registry" ;;
+    "Bash(docker push*)")                        echo "BLOCKED: push container image" ;;
+    "Bash(curl * | sh*)")                        echo "BLOCKED: pipe curl to shell" ;;
+    "Bash(curl * | bash*)")                      echo "BLOCKED: pipe curl to bash" ;;
+    # ---------- reads (deny) ----------
+    "Read(~/.ssh/**)")                           echo "BLOCKED: SSH keys" ;;
+    "Read(~/.aws/**)")                           echo "BLOCKED: AWS credentials" ;;
+    "Read(~/.gnupg/**)")                         echo "BLOCKED: GPG keys" ;;
+    # ---------- mcp ----------
+    "mcp__plugin_atelier_playwright__*")         echo "Playwright MCP tools" ;;
+    "mcp__plugin_atelier_playwright__browser_run_code_unsafe") echo "BLOCKED: arbitrary JS execution" ;;
+    # ---------- fallback ----------
+    *) echo "(no description — see HISTORY.md for change rationale)" ;;
+  esac
+}
+
+# ---------- diff computation ----------
+# For each permission category (allow / deny / ask), compute the set
+# difference. We compare as sorted arrays — order in the source file
+# doesn't matter, only membership.
+diff_category() {
+  local key="$1"
+  local added removed
+  added="$(jq -r --arg k "$key" \
+    '($OLD_ARR) as $o | ($NEW_ARR) as $n | ($n - $o)[]' \
+    --slurpfile OLD_ARR <(jq ".permissions.$key // []" "$OLD") \
+    --slurpfile NEW_ARR <(jq ".permissions.$key // []" "$NEW") \
+    -n 2>/dev/null || true)"
+  # Simpler form: just compute additions and removals with jq -n + --slurpfile
+  added="$(jq -nr \
+    --slurpfile old <(jq ".permissions.$key // []" "$OLD") \
+    --slurpfile new <(jq ".permissions.$key // []" "$NEW") \
+    '$new[0] - $old[0] | .[]')"
+  removed="$(jq -nr \
+    --slurpfile old <(jq ".permissions.$key // []" "$OLD") \
+    --slurpfile new <(jq ".permissions.$key // []" "$NEW") \
+    '$old[0] - $new[0] | .[]')"
+  printf '%s\n---\n%s' "$added" "$removed"
+}
+
+# Capture diffs per category. Format: "category|added_or_removed|entry|description".
+collect_changes() {
+  local category=""
+  for category in allow deny ask; do
+    local result added removed
+    result="$(diff_category "$category")"
+    added="${result%%---*}"
+    removed="${result##*---}"
+    # Trim leading newlines.
+    added="$(printf '%s' "$added" | sed '/^$/d')"
+    removed="$(printf '%s' "$removed" | sed '/^$/d')"
+    if [ -n "$added" ]; then
+      while IFS= read -r entry; do
+        printf '%s|added|%s|%s\n' "$category" "$entry" "$(describe_permission "$entry")"
+      done <<< "$added"
+    fi
+    if [ -n "$removed" ]; then
+      while IFS= read -r entry; do
+        printf '%s|removed|%s|%s\n' "$category" "$entry" "$(describe_permission "$entry")"
+      done <<< "$removed"
+    fi
+  done
+}
+
+CHANGES="$(collect_changes)"
+
+if [ -z "$CHANGES" ]; then
+  # No changes — exit 0.
+  exit 0
+fi
+
+# ---------- render ----------
+# Two sections (added / removed), each grouped header followed by entries.
+# The "Impact" section is a two-line operator-facing summary.
+
+render_block() {
+  local label="$1" sigil="$2" color="$3"
+  local items="$4"
+  [ -z "$items" ] && return
+  printf '%b%s permissions%b — the agent %s without asking:\n' \
+    "$C_BOLD" "$label" "$C_RESET" \
+    "$([ "$sigil" = "+" ] && echo "WILL now do these" || echo "can NO LONGER do these")"
+  while IFS='|' read -r category _ entry description; do
+    [ -z "$entry" ] && continue
+    # Note: $sigil $entry are emitted unmodified — preserves the operator's
+    # exact pattern (helpful when they copy-paste into .atelier.json or
+    # debug a permission prompt). $description is the value-add we contribute.
+    printf '  %s%s %s%b → %s [%s]\n' \
+      "$color" "$sigil" "$entry" "$C_RESET" \
+      "$description" "$category"
+  done <<< "$items"
+  printf '\n'
+}
+
+# `grep ... || true` is mandatory under `set -e -o pipefail`: grep exits
+# with status 1 when there are no matches, which would silently abort the
+# script (and skip the rendering below) for the common "additions only" or
+# "removals only" case.
+ADDED_LINES="$(printf '%s\n' "$CHANGES" | grep -E '^[^|]+\|added\|' || true)"
+REMOVED_LINES="$(printf '%s\n' "$CHANGES" | grep -E '^[^|]+\|removed\|' || true)"
+
+printf '\n%b⚠️  The update changes the agent permissions%b\n\n' "$C_YELLOW$C_BOLD" "$C_RESET"
+render_block "NEW"     "+" "$C_GREEN" "$ADDED_LINES"
+render_block "REMOVED" "-" "$C_RED"   "$REMOVED_LINES"
+
+# Impact summary — heuristic. Group changes by intent (Bash / Edit / Read / mcp)
+# and emit one operator-facing line per group.
+COUNT_ADDED=$(printf '%s\n' "$ADDED_LINES" | grep -c . 2>/dev/null || true)
+COUNT_REMOVED=$(printf '%s\n' "$REMOVED_LINES" | grep -c . 2>/dev/null || true)
+# Coerce empty to 0 so the comparisons below don't trip under `set -u`.
+COUNT_ADDED="${COUNT_ADDED:-0}"
+COUNT_REMOVED="${COUNT_REMOVED:-0}"
+printf '%bImpact on your day-to-day:%b\n' "$C_BOLD" "$C_RESET"
+if [ "$COUNT_ADDED" -gt 0 ]; then
+  printf '  - %d new permission(s): the agent gains autonomy in those areas.\n' "$COUNT_ADDED"
+fi
+if [ "$COUNT_REMOVED" -gt 0 ]; then
+  printf '  - %d removed permission(s): the agent will now ask you before doing those.\n' "$COUNT_REMOVED"
+fi
+printf '\n'
+
+exit 1

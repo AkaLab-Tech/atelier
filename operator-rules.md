@@ -148,6 +148,40 @@ Entry point: the `/next-task` slash command picks the highest-priority
 unblocked item from the project's `ROADMAP.md` and routes it through this
 chain.
 
+## Keeping atelier up to date (M6.1)
+
+Atelier ships as a Claude Code plugin **plus** a host-OS layer (the
+`atelier-*` helpers symlinked into `~/.local/bin/` by `install.sh`).
+Both have to be refreshed when upstream releases a new version:
+
+- `atelier-update` (terminal command): pulls `origin/main` on the
+  clone, refreshes the instantiated templates in `$ATELIER_CONFIG_DIR/templates/`,
+  and triggers `claude plugin update` for the agents/skills/commands
+  Claude Code loads at session start. Refuses dirty trees and
+  non-`main` branches.
+- `/atelier:update` (slash command): wraps the helper so the
+  permission-diff prompt resolves through Claude Code's I/O. Use this
+  whenever the upstream release touches `settings.template.json` — the
+  helper will show you what changed and ask before applying.
+
+When `settings.template.json` changes, the prompt shows:
+
+- `+` lines: permissions the agent will **gain** (more autonomy in
+  those areas).
+- `-` lines: permissions the agent will **lose** (more prompting in
+  those areas).
+- An impact summary so you can read what changes about your
+  day-to-day before deciding.
+
+If you decline (`N`): the clone has the new template but
+`$ATELIER_CONFIG_DIR/templates/settings.template.json` keeps the old
+permissions. Re-run from an interactive shell when you're ready to
+accept.
+
+After any successful update, **restart open Claude Code sessions** —
+the plugin cache is refreshed but each session loads its agents /
+skills / commands at start.
+
 ## Epic + sub-tasks (M4.24.a)
 
 Large tasks that would produce an oversize PR can be expressed as an
