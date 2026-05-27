@@ -1231,6 +1231,13 @@ phase_c_1_setup_project_helper() {
   # and by reviewer / auto-merge after the PR exists. Reads
   # <project>/.atelier.json or falls back to built-in defaults.
   _phase_c_1_symlink_helper atelier-pr-size-check
+  # M6.1.a: atelier-update pulls origin/main on the clone, refreshes the
+  # instantiated templates in $ATELIER_CONFIG_DIR, and triggers
+  # `claude plugin update` so Claude Code sessions load the new
+  # agents/skills/commands on next start. The permission-diff prompt for
+  # settings.template.json changes lands in M6.1.b along with the
+  # /atelier:update slash command.
+  _phase_c_1_symlink_helper atelier-update
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it
