@@ -1238,6 +1238,12 @@ phase_c_1_setup_project_helper() {
   # settings.template.json changes lands in M6.1.b along with the
   # /atelier:update slash command.
   _phase_c_1_symlink_helper atelier-update
+  # M6.1.b: atelier-permission-diff renders a human-readable diff
+  # between two settings.template.json files (added/removed/impact, in
+  # the shape of PLAN.md §9). Invoked by atelier-update before applying
+  # template changes, and by the /atelier:update slash command. Refuses
+  # to apply permission changes without an interactive prompt.
+  _phase_c_1_symlink_helper atelier-permission-diff
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it

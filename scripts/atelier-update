@@ -236,6 +236,10 @@ for f in "${TEMPLATES[@]}"; do
 done
 
 # ---------- apply deltas (unless --dry-run) ----------
+# Pre-declare APPLY_SETTINGS so the final report (after the if/else block)
+# can read it under `set -u` even when --dry-run skips the branch that
+# would otherwise set it.
+APPLY_SETTINGS=true
 if $DRY_RUN; then
   log "DRY-RUN — skipping template re-instantiation and plugin update"
 else
@@ -251,16 +255,80 @@ else
     warn "skipping template refresh; re-run install.sh to bootstrap"
   else
     log "refreshing $ATELIER_CONFIG_DIR/templates/"
-    # settings.template.json — substitute <atelier-config-dir>
-    sed "s|<atelier-config-dir>|$ATELIER_CONFIG_DIR|g" \
-        "$PLUGIN_ROOT/templates/settings.template.json" \
-        > "$ATELIER_CONFIG_DIR/templates/settings.template.json"
-    sublog "refreshed settings.template.json"
-    # project-claude.md.template — verbatim
+
+    # ---- settings.template.json with permission-diff prompt (M6.1.b) ----
+    # When the new settings.template.json differs from the old one,
+    # invoke atelier-permission-diff and prompt the operator before
+    # applying. On N, the new template stays in the clone (the operator
+    # may inspect / git-revert it) but $ATELIER_CONFIG_DIR is left
+    # untouched, so the agent keeps operating under the old permission
+    # set until the operator re-runs `atelier-update` and accepts.
+    APPLY_SETTINGS=true
+    if $SETTINGS_TEMPLATE_CHANGED; then
+      # Extract the old settings.template.json from git history (pre-pull
+      # state was OLD_SHA) so the diff has both versions on disk. We
+      # compare the un-substituted templates (with <atelier-config-dir>
+      # placeholders intact); the diff cares about the permission
+      # patterns, not the operator's config dir path.
+      TMP_OLD="$(mktemp -t atelier-update-old-settings.XXXXXX.json)"
+      git -C "$PLUGIN_ROOT" show "$OLD_SHA:templates/settings.template.json" > "$TMP_OLD"
+
+      # Try the helper first; fall back to the in-repo copy on path
+      # mismatch (e.g., when the script is run before install.sh creates
+      # the ~/.local/bin symlink for atelier-permission-diff).
+      DIFF_TOOL="$(command -v atelier-permission-diff || true)"
+      [ -z "$DIFF_TOOL" ] && DIFF_TOOL="$PLUGIN_ROOT/scripts/atelier-permission-diff"
+
+      if [ -x "$DIFF_TOOL" ]; then
+        # Run the diff. Exit 0 = no changes (shouldn't reach here, but
+        # safe to handle). Exit 1 = changes rendered to stdout, prompt
+        # the operator. Exit 2 = tool error; warn and apply anyway (the
+        # alternative — refusing to update — is worse than missing
+        # the diff).
+        DIFF_RC=0
+        "$DIFF_TOOL" --old "$TMP_OLD" --new "$PLUGIN_ROOT/templates/settings.template.json" || DIFF_RC=$?
+        rm -f "$TMP_OLD"
+        case "$DIFF_RC" in
+          0) sublog "settings.template.json content changed but no permission diff (likely comment/whitespace only)" ;;
+          1)
+            if [ -t 0 ]; then
+              printf "Apply these permission changes? [y/N]: " >&2
+              read -r ans
+              case "$ans" in
+                y|Y|yes|Yes) sublog "operator confirmed — applying" ;;
+                *)           APPLY_SETTINGS=false; sublog "operator declined — keeping old settings.template.json in \$ATELIER_CONFIG_DIR" ;;
+              esac
+            else
+              # Non-interactive — refuse to apply silently. The operator
+              # re-runs with a TTY to accept.
+              APPLY_SETTINGS=false
+              warn "non-interactive mode: refusing to apply permission changes without confirmation"
+              warn "re-run \`atelier-update\` from an interactive shell to accept"
+            fi
+            ;;
+          *) warn "atelier-permission-diff failed (rc=$DIFF_RC); applying new settings.template.json without diff" ;;
+        esac
+      else
+        warn "atelier-permission-diff not found; applying new settings.template.json without diff"
+        rm -f "$TMP_OLD"
+      fi
+    fi
+
+    if $APPLY_SETTINGS; then
+      sed "s|<atelier-config-dir>|$ATELIER_CONFIG_DIR|g" \
+          "$PLUGIN_ROOT/templates/settings.template.json" \
+          > "$ATELIER_CONFIG_DIR/templates/settings.template.json"
+      sublog "refreshed settings.template.json"
+    else
+      sublog "preserved $ATELIER_CONFIG_DIR/templates/settings.template.json (operator declined)"
+    fi
+
+    # ---- project-claude.md.template (verbatim, no permissions) ----
     cp "$PLUGIN_ROOT/templates/project-claude.md.template" \
        "$ATELIER_CONFIG_DIR/templates/project-claude.md.template"
     sublog "refreshed project-claude.md.template"
-    # atelier.template.json — verbatim (added in M7.1.F27)
+
+    # ---- atelier.template.json (verbatim, added in M7.1.F27) ----
     if [ -f "$PLUGIN_ROOT/templates/atelier.template.json" ]; then
       cp "$PLUGIN_ROOT/templates/atelier.template.json" \
          "$ATELIER_CONFIG_DIR/templates/atelier.template.json"
@@ -314,11 +382,14 @@ report_bucket "other"     ${OTHER[@]+"${OTHER[@]}"}
 
 if $SETTINGS_TEMPLATE_CHANGED; then
   echo ""
-  warn "templates/settings.template.json changed."
-  warn "M6.1.a does not render the permission diff yet — re-run via /atelier:update"
-  warn "once M6.1.b lands to see the detailed added/removed/impact breakdown."
-  warn "The new template has been applied as-is for now; the operator should"
-  warn "review HISTORY.md to understand what changed."
+  if $APPLY_SETTINGS; then
+    sublog "settings.template.json: applied (permission changes accepted)"
+  else
+    warn "settings.template.json: NOT applied — operator declined permission changes."
+    warn "  - the clone has the new template; \$ATELIER_CONFIG_DIR/templates/ has the old one."
+    warn "  - the agent will keep operating under the old permission set."
+    warn "  - re-run \`atelier-update\` from an interactive shell to re-evaluate."
+  fi
 fi
 
 echo ""
