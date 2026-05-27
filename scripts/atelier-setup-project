@@ -274,6 +274,7 @@ is_configured() {
 
 # ---------- step status (one variable per step for the final summary) ----------
 SETTINGS_STATUS=""
+ATELIER_CONFIG_STATUS=""
 ROADMAP_STATUS=""
 INPROGRESS_STATUS=""
 HISTORY_STATUS=""
@@ -528,6 +529,42 @@ step_settings_json() {
     mv "$tmp" "$target"
     SETTINGS_STATUS="created"
   fi
+}
+
+# ---------- step 3.5: .atelier.json (per-project atelier config) ----------
+# Creates <project>/.atelier.json from the bundled template when missing.
+# NEVER overwrites once it exists — this file is operator-owned after
+# creation (M7.1.F27). To reset to defaults, the operator deletes the
+# file and re-runs setup-project.
+#
+# The template lives at $ATELIER_CONFIG_DIR/templates/atelier.template.json
+# (install.sh copies it from the plugin's templates/ at install time —
+# same convention as settings.template.json).
+step_atelier_config_json() {
+  local target="$PROJECT/.atelier.json"
+  local template="$ATELIER_CONFIG_DIR/templates/atelier.template.json"
+
+  if [ ! -f "$template" ]; then
+    # Older install that predates F27 — template not bundled yet. Don't
+    # fail the setup; just skip and warn so the operator can re-run
+    # install.sh to pick it up. atelier-pr-size-check uses built-in
+    # defaults when the file is missing, so the absence is non-fatal.
+    ATELIER_CONFIG_STATUS="skipped (template missing — re-run install.sh)"
+    return
+  fi
+
+  if [ -f "$target" ]; then
+    ATELIER_CONFIG_STATUS="preserved"
+    return
+  fi
+
+  cp "$template" "$target" \
+    || die "failed to write $target"
+
+  jq empty "$target" >/dev/null 2>&1 \
+    || die "$template did not produce valid JSON at $target"
+
+  ATELIER_CONFIG_STATUS="created"
 }
 
 # ---------- step 4: ROADMAP.md / IN_PROGRESS.md / HISTORY.md ----------
@@ -797,6 +834,7 @@ if is_configured "$PROJECT"; then
 fi
 
 step_settings_json
+step_atelier_config_json
 step_roadmap_files
 step_project_claude_md
 step_npmrc
@@ -814,6 +852,7 @@ ROOT_CLAUDE_MD_STATUS="$(detect_root_claude_md "$PROJECT")"
 echo ""
 ok "$PROJECT set up for atelier"
 sublog ".claude/settings.json:          $SETTINGS_STATUS"
+sublog ".atelier.json:                  $ATELIER_CONFIG_STATUS"
 sublog "ROADMAP.md:                     $ROADMAP_STATUS"
 sublog "IN_PROGRESS.md:                 $INPROGRESS_STATUS"
 sublog "HISTORY.md:                     $HISTORY_STATUS"

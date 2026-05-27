@@ -88,7 +88,7 @@ following applies:
 - Changes to `package.json` or `pnpm-lock.yaml`.
 - Changes to `Dockerfile` or `docker-compose*`.
 - Changes to `.github/workflows/**`.
-- PR exceeds 500 lines changed.
+- PR exceeds the per-project size budget: by default both `>200 lines` **and** `>10 files` after exempting tests / lockfiles / migrations (run `atelier-pr-size-check` to see the exact count and any slicing hints). Either dimension alone is fine; only PRs that breach both axes fall back. Per-project override via `<project>/.atelier.json`.
 - Human comments are pending on the PR.
 - Reviewer marks `request-changes`.
 

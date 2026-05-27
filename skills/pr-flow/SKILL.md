@@ -116,7 +116,23 @@ The `HISTORY.md` entry follows the existing template:
 - <bullet>
 ```
 
-### 5. Open the PR with `gh pr create`
+### 5. Size gate — `atelier-pr-size-check` before opening the PR (M7.1.F27)
+
+Before `gh pr create` runs, the branch is pushed and the tracking commit is in place. Run the size check now — local mode, no network — and short-circuit if it trips:
+
+```sh
+atelier-pr-size-check --branch task/<id>-<slug> --base main --project <worktree>
+```
+
+The tool reads `<worktree>/.atelier.json` (or built-in defaults) and applies the AND-gate over post-exemption counts. Exit codes:
+
+- **0** within budget → continue to step 6.
+- **1** OVERSIZE → **do NOT open the PR**. Surface the tool's stdout (including the suggested slice boundaries) back to the caller (`pr-author` agent or the operator). The branch is already on `origin` — that's fine; nothing observably wrong with the push itself. The orchestrator's next move is to dispatch `implementer` again with slicing instructions, or to ask the operator for a split. Opening the PR in this oversized shape would only consume a `reviewer` cycle and land at the auto-merge gate as held.
+- **2** error → fail loudly (typical causes: `jq` / `gh` missing, malformed `.atelier.json`).
+
+Why here and not earlier: the size budget is a property of the diff between `main` and the task branch's tip — it can only be measured after step 4 lands the tracking commit, which is the last commit that contributes to the diff before review. Measuring before the tracking move would undercount; measuring inside `auto-merge` is too late (the reviewer already spent their cycle).
+
+### 6. Open the PR with `gh pr create`
 
 ```sh
 gh pr create \
@@ -145,7 +161,7 @@ EOF
 
 The title must be **under 70 characters** (GitHub truncates anything longer in lists). Keep the body's `## Summary` to 1–3 bullets; details belong in commit messages, not PR descriptions.
 
-### 6. Report the PR URL
+### 7. Report the PR URL
 
 Return:
 

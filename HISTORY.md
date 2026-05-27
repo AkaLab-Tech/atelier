@@ -8,6 +8,53 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F27 — PR size budget: AND-gate (200 lines / 10 files post-exemptions) + pre-push gate + per-project `.atelier.json` — 2026-05-27
+**PR:** [#96](https://github.com/AkaLab-Tech/atelier/pull/96)
+
+Discovered during M7.1 dogfood-4 immediately after M7.1.F26 (PR [#95](https://github.com/AkaLab-Tech/atelier/pull/95)) merged. An atelier-orchestrated task on the operator's `storefront` project produced a PR over 500 lines; the `auto-merge` skill's existing guardrail #5 held it for human review. The threshold was working as designed, but two problems surfaced:
+
+- **Reactive only.** The 500-line gate enforced *after* `pr-author` had already opened the PR and `reviewer` had spent its Opus-fresh-context cycle approving. The held-PR outcome looked the same as a malformed PR — the operator had to inspect to learn it was just oversized. The auto-merge gate is the wrong place to first discover a size problem; by that point the chain has burned an `implementer`, `tester`, `pr-author`, and `reviewer`.
+- **Threshold too generous, dimension too narrow.** 500 lines covers a 250-line monolithic refactor of one file and a 50-line cleanup spread across 20 unrelated subsystems with equal indifference. The first is reviewable; the second is a slicing problem. A single line-count gate cannot tell them apart.
+
+Root direction: keep the gate, but enforce it earlier *and* on both axes (lines + files), with project-configurable thresholds and built-in exemptions for the diff content that does not contribute to reviewability (auto-generated lockfiles, test code, DB migrations).
+
+**Delivered:**
+
+- **New script `scripts/atelier-pr-size-check`** (host-OS layer, symlinked by `install.sh` Phase C.1 alongside the other `atelier-*` binaries). Two evaluation modes:
+  - `--branch <name> [--base main]` — local pre-push mode. Uses `git diff --numstat`. No network.
+  - `--pr <NN>` — post-push remote mode. Uses `gh pr view --json files`.
+  - In both modes: reads `<project>/.atelier.json` (or built-in defaults), filters paths against the `prSize.exempt` glob list (bash-3.2-portable `case` matching with `**/` prefix fallback for root-level dirs), and applies the AND-gate over the non-exempt remainder. Exit 0 within budget, exit 1 OVERSIZE (with suggested slice boundaries by top-level dir), exit 2 error.
+- **AND-gate threshold (200 lines AND 10 files post-exemptions)** replaces the prior OR-style `additions+deletions > 500`. The AND-gate is deliberate: a tightly-scoped diff that grows long, or a broad refactor that stays small, both pass — only PRs that breach *both* axes auto-block. Operator decision from the M7.1.F27 design conversation (2026-05-27).
+- **New `templates/atelier.template.json`** (bundled with the plugin, copied to `$ATELIER_CONFIG_DIR/templates/` by `install.sh` Phase C.1 alongside `settings.template.json` and `project-claude.md.template`). Default `prSize.{maxLines:200, maxFiles:10}` plus a 14-entry `exempt` list (lockfiles, `**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, `**/tests/**`, `**/e2e/**`, `**/playwright/**`, `**/cypress/**`, `**/migrations/**`, `**/*.sql`, `**/*.snap`, `**/*.generated.*`).
+- **`scripts/atelier-setup-project` — new `step_atelier_config_json`** between `step_settings_json` and `step_roadmap_files`. Seeds `<project>/.atelier.json` from the template when missing; **never overwrites** once it exists (the operator owns this file after creation — to reset to defaults, delete the file and re-run `setup-project`). Falls back silently if the template is missing in `$ATELIER_CONFIG_DIR/templates/` (older install — `atelier-pr-size-check` uses its built-in defaults regardless, so absence is non-fatal).
+- **Three new gate points wired into the chain:**
+  - **`agents/pr-author.md` step 5** (between push and `gh pr create`): invoke `atelier-pr-size-check --branch task/<id>-<slug> --base main --project <worktree>`. On exit 1, return `{"status": "oversized", ...}` to the orchestrator with the tool's full stdout. The PR does not get opened in oversized shape — the prior steps (`implementer`, `tester`, push) keep their work product on the branch; only the `gh pr create` is short-circuited.
+  - **`skills/pr-flow/SKILL.md` step 5** (same intent, same command, executable form for the slash-command path that doesn't dispatch `pr-author`). Numbering shifted: tracking move stays at step 4, size gate is step 5, PR creation is step 6, report is step 7.
+  - **`skills/auto-merge/SKILL.md` guardrail #5** rewritten to invoke `atelier-pr-size-check --pr <NN> --project <project-root>` instead of the prior inline `gh pr view --json additions,deletions`. Held-state message now reports both axes plus the slicing hints from the tool's stdout. `agents/reviewer.md` gains a parallel finding template for the same case (operator manually opened an oversized PR bypassing the orchestrator).
+- **Text updates in the four reference surfaces** so the threshold language is consistent everywhere: `PLAN.md §6`, `CLAUDE.md`, `operator-rules.md`, `commands/setup-project.md`. Each mentions the AND-gate, the exemption list, and the per-project override path.
+
+**Decisions captured:**
+
+- **AND vs OR for the gate.** OR (either dimension trips → blocked) would be stricter but would block legitimate atomic changes: a single-file refactor touching 250 lines, or a 50-line type-rename spread across 12 files, are both reviewable. AND blocks only the cases where slicing is genuinely possible (multiple subsystems touched AND total diff is long). Operator's explicit choice in the design conversation.
+- **Exemptions in defaults vs configurable.** Both. The built-in list covers ~95% of cases (tests, lockfiles, migrations); per-project overrides via `.atelier.json` cover the long tail (project-specific generated paths, vendored code, etc.). The override path is a single jq lookup — no schema validation cost.
+- **`.atelier.json` location: project root, not `.claude/`.** `.claude/` is Claude Code's scope; mixing atelier config there confuses the schema. `.atelier.json` at the repo root is atelier's own namespace, parallel to `.nvmrc` / `.npmrc` / `.gitignore`. It is **not** gitignored — the size budget is part of the project's source of truth, version-controlled and reviewable.
+- **Never-overwrites policy for `.atelier.json`.** Same logic as F26 for legacy `settings.json` but flipped: this file is *new in F27*, so a pre-existing file in a project's working dir is the operator's customization, not a legacy artifact to migrate. The operator deletes the file to reset to defaults (clear, deterministic) — atelier never silently rewrites it.
+- **Pre-push gate at the latest possible moment in the chain (after the tracking commit, before `gh pr create`).** The diff is only complete at that point — measuring earlier would undercount and let oversized PRs through; measuring later (in `auto-merge`) is too late, since `reviewer` already ran. The branch on `origin` is fine to leave behind on a held verdict — nothing landed past what the operator approved.
+- **Bash 3.2 portability.** macOS ships bash 3.2 (Apple-licensing reasons); `shopt -s globstar` and `declare -A` are bash-4 features. `atelier-pr-size-check` uses `case` pattern matching with a `**/`-prefix fallback for root-level dirs, plus `sort | uniq -c` instead of associative arrays. Verified across the 7 synthetic scenarios used during development.
+
+**Verified locally with 7+ synthetic scenarios:** created / preserved-atelier-managed / preserved-legacy (under `--yes`) for `step_atelier_config_json`; plus within-budget / lines-only-exceed / files-only-exceed / both-exceed / all-exempted-tests / per-project-override / mixed-counted-and-exempt for `atelier-pr-size-check`. All matched the expected verdicts.
+
+**Plugin scope:** mixed.
+- Host-OS-layer (do not by themselves require a `plugin.json` bump): `scripts/atelier-pr-size-check`, `scripts/atelier-setup-project`, `install.sh`, `templates/atelier.template.json` (the bundled template — copied at install time, not loaded by Claude Code).
+- Plugin-shipped: `agents/reviewer.md`, `agents/pr-author.md`, `skills/pr-flow/SKILL.md`, `skills/auto-merge/SKILL.md`, `commands/setup-project.md`, `templates/settings.template.json`. Plugin patch bump **0.5.8 → 0.5.9** in `.claude-plugin/plugin.json` per PLAN.md §14.2 (plugin-scope behaviour change).
+
+**Meta-irony acknowledged.** This PR is the seed of the rule and the rule does not retroactively apply to its own merge — the gate fires on PRs opened *after* the merge lands. The diff is ~12 files / ~600 lines (heavily concentrated in the new script + the HISTORY entry); built-in exemptions don't apply (no tests / lockfiles / migrations touched). Subsequent PRs answer to the gate the way it's now written.
+
+**Follow-up paths (not in this PR):**
+- **Preventive splitting in `task-orchestrator`** — estimate task size from the ROADMAP entry and propose sub-tasks *before* delegating to `implementer`. Requires a sub-task / `blocked_by` chain convention in ROADMAP and is non-trivial; tracked as a future milestone (`M4.x — Task slicing engine`).
+- **First-class `slicer` skill / agent** — invoked by `pr-author` on exit 1 from the size check, automatically splits the diff into sub-PRs along the suggested boundaries. Useful only if preventive splitting (above) proves too lossy.
+- **Schema validation for `.atelier.json`** — currently the script only checks `jq empty` (valid JSON). A JSON Schema would catch typos like `prSize.maxLine` (singular). Cheap, defer until the first operator hits the bug.
+
 ### M7.1.F26 — `/atelier:setup-project` silently preserves a non-atelier-managed `settings.json` — 2026-05-27
 **PR:** [#95](https://github.com/AkaLab-Tech/atelier/pull/95)
 
