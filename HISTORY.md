@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M7.1.F27 — PR size budget: AND-gate (200 lines / 10 files post-exemptions) + pre-push gate + per-project `.atelier.json` — 2026-05-27
-**PR:** _pending_
+**PR:** [#96](https://github.com/AkaLab-Tech/atelier/pull/96)
 
 Discovered during M7.1 dogfood-4 immediately after M7.1.F26 (PR [#95](https://github.com/AkaLab-Tech/atelier/pull/95)) merged. An atelier-orchestrated task on the operator's `storefront` project produced a PR over 500 lines; the `auto-merge` skill's existing guardrail #5 held it for human review. The threshold was working as designed, but two problems surfaced:
 
