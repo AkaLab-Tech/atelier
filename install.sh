@@ -1015,6 +1015,14 @@ phase_c_1_instantiate_templates() {
   #    substitution happens later in atelier-setup-project.
   cp "$src_dir/project-claude.md.template" "$dst_dir/project-claude.md.template"
   sublog "copied $dst_dir/project-claude.md.template"
+
+  # 3) atelier.template.json — per-project atelier config (M7.1.F27). No
+  #    install-time placeholders; copy verbatim. atelier-setup-project
+  #    seeds <project>/.atelier.json from this on first run only.
+  if [ -f "$src_dir/atelier.template.json" ]; then
+    cp "$src_dir/atelier.template.json" "$dst_dir/atelier.template.json"
+    sublog "copied $dst_dir/atelier.template.json"
+  fi
 }
 
 phase_c_1_claude_config_dir() {
@@ -1217,6 +1225,12 @@ phase_c_1_setup_project_helper() {
   # to evaluate the Phase 7 ship gate (≥80% autonomous on a sample of 10
   # atelier-driven tasks).
   _phase_c_1_symlink_helper atelier-measure-merge-rate
+  # M7.1.F27: atelier-pr-size-check enforces the per-PR size budget
+  # (AND-gate over lines + files, after exempting tests / lockfiles /
+  # migrations). Invoked by pr-author / pr-flow before `gh pr create`
+  # and by reviewer / auto-merge after the PR exists. Reads
+  # <project>/.atelier.json or falls back to built-in defaults.
+  _phase_c_1_symlink_helper atelier-pr-size-check
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it

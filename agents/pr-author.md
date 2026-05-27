@@ -59,13 +59,26 @@ You inherit the session's default `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"
 
    If any check fails, **stop and fix** before pushing. A tracking move pushed in a follow-up commit on the protected branch (or in a separate PR opened later) splits the bookkeeping and violates the convention.
 4. **Push to the right place.** Push the branch to `origin task/<id>-<slug>` only. Pushing to `main`, `master`, `develop`, `staging`, or any other branch is denied — surface a clear error if the current branch does not match `task/*`. By this point the branch carries both the code commit and the tracking commit.
-5. **Open the PR with `gh pr create`.** Title under 70 characters. Body must include, in this order:
+5. **Size gate — run `atelier-pr-size-check` BEFORE `gh pr create`** (M7.1.F27). Invoke it in local-mode against the branch you just pushed, scoped to the per-task worktree:
+
+   ```bash
+   atelier-pr-size-check --branch task/<id>-<slug> --base main --project <worktree-path>
+   ```
+
+   The tool reads `<worktree>/.atelier.json` (or built-in defaults) and applies the AND-gate over post-exemption counts. Exit codes: `0` within budget, `1` OVERSIZE, `2` error.
+
+   - **Exit 0** → proceed to step 6.
+   - **Exit 1 (OVERSIZE)** → **do NOT open the PR**. Return control to the orchestrator with `{"status": "oversized", "lines": <N>, "files": <M>, "max_lines": <X>, "max_files": <Y>, "suggested_slices": [...]}` plus the tool's stdout verbatim. The orchestrator decides next: either dispatch `implementer` again with slicing instructions, or surface the situation to the operator. Either way, the PR does not get opened in this oversized shape — opening it would land on the auto-merge gate as a held PR and waste the `reviewer` cycle.
+   - **Exit 2 (error)** → fail loudly; do not open the PR. Typical causes: `jq` / `gh` missing, malformed `.atelier.json`, network unreachable from `gh pr view`.
+
+   Why before push & after the branch already exists: a local pre-push check is the cheapest version of this gate (no network, no PR object). It catches the most common cause — implementer accidentally grew the diff past the budget — at the earliest possible point in the chain, sparing the reviewer + auto-merge round trip the operator saw in M7.1 dogfood-4.
+6. **Open the PR with `gh pr create`.** Title under 70 characters. Body must include, in this order:
    - **Roadmap reference:** link to the (now moved-to-`HISTORY.md`) block or the task identifier.
    - **Summary:** 1–3 bullets of what changed and why.
    - **Validation checklist:** what `tester` ran (lint / typecheck / unit / integration), with their pass/fail state.
    - **Screenshots:** if the change has a UI surface, embed Playwright screenshots from `e2e-runner`. For docs/infra/backend-only changes, note "no UI surface — e2e skipped per `e2e-runner`".
    - **Tracking:** an explicit `<commit-sha>` line for the `chore(tracking)` commit so reviewers can see the bookkeeping change at a glance.
-6. **Report the PR URL back.** Final output is the URL the operator opens to review.
+7. **Report the PR URL back.** Final output is the URL the operator opens to review.
 
 ## Decision rules
 

@@ -83,15 +83,21 @@ Reject if any path matches:
 
 Note: this catches the **path**, not the diff intent. A PR that only adds a docs/README change to a package's metadata but accidentally also touches `package.json` falls into this guardrail and goes to human review. That's the intended behaviour.
 
-### 5. PR size ≤ 500 lines changed
+### 5. PR within the project's size budget
+
+Invoke `atelier-pr-size-check` against the PR. The tool applies the AND-gate (`>maxLines` AND `>maxFiles`, after exempting tests / lockfiles / migrations) using the values from `<project>/.atelier.json` or the built-in defaults (`200` lines, `10` files):
 
 ```bash
-gh pr view <NN> --json additions,deletions --jq '.additions + .deletions'
+atelier-pr-size-check --pr <NN> --project <project-root>
 ```
 
-If sum > 500 → `held: PR changes <N> lines (limit 500)`.
+Exit codes:
 
-The 500-line threshold is adjustable (PLAN.md §6 calls it adjustable); the skill keeps it hard-coded for v1. A future per-project config could override it.
+- **0** within budget → continue to guardrail #6.
+- **1** OVERSIZE → `held: PR exceeds size budget (<counted-lines> lines AND <counted-files> files, limits <maxLines>/<maxFiles>)`. Include the tool's stdout — particularly the suggested slice boundaries — in the held-state report so the operator (and the orchestrator on the next pass) see the slicing hints.
+- **2** error → `held: size check failed (<stderr-tail>)`. Do not silently widen the gate.
+
+The AND-gate is deliberate (M7.1.F27): a tightly-scoped diff that grows long, or a broad refactor that stays small, both pass — only PRs that breach **both** axes after exemptions auto-block. Per-project overrides live in `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`. The skill never widens the gate at runtime; if a project legitimately needs a higher ceiling, that decision is made in `.atelier.json` and version-controlled.
 
 ### 6. No unresolved human comments
 
@@ -153,7 +159,7 @@ Guardrails:
   review:         ✓ APPROVED | ✗ <state>
   CI:             ✓ <N>/<N> checks SUCCESS | ✗ <state>
   forbidden:      ✓ none | ✗ <comma-separated paths>
-  size:           ✓ <N> lines (≤ 500) | ✗ <N> lines (> 500)
+  size:           ✓ <N> lines / <M> files (within budget) | ✗ OVERSIZE <N>/<M> (limits <maxLines>/<maxFiles>)
   comments:       ✓ no pending | ✗ <N> pending (latest @<user>)
 
 Decision: merged | held — <comma-separated failed guardrails>
@@ -180,5 +186,5 @@ Next step:     human review required. Operator can:
 - **Never** push `chore(roadmap): mark X done` directly to `main`. The static permissions matrix denies it. Surface the change as a follow-up.
 - **Never** mark a roadmap item `[x]` for a PR that was held. The auto-merge skill only modifies state on success.
 - **Never** override `reviewDecision`. If GitHub says `CHANGES_REQUESTED`, that is final until a new review supersedes it.
-- **Never** silently widen the 500-line threshold. If a project legitimately needs a larger threshold, the skill's behaviour is "human review"; the v2 per-project config is the right place to make the threshold adjustable.
+- **Never** silently widen the size budget. The threshold is the AND-gate from `atelier-pr-size-check`, configurable per-project via `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`. If a project legitimately needs a higher ceiling, the operator updates that file (version-controlled, reviewable) — the skill never raises the gate at runtime.
 

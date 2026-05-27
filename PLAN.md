@@ -316,7 +316,7 @@ Auto-merge when:
 - Changes to `package.json` / `pnpm-lock.yaml`.
 - Changes to `Dockerfile` / `docker-compose*`.
 - Changes to `.github/workflows/**`.
-- PR exceeds 500 lines changed (threshold adjustable).
+- PR exceeds the per-project size budget. Default: `>200 lines` **AND** `>10 files`, post-exemptions for tests / lockfiles / migrations (see `scripts/atelier-pr-size-check`). The AND-gate means either dimension alone (a tightly-scoped long diff, or a broad refactor that stays small) is fine; only PRs that breach both axes fall back to human review. Per-project override via `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`.
 - Human comments pending on PR.
 - Reviewer marks `request-changes`.
 

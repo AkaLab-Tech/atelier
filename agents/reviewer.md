@@ -141,9 +141,20 @@ A PR is **not auto-mergeable** when any of these is true. Surface each one expli
 - Changes touch `package.json` or `pnpm-lock.yaml`.
 - Changes touch `Dockerfile` or `docker-compose*`.
 - Changes touch `.github/workflows/**`.
-- `additions + deletions > 500` (the 500-line threshold).
+- PR exceeds the project's size budget. Default: BOTH `>200 lines` AND `>10 files` after exemptions (tests / lockfiles / migrations). Per-project override via `<project>/.atelier.json`. Run `atelier-pr-size-check --pr <NN>` to get the post-exemption counts plus suggested slice boundaries — paste the verdict + counts into your report so the `auto-merge` skill and the operator see the exact numbers. The AND-gate matters: either dimension alone is fine; only PRs that breach both axes auto-block. When you flag this, **also emit a `size` finding** (see below) with the slicing suggestion verbatim from the tool — that is what the operator acts on.
 - Human comments are pending (any non-bot comment that has not been resolved).
 - `reviewDecision` already has a `CHANGES_REQUESTED` from a human reviewer that hasn't been re-reviewed.
+
+### Size finding template (M7.1.F27)
+
+When the size guardrail trips, append a finding to your report under the standard format. Severity is **important** (correctness is unaffected — just reviewability):
+
+```markdown
+### [important] PR exceeds project size budget
+`atelier-pr-size-check --pr <NN>` reports OVERSIZE: <counted-lines> counted lines across <counted-files> files (limits: <maxLines>/<maxFiles>, AND-gate). Suggested slice boundaries by top-level dir (file count): <tool-output verbatim>. Recommend splitting into <N> sub-PRs along these boundaries; the orchestrator can pick up the unsplit remainder after the first sub-PR merges.
+```
+
+This finding does not flip your `approve` decision to `request-changes` on its own — correctness is the gate for that. It exists so the operator (and the orchestrator on the next pass) sees the slicing hints next to the auto-merge blocker. If the diff is *also* incorrect in other ways, the higher-severity finding wins your decision.
 
 A PR can still be `approved` by you and **not** auto-mergeable — those two decisions are separate. Your `approve` says "the change is correct"; the auto-merge gate says "it can land without a human pressing the button".
 
