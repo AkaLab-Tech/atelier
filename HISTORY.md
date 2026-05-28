@@ -41,7 +41,7 @@ Two gaps in the M7.1.F32 surface F33 closes:
 
 **Plugin scope:** mixed.
 - Host-OS-layer: `scripts/atelier-list-projects`, `install.sh`.
-- Plugin-shipped: `commands/list-projects.md`, `commands/remove-project.md`, `templates/settings.template.json`. Plugin patch bump **0.6.7 → 0.6.8** per PLAN.md §14.2 (plugin-scope additive change: new slash commands + new allow entry; no behaviour shift for existing projects).
+- Plugin-shipped: `commands/list-projects.md`, `commands/remove-project.md`, `templates/settings.template.json`. Plugin **minor** version bump **0.6.7 → 0.7.0** per PLAN.md §14.2 — new operator-facing surface area (1 new binary + 2 new slash commands) is a feature, not a fix. Same versioning shape as M4.24.b (v0.6.0) which added a new agent + slash command. Existing projects see no behaviour shift, but the plugin's capability set grew.
 
 **Verified locally with synthetic scenarios** for the binary (the slash commands are markdown contracts, validated by reading):
 
