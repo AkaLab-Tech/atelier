@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M7.1.F29 — `atelier-doctor` + `atelier-update` must prefix `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"` on every `claude` subprocess — 2026-05-28
-**PR:** _pending_
+**PR:** [#103](https://github.com/AkaLab-Tech/atelier/pull/103)
 
 Discovered during M7.1 dogfood-5 immediately after M7.1.F28 (PR [#102](https://github.com/AkaLab-Tech/atelier/pull/102)) merged. Operator ran a clean uninstall + re-install pass to test the new version end-to-end, then ran `atelier-doctor` from their interactive terminal and saw:
 
