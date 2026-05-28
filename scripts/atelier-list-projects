@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+#
+# atelier-list-projects — show every project registered in
+# $ATELIER_CONFIG_DIR/projects.json, with an at-a-glance status of
+# whether the on-disk setup matches the registry.
+#
+# Default mode (human-facing):
+#   Atelier-managed projects (3):
+#
+#     /Users/mike/Work/storefront
+#       name: storefront · version: 0.6.7 · since: 2026-05-28T18:34Z
+#       status: ✓ configured
+#
+#     /Users/mike/Work/some-other
+#       name: some-other · version: 0.6.2 · since: 2026-05-20T10:11Z
+#       status: ⚠ partial (.atelier.json missing — re-run setup-project)
+#
+# --json mode:
+#   Emits the raw projects.json content (jq-friendly) plus a per-project
+#   `status` field computed from the on-disk check.
+#
+# --quiet mode:
+#   One absolute path per line, no metadata. Useful for piping into
+#   xargs / loops.
+#
+# Usage:
+#   atelier-list-projects [--json|--quiet]
+#   atelier-list-projects --help
+#
+# Exit codes:
+#   0  zero or more projects listed successfully
+#   1  unrecoverable error (missing config dir, malformed JSON, jq missing)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+# ---------- logging ----------
+die() { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+
+# ---------- usage ----------
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+List atelier-managed projects from \$ATELIER_CONFIG_DIR/projects.json,
+with a per-project on-disk status indicator.
+
+USAGE:
+  ${SCRIPT_NAME} [--json|--quiet]
+  ${SCRIPT_NAME} --help
+
+OPTIONS:
+  --json     Emit machine-readable JSON. Each project gains a \`status\`
+             field: "configured" | "partial" | "missing-directory" |
+             "missing-files".
+  --quiet    Emit one absolute path per line. Suitable for piping.
+  --help, -h Show this help and exit.
+
+EXIT CODES:
+  0  listed successfully (even when zero projects are registered)
+  1  unrecoverable error (no config dir / malformed JSON / jq missing)
+EOF
+}
+
+# ---------- arg parse ----------
+MODE="default"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json)    MODE="json"; shift ;;
+    --quiet)   MODE="quiet"; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "unknown arg: $1 (run --help for usage)" ;;
+  esac
+done
+
+# ---------- config + deps ----------
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+CONFIG_FILE="$ATELIER_CONFIG_DIR/projects.json"
+
+command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+  die "$CONFIG_FILE not found — atelier may not be installed (run install.sh)"
+fi
+
+jq empty "$CONFIG_FILE" >/dev/null 2>&1 \
+  || die "$CONFIG_FILE is not valid JSON"
+
+# ---------- compute per-project on-disk status ----------
+# Returns one of:
+#   "configured"         — directory present and both atelier-managed files
+#                          (.claude/settings.json + .atelier.json) exist
+#   "partial"            — directory present but one or both files missing
+#                          (likely cause: setup-project was interrupted,
+#                          or the operator removed a file by hand)
+#   "missing-directory"  — the registered path no longer exists on disk
+#                          (operator deleted / moved the project but did not
+#                          unregister; atelier-remove-project would fix)
+compute_status() {
+  local path="$1"
+  [ -d "$path" ] || { printf 'missing-directory'; return; }
+  if [ -f "$path/.claude/settings.json" ] && [ -f "$path/.atelier.json" ]; then
+    printf 'configured'
+  elif [ -f "$path/.claude/settings.json" ] || [ -f "$path/.atelier.json" ]; then
+    printf 'partial'
+  else
+    printf 'missing-files'
+  fi
+}
+
+# Extract the keys (paths) in their original insertion order so the output
+# is deterministic. Use a while-read loop instead of `mapfile` so the
+# script stays portable to bash 3.2 (macOS system bash).
+PATHS=()
+while IFS= read -r p; do
+  [ -n "$p" ] && PATHS+=("$p")
+done < <(jq -r '.projects | keys[]' "$CONFIG_FILE" 2>/dev/null)
+PROJECT_COUNT="${#PATHS[@]}"
+
+# ---------- emit ----------
+case "$MODE" in
+  quiet)
+    for p in ${PATHS[@]+"${PATHS[@]}"}; do printf '%s\n' "$p"; done
+    ;;
+
+  json)
+    # Re-emit projects.json with a `status` field merged into each entry.
+    # We compute status in bash (compute_status reads the filesystem) and
+    # feed the result into jq via --arg.
+    {
+      printf '{\n  "projects": {\n'
+      local_first=true
+      for p in ${PATHS[@]+"${PATHS[@]}"}; do
+        s="$(compute_status "$p")"
+        if $local_first; then local_first=false; else printf ',\n'; fi
+        # Print the entry verbatim from the registry plus the new status field.
+        entry="$(jq -c --arg p "$p" --arg s "$s" \
+          '.projects[$p] + {status: $s}' "$CONFIG_FILE")"
+        printf '    %s: %s' "$(jq -n --arg p "$p" '$p')" "$entry"
+      done
+      printf '\n  }\n}\n'
+    }
+    ;;
+
+  default|*)
+    if [ "$PROJECT_COUNT" -eq 0 ]; then
+      printf 'No atelier-managed projects registered.\n'
+      # shellcheck disable=SC2016
+      printf 'Use `atelier-setup-project <path>` to register one.\n'
+      exit 0
+    fi
+
+    printf 'Atelier-managed projects (%d):\n\n' "$PROJECT_COUNT"
+
+    for p in ${PATHS[@]+"${PATHS[@]}"}; do
+      name="$(jq -r --arg p "$p" '.projects[$p].name // "(unnamed)"' "$CONFIG_FILE")"
+      version="$(jq -r --arg p "$p" '.projects[$p].setupVersion // "?"' "$CONFIG_FILE")"
+      since="$(jq -r --arg p "$p" '.projects[$p].setupCompleted // "?"' "$CONFIG_FILE")"
+      status="$(compute_status "$p")"
+
+      # Status glyph + detail message
+      case "$status" in
+        configured)        glyph='✓'; detail='configured' ;;
+        partial)
+          glyph='⚠'
+          missing=()
+          [ -f "$p/.claude/settings.json" ] || missing+=('.claude/settings.json')
+          [ -f "$p/.atelier.json" ]        || missing+=('.atelier.json')
+          detail="partial (${missing[*]} missing — re-run setup-project)"
+          ;;
+        missing-files)
+          glyph='⚠'
+          detail='partial (both atelier files missing — re-run setup-project)'
+          ;;
+        missing-directory) glyph='✗'; detail='directory no longer exists — atelier-remove-project will unregister' ;;
+        *)                 glyph='?'; detail="$status" ;;
+      esac
+
+      printf '  %s\n' "$p"
+      printf '    name: %s · version: %s · since: %s\n' "$name" "$version" "$since"
+      printf '    status: %s %s\n' "$glyph" "$detail"
+      printf '\n'
+    done
+    ;;
+esac

@@ -1216,6 +1216,10 @@ phase_c_1_setup_project_helper() {
   # (tracking files, .gitignore, .npmrc entries); --purge extends the
   # cleanup to those as well.
   _phase_c_1_symlink_helper atelier-remove-project
+  # M7.1.F33: atelier-list-projects lists every project registered in
+  # $ATELIER_CONFIG_DIR/projects.json, with a per-project on-disk
+  # status (configured / partial / missing-directory). Read-only.
+  _phase_c_1_symlink_helper atelier-list-projects
   # M7.1.F23: atelier-doctor bash binary — replaces the 10 inline Bash
   # checks the /atelier:doctor slash command used to run, each of which
   # surfaced a different Claude Code permission gate. With this binary
