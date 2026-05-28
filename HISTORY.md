@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M7.1.F30 — `atelier-doctor --fix` auto-executes runnable fixes — 2026-05-28
-**PR:** _pending_
+**PR:** [#104](https://github.com/AkaLab-Tech/atelier/pull/104)
 
 Discovered during M7.1 dogfood-5 immediately after M7.1.F29 (PR [#103](https://github.com/AkaLab-Tech/atelier/pull/103)) merged. Operator ran `atelier-doctor` to verify everything was working post-update and saw the expected drift report:
 
