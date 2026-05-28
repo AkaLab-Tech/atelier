@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M7.1.F31 — allow atelier's own skills + slash commands in `settings.template.json` — 2026-05-28
-**PR:** _pending_
+**PR:** [#105](https://github.com/AkaLab-Tech/atelier/pull/105)
 
 Discovered during M7.1 dogfood-5 immediately after M7.1.F30 (PR [#104](https://github.com/AkaLab-Tech/atelier/pull/104)) merged. Operator typed *"Dime el estado de las tareas"* in a Claude Code session inside the `storefront` project. Claude Code resolved that to the `/atelier:status` slash command and prompted the operator for authorisation:
 
