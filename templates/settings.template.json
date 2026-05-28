@@ -142,6 +142,7 @@
       "Bash(git checkout -b *)",
       "Bash(git switch*)",
       "Bash(git worktree*)",
+      "Bash(git wt*)",
       "Bash(git stash*)",
 
       "Bash(git push origin task/*)",
