@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M7.1.F34 — `atelier --help` discoverability + install.sh first-steps mentions new helpers — 2026-05-28
-**PR:** _pending_
+**PR:** [#108](https://github.com/AkaLab-Tech/atelier/pull/108)
 
 Discovered during M7.1 dogfood-5 immediately after M7.1.F33 (PR [#107](https://github.com/AkaLab-Tech/atelier/pull/107)) merged. Operator's observation: *"cuando termina la instalación muestra ciertas ayudas pero no muestra las nuevas opciones. Además me gustaría un `atelier --help` que muestre todos los comandos."*
 
