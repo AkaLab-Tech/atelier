@@ -148,6 +148,34 @@ Entry point: the `/next-task` slash command picks the highest-priority
 unblocked item from the project's `ROADMAP.md` and routes it through this
 chain.
 
+## Invoking `claude` from atelier scripts (M7.1.F29)
+
+Atelier maintains a config root **separate** from the operator's personal
+Claude Code config: `$ATELIER_CONFIG_DIR` (default `~/.claude-work/`) vs.
+the personal `~/.claude/`. This separation exists so atelier's autonomous-
+mode rules and installed plugins don't conflict with the operator's
+personal settings.
+
+**Every `claude` invocation from an atelier script must prefix
+`CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"`**, e.g.:
+
+```bash
+CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin list --json
+CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin install <id>
+CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin update <id>
+CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin marketplace update <name>
+```
+
+Without the prefix, `claude` reads/writes the operator's personal config
+root, so atelier-managed plugins appear "not installed" and updates land
+in the wrong cache. The `atelier()` shell function (installed by
+`install.sh` into the shellrc hook) already sets the env var for
+interactive sessions; the issue only applies to scripts that invoke
+`claude` directly as a subprocess.
+
+The same rule applies to suggestions the doctor / setup-project / similar
+scripts surface to the operator as copy-paste commands.
+
 ## Keeping atelier up to date (M6.1)
 
 Atelier ships as a Claude Code plugin **plus** a host-OS layer (the

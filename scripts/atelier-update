@@ -339,14 +339,23 @@ else
   # 2) Trigger `claude plugin update` so Claude Code's plugin cache lands
   #    on the new version. Open sessions keep loading the old version
   #    until they restart — surface this in the final report.
+  #
+  # M7.1.F29: prefix CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR. Without it,
+  # `claude plugin update` operates on the operator's personal Claude
+  # config root (~/.claude/) — not the atelier-managed root
+  # (~/.claude-work/) where Phase C.2 of install.sh installed the
+  # plugins. The pre-F29 calls returned 0 (no plugin "atelier" in the
+  # default config to update → fast no-op) so the helper claimed
+  # success, but Claude Code sessions kept loading the stale version
+  # because the atelier cache was untouched.
   if command -v claude >/dev/null 2>&1; then
     log "refreshing Claude Code plugin cache"
-    if claude plugin update atelier@akalab-tech 2>/dev/null; then
+    if CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin update atelier@akalab-tech 2>/dev/null; then
       sublog "claude plugin update atelier@akalab-tech: OK"
     else
       warn "claude plugin update atelier@akalab-tech failed (continuing)"
     fi
-    if claude plugin update claude-roadmap-tools@akalab-tech 2>/dev/null; then
+    if CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin update claude-roadmap-tools@akalab-tech 2>/dev/null; then
       sublog "claude plugin update claude-roadmap-tools@akalab-tech: OK"
     else
       warn "claude plugin update claude-roadmap-tools@akalab-tech failed (continuing)"
