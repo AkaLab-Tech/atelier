@@ -191,6 +191,15 @@ Both have to be refreshed when upstream releases a new version:
   permission-diff prompt resolves through Claude Code's I/O. Use this
   whenever the upstream release touches `settings.template.json` — the
   helper will show you what changed and ask before applying.
+- `atelier-doctor --fix` (M7.1.F30): after the standard health check
+  report, auto-execute the runnable fix commands the doctor would
+  otherwise have asked you to copy-paste (typically the
+  `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR claude plugin update ...`
+  calls when the plugin is out of date). Manual fixes — paths,
+  re-run-install.sh instructions, hand-edit suggestions — still print
+  as text for the operator to act on. Useful when you trust the
+  doctor's diagnosis and don't want to re-paste each command.
+  Available also as `/atelier:doctor --fix` from inside Claude Code.
 
 When `settings.template.json` changes, the prompt shows:
 

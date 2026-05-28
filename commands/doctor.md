@@ -1,5 +1,6 @@
 ---
-description: Health check for atelier — detects drift against upstream for `atelier`, `claude-roadmap-tools`, and `git-wt`, plus auxiliary host checks (legacy hooks, shellrc, .npmrc, Chrome, docker compose, `$ATELIER_CONFIG_DIR`, git-identity.conf). Reports findings and prints the exact commands the operator must run; never applies updates automatically.
+description: Health check for atelier — detects drift against upstream for `atelier`, `claude-roadmap-tools`, and `git-wt`, plus auxiliary host checks (legacy hooks, shellrc, .npmrc, Chrome, docker compose, `$ATELIER_CONFIG_DIR`, git-identity.conf). Reports findings. With `--fix`, auto-applies the runnable fixes (M7.1.F30); manual fixes still print as instructions.
+argument-hint: "[--fix]"
 allowed-tools: Bash(atelier-doctor:*)
 ---
 
@@ -7,13 +8,14 @@ You are running the `/atelier:doctor` health check.
 
 ## What to do
 
-Run the `atelier-doctor` bash binary and pass its stdout to the operator verbatim. That's the entire job — the binary contains all check logic and produces the final formatted report.
+If `$ARGUMENTS` contains `--fix`, run the binary with `--fix`. Otherwise run it bare. Pass its stdout to the operator verbatim either way — the binary contains all check logic and produces the final formatted report.
 
 ```bash
-atelier-doctor
+atelier-doctor          # checks only
+atelier-doctor --fix    # checks + auto-apply runnable fixes (M7.1.F30)
 ```
 
-Then output whatever the binary printed, unchanged. The report already has its own structure (`atelier /doctor — health check` header, three sections, optional fix block). Do **not** rewrap, summarize, or commentate — the operator wants the raw report.
+Then output whatever the binary printed, unchanged. The report already has its own structure (`atelier /doctor — health check` header, three sections, optional fix block, and — under `--fix` — an `Applying N runnable fix(es)` section followed by a per-fix `✓` / `✗` summary). Do **not** rewrap, summarize, or commentate — the operator wants the raw report.
 
 ## Stop rule (M7.1.F25)
 

@@ -8,6 +8,77 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F30 — `atelier-doctor --fix` auto-executes runnable fixes — 2026-05-28
+**PR:** _pending_
+
+Discovered during M7.1 dogfood-5 immediately after M7.1.F29 (PR [#103](https://github.com/AkaLab-Tech/atelier/pull/103)) merged. Operator ran `atelier-doctor` to verify everything was working post-update and saw the expected drift report:
+
+```
+✗ atelier@akalab-tech 0.6.3 → 0.6.4
+
+To apply pending fixes, run:
+    CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR claude plugin marketplace update akalab-tech
+    CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR claude plugin update atelier@akalab-tec
+```
+
+Operator's response: *"No quiero tener que correr todo eso para aplicar los fixes."* (paraphrased: the copy-paste fix is friction the operator shouldn't have to do for a mechanical update.) Asked for `atelier-fix` as a separate command — or, better, for the fix to apply automatically.
+
+Trade-off considered:
+
+- **Auto-fix by default** (operator's first preference): violates the doctor's "read-only / never modify" contract. If `claude plugin update` fails partway through (auth, network, marketplace cache stale), the doctor leaves the operator in a worse state than they started. CI / script use cases also break (they expect read-only).
+- **Separate `atelier-fix` command**: more surface to maintain, duplicates the doctor's check logic to decide what to fix.
+- **`atelier-doctor --fix` flag** (chosen): single binary, opt-in via flag, doctor stays read-only by default. Composable with non-interactive flows (`atelier-doctor --fix` from a script works; bare `atelier-doctor` for diagnostics). Discovery is solved by changing the footer: when there are runnable fixes pending and `--fix` wasn't passed, the footer now ends with `Tip: run \`atelier-doctor --fix\` to auto-execute the N runnable fix(es).` instead of forcing the operator to copy-paste each command.
+
+**Delivered:**
+
+- **`scripts/atelier-doctor` — two-flavour `push_fix` API.** The single `push_fix` function is split into:
+  - `push_fix_auto <cmd>` for runnable shell commands the doctor can execute under `--fix`. Stores the command in both `FIX_BLOCKS` (display) and `FIX_AUTO_COMMANDS` (execution).
+  - `push_fix_manual <txt>` for instructions only humans should act on (paths, "re-run install.sh", "hand-edit ~/.claude/settings.json"). Only goes to `FIX_BLOCKS`. Never executed by `--fix`.
+  Migration of all 21 existing call sites: the 3 plugin-update fixes from `check_plugin_drift` are `push_fix_auto`; the 19 remaining (install.sh re-runs, comments, manual edits, npm/playwright install commands the operator needs to vet) are `push_fix_manual`.
+- **`scripts/atelier-doctor` — new `--fix` flag and execution loop.** Arg parsing moved to the top of the script (legacy `${1:-} --help` case at bottom removed). When `--fix` is passed and `FIX_AUTO_COMMANDS` is non-empty, the doctor prints `Applying N runnable fix(es)`, executes each via `eval` (so the literal `$ATELIER_CONFIG_DIR` in the stored command expands at execution time), and reports `✓ OK` or `✗ FAIL (rc=N)` per fix with the failing command's output indented under the failure. Manual fixes still print as text after the auto-fix section. Final summary line tallies `applied OK / failed / need manual action`.
+- **`scripts/atelier-doctor` — footer change.** When `--fix` is not passed and at least one runnable fix exists, the footer ends with `Tip: run \`atelier-doctor --fix\` to auto-execute the N runnable fix(es).` plus an optional second line noting how many remaining fixes still need manual attention.
+- **`commands/doctor.md` — `argument-hint: "[--fix]"` + updated description.** The slash command now passes `--fix` through to the binary if `$ARGUMENTS` contains it. Frontmatter `description` updated to mention the new behaviour. The "Stop rule" (M7.1.F25) and the verbatim-pass-through contract are unchanged — the binary's output remains the entire job.
+- **`operator-rules.md` — new bullet** in the "Keeping atelier up to date (M6.1)" section documenting `atelier-doctor --fix` alongside `atelier-update` and `/atelier:update`. Same shape as the other entries.
+
+**Decisions captured:**
+
+- **`eval` to execute, not `bash -c` or array-splat.** The stored fix command can contain pipes / redirections / quoted args (today only flat commands, but the API leaves room). `eval` is the only mechanism that re-interprets the stored string the way the operator would if they copy-pasted it themselves. The eval surface is bounded: the strings come exclusively from this script's own `push_fix_auto` calls, never from user input.
+- **Two functions instead of `push_fix <flag>`.** Considered a single `push_fix <auto|manual> <text>` API. Rejected because call sites read more cleanly as `push_fix_auto "..."` / `push_fix_manual "..."` than `push_fix auto "..."` / `push_fix manual "..."` — the flavour is part of the function identity, not a parameter.
+- **Manual fixes interleaved with auto fixes in `FIX_BLOCKS` for display, but parallel separation for execution.** The display preserves the order the checks ran (which is the order the operator reads the report); the execution loop iterates `FIX_AUTO_COMMANDS` separately so manual fixes don't get accidentally eval'd. The duplication of auto fixes in both arrays is the simplest correct model.
+- **Don't auto-re-check after `--fix`.** Considered: after applying fixes, re-run the affected check functions to confirm they pass. Rejected for v1 because the re-run would need to be selective (re-checking the legacy-hooks check after fixing a plugin drift is wasted work), and the operator running `atelier-doctor` again post-`--fix` is a one-command verification that scales correctly.
+- **Footer's `--fix` tip only shows when runnable fixes exist.** A doctor run with only manual fixes pending shouldn't suggest `--fix` (it wouldn't do anything). Same logic for the "remaining N need manual action" sub-line.
+
+**Plugin scope:** mixed.
+- Host-OS-layer (the actual feature): `scripts/atelier-doctor`.
+- Plugin-shipped: `commands/doctor.md`, `operator-rules.md`. Plugin patch bump **0.6.4 → 0.6.5** per PLAN.md §14.2 (plugin-scope additive change in the slash command + docs; the helper binary's behaviour is delivered via the host-OS layer that operators update via `atelier-update`).
+
+**Verified locally:**
+
+- `bash -n` + `shellcheck` clean on the modified script (with two `shellcheck disable=SC2016` annotations on the two `printf` lines that contain backticks-as-display-formatting in their template — backticks are deliberate, not command substitutions).
+- `atelier-doctor --help` shows the new help section.
+- `atelier-doctor --bogus` exits 2 with `unknown arg: --bogus` clearly surfaced.
+- Pre-existing SC2006 (legacy backtick in an unrelated comment, line 457) untouched — same as it was after F29.
+
+**Operator-visible behaviour change:**
+
+After merging + `atelier-update`, the doctor report no longer asks the operator to copy-paste long `CLAUDE_CONFIG_DIR=...` commands for routine plugin drift. The new flow:
+
+```
+$ atelier-doctor
+(report shows ✗ on atelier@akalab-tech)
+...
+Tip: run `atelier-doctor --fix` to auto-execute the 2 runnable fix(es).
+
+$ atelier-doctor --fix
+(report + Applying 2 runnable fix(es) section + ✓ OK per fix)
+Summary: 2 fix(es) applied OK. Re-run `atelier-doctor` to verify.
+
+$ atelier-doctor
+(clean report, all ✓)
+```
+
+**Follow-up paths:** none expected for the core feature. A future M-task could add an `--fix --yes` to auto-confirm any prompts inside fix commands (e.g., if a future fix calls `apt install` or similar), but today's runnable fixes are all `claude plugin ...` which don't prompt.
+
 ### M7.1.F29 — `atelier-doctor` + `atelier-update` must prefix `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"` on every `claude` subprocess — 2026-05-28
 **PR:** [#103](https://github.com/AkaLab-Tech/atelier/pull/103)
 
