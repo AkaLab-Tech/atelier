@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M7.1.F28 — remove invalid `Bash(:(){ :|:&};:)` fork-bomb entry from `permissions.deny` — 2026-05-28
-**PR:** _pending_
+**PR:** [#102](https://github.com/AkaLab-Tech/atelier/pull/102)
 
 Discovered during M7.1 dogfood-5 (operator's first session on `0.6.2` after a clean reinstall). Claude Code's `/atelier:setup-project`-instantiated `.claude/settings.json` triggered a Settings Warning at session start:
 
