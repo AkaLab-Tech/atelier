@@ -1278,7 +1278,7 @@ phase_c_1_shellrc_hooks() {
   # below. Existing operators' rc files carry their version inline; on
   # install.sh re-run, an older or missing version triggers a strip +
   # re-inject so the upgrade propagates automatically.
-  local current_version=2
+  local current_version=3
 
   # Heredoc is single-quoted: `$(fnm env --use-on-cd)`, `$*`, and the alias
   # body are written as literal text, expanded later when the shell sources

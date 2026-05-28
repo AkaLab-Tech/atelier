@@ -8,8 +8,48 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M7.1.F35 — Documentation sweep: align README + operator-guide + troubleshooting + dogfood-guide + ROADMAP + PLAN with the v0.5 → v0.7.1 helper surface — 2026-05-28
+### M7.1.F36 — `install.sh` shellrc-block `current_version` comparator out of sync with the heredoc — 2026-05-28
 **PR:** _pending_
+
+Discovered immediately after M7.1.F35 (PR [#109](https://github.com/AkaLab-Tech/atelier/pull/109)) merged. Operator's report: *"`atelier --help` me muestra la ayuda de `claude`"*. Re-running `install.sh` on a host that already had the v2 hook block did not refresh the block to v3, even though F34's heredoc carries `# atelier-hooks-version: 3` and `phase_c_1_atelier_help_file` ran and wrote `$ATELIER_CONFIG_DIR/atelier-help.txt` correctly.
+
+**Root cause:**
+
+[install.sh:1281](install.sh) declared `local current_version=2` while the heredoc on line 1289 carries `# atelier-hooks-version: 3`. F7c's re-inject logic compares the version it reads from the operator's existing block against `current_version` to decide whether to strip + re-inject. With both the existing block and `current_version` at `2`, the comparator concluded "already present (v2)" and skipped the refresh — leaving the pre-F34 `atelier()` function body in place, which is the body that forwards `--help` straight to `claude`. F34 bumped the heredoc but missed the comparator.
+
+How it stayed hidden through F34's pre-merge checks:
+- The F34 PR validation re-ran `install.sh` on a host that had never had the hook block (`existing=0`, `current=2` — refresh triggered as a side effect of the no-block branch, which inserts the heredoc verbatim). The inserted block carried `v3` from the heredoc, so post-install `grep atelier-hooks-version ~/.zshrc` reported `3` — looking like F34 worked.
+- The bug only surfaces when re-running `install.sh` on a host that already had a v2 block — exactly the scenario for every existing operator upgrading through F34.
+
+**Delivered:**
+
+- **`install.sh:1281`** — `local current_version=2` → `local current_version=3`. Single-line fix. The F7c invariant the comments above the variable state is restored: bump the heredoc and the comparator together so existing operators get the refresh on their next `install.sh` run.
+
+**Decisions captured:**
+
+- **Comparator and heredoc must move together.** The block comment above `current_version` documents this expectation ("when you bump the heredoc, bump this too"). F34 followed it for the heredoc but not for the comparator. Adding a `grep -E "^# atelier-hooks-version:" install.sh` self-test inside `install.sh` itself (compare the heredoc number against the `local current_version` literal at parse time) would prevent the same drift in the future — captured as a follow-up under "Follow-up paths" rather than included here to keep the F36 patch minimal.
+- **Patch-only fix.** No re-write of the F7c logic, no defensive "always refresh when --force is passed" flag added — those would expand scope. The one-line fix restores the design F34 already had on paper.
+- **No HISTORY rewrite of F34.** F34's HISTORY entry is accurate — it describes what F34 *delivered*; the post-merge bug is a separate F36 entry, not a rewrite of F34. Keeps the historical record clean.
+
+**Plugin scope:** host-OS-layer change to `install.sh`. No plugin files touched. Plugin patch bump **0.7.2 → 0.7.3** per PLAN.md §14.2 — bug fix only. Mechanism: existing operators receive F36 by re-running `install.sh` (the F7c versioned hook detection now correctly fires because `existing=2 < current=3`).
+
+**Verified locally:**
+
+- `bash -n install.sh` syntax-clean.
+- `grep -nE "current_version=|atelier-hooks-version:" install.sh` shows comparator `3` matching heredoc `3` — no other version literals to align.
+- Manual walk-through of the F7c logic with `existing_version=2`, `current_version=3` → enters the `existing < current` branch → strip + re-inject → operator gets the new `atelier()` body.
+
+**Operator-visible:**
+
+After this fix lands and `install.sh` is re-run, opening a new shell and running `atelier --help` prints the cheatsheet from `$ATELIER_CONFIG_DIR/atelier-help.txt` (the F34-intended behavior). `grep atelier-hooks-version ~/.zshrc` reports `3` post-refresh. No project files or `.claude/` folders touched.
+
+**Follow-up paths:**
+
+- **`install.sh` self-test for heredoc/comparator drift.** A startup check inside `install.sh` (or a `scripts/atelier-doctor` check) that extracts both numbers and refuses to proceed if they disagree. Trivial — one `grep` + `awk` + comparison. Captured as a candidate `M7.1.F38` if the same drift recurs.
+- **`atelier-doctor --fix` extension** that re-runs the shellrc inject path without requiring the operator to find the atelier checkout (currently `atelier-doctor --fix` doesn't touch the shellrc at all because F30's scope was templates + symlinks + marketplace). Trade-off: `atelier-doctor` would need to know where the install.sh lives.
+
+### M7.1.F35 — Documentation sweep: align README + operator-guide + troubleshooting + dogfood-guide + ROADMAP + PLAN with the v0.5 → v0.7.1 helper surface — 2026-05-28
+**PR:** [#109](https://github.com/AkaLab-Tech/atelier/pull/109)
 
 Captured during the post-v0.7.1 audit. After M6.1 + M7.1.F26 → F34 shipped a wave of new helpers and slash commands (`atelier-update`, `atelier-list-projects`, `atelier-remove-project`, `atelier-doctor --fix`, `atelier-permission-diff`, `atelier-pr-size-check`, `atelier --help`, `/atelier:update`, `/atelier:slice-task`, `/atelier:list-projects`, `/atelier:remove-project`), the operator-facing docs had not caught up. Operator's prompt: *"la documentación del proyecto está actualizada con los últimos cambios?"* — audit confirmed no, in a new PR.
 
