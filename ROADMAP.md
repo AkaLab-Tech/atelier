@@ -161,10 +161,6 @@ Implementation of Coolify VPS integration covering deploy, status/logs, env vars
 
 **Trigger to revisit:** after M4.22 lands AND the team explicitly decides to promote deployment work into v1 (or accepts this stays v2 with the spike having unblocked the path).
 
-### M6.1 — `update.sh`
-
-Incremental updater per [PLAN.md §9](PLAN.md): `git pull` → diff changed files → apply deltas → if `settings.template.json` changed, prompt the operator with a human-readable permissions diff (added / removed / impact) before applying.
-
 ### M6.3 — Product owner guide (ROADMAP.md format)
 
 How to write [PLAN.md §5](PLAN.md)-shaped roadmaps: priorities, types, estimates, `blocked_by`, acceptance criteria. With examples.

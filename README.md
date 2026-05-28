@@ -10,6 +10,8 @@ Read the **[Operator Guide](docs/operator-guide.md)** — a Jr-friendly walkthro
 
 Once atelier is installed, the typical loop is five steps. This section is the quick reference; for the long-form rationale, see the [Operator Guide](docs/operator-guide.md).
 
+> Run `atelier --help` from any shell to list every `atelier-*` helper (`atelier-update`, `atelier-list-projects`, `atelier-remove-project`, `atelier-doctor`, `atelier-measure-merge-rate`, `atelier-uninstall`). Inside a Claude session, the same surface is reachable as slash commands under `/atelier:*`.
+
 ### 1. Set up a project (one-time per project)
 
 ```bash
@@ -18,6 +20,17 @@ atelier /atelier:setup-project .
 ```
 
 Idempotent — safe to re-run. Creates `.claude/`, `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, project `.npmrc` (Node projects), and `.gitignore` entries. Registers the project in `$ATELIER_CONFIG_DIR/projects.json` so `task` can find it from any subdirectory.
+
+To inspect or undo project setup:
+
+```bash
+atelier-list-projects                  # list every registered project + status
+atelier-list-projects --json           # same, machine-readable
+atelier-remove-project .               # deregister current project (keep files)
+atelier-remove-project . --purge       # also strip atelier-added .gitignore / .npmrc entries
+```
+
+The same commands are available as `/atelier:list-projects` and `/atelier:remove-project` inside a Claude session.
 
 ### 2. Write a task in the project's `ROADMAP.md`
 
@@ -88,7 +101,9 @@ A PR is "autonomous" iff (a) author == `--author`, (b) ≥1 approval from `--rev
 
 ### When something doesn't work
 
-First step: `atelier /atelier:doctor`. Each `✗` line lists the fix command.
+First step: `atelier-doctor` (or `/atelier:doctor` inside a Claude session). Each `✗` line lists the fix command; pass `--fix` to apply the auto-fixable ones (`atelier-doctor --fix` or `/atelier:doctor --fix`).
+
+If `atelier-doctor` reports drift between the installed version and the latest release, run `atelier-update` (or `/atelier:update`) — it pulls latest, refreshes `$ATELIER_CONFIG_DIR/templates/`, and re-runs the plugin update under the atelier config root.
 
 Symptom-indexed common problems: [docs/troubleshooting.md](docs/troubleshooting.md). Covers the M7.1 dogfood findings + every operator-facing failure mode derivable from the design.
 
@@ -96,6 +111,7 @@ Symptom-indexed common problems: [docs/troubleshooting.md](docs/troubleshooting.
 
 - **Pause a session:** Ctrl+C in the Claude session. The task stays in `IN_PROGRESS.md`. Run `task` again later to resume.
 - **Abandon a blocked task:** close the GitHub `blocked` issue with `wontfix`, manually move the entry from `IN_PROGRESS.md` to `HISTORY.md` under an "abandoned" heading. Future work: `/abandon-task` slash command (ROADMAP M4.5).
+- **Remove atelier from one project:** `atelier-remove-project <path>` (deregister only) or `atelier-remove-project <path> --purge` (also strip the `.gitignore` / `.npmrc` atelier-additions). Files under `.claude/`, `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md` are preserved.
 - **Reset everything (nuclear):** `atelier-uninstall --purge` + `rm -rf ~/atelier` + `git clone` + `./install.sh`. See the [troubleshooting doc](docs/troubleshooting.md#reset-everything-nuclear-option). Project files and `.claude/` folders inside projects are not touched.
 
 ## Already have Claude Code + GitHub set up?
@@ -109,11 +125,12 @@ Symptom-indexed common problems: [docs/troubleshooting.md](docs/troubleshooting.
 
 The same `marketplace add` step exposes the other AkaLab-Tech plugins (e.g. install [`claude-roadmap-tools`](https://github.com/AkaLab-Tech/claude-roadmap-tools) with `/plugin install claude-roadmap-tools@akalab-tech`).
 
-For the full setup (recommended), run [`install.sh`](install.sh) per the [Operator Guide](docs/operator-guide.md). Subsequent atelier updates use the plugin manager: `/plugin marketplace update akalab-tech` then `/plugin update atelier@akalab-tech`.
+For the full setup (recommended), run [`install.sh`](install.sh) per the [Operator Guide](docs/operator-guide.md). Subsequent atelier updates use `atelier-update` (or `/atelier:update` from inside a Claude session) — it pulls the latest atelier release, refreshes `$ATELIER_CONFIG_DIR/templates/`, and runs `claude plugin update` for you. See [operator-rules.md → Keeping atelier up to date](operator-rules.md).
 
 ## Other docs
 
 - [docs/troubleshooting.md](docs/troubleshooting.md) — symptom-indexed guide for when something doesn't work.
+- [operator-rules.md](operator-rules.md) — invariants every atelier session honors (update flow, epic + sub-tasks, oversize handling, config-root semantics).
 - [docs/measurements/autonomous-merge-rate.md](docs/measurements/autonomous-merge-rate.md) — methodology for the Phase 7 ship-gate metric.
 - [PLAN.md](PLAN.md) — full design source of truth (architecture, milestones, decisions).
 - [docs/dogfood-guide.md](docs/dogfood-guide.md) — integration-test guide for end-to-end validation on a real machine.

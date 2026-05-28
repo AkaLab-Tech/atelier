@@ -2,8 +2,8 @@
 
 **Goal**: validate atelier end-to-end on your real machine + a real project, capturing friction at every step. Three stages: install → setup-project → task cycle. Each test case lists command + expected output + failure mode + what to capture.
 
-**Atelier version**: v0.4.0 (post-#67 merge).
-**Date**: 2026-05-23.
+**Atelier version**: v0.4.0 (post-#67 merge); test cases also cover the v0.5+ helpers (`atelier-update`, `atelier-list-projects`, `atelier-remove-project`, `atelier-doctor --fix`, `atelier --help`) introduced through M6.1 + M7.1.F32/F33/F34.
+**Date**: 2026-05-23 (initial); revised 2026-05-28 for the M7.1.F35 documentation sweep.
 **Expected wall time**: 2-3 hours, plus iteration on any friction found.
 
 ---
@@ -138,9 +138,25 @@ ls -la "$ATELIER_CONFIG_DIR" | head -10
 ls "$ATELIER_CONFIG_DIR/templates/" | head -5
 ls "$ATELIER_CONFIG_DIR/gh/" 2>/dev/null
 ls "$ATELIER_CONFIG_DIR/plugins/" 2>/dev/null | head -5
+test -f "$ATELIER_CONFIG_DIR/atelier-help.txt" && echo "  ✓ atelier-help.txt written (F34)" || echo "  ✗ atelier-help.txt missing — run atelier-update"
 ```
 
-**Expected**: `templates/` with `settings.template.json`, `project-claude.md.template`, `project-claude-root.md.template`. `gh/` with `author/` + `reviewer/` subdirs. `plugins/` with installed atelier + claude-roadmap-tools.
+**Expected**: `templates/` with `settings.template.json`, `project-claude.md.template`, `project-claude-root.md.template`. `gh/` with `author/` + `reviewer/` subdirs. `plugins/` with installed atelier + claude-roadmap-tools. `atelier-help.txt` present (added by `phase_c_1_atelier_help_file`, M7.1.F34).
+
+### TC-1.6 — Verify the v0.5+ helper surface
+
+```bash
+echo "=== atelier-* helpers on PATH ==="
+for cmd in atelier-setup-project atelier-uninstall atelier-doctor atelier-task-resolve \
+          atelier-measure-merge-rate atelier-update atelier-list-projects \
+          atelier-remove-project atelier-permission-diff atelier-pr-size-check; do
+  command -v "$cmd" >/dev/null 2>&1 && echo "  ✓ $cmd" || echo "  ✗ $cmd missing"
+done
+echo ""
+atelier --help | head -20
+```
+
+**Expected**: every helper present. `atelier --help` prints the cheatsheet from `$ATELIER_CONFIG_DIR/atelier-help.txt`. If any helper is missing, `atelier-doctor --fix` re-creates the `~/.local/bin/atelier-*` symlinks.
 
 ---
 
@@ -187,6 +203,22 @@ Host checks
 - Plugin version mismatch (drift). Note current + expected.
 - Any `✗` line. The `/doctor` output gives the exact fix command — try it, capture if it works.
 - Any `–` (skipped) that you DIDN'T expect to be skipped.
+
+### TC-2.2 — Exercise `--fix` and `atelier-update`
+
+Outside the Claude session (from a regular shell):
+
+```bash
+atelier-doctor --fix       # apply auto-repair for templates/symlink/shellrc/marketplace
+atelier-doctor             # confirm a clean run
+atelier-update             # no-op the first time; capture the version delta line
+```
+
+**Expected**:
+- `atelier-doctor --fix` reports `n auto-fixed` (or `0` if there's nothing to repair) and no longer has `✗` lines for the auto-fixable checks (templates symlink, shellrc block, marketplace registration, helper symlinks under `~/.local/bin/`).
+- `atelier-update` reports the installed version and the latest release tag side-by-side. On a fresh install they match — capture the exact line so the M7.1 entry has a baseline.
+
+If `atelier-update` reports `already up to date` but `atelier-doctor` still flags drift, re-run with `atelier-update --force` (this is the M7.1.F31 dogfood finding — see [troubleshooting → atelier-update says "already up to date"](troubleshooting.md#atelier-update-says-already-up-to-date-but-the-doctor-still-warns-about-a-stale-version)).
 
 ---
 
@@ -341,10 +373,17 @@ For each friction item that requires a code change, add a new ROADMAP entry (lik
 If atelier is going to stay installed:
 
 ```bash
-# Already done. Continue using.
+atelier-list-projects          # snapshot which projects you registered during the dogfood
 ```
 
-If rolling back for now (preserving chat history):
+If you want to retire only the dogfood project (keep atelier active for others):
+
+```bash
+atelier-remove-project <dogfood-project-path>           # deregister; keep files
+atelier-remove-project <dogfood-project-path> --purge   # also strip atelier's .gitignore + .npmrc additions
+```
+
+If rolling back atelier entirely for now (preserving chat history):
 
 ```bash
 atelier-uninstall              # default mode: removes shellrc + symlinks + plugins; preserves $ATELIER_CONFIG_DIR
@@ -373,7 +412,8 @@ This section catalogs the exact behaviors to validate and what to record. Use it
 | INS-5 | Phase B: gh dual-id setup | 2 separate `gh auth login` flows | both identities recorded |
 | INS-6 | Phase B: identity-equality warning | warning if both same user | did you see it? |
 | INS-7 | Phase C.1: shellrc block injected | sentinel comments + `task()` function | sentinel found in `~/.zshrc` |
-| INS-8 | Phase C.1: `~/.local/bin/*` symlinks | 2 symlinks (setup-project + uninstall) | both present |
+| INS-8 | Phase C.1: `~/.local/bin/*` symlinks | symlinks for every `scripts/atelier-*` helper (`setup-project`, `uninstall`, `doctor`, `task-resolve`, `measure-merge-rate`, `update`, `list-projects`, `remove-project`, `permission-diff`, `pr-size-check`) | full list present |
+| INS-8a | Phase C.1: `atelier-help.txt` (M7.1.F34) | `$ATELIER_CONFIG_DIR/atelier-help.txt` written | file present + `atelier --help` prints it |
 | INS-9 | Phase C.1: `$ATELIER_CONFIG_DIR/templates/` instantiated | settings template + project-claude template + project-claude-root template | all 3 present, `<atelier-config-dir>` substituted |
 | INS-10 | Phase C.2: marketplace + plugins installed | atelier@akalab-tech + claude-roadmap-tools@akalab-tech | both present in `/plugin list` |
 

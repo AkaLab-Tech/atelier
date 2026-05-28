@@ -83,10 +83,12 @@ source ~/.zshrc
 To check the install worked:
 
 ```bash
-atelier /atelier:doctor
+atelier-doctor
 ```
 
-This runs atelier's health check. You should see a list of items each marked `✓`. If you see a `✗` (red X), the line tells you what to fix.
+This runs atelier's health check. You should see a list of items each marked `✓`. If you see a `✗` (red X), the line tells you what to fix. Many checks auto-repair if you re-run as `atelier-doctor --fix`.
+
+> Inside a Claude session the same check is `/atelier:doctor` (or `/atelier:doctor --fix`). To see every helper that ships with atelier, run `atelier --help`.
 
 ---
 
@@ -111,7 +113,9 @@ This is a one-time configuration step per project. atelier will:
 - Add a few entries to `.gitignore` so atelier's working files don't get saved to your project.
 - If the project uses Node.js, add an `.npmrc` file with safety settings for installing packages.
 
-You can run `atelier /atelier:setup-project .` on as many projects as you like — atelier will remember each one.
+You can run `atelier /atelier:setup-project .` on as many projects as you like — atelier will remember each one. Run `atelier-list-projects` from any shell to see them all.
+
+If you ever want to retire a project from atelier (no more `task` will run on it), `cd` into the project and run `atelier-remove-project .` — it deregisters the project but keeps your files. Add `--purge` to also strip the few `.gitignore` and `.npmrc` entries atelier added during setup. Both flows have a Claude-session equivalent under `/atelier:remove-project`.
 
 ---
 
@@ -195,15 +199,36 @@ If atelier gets stuck (e.g. a test keeps failing), it stops and creates an issue
 
 ---
 
+## Keep atelier up to date
+
+atelier ships fixes and new helpers regularly. To pull the latest release without touching `install.sh`:
+
+```bash
+atelier-update
+```
+
+What it does:
+
+1. Pulls the latest tag from the atelier git clone (`~/atelier` by default).
+2. Refreshes the templates under `$ATELIER_CONFIG_DIR/templates/` so new projects pick up the latest settings.
+3. Runs `claude plugin update atelier@akalab-tech` under atelier's config root.
+4. Reports the version delta and any new commands / agents / skills you now have.
+
+If you're inside a Claude session, `/atelier:update` does the same thing. After updating, run `atelier-doctor` to confirm everything lines up.
+
+`atelier-doctor` will warn you when there's a version mismatch between the installed plugin and the latest released tag. That warning is your nudge to run `atelier-update`.
+
+---
+
 ## If something goes wrong
 
 First stop: run the health check.
 
 ```bash
-atelier /atelier:doctor
+atelier-doctor
 ```
 
-Any `✗` line tells you what's broken and the command to fix it. Copy-paste the suggested command and re-run the doctor.
+Any `✗` line tells you what's broken and the command to fix it. For the common cases (missing `templates/` symlink, stale shellrc block, marketplace not registered), `atelier-doctor --fix` applies the auto-fixable repairs in one pass — re-run plain `atelier-doctor` afterward to confirm.
 
 If you're still stuck:
 
@@ -243,11 +268,18 @@ Quick lookup once you've used atelier a few times.
 |---|---|
 | `task` | Run the next task from the current project's `ROADMAP.md` |
 | `atelier` | Open a Claude session under atelier's configuration |
+| `atelier --help` | List every `atelier-*` helper installed on your machine |
 | `atelier /atelier:setup-project .` | Set up the current folder as an atelier project |
-| `atelier /atelier:doctor` | Run a health check |
+| `atelier-list-projects` | List every project registered with atelier (`--json` for machine-readable) |
+| `atelier-remove-project <path>` | Deregister a project (`--purge` also strips atelier's `.gitignore` / `.npmrc` additions) |
+| `atelier-doctor` | Run a health check |
+| `atelier-doctor --fix` | Apply the auto-fixable repairs (missing symlinks, stale shellrc block, marketplace not registered) |
+| `atelier-update` | Pull latest atelier release, refresh templates, update the Claude plugin |
 | `atelier-measure-merge-rate` | Measure the % of recent PRs that merged autonomously (see [methodology](measurements/autonomous-merge-rate.md)) |
 | `atelier-uninstall` | Remove atelier (preserves history) |
 | `atelier-uninstall --purge` | Remove atelier and wipe all settings |
+
+Each `atelier-*` helper also has a Claude-session equivalent under `/atelier:*` (`/atelier:update`, `/atelier:list-projects`, `/atelier:remove-project`, `/atelier:doctor`, etc.). Use whichever fits the moment — both go through the same scripts.
 
 **Files atelier creates in each project**:
 
@@ -259,5 +291,6 @@ Quick lookup once you've used atelier a few times.
 
 **Files atelier stores outside your projects**:
 
-- `~/.claude-work/` — atelier's own configuration, separate from your personal Claude config.
-- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, and `atelier-measure-merge-rate` commands.
+- `~/.claude-work/` — atelier's own configuration, separate from your personal Claude config. (This path is `$ATELIER_CONFIG_DIR`; helpers and slash commands always read/write here, never your personal `~/.claude/`.)
+- `~/.claude-work/atelier-help.txt` — the cheatsheet shown by `atelier --help` (written at install time, refreshed by `atelier-update`).
+- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, `atelier-list-projects`, `atelier-remove-project`, `atelier-update`, `atelier-permission-diff`, `atelier-pr-size-check`, and `atelier-measure-merge-rate` commands.

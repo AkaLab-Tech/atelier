@@ -8,6 +8,44 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F35 — Documentation sweep: align README + operator-guide + troubleshooting + dogfood-guide + ROADMAP + PLAN with the v0.5 → v0.7.1 helper surface — 2026-05-28
+**PR:** _pending_
+
+Captured during the post-v0.7.1 audit. After M6.1 + M7.1.F26 → F34 shipped a wave of new helpers and slash commands (`atelier-update`, `atelier-list-projects`, `atelier-remove-project`, `atelier-doctor --fix`, `atelier-permission-diff`, `atelier-pr-size-check`, `atelier --help`, `/atelier:update`, `/atelier:slice-task`, `/atelier:list-projects`, `/atelier:remove-project`), the operator-facing docs had not caught up. Operator's prompt: *"la documentación del proyecto está actualizada con los últimos cambios?"* — audit confirmed no, in a new PR.
+
+**Delivered (documentation only — no code, no plugin behavior change):**
+
+- **`README.md`**: replaced the obsolete `/plugin marketplace update akalab-tech` + `/plugin update atelier@akalab-tech` update path with `atelier-update` (the M6.1.a + M6.1.b implementation); surfaced `atelier --help` as the discoverability entry point with a one-line summary of every `atelier-*` helper + `/atelier:*` slash command; added an inverse-of-setup block under step 1 covering `atelier-list-projects` (+ `--json`) and `atelier-remove-project` (+ `--purge`); updated the "When something doesn't work" section to mention `atelier-doctor --fix`; added `atelier-remove-project` to the "Pause / abandon / reset" section as the per-project alternative to `atelier-uninstall`; added `operator-rules.md` to the "Other docs" list.
+- **`docs/operator-guide.md`**: replaced `atelier /atelier:doctor` with `atelier-doctor` (+ `--fix`) throughout while preserving the `/atelier:doctor` mention for the Claude-session case; added an inverse-setup block (list-projects, remove-project) under Step 4; added a new "Keep atelier up to date" section between "Step 6" and "If something goes wrong" describing the `atelier-update` flow (pull, refresh templates, run plugin update under atelier's config root) and how `atelier-doctor` flags version drift; expanded "If something goes wrong" with `atelier-doctor --fix`; extended the Reference table with `atelier --help`, `atelier-list-projects`, `atelier-remove-project`, `atelier-doctor --fix`, `atelier-update`; updated the "Files atelier stores outside your projects" list to include `atelier-help.txt` and every helper symlinked under `~/.local/bin/`.
+- **`docs/troubleshooting.md`**: updated the "Always first" doctor block to show `atelier-doctor` + `atelier-doctor --fix` (Claude-session forms still listed); added five symptom-indexed entries — `atelier --help` prints nothing (F34 not installed), `atelier-update` says "already up to date" but doctor flags drift (F31 — no-op `git pull` skipping the template refresh), `claude plugin install` fails with "marketplace not registered" (F30 — marketplace was removed), `atelier` warns about running inside another atelier session (F28 — fork-bomb guard), and `atelier-task-resolve` no-projects symptom now points the operator at `atelier-list-projects` first; updated the "Auto-merge skipped my PR" entry to reflect the AND-gate (`>200 lines AND >10 files` post-exemptions per `scripts/atelier-pr-size-check`) and surfaced `/atelier:slice-task` as the autonomous-decomposition path; expanded "When all else fails" with a step 2 `atelier-update` confirmation; expanded "Reset everything" with a "Less drastic: remove just one project" subsection.
+- **`docs/dogfood-guide.md`**: revised the header to call out v0.5+ helper coverage and the 2026-05-28 revision date; added a TC-1.5 line that checks `$ATELIER_CONFIG_DIR/atelier-help.txt` exists (F34); added TC-1.6 ("Verify the v0.5+ helper surface") that confirms each new `atelier-*` symlink is on `PATH` and `atelier --help` prints the cheatsheet; added TC-2.2 ("Exercise `--fix` and `atelier-update`") that walks the operator through `atelier-doctor --fix` + `atelier-update` baseline + the F31 force-refresh fallback; expanded TC-5.3 to recommend `atelier-list-projects` post-dogfood and surface `atelier-remove-project` as the per-project rollback (vs. full `atelier-uninstall`); updated the install-path catalog INS-8 to enumerate every helper symlink and added INS-8a for `atelier-help.txt`.
+- **`ROADMAP.md`**: removed the `M6.1 — update.sh` entry under Low Priority — it's now closed in HISTORY as M6.1.a + M6.1.b (PR #99 + #100).
+- **`PLAN.md`**: §9 retitled from `Update flow (\`update.sh\`)` to `Update flow (\`atelier-update\`)`; the steps now reference the actual implementation (`scripts/atelier-update`, `scripts/atelier-permission-diff`, `$ATELIER_CONFIG_DIR/atelier-help.txt`, `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin update`); §12 Phase 6 marks M6.1 + M6.2 + M6.4 ✅ with deliverable references; §12 Phase 7 marks M7.3 ✅ and tags M7.1 as in-progress with the F1–F35 stream in `HISTORY.md`.
+
+**Decisions captured:**
+
+- **No `update.sh` rename.** §9 keeps the historical title only in the section's prose (`Originally named \`update.sh\``) — the actual file shipped as `scripts/atelier-update` per the convention `atelier-*` (M6.1.a). Re-naming the §9 heading to match what shipped avoids documentation drift on every future reader.
+- **Keep `atelier /atelier:doctor` form alive in the operator guide.** Some operators are still inside a Claude session when something breaks; surfacing both `atelier-doctor` (shell) and `/atelier:doctor` (in-session) covers both modes without forcing a context switch.
+- **README depth limit.** The README is the front door, not the manual. It surfaces the new helpers in one line each and defers detail to `docs/operator-guide.md` + `docs/troubleshooting.md` + `operator-rules.md`. Avoided expanding the README into a third reference.
+- **No new symptoms invented.** Each new troubleshooting entry corresponds to a real F26 → F34 finding already captured in HISTORY — no speculative "could happen" entries. The dogfood-guide cross-links to the F31 troubleshooting entry rather than duplicating its content.
+
+**Plugin scope:** documentation only. No agent / skill / command / hook / script / template file touched. Plugin patch bump **0.7.1 → 0.7.2** per PLAN.md §14.2 — docs-only changes don't trigger a release cut on their own, but the bump keeps `plugin.json` aligned with the head-of-main convention so the next time `atelier-doctor` compares against `gh release list`, the lag is one tag rather than two.
+
+**Verified locally:**
+
+- `bash -n install.sh` syntax-clean (no `install.sh` changes — defensive re-check).
+- Every link added in `README.md` and `docs/operator-guide.md` resolves to an existing file/anchor in this worktree (including the `docs/troubleshooting.md#atelier-update-says-already-up-to-date-but-the-doctor-still-warns-about-a-stale-version` cross-link added in `docs/dogfood-guide.md` TC-2.2).
+- Line-count audit: `README.md` +21, `docs/operator-guide.md` +49, `docs/troubleshooting.md` +74 (largest growth — 5 new symptom entries + AND-gate rewrite + "Less drastic" subsection), `docs/dogfood-guide.md` +52, `ROADMAP.md` −4, `PLAN.md` net ≈ 0 (rewrite of §9 + §12 deliverable bullets). No section duplicated by accident.
+
+**Operator-visible:**
+
+After the merge, an operator reading the README front door for the first time sees `atelier-update` for keeping atelier current (not the obsolete plugin-manager invocation), and learns `atelier --help` is the entry point for the full helper surface. An operator hitting a symptom that was only documented in HISTORY before this PR (fork-bomb warning, no-op `atelier-update`, missing marketplace) now finds a symptom-indexed entry in `docs/troubleshooting.md`. The dogfood guide now reflects the v0.5 → v0.7.1 helper surface, so a fresh dogfood-6 run on a clean machine validates everything that ships today.
+
+**Follow-up paths:**
+
+- **`docs/measurements/autonomous-merge-rate.md`** — sample size still 0 in production (no autonomous-merge data yet). Not in F35 scope; refresh when M7.1 produces ≥10 merged PRs.
+- **`commands/*.md` cross-references.** Each slash command's `description:` frontmatter is the surface the operator sees in `claude` autocomplete. Audit pass deferred — F35 covers the operator-facing docs, not the slash-command frontmatter.
+
 ### M7.1.F34 — `atelier --help` discoverability + install.sh first-steps mentions new helpers — 2026-05-28
 **PR:** [#108](https://github.com/AkaLab-Tech/atelier/pull/108)
 
