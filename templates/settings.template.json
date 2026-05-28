@@ -14,7 +14,6 @@
       "Bash(find * -delete)",
       "Bash(find * -exec rm *)",
       "Bash(find * -exec rm -rf *)",
-      "Bash(:(){ :|:&};:)",
 
       "Bash(git push --force*)",
       "Bash(git push -f*)",
