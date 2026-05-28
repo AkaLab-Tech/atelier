@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M7.1.F33 — `atelier-list-projects` + `/atelier:list-projects` + `/atelier:remove-project` (slash command wrappers) — 2026-05-28
-**PR:** _pending_
+**PR:** [#107](https://github.com/AkaLab-Tech/atelier/pull/107)
 
 Discovered during M7.1 dogfood-5. Operator's request: *"debería haber un comando dentro de claude (atelier) para hacerlo desde dentro de un proyecto. Además debría haber una opción para listar los proyectos configurados con atelier."*
 
