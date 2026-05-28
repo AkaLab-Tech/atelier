@@ -8,6 +8,47 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F29 — `atelier-doctor` + `atelier-update` must prefix `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"` on every `claude` subprocess — 2026-05-28
+**PR:** _pending_
+
+Discovered during M7.1 dogfood-5 immediately after M7.1.F28 (PR [#102](https://github.com/AkaLab-Tech/atelier/pull/102)) merged. Operator ran a clean uninstall + re-install pass to test the new version end-to-end, then ran `atelier-doctor` from their interactive terminal and saw:
+
+```
+Plugins (compared against AkaLab-Tech/claude-plugins marketplace)
+    ✗ atelier@akalab-tech not installed
+    ✗ claude-roadmap-tools@akalab-tech not installed
+```
+
+The operator had **definitely** re-run `install.sh`; Phase C.2 had completed; the plugins should have been there. They followed the doctor's suggested fix (`claude plugin install atelier@akalab-tech`) — and got `Failed to install plugin: Plugin "atelier" not found in marketplace "akalab-tech"`. The next suggested fallback (`claude plugin marketplace update akalab-tech`) also failed with `Marketplace 'akalab-tech' not found`.
+
+**Operator caught the root cause first** (deserves the credit): atelier maintains a separate config root `$ATELIER_CONFIG_DIR` (default `~/.claude-work/`), distinct from the operator's personal `~/.claude/`. `install.sh` Phase C.2 sets `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"` before each `claude plugin marketplace add` / `claude plugin install` call — so the plugins land **in the atelier-managed config**. The `atelier()` shell function (M7.1.F13) sets the same env var for interactive sessions. But the standalone host-OS helpers `atelier-doctor` and `atelier-update` were invoking `claude` **without** the prefix, so they read/wrote the operator's personal config root instead. The plugins genuinely were installed — just at the address neither helper was looking at.
+
+**Delivered:**
+
+- **`scripts/atelier-doctor` — `check_plugin_drift()` prefixed.** The single `claude plugin list --json` invocation that resolves `local_v` now runs as `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin list --json`. The two `push_fix` suggestions that the doctor surfaces to the operator (`claude plugin install ...`, `claude plugin marketplace update ... && claude plugin update ...`) now include the same `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR` prefix so copy-paste works from any terminal (including the operator's regular non-atelier shell).
+- **`scripts/atelier-update` — `claude plugin update` calls prefixed.** Both invocations (atelier + claude-roadmap-tools) now prefix `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"`. Pre-F29 the call returned 0 (no-op against the personal config, no error to surface) so the helper claimed success, but Claude Code sessions kept loading the stale version because the atelier-managed plugin cache was untouched.
+- **`operator-rules.md` — new "Invoking `claude` from atelier scripts (M7.1.F29)" section.** Documents the rule: every `claude` invocation from an atelier script must prefix `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"`. The interactive `atelier()` shell function already sets the env var for sessions; the rule only matters for standalone scripts that invoke `claude` as a subprocess. The suggestions an atelier script surfaces to the operator (copy-paste fixes) must also include the prefix.
+
+**Decisions captured:**
+
+- **Per-call prefix, not `export` at script start.** Considered `export CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"` at the top of each script (one line, applies to everything). Rejected: an `export` would leak the value into sub-subprocesses that may not want it. The per-call prefix scopes the override to exactly the call that needs it, the same way `GIT_CONFIG_GLOBAL="..." git commit ...` (M7.1.F7b) scopes the git-identity override.
+- **Same rule for operator-facing fix suggestions.** When the doctor tells the operator *"to apply pending fixes, run: `claude plugin install ...`"*, that suggestion is the operator's first attempt and lands them on the same wrong config root. Including the prefix in the suggested command saves the operator from discovering the bug themselves (the way the M7.1 dogfood-5 operator did).
+- **`install.sh` and `atelier-uninstall` already had it right.** `install.sh` Phase C.2's plugin install calls inherit the `export CLAUDE_CONFIG_DIR=...` set at the top of the script. `atelier-uninstall` line 208 prefixes `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"` explicitly. Both were already correct; F29 brings the two remaining standalone helpers in line.
+
+**Plugin scope:** mixed.
+- Host-OS-layer (the actual bug fix): `scripts/atelier-doctor`, `scripts/atelier-update`.
+- Plugin-shipped: `operator-rules.md`. Plugin patch bump **0.6.3 → 0.6.4** per PLAN.md §14.2 (plugin-scope additive doc; the helper scripts' behaviour fix is delivered via the host-OS layer that operators update via `atelier-update`).
+
+**Verified locally:**
+
+- `bash -n` + `shellcheck` clean on both modified scripts.
+- Manual inspection: every `claude plugin ...` / `claude auth ...` invocation in `scripts/` either (a) is inside `install.sh`'s `export CLAUDE_CONFIG_DIR=...` scope, (b) already prefixes `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"` explicitly (`atelier-uninstall`), or (c) is being touched by this PR. No other helpers remain affected.
+- Operator-facing `push_fix` strings now match the pattern shown in the new `operator-rules.md` section, so the doctor's output is self-consistent with the documented rule.
+
+**Operator-visible behaviour change:** after merging + `atelier-update` (which now actually refreshes the atelier-managed plugin cache), running `atelier-doctor` from any terminal — including the operator's regular non-atelier shell — reports the installed plugin versions correctly instead of false-negative `not installed`.
+
+**Follow-up paths:** none expected for the core bug. A future M-task could centralise the prefix into a one-line helper (`_claude() { CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude "$@"; }`) for any new scripts that land, but two helpers fixed at the call site is not enough surface to justify a refactor today.
+
 ### M7.1.F28 — remove invalid `Bash(:(){ :|:&};:)` fork-bomb entry from `permissions.deny` — 2026-05-28
 **PR:** [#102](https://github.com/AkaLab-Tech/atelier/pull/102)
 

@@ -122,12 +122,17 @@ check_plugin_drift() {
   local plugin_id="$1" repo="$2"
   local local_v upstream_v
 
-  local_v="$(claude plugin list --json 2>/dev/null \
+  # M7.1.F29: prefix CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR. Without it,
+  # `claude plugin list` reads the operator's personal config (~/.claude/)
+  # — not the atelier-managed root (~/.claude-work/) where Phase C.2 of
+  # install.sh installed the plugins. The result was a false-negative
+  # "not installed" report even when the plugin was installed correctly.
+  local_v="$(CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin list --json 2>/dev/null \
     | jq -r --arg id "$plugin_id" '.[] | select(.id == $id) | .version // empty')"
 
   if [ -z "$local_v" ]; then
     push_plugin "$FAIL $plugin_id not installed"
-    push_fix "claude plugin install $plugin_id"
+    push_fix "CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin install $plugin_id"
     return
   fi
 
@@ -143,8 +148,8 @@ check_plugin_drift() {
     push_plugin "$OK $plugin_id $local_v (up to date)"
   else
     push_plugin "$FAIL $plugin_id $local_v → $upstream_v"
-    push_fix "claude plugin marketplace update akalab-tech
-claude plugin update $plugin_id"
+    push_fix "CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin marketplace update akalab-tech
+CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin update $plugin_id"
   fi
 }
 
