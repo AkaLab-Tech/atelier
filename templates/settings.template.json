@@ -208,6 +208,10 @@
 
       "mcp__plugin_atelier_playwright__*",
 
+      "Skill(atelier:*)",
+      "Skill(plugin:atelier:*)",
+      "SlashCommand(/atelier:*)",
+
       "Bash(atelier-setup-project:*)",
       "Bash(atelier-setup-project --per-task-settings:*)",
       "Bash(atelier-pr-size-check:*)",

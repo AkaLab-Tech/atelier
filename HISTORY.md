@@ -8,6 +8,50 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F31 — allow atelier's own skills + slash commands in `settings.template.json` — 2026-05-28
+**PR:** [#105](https://github.com/AkaLab-Tech/atelier/pull/105)
+
+Discovered during M7.1 dogfood-5 immediately after M7.1.F30 (PR [#104](https://github.com/AkaLab-Tech/atelier/pull/104)) merged. Operator typed *"Dime el estado de las tareas"* in a Claude Code session inside the `storefront` project. Claude Code resolved that to the `/atelier:status` slash command and prompted the operator for authorisation:
+
+```
+Use skill "atelier:status"?
+Claude may use instructions, code, or files from this Skill.
+Show the operator what's in progress, what's blocked, and what's awaiting review...
+
+Do you want to proceed?
+> 1. Yes
+  2. Yes, and don't ask again for atelier:status in /Users/mike/Work/storefront
+  3. No
+```
+
+The expected behaviour for an atelier-managed project is that **atelier's own** features work without per-feature prompts — the operator opted into atelier; opting in again for each of the 8 skills + 9 slash commands the plugin ships, in each new project, is friction the design never accounted for. `settings.template.json` (instantiated into each project's `.claude/settings.json` by `/atelier:setup-project`) had explicit allows for `Bash(atelier-*:*)` and `mcp__plugin_atelier_playwright__*`, but **nothing** for the plugin's own skills or slash commands.
+
+**Delivered:**
+
+- **`templates/settings.template.json` — three new entries in the `allow` array**, sitting right after the existing `mcp__plugin_atelier_playwright__*` line:
+  - `Skill(atelier:*)` — covers atelier's skills (`auto-merge`, `docker-env`, `pr-flow`, `retry-with-logs`, `safe-commit`, `safe-install`, `task-discovery`, `visual-validation`) by short reference.
+  - `Skill(plugin:atelier:*)` — same skills referenced with the explicit `plugin:` prefix that Claude Code may emit internally depending on context. Both patterns are accepted as additive defense-in-depth so the entry doesn't depend on which form Claude Code resolves to on a given turn.
+  - `SlashCommand(/atelier:*)` — covers atelier's slash commands (`/atelier:doctor`, `/atelier:next-task`, `/atelier:finish-task`, `/atelier:resume-task`, `/atelier:setup-project`, `/atelier:slice-task`, `/atelier:status`, `/atelier:update`, `/atelier:validate`). The screenshot showing the prompt was triggered via the slash-command path that Claude Code surfaced under a "Skill" label — both shape are covered by including this entry.
+
+**Decisions captured:**
+
+- **Wildcards over enumeration.** Considered enumerating each skill / command explicitly (`Skill(atelier:auto-merge)`, `Skill(atelier:pr-flow)`, ...). Rejected: every new skill or command we add later (and there are several pending in the ROADMAP) would need an additional template entry plus a doctor check + operator-rules note. The `atelier:*` wildcard scopes the allow to the plugin's own namespace, no broader — operators who install third-party Claude Code plugins still see permission prompts for those.
+- **Three patterns, not one.** Claude Code's display naming (`atelier:status` in the prompt screenshot) doesn't always match the canonical id (`plugin:atelier:status` in some contexts; `SlashCommand(/atelier:status)` from the slash-command surface). Rather than reverse-engineer which one will match at runtime, we include all three. They're additive — extra entries that don't match are inert; missing ones cause the prompt to fire.
+- **No reconfigure needed for newly-created projects.** New projects bootstrapped after this version ships pick up the new entries automatically from `setup-project`'s template instantiation. Existing projects (like `storefront`) need a `/atelier:setup-project --reconfigure` after `atelier-update` brings the new template into `$ATELIER_CONFIG_DIR/templates/`. The permission-diff prompt from M6.1.b will surface the three new entries explicitly as `NEW permissions`, so the operator sees what's being added before accepting.
+
+**Plugin scope:** plugin-shipped — `templates/settings.template.json` is plugin content that the operator's installed plugin cache loads via `claude plugin update`. Plugin patch bump **0.6.5 → 0.6.6** per PLAN.md §14.2 (plugin-scope additive change in the allow list; no behaviour shift for projects whose existing `settings.json` already authorises these patterns).
+
+**Verified locally:**
+
+- `jq empty templates/settings.template.json` passes — JSON still valid after the additions.
+- Diff shows exactly the three new lines inserted (plus the surrounding blank-line spacing); no other rules affected.
+
+**Operator-visible behaviour change:**
+
+After merging + `atelier-update` + `/atelier:setup-project --reconfigure` on each existing atelier-managed project (or zero-config for new projects), invoking any atelier skill or slash command no longer fires the "Use skill / Do you want to proceed?" permission prompt. The pre-F31 workaround — choosing the "Yes, and don't ask again for X in /path" option once per skill per project — remains effective for projects the operator chooses not to reconfigure.
+
+**Follow-up paths:** none expected for the core bug. If a future iteration of Claude Code changes the canonical naming of plugin skills / commands again, the three additive patterns above cover the cases we know about today; new patterns can be appended without removing the old ones.
+
 ### M7.1.F30 — `atelier-doctor --fix` auto-executes runnable fixes — 2026-05-28
 **PR:** [#104](https://github.com/AkaLab-Tech/atelier/pull/104)
 
