@@ -8,10 +8,14 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M7.1.F36 — `install.sh` shellrc-block `current_version` comparator out of sync with the heredoc — 2026-05-28
+### M7.1.F36 + F37 — `install.sh` shellrc `current_version` comparator out of sync with the heredoc + allowlist `Bash(git wt*)` — 2026-05-28
 **PR:** _pending_
 
-Discovered immediately after M7.1.F35 (PR [#109](https://github.com/AkaLab-Tech/atelier/pull/109)) merged. Operator's report: *"`atelier --help` me muestra la ayuda de `claude`"*. Re-running `install.sh` on a host that already had the v2 hook block did not refresh the block to v3, even though F34's heredoc carries `# atelier-hooks-version: 3` and `phase_c_1_atelier_help_file` ran and wrote `$ATELIER_CONFIG_DIR/atelier-help.txt` correctly.
+Two related findings surfaced in the same operator session immediately after M7.1.F35 (PR [#109](https://github.com/AkaLab-Tech/atelier/pull/109)) merged. Both are 1-line fixes and ship together to spare the operator a second re-run of `install.sh`.
+
+#### F36 — `current_version` comparator stuck at 2
+
+Operator's report: *"`atelier --help` me muestra la ayuda de `claude`"*. Re-running `install.sh` on a host that already had the v2 hook block did not refresh the block to v3, even though F34's heredoc carries `# atelier-hooks-version: 3` and `phase_c_1_atelier_help_file` ran and wrote `$ATELIER_CONFIG_DIR/atelier-help.txt` correctly.
 
 **Root cause:**
 
@@ -21,9 +25,29 @@ How it stayed hidden through F34's pre-merge checks:
 - The F34 PR validation re-ran `install.sh` on a host that had never had the hook block (`existing=0`, `current=2` — refresh triggered as a side effect of the no-block branch, which inserts the heredoc verbatim). The inserted block carried `v3` from the heredoc, so post-install `grep atelier-hooks-version ~/.zshrc` reported `3` — looking like F34 worked.
 - The bug only surfaces when re-running `install.sh` on a host that already had a v2 block — exactly the scenario for every existing operator upgrading through F34.
 
-**Delivered:**
+**Delivered (F36):**
 
 - **`install.sh:1281`** — `local current_version=2` → `local current_version=3`. Single-line fix. The F7c invariant the comments above the variable state is restored: bump the heredoc and the comparator together so existing operators get the refresh on their next `install.sh` run.
+
+#### F37 — `templates/settings.template.json` does not allowlist `Bash(git wt*)`
+
+Surfaced in the same operator session, on a different storefront task. Claude Code prompted *"Do you want to proceed? 1) Yes / 2) Yes, and don't ask again for: git wt * / 3) No"* for `git wt list` — a command that should have been pre-approved since every atelier task uses `git-wt` for worktree setup ([agents/task-orchestrator.md](agents/task-orchestrator.md) step 2 + the `task-discovery` skill).
+
+**Root cause:**
+
+[templates/settings.template.json:144](templates/settings.template.json) allowlistes `Bash(git worktree*)` but not `Bash(git wt*)`. Claude Code matches Bash permissions on the literal token sequence — it does not expand the `git wt` → `git worktree` alias (which is a `~/.local/bin/git-wt` script dispatched by git's external-subcommand mechanism, not a git alias). Every `git wt …` call therefore looked unmatched and tripped the ask path.
+
+The mismatch went unnoticed because the existing `Bash(git worktree*)` allow covers the cases where atelier code calls `git worktree` *directly* (none of the runtime code does today — the agents and skills all call `git-wt`). The F37 fix makes the runtime path match the allowlist.
+
+**Delivered (F37):**
+
+- **`templates/settings.template.json`** — added `"Bash(git wt*)"` next to the existing `"Bash(git worktree*)"` in the allow list. Same glob shape, same scope, no widening beyond the existing worktree-management surface.
+
+**Decisions captured (F37):**
+
+- **Allow both forms, don't replace one with the other.** Operators or future agents may still call `git worktree` directly (e.g. for `git worktree list` inside `atelier-doctor`). Keeping both entries preserves either path.
+- **No `Bash(git-wt*)` entry.** `git-wt` is invoked exclusively via the `git wt` subcommand dispatcher; nothing in atelier shells out to the raw `git-wt` binary by name. Adding a redundant allow would only invite drift.
+- **Per-task templates re-inject the new allow.** Operators with already-running task worktrees will keep the old `.claude/settings.json` (no `Bash(git wt*)`) until their next `task` invocation, which always regenerates `<worktree>/.claude/settings.json` from the template. No special migration needed.
 
 **Decisions captured:**
 
@@ -31,22 +55,24 @@ How it stayed hidden through F34's pre-merge checks:
 - **Patch-only fix.** No re-write of the F7c logic, no defensive "always refresh when --force is passed" flag added — those would expand scope. The one-line fix restores the design F34 already had on paper.
 - **No HISTORY rewrite of F34.** F34's HISTORY entry is accurate — it describes what F34 *delivered*; the post-merge bug is a separate F36 entry, not a rewrite of F34. Keeps the historical record clean.
 
-**Plugin scope:** host-OS-layer change to `install.sh`. No plugin files touched. Plugin patch bump **0.7.2 → 0.7.3** per PLAN.md §14.2 — bug fix only. Mechanism: existing operators receive F36 by re-running `install.sh` (the F7c versioned hook detection now correctly fires because `existing=2 < current=3`).
+**Plugin scope:** F36 is host-OS-layer (`install.sh`); F37 is plugin-layer (`templates/settings.template.json`, which `install.sh` Phase C.1 instantiates under `$ATELIER_CONFIG_DIR/templates/`). Plugin patch bump **0.7.2 → 0.7.3** per PLAN.md §14.2 — bug fixes only. Mechanism: existing operators receive F36 by re-running `install.sh` (the F7c versioned hook detection now correctly fires because `existing=2 < current=3`); operators receive F37 either by re-running `install.sh` (which refreshes `$ATELIER_CONFIG_DIR/templates/settings.template.json`) or, more conveniently, via `atelier-update` (whose template-refresh step picks up the new allow without touching `install.sh`).
 
 **Verified locally:**
 
 - `bash -n install.sh` syntax-clean.
 - `grep -nE "current_version=|atelier-hooks-version:" install.sh` shows comparator `3` matching heredoc `3` — no other version literals to align.
 - Manual walk-through of the F7c logic with `existing_version=2`, `current_version=3` → enters the `existing < current` branch → strip + re-inject → operator gets the new `atelier()` body.
+- `jq -e '.permissions.allow[] | select(. == "Bash(git wt*)" or . == "Bash(git worktree*)")' templates/settings.template.json` returns both entries (JSON parses + both allows present, no widening).
 
 **Operator-visible:**
 
-After this fix lands and `install.sh` is re-run, opening a new shell and running `atelier --help` prints the cheatsheet from `$ATELIER_CONFIG_DIR/atelier-help.txt` (the F34-intended behavior). `grep atelier-hooks-version ~/.zshrc` reports `3` post-refresh. No project files or `.claude/` folders touched.
+After this fix lands and `install.sh` is re-run, opening a new shell and running `atelier --help` prints the cheatsheet from `$ATELIER_CONFIG_DIR/atelier-help.txt` (the F34-intended behavior). `grep atelier-hooks-version ~/.zshrc` reports `3` post-refresh. The operator's next `task` invocation regenerates `<worktree>/.claude/settings.json` from the refreshed template, so `git wt list` (and any other `git wt …` call) stops prompting for permission. No project files or `.claude/` folders touched.
 
 **Follow-up paths:**
 
 - **`install.sh` self-test for heredoc/comparator drift.** A startup check inside `install.sh` (or a `scripts/atelier-doctor` check) that extracts both numbers and refuses to proceed if they disagree. Trivial — one `grep` + `awk` + comparison. Captured as a candidate `M7.1.F38` if the same drift recurs.
 - **`atelier-doctor --fix` extension** that re-runs the shellrc inject path without requiring the operator to find the atelier checkout (currently `atelier-doctor --fix` doesn't touch the shellrc at all because F30's scope was templates + symlinks + marketplace). Trade-off: `atelier-doctor` would need to know where the install.sh lives.
+- **Audit pass on the rest of `settings.template.json`** for other "external-subcommand" aliases that may surface the same prompt (e.g. `git lfs`, `git absorb`, anything dispatched via `~/.local/bin/git-<name>`). Defer until the next external git helper actually ships into atelier's runtime.
 
 ### M7.1.F35 — Documentation sweep: align README + operator-guide + troubleshooting + dogfood-guide + ROADMAP + PLAN with the v0.5 → v0.7.1 helper surface — 2026-05-28
 **PR:** [#109](https://github.com/AkaLab-Tech/atelier/pull/109)
