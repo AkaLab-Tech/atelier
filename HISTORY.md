@@ -8,6 +8,44 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F28 — remove invalid `Bash(:(){ :|:&};:)` fork-bomb entry from `permissions.deny` — 2026-05-28
+**PR:** _pending_
+
+Discovered during M7.1 dogfood-5 (operator's first session on `0.6.2` after a clean reinstall). Claude Code's `/atelier:setup-project`-instantiated `.claude/settings.json` triggered a Settings Warning at session start:
+
+```
+Invalid permission rule "Bash(:(){ :|:&};:)" was skipped: Empty parentheses.
+Either specify a pattern or use just "Bash" without parentheses
+```
+
+Root cause: the entry was added to `templates/settings.template.json` as defense-in-depth against Claude generating a bash fork bomb (`:(){ :|:&};:`). Claude Code's permission-pattern parser sees the internal `()` and treats it as "empty parentheses", which is invalid syntax in its DSL. The rule was therefore being **silently skipped** at load time — the defense it was meant to provide didn't exist; the only effect was a startup warning.
+
+The fix is to remove the entry. Realistic threat-model assessment:
+
+- **Claude is not going to write `:(){ :|:&};:` spontaneously** while implementing features. It is a niche bash trivia construct; the model has no reason to emit it during normal task execution.
+- **If it did**, the deny rule would not have mattered: Claude Code never enforced it (it was being skipped from day one). The fact that no fork bomb has occurred in 100+ task chains is independent of this rule's existence.
+- **If a real attacker controlled Claude's output stream and tried to inject a fork bomb**, no permission rule can save the operator anyway — the same attacker can just rewrite the bomb in 50 different forms that wouldn't match any single pattern. The realistic backstop is the kernel's process limit (`ulimit -u`), not a denylist entry.
+
+So: the entry was symbolic, the symbolism is now broken (Claude Code rejects it), and the only operationally honest move is to remove it.
+
+**Delivered:**
+
+- **`templates/settings.template.json`** — single line removed (the `Bash(:(){ :|:&};:)` entry in the `deny` array). All other deny entries — `rm -rf *`, `sudo *`, `git push --force*`, `gh auth logout*`, `Read(~/.ssh/**)`, etc. — are intact and continue to be the operationally meaningful guardrails.
+
+**Decisions captured:**
+
+- **Remove vs replace with a different pattern.** Considered substituting `Bash(:()*)`, `Bash(*:|:*)`, or a regex matching common fork-bomb shapes. Rejected for three reasons: (a) any pattern with internal `()` will hit the same Claude Code parser limit; (b) even a working pattern catches a single textual variant — the threat model the entry was supposedly addressing requires catching *all* possible fork bombs, which a denylist cannot do; (c) honesty about what defenses are operative beats sprinkling more symbolic entries. The clean removal makes the deny list accurate.
+- **No replacement documentation about fork-bomb defense.** Could have added a `_comment` JSON field or a section in `operator-rules.md` explaining "we removed a symbolic defense; the real one is the kernel". Rejected because (a) JSON `_comment` adds noise to a clean file and (b) operator-rules.md should describe operational policy the agent must follow, not historical artifacts. The HISTORY entry above is the audit record.
+- **Patch bump 0.6.2 → 0.6.3.** Plugin-scope change (`templates/settings.template.json` is plugin-shipped). The behaviour shift is removing a silently-skipped rule, so no agent behaviour actually changes — but operators get a cleaner startup (no warning) and the deny list now matches what Claude Code actually enforces.
+
+**Verified locally:**
+
+- `jq empty templates/settings.template.json` passes — JSON still valid after the deletion.
+- Diff shows exactly one line removed (the offending entry) plus the surrounding blank line cleanup; no other rules affected.
+- A re-instantiated `.claude/settings.json` (via the substitution sed `install.sh` uses) no longer contains the entry — Claude Code's startup warning will not fire on installations updated past this version.
+
+**Spawned in this session — published retroactive releases.** Same session that discovered F28, the operator's `/atelier:doctor` reported `✗ atelier@akalab-tech 0.6.2 → 0.5.7` because `gh api releases/latest` returned `v0.5.7` while local was `0.6.2` (post-M6.1.b merge). Diagnosed: `claude plugin install` resolves the HEAD of the default branch via the marketplace, while `doctor` compares against the last *published GitHub release* — and the maintainer (operator) hadn't released `v0.5.8 → v0.6.2` after the corresponding PRs merged earlier in the session. Resolved out-of-band by publishing the 7 missing releases manually (`gh release create v0.5.8 --target <sha> ...` × 7). After that pass, `gh api releases/latest` returns `v0.6.2` and the doctor reports `up to date`. This is not part of F28 itself (no commit lands in this PR for it) but is recorded here because it surfaced together. A proper follow-up — automating release creation on plugin.json version bumps, or having doctor compare against the HEAD `plugin.json` instead of GitHub releases — is captured as a future task.
+
 ### M6.1.b — `atelier-permission-diff` + `atelier-update` integration + `/atelier:update` slash command — 2026-05-27
 **PR:** [#101](https://github.com/AkaLab-Tech/atelier/pull/101)
 
