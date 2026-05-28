@@ -15,11 +15,17 @@
 #
 # Usage:
 #   atelier-doctor             # run all checks, print human-readable report
+#   atelier-doctor --fix       # run all checks, then auto-execute the
+#                                runnable pending fixes (M7.1.F30). Manual
+#                                fixes (paths, re-run install.sh, etc.)
+#                                still print as instructions.
 #   atelier-doctor --help      # show help
 #
 # Exit code:
-#   0   all checks ✓ (or only ↷ skipped)
-#   1   one or more checks ✗
+#   0   all checks ✓ (or only ↷ skipped); with --fix, also: all runnable
+#       fixes applied successfully and the post-fix re-check would be clean
+#   1   one or more checks ✗ (or, with --fix, one or more fix commands
+#       returned non-zero)
 #   2   unrecoverable error before the report could be produced
 #
 # Output format mirrors the legacy slash-command report:
@@ -42,6 +48,35 @@
 set -uo pipefail
 # Note: no `set -e` — individual checks may fail and we must keep running.
 
+# ---------- arg parse ----------
+
+RUN_FIXES=false
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --fix) RUN_FIXES=true; shift ;;
+    --help|-h)
+      cat <<EOF
+atelier-doctor — health check for atelier
+
+USAGE:
+  atelier-doctor          run all checks and print the report
+  atelier-doctor --fix    after the report, auto-execute the runnable
+                          pending fixes (M7.1.F30). Manual fixes still
+                          print as instructions for the operator.
+  atelier-doctor --help   show this help
+
+EXIT CODES:
+  0   all checks ✓ (or only ↷ skipped); with --fix, all runnable fixes
+      also applied successfully
+  1   one or more checks ✗ (or, with --fix, one or more fix commands
+      returned non-zero)
+  2   unrecoverable error before the report could be produced
+EOF
+      exit 0 ;;
+    *) printf '!! unknown arg: %s (run --help)\n' "$1" >&2; exit 2 ;;
+  esac
+done
+
 # ---------- constants ----------
 
 ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
@@ -58,13 +93,36 @@ declare -a SECTION_PLUGINS=()
 declare -a SECTION_EXTERNAL=()
 declare -a SECTION_HOST=()
 declare -a FIX_BLOCKS=()
+declare -a FIX_AUTO_COMMANDS=()
 EXIT_STATUS=0
 
 push_plugin()   { SECTION_PLUGINS+=("    $*"); }
 push_external() { SECTION_EXTERNAL+=("    $*"); }
 push_host()     { SECTION_HOST+=("    $*"); }
-push_fix() {
-  # One element per fix block; printed under "To apply pending fixes, run:"
+
+# Two flavours of fix (M7.1.F30):
+#
+# - push_fix_auto <cmd>   for runnable fixes the doctor can execute itself
+#                         when --fix is passed. The argument is one shell
+#                         command (may contain unexpanded $ATELIER_CONFIG_DIR
+#                         — `eval` at execution time expands it correctly).
+#                         The command is added to BOTH the display list
+#                         (FIX_BLOCKS) so the operator sees what would run
+#                         AND to FIX_AUTO_COMMANDS for actual execution.
+#
+# - push_fix_manual <txt> for fixes the operator must apply themselves
+#                         (paths to re-run install.sh, comments about
+#                         settings.json hand-editing, etc.). Only added
+#                         to FIX_BLOCKS for display. Never executed by
+#                         --fix — these need human judgment.
+#
+# Both set EXIT_STATUS=1 so the doctor exits non-zero on any pending fix.
+push_fix_auto() {
+  FIX_BLOCKS+=("$*")
+  FIX_AUTO_COMMANDS+=("$*")
+  EXIT_STATUS=1
+}
+push_fix_manual() {
   FIX_BLOCKS+=("$*")
   EXIT_STATUS=1
 }
@@ -77,9 +135,11 @@ strip_v() { printf '%s' "${1#v}"; }
 # CONTRACT (M7.1.F15): every check function below MUST be independent.
 #   - Handle errors internally with `2>/dev/null` + conditional logic.
 #   - Never rely on `set -e` (it is intentionally OFF — see top of file).
-#   - Never call `exit` from inside a check; use `push_fix` to set
-#     EXIT_STATUS=1 and `return` so the failure surfaces in the report
-#     without aborting the rest.
+#   - Never call `exit` from inside a check; use `push_fix_auto` (for
+#     runnable shell commands the doctor can execute under --fix) or
+#     `push_fix_manual` (for instructions only humans should act on) to
+#     set EXIT_STATUS=1 and `return` so the failure surfaces in the
+#     report without aborting the rest.
 #   - A failing check must produce ONE status line via `push_plugin`,
 #     `push_external`, or `push_host` so the report stays complete and
 #     every check the binary attempted is visible to the operator.
@@ -132,7 +192,7 @@ check_plugin_drift() {
 
   if [ -z "$local_v" ]; then
     push_plugin "$FAIL $plugin_id not installed"
-    push_fix "CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin install $plugin_id"
+    push_fix_auto "CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin install $plugin_id"
     return
   fi
 
@@ -148,8 +208,8 @@ check_plugin_drift() {
     push_plugin "$OK $plugin_id $local_v (up to date)"
   else
     push_plugin "$FAIL $plugin_id $local_v → $upstream_v"
-    push_fix "CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin marketplace update akalab-tech
-CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin update $plugin_id"
+    push_fix_auto "CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin marketplace update akalab-tech"
+    push_fix_auto "CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin update $plugin_id"
   fi
 }
 
@@ -159,7 +219,7 @@ check_git_wt_drift() {
 
   if [ ! -f "$sha_file" ]; then
     push_external "$FAIL git-wt SHA not recorded"
-    push_fix "# re-run install.sh to record the git-wt SHA
+    push_fix_manual "# re-run install.sh to record the git-wt SHA
 /path/to/atelier/install.sh"
     return
   fi
@@ -167,7 +227,7 @@ check_git_wt_drift() {
   recorded_sha="$(<"$sha_file")"
   if [ -z "$recorded_sha" ]; then
     push_external "$FAIL git-wt SHA file empty"
-    push_fix "/path/to/atelier/install.sh"
+    push_fix_manual "/path/to/atelier/install.sh"
     return
   fi
 
@@ -181,7 +241,7 @@ check_git_wt_drift() {
     push_external "$OK git-wt ${recorded_sha:0:7} (up to date)"
   else
     push_external "$FAIL git-wt ${recorded_sha:0:7} → ${upstream_sha:0:7}"
-    push_fix "git clone --depth 1 https://github.com/AkaLab-Tech/git-wt.git /tmp/git-wt
+    push_fix_manual "git clone --depth 1 https://github.com/AkaLab-Tech/git-wt.git /tmp/git-wt
 /tmp/git-wt/install.sh --skill-for=claude
 git -C /tmp/git-wt rev-parse HEAD > ~/.local/state/atelier/git-wt.sha
 rm -rf /tmp/git-wt"
@@ -197,7 +257,7 @@ check_legacy_hooks() {
   # Look for path strings containing atelier under hooks.
   if jq -e '.hooks // {} | tostring | test("atelier|\\.claude-personal/atelier")' "$settings" >/dev/null 2>&1; then
     push_host "$FAIL legacy atelier hooks found in ~/.claude/settings.json"
-    push_fix "# open ~/.claude/settings.json and remove entries under \"hooks\"
+    push_fix_manual "# open ~/.claude/settings.json and remove entries under \"hooks\"
 # referencing atelier paths — live hooks ship via the plugin manifest now."
   else
     push_host "$OK no legacy atelier hooks in ~/.claude/settings.json"
@@ -211,7 +271,7 @@ check_git_wt_path() {
     push_host "$OK git-wt on PATH ($bin)"
   else
     push_host "$FAIL git-wt not on PATH"
-    push_fix "/path/to/atelier/install.sh"
+    push_fix_manual "/path/to/atelier/install.sh"
   fi
 }
 
@@ -227,7 +287,7 @@ check_shellrc_hooks() {
     push_host "$OK atelier shellrc hooks active (~/$found_in)"
   else
     push_host "$FAIL atelier shellrc hooks not found in ~/.zshrc or ~/.bashrc"
-    push_fix "/path/to/atelier/install.sh"
+    push_fix_manual "/path/to/atelier/install.sh"
   fi
 }
 
@@ -250,7 +310,7 @@ check_project_npmrc() {
     push_host "$OK project .npmrc guardrails present"
   else
     push_host "$FAIL .npmrc missing: ${missing[*]}"
-    push_fix "# re-run /atelier:setup-project to refresh .npmrc with the three PLAN.md §4 guardrails."
+    push_fix_manual "# re-run /atelier:setup-project to refresh .npmrc with the three PLAN.md §4 guardrails."
   fi
 }
 
@@ -265,7 +325,7 @@ check_chrome() {
         push_host "$OK system Chrome detected (per-user install)"
       else
         push_host "$FAIL system Chrome not found"
-        push_fix "npx @playwright/mcp@latest install-browser chrome
+        push_fix_manual "npx @playwright/mcp@latest install-browser chrome
 # alternatively: brew install --cask google-chrome"
       fi
       ;;
@@ -274,7 +334,7 @@ check_chrome() {
         push_host "$OK system Chrome detected"
       else
         push_host "$FAIL system Chrome not found"
-        push_fix "npx @playwright/mcp@latest install-browser chrome
+        push_fix_manual "npx @playwright/mcp@latest install-browser chrome
 # alternatively (Linux): apt install google-chrome-stable"
       fi
       ;;
@@ -300,7 +360,7 @@ check_docker_compose() {
     push_host "$OK docker compose v$v detected"
   else
     push_host "$FAIL docker compose plugin not found"
-    push_fix "# macOS (homebrew):
+    push_fix_manual "# macOS (homebrew):
 brew install docker-compose
 mkdir -p ~/.docker/cli-plugins
 ln -sf /opt/homebrew/lib/docker/cli-plugins/docker-compose ~/.docker/cli-plugins/docker-compose
@@ -315,18 +375,18 @@ check_atelier_config_dir() {
   # install (marker present + installStatus complete).
   if [ -z "${ATELIER_CONFIG_DIR:-}" ]; then
     push_host "$FAIL \$ATELIER_CONFIG_DIR unset (shellrc hook block missing or not sourced)"
-    push_fix "source ~/.zshrc   # or ~/.bashrc"
+    push_fix_manual "source ~/.zshrc   # or ~/.bashrc"
     return
   fi
   if [ ! -d "$ATELIER_CONFIG_DIR" ]; then
     push_host "$FAIL atelier config dir $ATELIER_CONFIG_DIR does not exist"
-    push_fix "/path/to/atelier/install.sh"
+    push_fix_manual "/path/to/atelier/install.sh"
     return
   fi
   local marker="$ATELIER_CONFIG_DIR/.atelier-managed"
   if [ ! -f "$marker" ]; then
     push_host "$FAIL marker file missing at $marker"
-    push_fix "/path/to/atelier/install.sh"
+    push_fix_manual "/path/to/atelier/install.sh"
     return
   fi
   local status
@@ -337,12 +397,12 @@ check_atelier_config_dir() {
       ;;
     in_progress)
       push_host "$FAIL atelier config dir $ATELIER_CONFIG_DIR (installStatus: in_progress — install crashed)"
-      push_fix "# install.sh Phase 0 will offer to resume (M7.1.F6)
+      push_fix_manual "# install.sh Phase 0 will offer to resume (M7.1.F6)
 /path/to/atelier/install.sh"
       ;;
     *)
       push_host "$FAIL atelier config dir $ATELIER_CONFIG_DIR (marker corrupt or unrecognized installStatus)"
-      push_fix "/path/to/atelier/install.sh"
+      push_fix_manual "/path/to/atelier/install.sh"
       ;;
   esac
 }
@@ -354,7 +414,7 @@ check_git_identity() {
   local conf="$ATELIER_CONFIG_DIR/git-identity.conf"
   if [ ! -f "$conf" ]; then
     push_host "$FAIL atelier-author git-identity.conf missing"
-    push_fix "/path/to/atelier/install.sh"
+    push_fix_manual "/path/to/atelier/install.sh"
     return
   fi
   local conf_name conf_email
@@ -362,14 +422,14 @@ check_git_identity() {
   conf_email="$(awk -F'= ' '/^[[:space:]]*email = /{print $2}' "$conf")"
   if [ -z "$conf_name" ] || [ -z "$conf_email" ]; then
     push_host "$FAIL git-identity.conf missing [user] name= or email="
-    push_fix "/path/to/atelier/install.sh"
+    push_fix_manual "/path/to/atelier/install.sh"
     return
   fi
   # gh api user under the author config dir
   local gh_dir="$ATELIER_CONFIG_DIR/gh/author"
   if [ ! -d "$gh_dir" ]; then
     push_host "$FAIL atelier-author gh dir missing ($gh_dir) — cannot cross-check identity"
-    push_fix "/path/to/atelier/install.sh"
+    push_fix_manual "/path/to/atelier/install.sh"
     return
   fi
   local gh_login gh_id gh_email
@@ -393,31 +453,15 @@ check_git_identity() {
   fi
   # Neither form matches → real drift
   push_host "$FAIL atelier-author git identity drift: conf has $conf_email but gh api returns $gh_email (id=$gh_id login=$gh_login)"
-  push_fix "# git-identity.conf doesn't match the currently-authenticated gh account.
+  push_fix_manual "# git-identity.conf doesn't match the currently-authenticated gh account.
 # Re-run install.sh — Phase B will rewrite it from `gh api user`:
 /path/to/atelier/install.sh"
 }
 
 # ---------- main ----------
-
-usage() {
-  cat <<EOF
-atelier-doctor — health check binary for atelier.
-
-USAGE:
-  atelier-doctor             Run all checks and print the report.
-  atelier-doctor --help      Show this help.
-
-EXIT CODES:
-  0   All checks ✓ (or only ↷ skipped).
-  1   One or more checks ✗.
-  2   Unrecoverable error before the report could be produced.
-EOF
-}
-
-case "${1:-}" in
-  -h|--help) usage; exit 0 ;;
-esac
+#
+# Args were parsed at the top of the script into $RUN_FIXES; --help also
+# branched out there. No further arg handling is needed here.
 
 # Run checks in deterministic order.
 check_plugin_drift "atelier@akalab-tech"               "AkaLab-Tech/atelier"
@@ -448,13 +492,86 @@ printf 'Host checks\n'
 for line in "${SECTION_HOST[@]}"; do printf '%s\n' "$line"; done
 printf '\n'
 
-if [ ${#FIX_BLOCKS[@]} -gt 0 ]; then
+if [ ${#FIX_BLOCKS[@]} -eq 0 ]; then
+  printf 'All checks passed. atelier is up to date.\n'
+  exit 0
+fi
+
+# There ARE pending fixes. Two paths from here:
+#   --fix mode: print + execute the runnable ones, then summarise.
+#   default:    print all the suggestions + the --fix hint when any auto
+#               fix is runnable, then exit 1.
+
+if ! $RUN_FIXES; then
   printf 'To apply pending fixes, run:\n\n'
   for block in "${FIX_BLOCKS[@]}"; do
     printf '%s\n\n' "$block"
   done
-else
-  printf 'All checks passed. atelier is up to date.\n'
+  if [ ${#FIX_AUTO_COMMANDS[@]} -gt 0 ]; then
+    # shellcheck disable=SC2016
+    printf 'Tip: run `atelier-doctor --fix` to auto-execute the %d runnable fix(es).\n' \
+      "${#FIX_AUTO_COMMANDS[@]}"
+    if [ ${#FIX_AUTO_COMMANDS[@]} -lt ${#FIX_BLOCKS[@]} ]; then
+      printf '     The remaining %d manual fix(es) above still need your attention.\n' \
+        $(( ${#FIX_BLOCKS[@]} - ${#FIX_AUTO_COMMANDS[@]} ))
+    fi
+  fi
+  exit "$EXIT_STATUS"
 fi
 
-exit $EXIT_STATUS
+# --fix mode: execute the auto commands; print manual blocks for the
+# operator to handle separately.
+APPLIED_OK=0
+APPLIED_FAIL=0
+
+if [ ${#FIX_AUTO_COMMANDS[@]} -gt 0 ]; then
+  printf 'Applying %d runnable fix(es)\n\n' "${#FIX_AUTO_COMMANDS[@]}"
+  for cmd in "${FIX_AUTO_COMMANDS[@]}"; do
+    printf '  $ %s\n' "$cmd"
+    # `eval` is the only way to expand $ATELIER_CONFIG_DIR (and any other
+    # var the runnable used a literal $... for). The command originates
+    # from this script's own check functions — not from user input — so
+    # the eval surface is bounded by what we ourselves call push_fix_auto
+    # with. We capture and suppress the command's normal output, then
+    # surface a one-line OK / FAIL summary.
+    if output="$(eval "$cmd" 2>&1)"; then
+      printf '    %s OK\n' "$OK"
+      APPLIED_OK=$(( APPLIED_OK + 1 ))
+    else
+      rc=$?
+      printf '    %s FAIL (rc=%d)\n' "$FAIL" "$rc"
+      printf '%s\n' "$output" | sed 's/^/      /'
+      APPLIED_FAIL=$(( APPLIED_FAIL + 1 ))
+    fi
+    printf '\n'
+  done
+fi
+
+# Surface any manual fix blocks that --fix can't act on.
+manual_count=$(( ${#FIX_BLOCKS[@]} - ${#FIX_AUTO_COMMANDS[@]} ))
+if [ "$manual_count" -gt 0 ]; then
+  printf 'The following %d fix(es) need manual action:\n\n' "$manual_count"
+  # FIX_BLOCKS contains both auto and manual entries interleaved by check
+  # order. To get just the manuals, we'd need a parallel array — but for
+  # the operator's purposes, replaying every block (with the runnable
+  # ones marked as already-applied above) is simpler and equally
+  # informative. Print every block; the operator skips the ones the
+  # `Applying` section already covered.
+  for block in "${FIX_BLOCKS[@]}"; do
+    printf '%s\n\n' "$block"
+  done
+fi
+
+if [ "$APPLIED_FAIL" -gt 0 ]; then
+  printf 'Summary: %d fix(es) applied OK, %d failed, %d need manual action.\n' \
+    "$APPLIED_OK" "$APPLIED_FAIL" "$manual_count"
+  exit 1
+elif [ "$manual_count" -gt 0 ]; then
+  printf 'Summary: %d fix(es) applied OK, %d need manual action.\n' \
+    "$APPLIED_OK" "$manual_count"
+  exit 1
+else
+  # shellcheck disable=SC2016
+  printf 'Summary: %d fix(es) applied OK. Re-run `atelier-doctor` to verify.\n' "$APPLIED_OK"
+  exit 0
+fi
