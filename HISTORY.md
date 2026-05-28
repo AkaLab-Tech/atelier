@@ -8,6 +8,54 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F34 — `atelier --help` discoverability + install.sh first-steps mentions new helpers — 2026-05-28
+**PR:** [#108](https://github.com/AkaLab-Tech/atelier/pull/108)
+
+Discovered during M7.1 dogfood-5 immediately after M7.1.F33 (PR [#107](https://github.com/AkaLab-Tech/atelier/pull/107)) merged. Operator's observation: *"cuando termina la instalación muestra ciertas ayudas pero no muestra las nuevas opciones. Además me gustaría un `atelier --help` que muestre todos los comandos."*
+
+Two friction points:
+1. The `atelier()` shell function (M7.1.F13) is a thin wrapper around `claude`. Running `atelier --help` forwarded `--help` to `claude` and surfaced Claude Code's own help — nothing to do with atelier.
+2. The post-install banner (M7.1.F12) listed 6 steps including `atelier-uninstall` but did not mention the helpers added since F12 (`atelier-list-projects`, `atelier-remove-project`, `atelier-update`, `atelier-pr-size-check`, etc.).
+
+**Delivered:**
+
+- **`install.sh` — shellrc hook block (`atelier()` function) intercepts `--help` / `-h`.** The function now checks `${1:-}` against `--help`/`-h` before the `claude` invocation; if matched, it `cat`s `$ATELIER_CONFIG_DIR/atelier-help.txt` and `return 0` without launching claude. All other invocations pass through to `claude` unchanged. The implementation uses `if/elif` rather than `case` — the closing `)` of a `case` pattern would terminate the `$(cat <<'BLOCK' ...)` substitution in `install.sh` that ships the function (constraint already documented for the existing PATH-add `if`).
+- **`install.sh` — new `phase_c_1_atelier_help_file()` step in Phase C.1.** Writes the canonical help text to `$ATELIER_CONFIG_DIR/atelier-help.txt`. Re-written on every install run so the help text always reflects the installed version's command surface. The text lives in a file rather than embedded inside the shellrc hook block to sidestep a bash-3.2 parser bug with nested HEREDOCs inside `$(cat <<'BLOCK' ...)` substitution: when the outer HEREDOC contains an inner `cat <<'EOF'`, bash 3.2 incorrectly attempts to parse the inner HEREDOC body, tripping on parentheses inside descriptive text. Externalising the help text to a file means the shell function only does a trivial `cat`, with no nested HEREDOC.
+- **`install.sh` — first-steps banner updated**:
+  - Step 5 is now *"Explore the full command surface"*, surfacing `atelier --help` as the entry point plus a short list of the 4 most-used helpers (`atelier-doctor [--fix]`, `atelier-update`, `atelier-list-projects`, `atelier-remove-project`). Previous step 5 ("Docs") is now step 6.
+  - Step 7 (formerly step 6, "Uninstall safely") gains `atelier-remove-project <p>` as the **first option** — operators reaching this step probably want to detach one project, not nuke everything. `atelier-uninstall` is still listed (with `--purge`) for the whole-system case.
+- **`install.sh` — shellrc hook block version bumped 2 → 3.** F7c (versioned shellrc block with auto re-injection) reads this version; bumping forces install.sh to re-inject the block on existing operators' next install run, so the new `atelier()` body lands without requiring manual edit of `~/.zshrc`.
+
+**Decisions captured:**
+
+- **`if/elif` over `case` in the function body.** A `case "${1:-}" in --help|-h)` would be more idiomatic, but the `)` in `--help|-h)` terminates the surrounding HEREDOC's `$(...)` substitution prematurely. The existing block comment (line ~1296) documents this for the PATH-add `if`. The new `--help` intercept follows the same constraint.
+- **Help text in an external file, not embedded inside the shell function.** The first attempt put the help text in a `cat <<'ATELIER_HELP_EOF' ... ATELIER_HELP_EOF` block inside the `atelier()` function. `bash -n install.sh` reported `syntax error near unexpected token '('` on a line inside the inner HEREDOC body. Reduced testing confirmed bash 3.2 has a parser bug with nested HEREDOCs inside `$(cat <<'BLOCK' ...)` substitution — even when both delimiters are single-quoted, the inner HEREDOC body is partially re-parsed and trips on parentheses inside descriptive text. Externalising the help to `$ATELIER_CONFIG_DIR/atelier-help.txt` (written by a Phase C.1 helper) means the shell function only does `cat "$help_file"` with no nested HEREDOC. install.sh rewrites the file on every run, so the text always matches the installed version.
+- **Bump hooks-version 2 → 3.** F7c installs re-inject the block when the operator-installed version is older. Without the bump, existing operators wouldn't see the new `atelier()` body after re-running `install.sh` — they'd need to manually strip the old block.
+- **First-steps banner re-ordering.** Old steps 5 and 6 shifted to 6 and 7. The added `atelier-remove-project` first in the uninstall step reflects that the per-project case (which F32 added) is more common than the whole-system uninstall.
+
+**Plugin scope:** host-OS-layer change to `install.sh`. No plugin files touched. Plugin patch bump **0.7.0 → 0.7.1** per PLAN.md §14.2 — discoverability surface enhancement, no new capability. Mechanism: `atelier-update` will not touch the shellrc block (it only refreshes `$ATELIER_CONFIG_DIR/templates/` + plugin cache); operators receive F34 by re-running `install.sh` (the F7c versioned hook detection handles the in-place re-inject).
+
+**Verified locally:**
+
+- `bash -n install.sh` syntax-clean.
+- The `atelier()` function's HEREDOC body has matched delimiters (`<<'ATELIER_HELP_EOF'` … `ATELIER_HELP_EOF` on a line by itself), no stray `)` inside the help text, no unescaped `$(...)` substitutions that would prematurely close the outer `$(cat <<'BLOCK' ...)`.
+- `atelier-hooks-version: 3` matches the F7c re-inject trigger pattern.
+
+**Operator-visible:**
+
+After re-running `install.sh` (which triggers the F7c re-inject), opening a new shell and running:
+
+```bash
+atelier --help
+```
+
+… prints the full atelier command reference verbatim — no claude launch.
+
+**Follow-up paths:**
+
+- **`atelier --version`** — symmetric companion to `--help`, would print the installed plugin version. Trivial extension if operator asks.
+- **`atelier --doctor`** — shorthand that runs `atelier-doctor` without launching claude. Same shape, deferred.
+
 ### M7.1.F33 — `atelier-list-projects` + `/atelier:list-projects` + `/atelier:remove-project` (slash command wrappers) — 2026-05-28
 **PR:** [#107](https://github.com/AkaLab-Tech/atelier/pull/107)
 
