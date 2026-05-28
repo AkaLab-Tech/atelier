@@ -8,6 +8,66 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F33 — `atelier-list-projects` + `/atelier:list-projects` + `/atelier:remove-project` (slash command wrappers) — 2026-05-28
+**PR:** [#107](https://github.com/AkaLab-Tech/atelier/pull/107)
+
+Discovered during M7.1 dogfood-5. Operator's request: *"debería haber un comando dentro de claude (atelier) para hacerlo desde dentro de un proyecto. Además debría haber una opción para listar los proyectos configurados con atelier."*
+
+Two gaps in the M7.1.F32 surface F33 closes:
+
+1. **`atelier-remove-project` was terminal-only.** The operator wanted to deconfigure the current project from inside Claude Code without dropping to a terminal. Trivial slash command wrapper.
+2. **No way to list which projects were registered.** Reading `~/.claude-work/projects.json` by hand worked but felt wrong for a non-technical operator. Listing was a missing primitive.
+
+**Delivered:**
+
+- **`scripts/atelier-list-projects` (new, ~150 lines bash, bash-3.2-portable).** Reads `$ATELIER_CONFIG_DIR/projects.json` and emits each project's path + name + setupVersion + setupCompleted + a per-project **on-disk status** computed at read time. Three output modes:
+  - **default (human-facing)**: one entry per registered project with `name · version · since` plus `✓ configured`, `⚠ partial (...)` or `✗ directory no longer exists`.
+  - **`--json`**: re-emits `projects.json` with a `status` field added to each entry. Suitable for piping into `jq`.
+  - **`--quiet`**: one absolute path per line. Suitable for piping into `xargs` or `for p in $(atelier-list-projects --quiet); do ...; done`.
+  Detects three failure shapes: `configured` (both `.claude/settings.json` and `.atelier.json` present), `partial` (one missing), `missing-directory` (the registered path no longer exists on disk — operator deleted / moved the project but did not unregister; `atelier-remove-project` would fix). Read-only — never modifies state.
+- **New `commands/list-projects.md` (slash command `/atelier:list-projects`).** Thin wrapper that invokes `atelier-list-projects` (default mode) and emits its stdout verbatim. Same stop-rule + verbatim-pass-through contract as `/atelier:doctor` (M7.1.F25): no commentary, no follow-up suggestions — the binary already produced the structured report.
+- **New `commands/remove-project.md` (slash command `/atelier:remove-project [--purge] [--yes]`).** Wrapper that detects the current project root via `pwd` and runs `atelier-remove-project <pwd> $ARGUMENTS`. Important safety caveat surfaced in the body: when run from a Claude Code session inside the project being deconfigured, it deletes the very `.claude/settings.json` the session is using; new sessions opened in the project will fall back to no-atelier permissions until `/atelier:setup-project` re-runs. Also detects task-worktree contexts (current branch matches `task/*`) and refuses, since `pwd` from a worktree would target the wrong path.
+- **`install.sh`** — symlink for `atelier-list-projects` alongside `atelier-remove-project` in Phase C.1.
+- **`templates/settings.template.json`** — `Bash(atelier-list-projects:*)` added to the `allow` list. `Bash(atelier-remove-project:*)` was already allowed from F32. `SlashCommand(/atelier:*)` from F31 covers both new slash commands automatically.
+
+**Decisions captured:**
+
+- **`atelier-list-projects` is its own binary, not bolted onto another helper.** Considered exposing it as `atelier-doctor --list-projects`. Rejected: doctor's job is *health checking the current installation*; project enumeration is a different concern. Separate binary is composable, single-responsibility, and easy to test.
+- **`--json` shape mirrors `projects.json` rather than inventing a new schema.** The binary's JSON output is byte-equivalent to `jq '.projects[$p] + {status: ...}'` over the existing `projects.json` — operators who already script against `projects.json` can swap their input source without code changes. The added `status` field is the only delta.
+- **Status computation in bash, not in jq.** The status check reads the filesystem (`-f` and `-d` tests on the project path), which jq can't do. Doing the check in bash and then merging via `jq --arg` keeps the JSON output clean without resorting to `jq -e` exit codes for filesystem state.
+- **`/atelier:remove-project` uses `pwd`, not a positional argument.** The operator's mental model is *"I'm inside the project; remove it"*, not *"give me a slash command that takes a path"*. The wrapper's body still accepts a positional override for the edge case (e.g., removing a project the operator hasn't `cd`'d into), but defaults to `pwd`.
+- **Worktree-context refusal in `/atelier:remove-project`.** A common mis-invocation would be running the slash command from a task worktree (`<project>-worktrees/<task>/`) — `pwd` would return the worktree path, not the project root, and `atelier-remove-project` would correctly find it not-registered and exit 0 with "nothing to do". But that's confusing UX. The wrapper checks `git rev-parse --abbrev-ref HEAD` for `task/*` and refuses with a clear "you're in a worktree, go to the project root" message.
+- **Safety caveat on `/atelier:remove-project` is surfaced before running the binary**, not after. The operator should know the consequence (`current session loses atelier permissions on restart`) before the irreversible `--purge` deletes ROADMAP / IN_PROGRESS / HISTORY.
+
+**Plugin scope:** mixed.
+- Host-OS-layer: `scripts/atelier-list-projects`, `install.sh`.
+- Plugin-shipped: `commands/list-projects.md`, `commands/remove-project.md`, `templates/settings.template.json`. Plugin **minor** version bump **0.6.7 → 0.7.0** per PLAN.md §14.2 — new operator-facing surface area (1 new binary + 2 new slash commands) is a feature, not a fix. Same versioning shape as M4.24.b (v0.6.0) which added a new agent + slash command. Existing projects see no behaviour shift, but the plugin's capability set grew.
+
+**Verified locally with synthetic scenarios** for the binary (the slash commands are markdown contracts, validated by reading):
+
+- **A — default mode**: 3 registered projects rendered as expected. Status detection correct for each shape (configured / partial / missing-directory).
+- **B — `--quiet`**: 3 absolute paths, one per line, no metadata.
+- **C — `--json`**: per-project entries match `projects.json` shape with `status` field merged. `jq .` parses cleanly.
+- **D — zero projects registered**: emits `No atelier-managed projects registered.` followed by the `atelier-setup-project` hint.
+
+`bash -n` + `shellcheck` clean (one `# shellcheck disable=SC2016` annotation on a backticks-as-display `printf` line — same pattern used in F30).
+
+**Operator-visible:**
+
+```
+# Terminal
+atelier-list-projects                 # human-facing list
+atelier-list-projects --json | jq .   # machine-readable
+atelier-list-projects --quiet         # paths only (pipe-friendly)
+
+# Inside Claude Code
+/atelier:list-projects                # invokes the binary, prints verbatim
+/atelier:remove-project               # deconfigure $pwd; preserves operator content
+/atelier:remove-project --purge       # deconfigure $pwd; full clean slate
+```
+
+**Follow-up paths:** none expected. Future iterations could add a `--health` flag to `atelier-list-projects` that re-runs `atelier-doctor` against each registered project (cross-project health), but that's deferred until an operator hits the friction.
+
 ### M7.1.F32 — `atelier-remove-project` (per-project removal, default preserves operator content; `--purge` extends to tracking files + .gitignore/.npmrc) — 2026-05-28
 **PR:** [#106](https://github.com/AkaLab-Tech/atelier/pull/106)
 
