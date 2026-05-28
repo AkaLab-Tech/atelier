@@ -425,12 +425,14 @@ On successful merge, logs are attached to the PR as an artifact.
 
 ---
 
-## 9. Update flow (`update.sh`) ✅
+## 9. Update flow (`atelier-update`) ✅
 
-1. `git pull` inside the `atelier` repo.
-2. Detect changed files since last pull.
-3. Apply only the deltas (re-symlink changed files, patch the per-project `.npmrc` template if changed, etc.).
-4. **If `settings.template.json` changed**, prompt the operator with a detailed permission diff:
+Implemented as `scripts/atelier-update` and the `/atelier:update` slash command (M6.1.a + M6.1.b, shipped v0.6.x). Originally named `update.sh` in this section — renamed to `atelier-update` so it matches the rest of the `atelier-*` helper family.
+
+1. `git pull` inside the `atelier` repo (default `~/atelier`, overridable via `ATELIER_HOME`).
+2. Detect changed files since the last pull (`git diff --name-only <prev-head> HEAD`).
+3. Apply only the deltas: re-instantiate any changed templates under `$ATELIER_CONFIG_DIR/templates/`, refresh the `~/.local/bin/atelier-*` symlinks if a new helper was added, refresh `$ATELIER_CONFIG_DIR/atelier-help.txt` (M7.1.F34), then `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin update atelier@akalab-tech` to pick up the new plugin version.
+4. **If `settings.template.json` changed**, surface a detailed permission diff via `scripts/atelier-permission-diff` (M6.1.b) — added/removed permissions, plus a human-readable description column (the description table is hardcoded in the script):
 
 ```
 ⚠️  The update changes the agent's permissions
@@ -540,18 +542,18 @@ Phases are sequential. Each phase ends with a verifiable milestone.
 
 ### Phase 6 — Update + documentation
 **Deliverables:**
-- M6.1 `update.sh` with incremental diff + permissions-prompt UX (§9).
-- M6.2 Operator guide (Jr-friendly).
+- M6.1 `atelier-update` with incremental diff + permissions-prompt UX (§9). ✅ Shipped as `scripts/atelier-update` (M6.1.a) + `scripts/atelier-permission-diff` (M6.1.b) + `/atelier:update` slash wrapper.
+- M6.2 Operator guide (Jr-friendly). ✅ [docs/operator-guide.md](docs/operator-guide.md).
 - M6.3 Product owner guide (how to write ROADMAP.md).
-- M6.4 Troubleshooting doc.
+- M6.4 Troubleshooting doc. ✅ [docs/troubleshooting.md](docs/troubleshooting.md).
 
 **Done when:** a Jr following only the operator guide can clone, install, and run a full task cycle on a pre-configured project.
 
 ### Phase 7 — End-to-end validation
 **Deliverables:**
-- M7.1 Dogfood on a real (non-toy) project.
+- M7.1 Dogfood on a real (non-toy) project. **In progress** — see [docs/dogfood-guide.md](docs/dogfood-guide.md) and the M7.1.F* finding stream in [HISTORY.md](HISTORY.md) (F1–F35 closed across v0.4.x → v0.7.x).
 - M7.2 Iterate on the network allowlist based on actual usage.
-- M7.3 Measure: % of tasks reaching merged state without intervention.
+- M7.3 Measure: % of tasks reaching merged state without intervention. ✅ Shipped as `scripts/atelier-measure-merge-rate` + [docs/measurements/autonomous-merge-rate.md](docs/measurements/autonomous-merge-rate.md).
 
 **Done when:** ≥ 80% of a sample of 10 real tasks complete to a merged PR autonomously.
 

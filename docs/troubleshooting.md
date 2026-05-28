@@ -9,10 +9,13 @@ If you can't find your symptom here, the most recent entries in `HISTORY.md` and
 ## Always first: run the doctor
 
 ```bash
-atelier /atelier:doctor
+atelier-doctor               # from any shell
+atelier-doctor --fix         # apply auto-fixable repairs in one pass
 ```
 
-Each `✗` line in the doctor's report carries the fix command. Copy-paste the command and re-run the doctor. Most setup-level issues surface here and self-resolve.
+Inside a Claude session the same checks live at `/atelier:doctor` (with `--fix` as an arg). Each `✗` line in the doctor's report carries the fix command — `--fix` applies the ones it can resolve on its own (templates symlink, stale shellrc block, marketplace not registered, missing helper symlinks). Re-run plain `atelier-doctor` afterward to confirm.
+
+If the doctor flags a version mismatch between the installed atelier and the latest released tag, run `atelier-update` and re-check.
 
 For checks the doctor cannot perform (it can't reach the network, your shell hasn't loaded the hooks yet, etc.), see the sections below.
 
@@ -74,7 +77,42 @@ Issues that come up while running a task.
 
 **Cause:** `$ATELIER_CONFIG_DIR/projects.json` is missing or unreadable. This happens if `atelier-uninstall --purge` was run and then a project was set up without re-registering it.
 
-**Fix:** From inside the project folder, run `atelier /atelier:setup-project .` again. It's idempotent and only writes the registry entry if it doesn't exist.
+**Fix:** Run `atelier-list-projects` to confirm the registry is empty. Then `cd` into each project that should be registered and run `atelier /atelier:setup-project .` — it's idempotent and only writes the registry entry if it doesn't exist.
+
+### `atelier --help` prints nothing / "atelier-help.txt: No such file"
+
+**Symptom:** Running `atelier --help` shows an empty output or a "file not found" error pointing at `$ATELIER_CONFIG_DIR/atelier-help.txt`.
+
+**Cause:** The help file was introduced in **M7.1.F34** (v0.7.1) and is written by `install.sh` Phase C.1. Older installs never had it, and `atelier-update` will refresh it the next time it runs.
+
+**Fix:** Run `atelier-update`. If it still fails, re-run `./install.sh` from the atelier checkout — phase `phase_c_1_atelier_help_file` writes the file unconditionally.
+
+### `atelier-update` says "already up to date" but the doctor still warns about a stale version
+
+**Symptom:** `atelier-update` exits with "already up to date — no template refresh needed", but `atelier-doctor` keeps flagging a plugin-version mismatch.
+
+**Cause:** The atelier git clone (`~/atelier`) is at the latest tag but `$ATELIER_CONFIG_DIR/templates/` or the plugin cache lags behind. This was the dogfood-5 finding behind **M7.1.F31**: a no-op `git pull` skipped the template refresh.
+
+**Fix:** Force the refresh: `atelier-update --force` (or delete `$ATELIER_CONFIG_DIR/templates/` and re-run `atelier-update`). Then re-launch any open Claude sessions so they pick up the refreshed settings template.
+
+### `claude plugin install` fails with "marketplace not registered"
+
+**Symptom:** `install.sh` or `atelier-update` fails on the `claude plugin install atelier@akalab-tech` step with a message about the `akalab-tech` marketplace not being registered.
+
+**Cause:** The marketplace was removed (e.g. by `atelier-uninstall --purge` or a manual `/plugin marketplace remove`) and never re-added. `claude plugin install` cannot fetch a plugin from a marketplace that isn't in `$ATELIER_CONFIG_DIR/`'s config.
+
+**Fix:** `atelier-doctor --fix` auto-repairs this (it re-adds `AkaLab-Tech/claude-plugins` under the atelier config root). Or run it manually:
+```bash
+CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin marketplace add AkaLab-Tech/claude-plugins
+```
+
+### `atelier` warns about "running from inside another atelier session" (fork-bomb guard)
+
+**Symptom:** Inside an existing `atelier` Claude session, you run `atelier` again from a `Bash` tool call and see a warning about a recursive launch.
+
+**Cause:** This is the **M7.1.F28** fork-bomb guard. atelier nests Claude sessions one level deep at most; a second nested `atelier` would create an unbounded prompt-cache cascade.
+
+**Fix:** Don't nest. Run the inner command (`atelier-doctor`, `atelier-update`, `atelier-list-projects`, etc.) as a plain shell call without the `atelier` prefix — the `atelier-*` helpers already pin `CLAUDE_CONFIG_DIR` correctly on their own.
 
 ### `pnpm install` rejected because of `minimum-release-age`
 
@@ -107,11 +145,11 @@ Issues that come up while running a task.
 - Touches `package.json` / `pnpm-lock.yaml`
 - Touches `Dockerfile` / `docker-compose*`
 - Touches `.github/workflows/**`
-- Is larger than 500 lines
+- Trips the **size gate** — the default budget is `>200 lines AND >10 files` (AND-gate, after exemptions for tests/lockfiles/migrations) per `scripts/atelier-pr-size-check`. Override per-project in `<project>/.atelier.json`. PRs that trip the gate are tagged `[OVERSIZE]` by `pr-author` and the orchestrator stops without retrying (M4.24 + M7.1.F27).
 - Has pending human review comments
 - Has a `request-changes` from the reviewer
 
-**Fix:** Review the PR yourself and merge it manually (`gh pr merge <N> --squash --delete-branch`). The held-back rules protect dependencies, CI, and large changes from going in without a human check.
+**Fix:** Review the PR yourself and merge it manually (`gh pr merge <N> --squash --delete-branch`). The held-back rules protect dependencies, CI, and large changes from going in without a human check. If you'd rather have atelier break the work into smaller tasks automatically, run `/atelier:slice-task` against the offending roadmap item — the `task-decomposer` agent will rewrite it as an epic with sub-tasks (M4.24).
 
 ### Reviewer's `gh pr review --approve` shows as a comment, not an approval
 
@@ -150,7 +188,7 @@ gh pr merge <N> --squash --delete-branch
 
 **Cause:** The external `git-wt` binary at `~/.local/bin/git-wt` is missing, outdated, or shadowed by a different `git-wt` on `PATH`.
 
-**Fix:** Run `atelier /atelier:doctor` — it will flag the issue with the exact fix. The fix is the snippet from `install.sh:check_git_wt_drift` (clone, run `install.sh --skill-for=claude`, record the SHA). Or simply re-run `./install.sh` from the atelier checkout.
+**Fix:** Run `atelier-doctor` (or `atelier-doctor --fix` to auto-repair the symlink when possible) — the report will flag the issue with the exact fix. The fix is the snippet from `install.sh:check_git_wt_drift` (clone, run `install.sh --skill-for=claude`, record the SHA). Or simply re-run `./install.sh` from the atelier checkout.
 
 ### `atelier-hooks-version` mismatch warning during install
 
@@ -166,11 +204,12 @@ gh pr merge <N> --squash --delete-branch
 
 If the doctor passes but tasks still fail or atelier behaves unexpectedly:
 
-1. **Capture the doctor output:** `atelier /atelier:doctor > /tmp/doctor.txt`
-2. **Find the failing worktree:** look at `IN_PROGRESS.md` to identify the active task; the worktree lives at `~/Work/<project>-worktrees/<task>/`.
-3. **Read the most recent task log:** `cat ~/Work/<project>-worktrees/<task>/.task-log/*.md | tail -200`. The log records each attempt with full agent output.
-4. **Check the `blocked` GitHub issues:** `gh issue list --label blocked` shows tasks that hit the retry budget.
-5. **Open a bug report:** https://github.com/AkaLab-Tech/atelier/issues/new — paste the doctor output and the last task log entry.
+1. **Capture the doctor output:** `atelier-doctor > /tmp/doctor.txt`
+2. **Confirm you're on the latest atelier:** `atelier-update` (no-op if you're current).
+3. **Find the failing worktree:** look at `IN_PROGRESS.md` to identify the active task; the worktree lives at `~/Work/<project>-worktrees/<task>/`.
+4. **Read the most recent task log:** `cat ~/Work/<project>-worktrees/<task>/.task-log/*.md | tail -200`. The log records each attempt with full agent output.
+5. **Check the `blocked` GitHub issues:** `gh issue list --label blocked` shows tasks that hit the retry budget.
+6. **Open a bug report:** https://github.com/AkaLab-Tech/atelier/issues/new — paste the doctor output and the last task log entry.
 
 ---
 
@@ -186,4 +225,15 @@ cd ~/atelier
 ./install.sh
 ```
 
-After re-install, re-register each project with `atelier /atelier:setup-project <path>` (idempotent — won't overwrite existing files).
+After re-install, re-register each project with `atelier /atelier:setup-project <path>` (idempotent — won't overwrite existing files). Confirm the registry with `atelier-list-projects` once you're done.
+
+### Less drastic: remove just one project
+
+If only one project is broken and the rest of atelier is healthy, you don't need to nuke everything. Run:
+
+```bash
+atelier-remove-project <path>           # deregister; keep files
+atelier-remove-project <path> --purge   # also strip the .gitignore / .npmrc atelier-additions
+```
+
+Then re-run `atelier /atelier:setup-project <path>` if you want to start fresh on that project.
