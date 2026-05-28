@@ -8,8 +8,72 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M7.1.F36 + F37 — `install.sh` shellrc `current_version` comparator out of sync with the heredoc + allowlist `Bash(git wt*)` — 2026-05-28
+### M7.1.F38 — `/atelier:setup-project` preserves stale `.claude/settings.json` instead of resyncing from the refreshed template — 2026-05-28
 **PR:** _pending_
+
+Discovered immediately after M7.1.F36 + F37 (PR [#110](https://github.com/AkaLab-Tech/atelier/pull/110)) merged and v0.7.3 was released. Operator's report after running `atelier-update`, `atelier-remove-project`, and `atelier /atelier:setup-project .` on `~/Work/storefront`: *"el proyecto me sigue pidiendo autorización para ejecutar algo tan simple como `git wt ls`"*.
+
+Diagnosis — the F37 allow had landed in:
+- ✅ The plugin source (`templates/settings.template.json` on `main`).
+- ✅ `$ATELIER_CONFIG_DIR/templates/settings.template.json` (`atelier-update` did refresh this layer correctly).
+- ❌ `~/Work/storefront/.claude/settings.json` (only `Bash(git worktree*)`; new `Bash(git wt*)` missing).
+
+The new allow was stuck in the refreshed template layer and never propagated to the operator's actual project settings.
+
+**Root cause:**
+
+[scripts/atelier-setup-project:471-475](scripts/atelier-setup-project) preserved an existing `.claude/settings.json` silently whenever the file looked atelier-managed (defaultMode=acceptEdits + distinctive deny entries), without comparing it against the current template:
+
+```bash
+if is_atelier_managed_settings "$target"; then
+  SETTINGS_STATUS="preserved"
+  sublog "$target already exists (atelier-managed) — preserving"
+  return
+fi
+```
+
+The heuristic was designed to protect operator customisations on top of the template. The unintended consequence: any new entry added to the plugin template (allow / deny / ask, additionalDirectories, etc.) stayed trapped at the `$ATELIER_CONFIG_DIR/templates/` layer indefinitely. Re-running `/atelier:setup-project` reported success but produced zero diff on disk. The only ways to receive the new entry were to manually delete `<project>/.claude/settings.json` or run `atelier-remove-project --purge` (which does the delete), neither of which is discoverable.
+
+`atelier-remove-project` without `--purge` deregisters but preserves the project's files — including `.claude/settings.json` — which is the right default for the "I'm pausing this project" case but matched the wrong assumption here: the operator believed remove + re-setup would re-apply the current template. The `--purge` flag is documented but the operator did not know they needed it for the F37 allow to land.
+
+**Delivered (option A — auto-resync with backup, per operator decision):**
+
+- **`scripts/atelier-setup-project` — `step_settings_json` rewritten for the "exists, atelier-managed, not in reconfigure flow" path**. Before F38: silently preserve. After F38: probe the instantiated template via `sed "s|<worktree>|$PROJECT|g"`, `diff -q` against the target; if equal → preserve as before; if different → `warn` about the drift, set `should_write=true` + `needs_backup=true` so the existing write/backup path takes over. The existing reconfigure path (`$RECONFIGURE`) is unchanged — it already prompted for overwrite. The non-atelier-managed path is unchanged — it already prompted. Only the atelier-managed path gained the drift-detection branch.
+
+**Decisions captured:**
+
+- **Auto-resync without prompt (operator chose option A).** The operator explicitly chose "auto-resync siempre con backup" over (B) prompt-on-drift, (C) cover via `atelier-doctor --fix`, (D) new `atelier-resync-settings` helper. Rationale: setup-project already promises idempotent re-application of the current template; preserving stale settings violated that contract. The backup file (`settings.json.bak.<timestamp>`) is the safety net for operators with local customisations.
+- **Reuse the existing `should_write` + `needs_backup` path.** Resisted the temptation to add a new `SETTINGS_STATUS="resynced"` value. The drift path produces the same observable outcome as the reconfigure-confirmed-overwrite path: file rewritten, backup left behind, status reported as `updated`. The `warn` line ("$target has drifted from the current plugin template — auto-resyncing") tells the operator *why* the update happened without inventing a new status.
+- **Don't merge custom edits — replace + back up.** Probing for which keys the operator added on top of the template (e.g. an extra `Bash(...)` allow for their project) would require a deep JSON diff and conflict semantics — out of scope for a fix. The backup file plus the `warn` makes the trade-off explicit: operators recover customisations from `.bak` and re-apply against the new template if they want them kept.
+- **Reconfigure path stays interactive.** The `$RECONFIGURE` branch (lines 437-461) already prompts the operator before overwriting; with option A landing for the non-reconfigure path, the reconfigure path's prompt becomes the *more conservative* of the two. Kept as-is because reconfigure is a deliberate operator action ("yes, redo my setup") where a one-keypress confirmation costs nothing.
+- **Non-interactive (`--yes`) auto-resyncs without prompt.** The auto-resync branch does not check `$NONINTERACTIVE` — drift detection + backup is safe under automation, and the whole point of `--yes` is to make the script script-friendly. Matches the existing "no existing file → just create" path's automation-friendly default.
+
+**Plugin scope:** plugin-layer change to `scripts/atelier-setup-project`. No template, agent, skill, command, or hook touched. Plugin patch bump **0.7.3 → 0.7.4** per PLAN.md §14.2 — bug fix only.
+
+**Verified locally:**
+
+- `bash -n scripts/atelier-setup-project` syntax-clean.
+- Manual trace through the three branches for the "exists" case:
+  1. `$RECONFIGURE=true` → unchanged path (probe + diff + prompt). ✅
+  2. `is_atelier_managed_settings` + identical to template → `preserved`. ✅
+  3. `is_atelier_managed_settings` + drifted from template → `warn` + `should_write=true` + `needs_backup=true` → existing write/backup path runs. ✅
+  4. Not atelier-managed → unchanged path (prompt). ✅
+- `is_atelier_managed_settings` heuristic unchanged — no risk of mis-categorising a hand-rolled settings.json as drifted.
+
+**Operator-visible:**
+
+After this fix lands and the operator re-runs `atelier /atelier:setup-project .` on a previously-registered project, any drift between the project's `.claude/settings.json` and the current plugin template is auto-detected and the project file is regenerated with a `.bak.<timestamp>` backup. The summary line at the end of setup-project reports `.claude/settings.json: updated` (instead of the misleading `preserved` it would have reported before F38). The next Claude Code session on the project loads the refreshed allows immediately — no manual `sed` substitution, no `atelier-remove-project --purge`, no editor diff.
+
+For storefront specifically, this means: after this PR merges and the operator re-runs `atelier /atelier:setup-project .`, the F37 `Bash(git wt*)` allow lands automatically and `git wt ls` stops prompting.
+
+**Follow-up paths:**
+
+- **`atelier-doctor --fix` extension** that detects drift across every registered project (not just the cwd one) and rewrites with backup. Today setup-project only resyncs when the operator explicitly runs it on a project; doctor could cover the case where the operator forgets to re-run after `atelier-update`. Captured as a candidate `M7.1.F39`.
+- **Smarter merge** that detects operator-added entries in the existing file and carries them forward into the regenerated file (deep JSON diff, list-union for `allow`/`deny`/`ask`, object-merge for the rest). Out of scope for F38 — the backup file is the explicit escape hatch; merge semantics get hairy fast (e.g. operator removed a template-default deny on purpose — should the merge re-add it?).
+- **`atelier-update --apply-to-projects`** that triggers the drift refresh across every registered project at update time. Today `atelier-update` refreshes `$ATELIER_CONFIG_DIR/templates/` but leaves project-level propagation to the operator's next setup-project run.
+
+### M7.1.F36 + F37 — `install.sh` shellrc `current_version` comparator out of sync with the heredoc + allowlist `Bash(git wt*)` — 2026-05-28
+**PR:** [#110](https://github.com/AkaLab-Tech/atelier/pull/110)
 
 Two related findings surfaced in the same operator session immediately after M7.1.F35 (PR [#109](https://github.com/AkaLab-Tech/atelier/pull/109)) merged. Both are 1-line fixes and ship together to spare the operator a second re-run of `install.sh`.
 

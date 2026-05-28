@@ -460,39 +460,58 @@ step_settings_json() {
       *)           SETTINGS_STATUS="preserved"; return ;;
     esac
   else
-    # Target exists, NOT in reconfigure flow. Decide based on whether it
-    # looks atelier-managed. Atelier-managed → preserve (operator likely
-    # has local customizations on top of the template). Non-atelier-managed
-    # (legacy pre-atelier settings.json, or hand-rolled) → prompt before
-    # silently keeping the file, because preserving silently was the M7.1.F26
-    # bug — operators ran /atelier:setup-project, the script reported success,
-    # and then Claude Code still asked for permission for every command
-    # because the template's acceptEdits + allowlist never made it onto disk.
+    # Target exists, NOT in reconfigure flow.
     if is_atelier_managed_settings "$target"; then
-      SETTINGS_STATUS="preserved"
-      sublog "$target already exists (atelier-managed) — preserving"
-      return
-    fi
-
-    warn "$target exists but is not atelier-managed"
-    warn "(missing atelier's defaultMode=acceptEdits and/or distinctive deny entries)."
-    warn "Likely a pre-atelier settings.json or a hand-edited file."
-
-    if $NONINTERACTIVE; then
-      SETTINGS_STATUS="preserved"
-      warn "Preserving (non-interactive default). Re-run interactively to overwrite."
-      return
-    fi
-
-    printf "Overwrite with current atelier template (existing file will be backed up)? [y/N]: " >&2
-    local ans; read -r ans
-    case "$ans" in
-      y|Y|yes|Yes) should_write=true; needs_backup=true ;;
-      *)
+      # Atelier-managed: compare against the instantiated template and
+      # auto-resync if drifted (M7.1.F38). Before F38 this path silently
+      # preserved the existing file — which meant a freshly added allow /
+      # deny / ask entry (e.g. F37's Bash(git wt*)) stayed trapped in
+      # $ATELIER_CONFIG_DIR/templates/ for every operator who didn't also
+      # delete <project>/.claude/settings.json by hand. Auto-resync with
+      # backup restores the design intent: re-running setup-project on a
+      # registered project picks up the current template. Operators with
+      # local customisations recover them from the .bak file.
+      local tmp_probe; tmp_probe="$(mktemp)"
+      sed "s|<worktree>|$PROJECT|g" "$template" > "$tmp_probe" \
+        || { rm -f "$tmp_probe"; die "sed substitution failed while probing $target"; }
+      if diff -q "$target" "$tmp_probe" >/dev/null 2>&1; then
+        rm -f "$tmp_probe"
         SETTINGS_STATUS="preserved"
-        sublog "Operator declined — preserving existing $target"
-        return ;;
-    esac
+        sublog "$target already exists (atelier-managed, in sync with template) — preserving"
+        return
+      fi
+      rm -f "$tmp_probe"
+      warn "$target has drifted from the current plugin template — auto-resyncing"
+      warn "(existing file will be backed up; if you had local customisations, recover them from the .bak file)"
+      should_write=true
+      needs_backup=true
+    else
+      # Non-atelier-managed (legacy pre-atelier settings.json, or hand-rolled).
+      # Prompt before silently keeping the file, because preserving silently
+      # was the M7.1.F26 bug — operators ran /atelier:setup-project, the
+      # script reported success, and then Claude Code still asked for
+      # permission for every command because the template's acceptEdits +
+      # allowlist never made it onto disk.
+      warn "$target exists but is not atelier-managed"
+      warn "(missing atelier's defaultMode=acceptEdits and/or distinctive deny entries)."
+      warn "Likely a pre-atelier settings.json or a hand-edited file."
+
+      if $NONINTERACTIVE; then
+        SETTINGS_STATUS="preserved"
+        warn "Preserving (non-interactive default). Re-run interactively to overwrite."
+        return
+      fi
+
+      printf "Overwrite with current atelier template (existing file will be backed up)? [y/N]: " >&2
+      local ans; read -r ans
+      case "$ans" in
+        y|Y|yes|Yes) should_write=true; needs_backup=true ;;
+        *)
+          SETTINGS_STATUS="preserved"
+          sublog "Operator declined — preserving existing $target"
+          return ;;
+      esac
+    fi
   fi
 
   $should_write || { SETTINGS_STATUS="preserved"; return; }
