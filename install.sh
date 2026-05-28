@@ -1286,7 +1286,7 @@ phase_c_1_shellrc_hooks() {
   local block
   block=$(cat <<'BLOCK'
 # >>> atelier hooks (managed by install.sh) >>>
-# atelier-hooks-version: 2
+# atelier-hooks-version: 3
 # (install.sh reads the version above; bump it when you edit anything between
 #  these sentinels so existing operators get the refreshed block on re-run.)
 # Ensure ~/.local/bin is on PATH so atelier-setup-project (and any future
@@ -1354,6 +1354,25 @@ task() {
 # identities — agents/skills/commands behave consistently across both
 # entry points.
 atelier() {
+  # M7.1.F34: --help intercept. The help text lives in
+  # $ATELIER_CONFIG_DIR/atelier-help.txt (written by install.sh,
+  # rewritten on every re-run so it always matches the installed
+  # version). Storing the text in a file rather than a HEREDOC inside
+  # this function avoids the nested-HEREDOC bash-3.2 parser bug:
+  # placing `cat <<EOF ... EOF` inside the outer `$(cat <<BLOCK ...)`
+  # substitution that ships this whole block confuses bash 3.2's
+  # delimiter tracking even when both delimiters are quoted.
+  if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    local help_file="$ATELIER_CONFIG_DIR/atelier-help.txt"
+    if [ -r "$help_file" ]; then
+      cat "$help_file"
+    else
+      printf 'atelier --help: help file missing at %s\n' "$help_file" >&2
+      printf 'Re-run install.sh to regenerate it.\n' >&2
+      return 1
+    fi
+    return 0
+  fi
   CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" \
     GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" \
     GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
@@ -1452,6 +1471,79 @@ BLOCK
   done
 }
 
+# M7.1.F34: write the help text that `atelier --help` will cat at
+# runtime. Living in $ATELIER_CONFIG_DIR/atelier-help.txt rather than
+# embedded inside the shellrc hook block sidesteps a bash-3.2 parser
+# bug with nested HEREDOCs inside `$(cat <<'BLOCK' ...)`. Re-written on
+# every install run so the help text always reflects the installed
+# version's command surface.
+phase_c_1_atelier_help_file() {
+  local dest="$ATELIER_CONFIG_DIR/atelier-help.txt"
+  cat > "$dest" <<'ATELIER_HELP_TXT'
+atelier — AI-operated workstation managed via Claude Code
+
+USAGE
+  atelier [args...]       Launch Claude Code under atelier's config dir
+                          (CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR, plus
+                          GH_CONFIG_DIR + GIT_CONFIG_GLOBAL scoped to
+                          atelier's auth + git identity). Plugins,
+                          agents, skills and slash commands from the
+                          akalab-tech marketplace are loaded.
+  atelier --help, -h      Show this help (intercepted by the shell
+                          function; never forwarded to claude).
+
+TERMINAL HELPERS (run directly, no `atelier` prefix needed)
+  atelier-doctor [--fix]            Health check; --fix auto-applies
+                                    runnable fixes
+  atelier-update                    Pull latest atelier + refresh
+                                    instantiated templates + refresh
+                                    plugin cache
+  atelier-setup-project [<path>]    Bootstrap a project for atelier
+                                    (defaults to cwd)
+  atelier-remove-project <path>     Deconfigure ONE project; default
+                                    preserves operator content,
+                                    --purge for full clean slate
+  atelier-list-projects [--json]    List every project registered with
+                                    atelier; per-project on-disk status
+  atelier-uninstall [--purge]       Remove atelier from the WHOLE
+                                    system (not per-project — use
+                                    atelier-remove-project for that)
+  atelier-pr-size-check             Per-PR size budget check (used by
+                                    pr-author + reviewer + auto-merge)
+  atelier-measure-merge-rate        Sample N most-recently-merged PRs,
+                                    measure autonomous merge rate
+  atelier-task-resolve              Resolve which registered project
+                                    owns the current cwd
+
+INSIDE CLAUDE CODE — slash commands (use within an atelier session)
+  /atelier:doctor [--fix]           Same as atelier-doctor
+  /atelier:next-task                Pick + start the next ROADMAP task
+  /atelier:resume-task <id>         Resume an interrupted / blocked task
+  /atelier:finish-task              Wrap up the active task: close PR,
+                                    move tracking, clean worktree
+  /atelier:status                   Dashboard of in-progress + blocked
+  /atelier:setup-project [...]      Bootstrap from inside Claude Code
+  /atelier:list-projects            Same as atelier-list-projects
+  /atelier:remove-project [...]     Deconfigure cwd; same flags as the
+                                    terminal helper
+  /atelier:update [--dry-run]       Same as atelier-update; permission
+                                    prompt on settings.template.json
+                                    changes
+  /atelier:validate [--full]        Run lint + typecheck + tests;
+                                    --full adds e2e + screenshots
+  /atelier:slice-task <id>          Decompose a large ROADMAP task into
+                                    sub-tasks (epic format, M4.24)
+
+NOTES
+  - `atelier` runs claude under $ATELIER_CONFIG_DIR (separate from your
+    personal ~/.claude/) so atelier's plugins + agents don't interfere
+    with non-atelier sessions. Run `claude` directly for a personal
+    (non-atelier) session.
+  - For full documentation: https://github.com/AkaLab-Tech/atelier
+ATELIER_HELP_TXT
+  sublog "wrote $dest"
+}
+
 phase_c_1() {
   phase "Phase C.1 — host-OS configuration"
   phase_c_1_claude_config_dir
@@ -1460,6 +1552,7 @@ phase_c_1() {
   phase_c_1_env_excludes
   phase_c_1_git_identity
   phase_c_1_setup_project_helper
+  phase_c_1_atelier_help_file
   phase_c_1_shellrc_hooks
   ok "Phase C.1 complete"
 }
@@ -1609,15 +1702,24 @@ print_first_steps() {
   printf '    4. %sStart your first task%s — `task` reads the next ROADMAP entry from the current project and runs the full task cycle:\n' "$_C_BOLD" "$_C_RESET"
   printf '         %stask%s\n\n' "$_C_CYAN" "$_C_RESET"
 
-  printf '    5. %sDocs%s:\n' "$_C_BOLD" "$_C_RESET"
+  printf '    5. %sExplore the full command surface%s (M7.1.F34):\n' "$_C_BOLD" "$_C_RESET"
+  printf '         %satelier --help%s              # complete command reference: terminal helpers + slash commands\n' "$_C_CYAN" "$_C_RESET"
+  printf '       Key helpers you should know about:\n'
+  printf '         %satelier-doctor [--fix]%s      # health check; --fix auto-applies\n' "$_C_CYAN" "$_C_RESET"
+  printf '         %satelier-update%s              # pull latest atelier + refresh\n' "$_C_CYAN" "$_C_RESET"
+  printf '         %satelier-list-projects%s       # list every registered project\n' "$_C_CYAN" "$_C_RESET"
+  printf '         %satelier-remove-project <p>%s  # deconfigure ONE project\n\n' "$_C_CYAN" "$_C_RESET"
+
+  printf '    6. %sDocs%s:\n' "$_C_BOLD" "$_C_RESET"
   printf '         - docs/operator-guide.md (Jr-friendly walkthrough — start here)\n'
   printf '         - docs/troubleshooting.md (symptom-indexed: when something does not work)\n'
   printf '         - README.md (overview + plugin-only install)\n'
   printf '         - PLAN.md §12 (architecture + milestone roadmap)\n'
   printf '         - docs/dogfood-guide.md (full-flow integration test)\n\n'
 
-  printf '    6. %sUninstall safely%s — when you no longer need atelier:\n' "$_C_BOLD" "$_C_RESET"
-  printf '         %satelier-uninstall%s             # preserves chat history\n' "$_C_CYAN" "$_C_RESET"
+  printf '    7. %sUninstall safely%s — when you no longer need atelier:\n' "$_C_BOLD" "$_C_RESET"
+  printf '         %satelier-remove-project <p>%s  # deconfigure ONE project (preserves atelier itself)\n' "$_C_CYAN" "$_C_RESET"
+  printf '         %satelier-uninstall%s             # whole-system uninstall, preserves chat history\n' "$_C_CYAN" "$_C_RESET"
   printf '         %satelier-uninstall --purge%s     # also wipes $ATELIER_CONFIG_DIR\n\n' "$_C_CYAN" "$_C_RESET"
 }
 
