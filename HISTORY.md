@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-05
 
 ### M7.1.F32 — `atelier-remove-project` (per-project removal, default preserves operator content; `--purge` extends to tracking files + .gitignore/.npmrc) — 2026-05-28
-**PR:** _pending_
+**PR:** [#106](https://github.com/AkaLab-Tech/atelier/pull/106)
 
 Discovered during M7.1 dogfood-5. Operator asked: *"Hay un mecanismo para eliminar atelier de un proyecto?"* — and there wasn't. `atelier-uninstall` removes atelier from the whole system (every registered project at once, plus the global state under `$ATELIER_CONFIG_DIR`); nothing existed to surgically detach a single project (leave atelier itself intact, leave the other registered projects intact, just disconnect `<this>` one).
 
