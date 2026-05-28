@@ -214,6 +214,7 @@
 
       "Bash(atelier-setup-project:*)",
       "Bash(atelier-setup-project --per-task-settings:*)",
+      "Bash(atelier-remove-project:*)",
       "Bash(atelier-pr-size-check:*)",
       "Bash(atelier-update:*)",
       "Bash(atelier-permission-diff:*)",

@@ -1210,6 +1210,12 @@ phase_c_1_setup_project_helper() {
 
   _phase_c_1_symlink_helper atelier-setup-project
   _phase_c_1_symlink_helper atelier-uninstall
+  # M7.1.F32: atelier-remove-project reverses atelier-setup-project for
+  # ONE project (vs atelier-uninstall which removes atelier from the
+  # whole system). Default mode preserves operator-owned content
+  # (tracking files, .gitignore, .npmrc entries); --purge extends the
+  # cleanup to those as well.
+  _phase_c_1_symlink_helper atelier-remove-project
   # M7.1.F23: atelier-doctor bash binary — replaces the 10 inline Bash
   # checks the /atelier:doctor slash command used to run, each of which
   # surfaced a different Claude Code permission gate. With this binary
