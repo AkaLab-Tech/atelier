@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+#
+# atelier-remove-project — reverse what atelier-setup-project did to ONE
+# project, leaving the rest of atelier (and other projects) untouched.
+#
+# Default mode (conservative):
+#   - Delete atelier-owned files: <path>/.claude/settings.json (+ .bak.*)
+#     and <path>/.atelier.json.
+#   - Unregister the project from $ATELIER_CONFIG_DIR/projects.json.
+#   - PRESERVE tracking files (ROADMAP.md, IN_PROGRESS.md, HISTORY.md),
+#     <path>/.gitignore, <path>/.npmrc, <path>/.claude/CLAUDE.md — these
+#     accumulate operator content over time and we don't try to surgically
+#     un-apply atelier's additions without explicit opt-in.
+#
+# Purge mode (--purge):
+#   - Everything default does, plus:
+#     - Delete the three tracking files (only if they exist).
+#     - Remove the four atelier-added entries from <path>/.gitignore
+#       (preserving any other entries the operator added).
+#     - Remove the three atelier-added guardrails from <path>/.npmrc
+#       (preserving any other entries).
+#     - Delete <path>/.claude/CLAUDE.md (atelier-managed even in default).
+#   - Requires --yes when stdin is not a TTY to skip the confirmation.
+#
+# Out of scope (intentionally not touched):
+#   - Per-task worktrees under <path>-worktrees/. The script warns when
+#     they exist but does not remove them. The operator uses `git wt rm`
+#     or atelier-uninstall for that.
+#   - Git history (no `git rm`, no commits — the operator decides what
+#     to do with the deletions, whether to stage them, etc.).
+#
+# Usage:
+#   atelier-remove-project <path> [--purge] [--yes|-y]
+#   atelier-remove-project --help
+#
+# Exit codes:
+#   0  removal applied
+#   1  unrecoverable error (path invalid, not registered, can't write, …)
+#   2  refusal (operator declined the confirmation in interactive mode)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+# ---------- logging ----------
+log()    { printf '==> %s\n' "$*"; }
+sublog() { printf '    %s\n' "$*"; }
+warn()   { printf '!!  %s\n' "$*" >&2; }
+die()    { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+ok()     { printf '    OK: %s\n' "$*"; }
+
+# ---------- usage ----------
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+Reverse atelier-setup-project for ONE project. Default mode preserves
+operator content (tracking files, .gitignore, .npmrc entries that may
+have grown beyond atelier's additions, project CLAUDE.md). --purge
+extends the removal to those files as well.
+
+USAGE:
+  ${SCRIPT_NAME} <project-path> [OPTIONS]
+  ${SCRIPT_NAME} --help
+
+OPTIONS:
+  --purge          Also delete tracking files (ROADMAP.md, IN_PROGRESS.md,
+                   HISTORY.md), remove the four atelier-added entries from
+                   .gitignore (preserving other entries), remove the three
+                   atelier-added pnpm guardrails from .npmrc (preserving
+                   other entries), and delete .claude/CLAUDE.md. Requires
+                   --yes in non-interactive mode.
+  --yes, -y        Non-interactive mode. Skip the confirmation prompt.
+                   Required with --purge in non-TTY contexts.
+  --help, -h       Show this help and exit.
+
+EXIT CODES:
+  0  removal applied
+  1  unrecoverable error
+  2  refusal (operator declined)
+EOF
+}
+
+# ---------- arg parse ----------
+PROJECT_PATH_ARG=""
+PURGE=false
+NONINTERACTIVE=false
+[ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --purge)    PURGE=true; shift ;;
+    --yes|-y)   NONINTERACTIVE=true; shift ;;
+    --help|-h)  usage; exit 0 ;;
+    --)         shift; break ;;
+    -*)         die "unknown flag: $1 (run --help for usage)" ;;
+    *)
+      [ -n "$PROJECT_PATH_ARG" ] && die "unexpected positional arg: $1 (only one <project-path> allowed)"
+      PROJECT_PATH_ARG="$1"; shift ;;
+  esac
+done
+
+[ -n "$PROJECT_PATH_ARG" ] || die "<project-path> is required (run --help for usage)"
+
+# ---------- resolve config ----------
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+CONFIG_FILE="$ATELIER_CONFIG_DIR/projects.json"
+
+command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+
+# ---------- resolve project path ----------
+# Canonicalise so the path matches what setup-project recorded
+# (an absolute, symlink-resolved path).
+case "$PROJECT_PATH_ARG" in
+  /*) ;;
+  *)  PROJECT_PATH_ARG="$(pwd)/$PROJECT_PATH_ARG" ;;
+esac
+
+if [ -d "$PROJECT_PATH_ARG" ]; then
+  PROJECT="$(cd -P "$PROJECT_PATH_ARG" && pwd)"
+else
+  # Path doesn't exist on disk — but the project may still be registered
+  # under that key if the operator already deleted the directory. Use the
+  # arg verbatim and let the registry lookup decide.
+  PROJECT="$PROJECT_PATH_ARG"
+fi
+
+log "atelier-remove-project ${VERSION}"
+sublog "project: $PROJECT"
+sublog "mode:    $($PURGE && echo 'purge (tracking + .gitignore + .npmrc + CLAUDE.md)' || echo 'default (preserve operator content)')"
+
+# ---------- check registry ----------
+if [ ! -f "$CONFIG_FILE" ]; then
+  die "$CONFIG_FILE not found — atelier may not be installed"
+fi
+if ! jq -e --arg p "$PROJECT" '.projects[$p]' "$CONFIG_FILE" >/dev/null 2>&1; then
+  warn "$PROJECT is not registered in $CONFIG_FILE"
+  warn "nothing to do — exiting cleanly"
+  exit 0
+fi
+
+# ---------- inventory: what would be removed ----------
+declare -a TO_DELETE=()
+declare -a PRESERVED=()
+add_delete() { [ -e "$1" ] && TO_DELETE+=("$1") || PRESERVED+=("$1 (already absent)"); }
+
+# Always-delete files
+add_delete "$PROJECT/.claude/settings.json"
+# .bak.* may be multiple — glob inside an enabling shopt scope.
+shopt -s nullglob
+for bak in "$PROJECT/.claude/settings.json.bak."*; do
+  TO_DELETE+=("$bak")
+done
+shopt -u nullglob
+add_delete "$PROJECT/.atelier.json"
+
+# Purge-only files
+if $PURGE; then
+  add_delete "$PROJECT/.claude/CLAUDE.md"
+  add_delete "$PROJECT/ROADMAP.md"
+  add_delete "$PROJECT/IN_PROGRESS.md"
+  add_delete "$PROJECT/HISTORY.md"
+fi
+
+# Preserved-by-policy (always, default mode)
+if ! $PURGE; then
+  [ -f "$PROJECT/.claude/CLAUDE.md" ] && PRESERVED+=("$PROJECT/.claude/CLAUDE.md (preserved — operator-owned)")
+  [ -f "$PROJECT/ROADMAP.md" ]        && PRESERVED+=("$PROJECT/ROADMAP.md (preserved — operator-owned)")
+  [ -f "$PROJECT/IN_PROGRESS.md" ]    && PRESERVED+=("$PROJECT/IN_PROGRESS.md (preserved — operator-owned)")
+  [ -f "$PROJECT/HISTORY.md" ]        && PRESERVED+=("$PROJECT/HISTORY.md (preserved — operator-owned)")
+  [ -f "$PROJECT/.gitignore" ]        && PRESERVED+=("$PROJECT/.gitignore (preserved — atelier-added entries kept intact)")
+  [ -f "$PROJECT/.npmrc" ]            && PRESERVED+=("$PROJECT/.npmrc (preserved — atelier-added guardrails kept intact)")
+fi
+
+# Worktrees observation (out of scope but operator should know).
+WORKTREE_DIR="${PROJECT}-worktrees"
+if [ -d "$WORKTREE_DIR" ] && [ -n "$(ls -A "$WORKTREE_DIR" 2>/dev/null)" ]; then
+  warn "task worktrees exist under $WORKTREE_DIR — NOT touched by this script"
+  warn "remove them manually with \`git wt rm <branch>\` if desired"
+fi
+
+# ---------- purge-only file modifications (computed up-front so the
+# inventory report shows them) ----------
+declare -a PURGE_MODIFY=()
+if $PURGE; then
+  [ -f "$PROJECT/.gitignore" ] && PURGE_MODIFY+=("$PROJECT/.gitignore (remove 4 atelier-added entries)")
+  [ -f "$PROJECT/.npmrc" ]     && PURGE_MODIFY+=("$PROJECT/.npmrc (remove 3 atelier-added pnpm guardrails)")
+fi
+
+# ---------- report inventory ----------
+echo ""
+log "would delete (${#TO_DELETE[@]} item(s)):"
+for f in ${TO_DELETE[@]+"${TO_DELETE[@]}"}; do sublog "$f"; done
+[ ${#TO_DELETE[@]} -eq 0 ] && sublog "(nothing on disk — only registry entry remains)"
+echo ""
+
+if [ ${#PURGE_MODIFY[@]} -gt 0 ]; then
+  log "would modify (${#PURGE_MODIFY[@]} item(s)):"
+  for f in "${PURGE_MODIFY[@]}"; do sublog "$f"; done
+  echo ""
+fi
+
+if [ ${#PRESERVED[@]} -gt 0 ]; then
+  log "preserved (${#PRESERVED[@]} item(s)):"
+  for f in "${PRESERVED[@]}"; do sublog "$f"; done
+  echo ""
+fi
+
+log "registry: will unregister $PROJECT from $CONFIG_FILE"
+echo ""
+
+# ---------- confirm ----------
+if ! $NONINTERACTIVE; then
+  if [ ! -t 0 ]; then
+    die "non-interactive context (no TTY) but --yes was not given; pass --yes to proceed without confirmation"
+  fi
+  printf 'Proceed? [y/N]: ' >&2
+  read -r ans
+  case "$ans" in
+    y|Y|yes|Yes) sublog "operator confirmed" ;;
+    *) warn "operator declined — exiting"; exit 2 ;;
+  esac
+fi
+
+# ---------- execute ----------
+echo ""
+log "applying removal"
+
+for f in ${TO_DELETE[@]+"${TO_DELETE[@]}"}; do
+  rm -f "$f" || warn "failed to delete $f (continuing)"
+  sublog "deleted $f"
+done
+
+if $PURGE && [ -f "$PROJECT/.gitignore" ]; then
+  # Strip the four atelier-added lines. We match the exact strings
+  # atelier-setup-project appends; other operator-added entries (and any
+  # other comments/blank lines) are preserved verbatim.
+  tmp="$(mktemp)"
+  grep -vxF -e '.task-log/' \
+            -e '.claude/settings.json' \
+            -e '.claude/settings.local.json' \
+            -e '.DS_Store' \
+            "$PROJECT/.gitignore" > "$tmp" || true
+  mv "$tmp" "$PROJECT/.gitignore"
+  sublog "stripped 4 atelier-added entries from .gitignore"
+fi
+
+if $PURGE && [ -f "$PROJECT/.npmrc" ]; then
+  tmp="$(mktemp)"
+  grep -vxE -e 'ignore-scripts=true' \
+            -e 'minimum-release-age=10080' \
+            -e 'audit-level=moderate' \
+            "$PROJECT/.npmrc" > "$tmp" || true
+  mv "$tmp" "$PROJECT/.npmrc"
+  sublog "stripped 3 atelier-added guardrails from .npmrc"
+fi
+
+# Update the registry: remove this project's entry.
+tmp="$(mktemp)"
+jq --arg p "$PROJECT" 'del(.projects[$p])' "$CONFIG_FILE" > "$tmp" \
+  || { rm -f "$tmp"; die "failed to update $CONFIG_FILE"; }
+mv "$tmp" "$CONFIG_FILE"
+sublog "unregistered from $CONFIG_FILE"
+
+# ---------- report ----------
+echo ""
+ok "$PROJECT removed from atelier"
+sublog "to reconfigure later: \`atelier-setup-project $PROJECT\`"
+exit 0

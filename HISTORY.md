@@ -8,6 +8,61 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### M7.1.F32 — `atelier-remove-project` (per-project removal, default preserves operator content; `--purge` extends to tracking files + .gitignore/.npmrc) — 2026-05-28
+**PR:** _pending_
+
+Discovered during M7.1 dogfood-5. Operator asked: *"Hay un mecanismo para eliminar atelier de un proyecto?"* — and there wasn't. `atelier-uninstall` removes atelier from the whole system (every registered project at once, plus the global state under `$ATELIER_CONFIG_DIR`); nothing existed to surgically detach a single project (leave atelier itself intact, leave the other registered projects intact, just disconnect `<this>` one).
+
+Use cases:
+- **Project no longer wants atelier**: operator decides storefront should go back to being a regular non-atelier-managed repo. Today this meant manually editing `~/.claude-work/projects.json` plus `rm` of various files.
+- **Resetting a broken setup**: after a partial `setup-project --reconfigure` left the project in an inconsistent state, the cleanest fix is to remove and re-setup. The first half of that cycle was missing.
+- **Testing setup-project's idempotency**: developers iterating on `setup-project` need a fast "undo" between runs.
+
+**Delivered:**
+
+- **`scripts/atelier-remove-project` (new, ~230 lines bash).** Mirrors the style of `atelier-uninstall` (default vs `--purge` mode duality, `--yes` for non-interactive) but scoped to one project.
+  - **Args**: `<project-path>` (required, positional) + `--purge` + `--yes`/`-y` + `--help`/`-h`.
+  - **Default mode**: deletes `.claude/settings.json` + `.claude/settings.json.bak.*` + `.atelier.json`. Unregisters the project from `$ATELIER_CONFIG_DIR/projects.json`. **Preserves** `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `.claude/CLAUDE.md` (operator-content artefacts), plus `.gitignore` and `.npmrc` (may carry operator-added entries beyond atelier's four / three additions).
+  - **`--purge` mode**: extends the default with: delete the three tracking files (`ROADMAP.md`/`IN_PROGRESS.md`/`HISTORY.md`), delete `.claude/CLAUDE.md`, and **surgically strip** the four atelier-added entries from `.gitignore` (`.task-log/`, `.claude/settings.json`, `.claude/settings.local.json`, `.DS_Store`) and the three atelier-added guardrails from `.npmrc` (`ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate`) — preserving any other entries the operator added.
+  - **Pre-flight refusal**: if the path is not registered in `projects.json`, exit 0 with `nothing to do — exiting cleanly`. Idempotent.
+  - **Worktrees observation**: detects `<path>-worktrees/` with content and warns but does not touch it. Removing per-task worktrees belongs to `git wt rm` or to `atelier-uninstall`.
+  - **Interactive confirmation**: lists exactly what will be deleted, what will be modified (purge only), what will be preserved, plus the unregister line; prompts `[y/N]`. `--yes` skips the prompt.
+- **`install.sh` — new symlink** for `atelier-remove-project` in `phase_c_1_setup_project_helper` alongside `atelier-uninstall`. Same `_phase_c_1_symlink_helper` pattern as the other host-OS helpers.
+- **`templates/settings.template.json`** — `Bash(atelier-remove-project:*)` added to the `allow` list so the helper can be invoked from inside Claude Code sessions without a permission prompt.
+
+**Decisions captured:**
+
+- **Conservative default + opt-in `--purge`.** Operators who deconfigure a project often want to keep their accumulated `ROADMAP.md` content (notes, decisions, links). Defaulting to delete-everything-now would surprise; defaulting to preserve gives a safe undo path. `--purge` is for the case where the operator genuinely wants a clean slate.
+- **Surgical strip of `.gitignore` and `.npmrc`, not full delete.** Both files commonly have content the operator added beyond atelier's defaults (registry URLs, custom ignore patterns, `node_modules/`, etc.). `grep -vxF` (for the literal `.gitignore` lines) and `grep -vxE` (for the `.npmrc` lines) remove only the exact atelier-added lines and leave everything else untouched.
+- **Idempotent on unregistered projects.** If the operator runs the script twice, or against a project that was never registered, the script exits 0 with a clear message. Same pattern as `atelier-uninstall`'s behaviour on a fresh system.
+- **Worktrees out of scope.** Removing per-task worktrees is a different operation (`git wt rm`); coupling it to the project-remove flow would be surprising. The script warns about worktree presence so the operator knows to handle them, but doesn't touch them.
+- **`pwd -P` canonicalization.** Mirrors what `atelier-setup-project` does when registering the path. Without it, paths under `/var/folders` (macOS tmp) or other symlinked roots would fail to match the registry entry.
+
+**Plugin scope:** mixed.
+- Host-OS-layer: `scripts/atelier-remove-project`, `install.sh`.
+- Plugin-shipped: `templates/settings.template.json`. Plugin patch bump **0.6.6 → 0.6.7** per PLAN.md §14.2 (plugin-scope additive allow-list change; the helper itself is delivered via the host-OS layer that operators update via `atelier-update`).
+
+**Verified locally with synthetic scenarios:**
+
+- **A — unregistered path** → exit 0, `nothing to do — exiting cleanly`. No registry change, no file touched.
+- **B — missing positional arg** → exit 1 with `<project-path> is required (run --help for usage)`.
+- **C — default mode + `--yes`** → deletes `.claude/settings.json` + `.bak.*` + `.atelier.json`; unregisters from `projects.json`; preserves `ROADMAP.md`/`IN_PROGRESS.md`/`HISTORY.md`/`.claude/CLAUDE.md`/`.gitignore`/`.npmrc` verbatim; other registered projects untouched.
+- **D — `--purge --yes`** → deletes everything from C plus the three tracking files plus `.claude/CLAUDE.md`; `.gitignore` reduced to only operator-added entries (`node_modules/`, `my-custom-entry`); `.npmrc` reduced to only operator-added entries (`registry=...`, `my-custom-setting=42`); registry entry unchanged for other projects.
+
+`bash -n` + `shellcheck` clean.
+
+**Operator-visible:**
+
+```
+atelier-remove-project /path/to/project              # safe deconfigure
+atelier-remove-project /path/to/project --purge      # full clean slate
+atelier-remove-project /path/to/project --purge --yes  # non-interactive
+```
+
+For the immediate dogfood-5 use case on `storefront`: the operator can now `atelier-remove-project /Users/mike/Work/storefront` to fully detach (or `--purge` for a clean slate before re-running `atelier-setup-project`).
+
+**Follow-up paths:** none expected for the core feature.
+
 ### M7.1.F31 — allow atelier's own skills + slash commands in `settings.template.json` — 2026-05-28
 **PR:** [#105](https://github.com/AkaLab-Tech/atelier/pull/105)
 
