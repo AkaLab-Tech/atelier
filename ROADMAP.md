@@ -20,23 +20,48 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 2–5 — Single-project agent flow + robustness + multi-project foundation.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries — and when an operator can install / uninstall atelier without risking unrelated Claude state.
 
-### M2.7 — Empirically validate the auto-mode adoption path (closes the spike's open questions)
+### M2.8 — Adopt Claude Code's native `auto` permission mode as layer 3
 
-`[security-design]` · Source: [docs/research/permission-layer-3.md](docs/research/permission-layer-3.md) (M2.6, 2026-05-29) · `blocked_by: M2.6 (already closed)`
+`[security-design]` · Source: [docs/research/permission-layer-3.md](docs/research/permission-layer-3.md) (M2.6 spike + M2.7 validation, 2026-05-29) · `blocked_by: M2.7 (already closed, all OQ favorable)`
 
-The M2.6 spike recommended **Option C — adopt Claude Code's native `auto` permission mode as the primary layer 3 + keep PLAN.md §11 v2.3 (`PreToolUse` Haiku hook) as a targeted second layer for the high-risk surface** — *conditional* on three empirical findings the documentation does not pin down. M2.7 runs those tests on a real host and writes the answers into the existing research doc as an addendum.
+M2.7 confirmed empirically that adoption is safe on Claude Code v2.1.156: `CLAUDE_CONFIG_DIR` honors `defaultMode: "auto"` (OQ-A), issue #55507 does not reproduce so user-level `auto` survives the merge with a project `permissions` block (OQ-B), and the auto-mode classifier explicitly intercepts the shell-syntax bypass that motivated the spike (OQ-C, observed annotation "Allowed by auto mode classifier" on a `for … do … done` loop). This milestone ships the adoption.
 
-**Open questions to resolve** (full description: [docs/research/permission-layer-3.md §Open questions](docs/research/permission-layer-3.md)):
+**Scope:**
 
-- [ ] **OQ-A — `CLAUDE_CONFIG_DIR` and `defaultMode: "auto"`.** Does Claude Code honor `defaultMode: "auto"` when it lives in `$CLAUDE_CONFIG_DIR/settings.json` (non-default user-config dir), or is the rule hardcoded to literal `~/.claude/settings.json`?
-- [ ] **OQ-B — Issue [#55507](https://github.com/anthropics/claude-code/issues/55507) reproduction.** Atelier writes a `permissions` block to every project's `.claude/settings.json`. Does that block's presence silently drop the user-level `defaultMode` from the merge in current Claude Code, as the issue reports?
-- [ ] **OQ-C — Shell-loop behavior under auto-mode.** The friction symptom that motivated the spike was the *"Contains shell syntax that cannot be statically analyzed"* prompt for `for … do … done`. Does the classifier intercept that branch, or is the static-analysis bypass hardcoded above the classifier?
+- [ ] **`templates/settings.template.json`** — remove the `"defaultMode": "acceptEdits"` line. Project-level `defaultMode` overrides user-level by normal merge precedence; leaving it would mask the user-level `auto`. The allow / deny / ask blocks stay unchanged — they compose with auto-mode as documented.
+- [ ] **`install.sh` Phase C.1** — add a step that writes `{"permissions": {"defaultMode": "auto"}}` into `$ATELIER_CONFIG_DIR/settings.json` (merge with the existing keys; do not clobber `enabledPlugins`, `extraKnownMarketplaces`, `theme`, etc.). Idempotent: skip if already present at the right value.
+- [ ] **`scripts/atelier-doctor`** — new check that `$ATELIER_CONFIG_DIR/settings.json` has `permissions.defaultMode == "auto"`. `--fix` writes the setting if missing.
+- [ ] **`docs/operator-guide.md` + `docs/troubleshooting.md` + `operator-rules.md`** — document the auto-mode adoption: what it changes for the operator (no more permission prompts for shell loops or new commands within the deny-respecting envelope) and what stays the same (deny list still blocks force-push, never-auto-merge surface, etc.).
+- [ ] **`docs/research/permission-layer-3.md`** — add a "Shipped in M2.8 (PR #N)" line to the addendum's Resolution summary.
 
-**Deliverable:** an addendum at the bottom of [docs/research/permission-layer-3.md](docs/research/permission-layer-3.md) reporting each test command, observed output, and a resolution per OQ. Also update PLAN.md §11 v2.3 with the validated decision (adopt / adopt-with-template-change / cannot-adopt) per the implementation-plan branches in §Implementation plan of the same doc.
+**Plugin bump:** **0.7.5 → 0.8.0** per PLAN.md §14.2. Minor bump — operator-visible UX change (fewer permission prompts, semantic-classifier gate) that is not breaking but observably different. Cut release `v0.8.0`.
 
-**Acceptance:** the OQ-A/B/C addendum exists; PLAN.md §11 v2.3 is updated with the validated decision; if favorable, a new M2.8 (`install.sh` writes `defaultMode: "auto"` + `atelier-doctor` verifies it) is added to ROADMAP; if unfavorable, PLAN.md §11 v2.3 is promoted from "v2 deferred" to a v1 Phase 4 milestone.
+**Acceptance:**
 
-**Trigger to revisit:** captured 2026-05-29 as the empirical-validation half of M2.6. Run before any auto-mode adoption work because the answer to OQ-B alone could invalidate the entire recommendation.
+- A fresh `install.sh` on a host with no prior atelier config produces `$ATELIER_CONFIG_DIR/settings.json` with `permissions.defaultMode == "auto"`.
+- `atelier-doctor` reports the auto-mode check as `✓`; on a host without the setting, `atelier-doctor --fix` adds it.
+- Inside an atelier task worktree, `/status` Config tab reports `Default permission mode: Auto mode`; `/status` Status tab reports `Setting sources: User settings, Shared project settings`.
+- A `for p in foo bar; do echo "$p"; done` invocation by Claude inside the task worktree no longer surfaces the *"Contains shell syntax (string) that cannot be statically analyzed"* prompt.
+- The `Bash(git worktree*)`, `Bash(git wt*)`, and the rest of the existing allow list still match before the classifier fires (verified by `/permissions` showing all allow entries intact).
+
+**Trigger to revisit:** captured 2026-05-29 immediately after M2.7's three OQs resolved favorably. Run before any further enumeration-gap fixes — once auto-mode is live, follow-up F-series findings about specific missing allow entries either disappear (covered by the classifier) or get a more focused fix scope.
+
+### M2.9 — Custom `PreToolUse` Haiku hook as targeted second layer above auto-mode (formerly PLAN §11 v2.3)
+
+`[security-design]` · Source: [docs/research/permission-layer-3.md](docs/research/permission-layer-3.md) Recommendation · `blocked_by: M2.8`
+
+Originally tracked as PLAN.md §11 v2.3. The M2.6 spike confirmed it complements auto-mode rather than replaces it — useful for the narrow residual high-risk surface where the documented ~17% FN rate of auto-mode matters (e.g. anything touching `pnpm-lock.yaml`, deploy paths, never-auto-merge files). Deferred from "v2" to a tracked v1 follow-up *after* M2.8 ships and the residual surface is observable in production.
+
+**Scope:**
+
+- [ ] A `PreToolUse` Bash hook that calls Haiku 4.5 with a structured prompt: tool name, args, the M2.5 risk-class tag of the path being touched (if any), the task's `CLAUDE.md` excerpt about deploy/secrets.
+- [ ] Cache **disabled** — every invocation is a fresh judgment. The OMC reference design caches per command string; atelier does not, because the same command can be safe or unsafe depending on cwd and surrounding state.
+- [ ] Logs decisions to `<worktree>/.task-log/hook-decisions.jsonl` for post-mortem and operator review.
+- [ ] Scope: project-level only (not global). Operator opts in per project by adding a key to `.atelier.json`.
+
+**Acceptance:** see [PLAN.md §11 v2.3](PLAN.md) for the original surface area; refine once M2.8 has shipped and the residual FN cases are observable.
+
+**Trigger to revisit:** after M2.8 has been in production long enough to surface real residual cases (target: ≥ 10 merged tasks under auto-mode). Run only if there are observed FN incidents that motivate the additional layer.
 
 ### M4.22 — Spike: Coolify VPS integration research
 
