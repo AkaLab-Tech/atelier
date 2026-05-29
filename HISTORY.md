@@ -8,8 +8,47 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M7.1.F38 — `/atelier:setup-project` preserves stale `.claude/settings.json` instead of resyncing from the refreshed template — 2026-05-28
+### M2.6 — Permission layer-3 spike: native auto-mode vs custom `PreToolUse` LLM hook — 2026-05-29
 **PR:** _pending_
+
+Closes M2.6 (ROADMAP) by producing the research artifact required by its acceptance criteria. Triggered by two friction patterns surfaced during M7.1 dogfood-5 (F37 + the `for … do … done` shell-syntax prompt the operator hit after F38 merged): atelier's static allow/deny/ask matrix in `templates/settings.template.json` cannot cover (a) enumeration gaps for new helpers/aliases or (b) bash control flow that the matcher refuses to statically analyse.
+
+**Delivered:**
+
+- **[docs/research/permission-layer-3.md](docs/research/permission-layer-3.md)** — full research artifact with Q1-Q4 findings (composition with the static matrix, per-task vs global scope, the 17% FN profile, latency), three open questions deferred to M2.7 (OQ-A `CLAUDE_CONFIG_DIR` scope, OQ-B issue #55507 reproduction, OQ-C shell-loop behaviour under auto-mode), recommendation **Option C — adopt Claude Code's native `auto` permission mode as primary layer 3 + keep PLAN.md §11 v2.3 (`PreToolUse` Haiku hook) as a targeted second layer for the high-risk surface**, conditional on the OQ-A/B/C validation, and a phased implementation plan covering both the favorable and unfavorable resolution paths.
+- **[PLAN.md](PLAN.md) §11 v2.3** — updated with `Decided in: docs/research/permission-layer-3.md` and the picked option (Option C, conditional). The custom hook is no longer "the v2.3 implementation"; it is now "the targeted second layer above auto-mode, tracked separately as a future M2.8 if and when adoption of auto-mode reaches production". §11 v2.3 also captures the FN profile context (concentrated in Tier-2 file edits and ambiguous-consent Bash, both of which atelier already scopes via `additionalDirectories` + deny list) so future readers don't have to re-walk the spike to understand why the recommendation lands where it does.
+- **[ROADMAP.md](ROADMAP.md)** — `M2.6` removed (closed by this PR), `M2.7 — Empirically validate the auto-mode adoption path` added as the empirical-validation half of the spike. M2.7 enumerates OQ-A/B/C with concrete reproduction steps and the addendum target inside `docs/research/permission-layer-3.md`.
+
+**Findings (one-line each, full detail in the doc):**
+
+- **Q1 — Composition.** Auto-mode composes on top of the static matrix; `deny` and `allow` rules still take precedence; the classifier only fires on `ask` or unenumerated actions. Atelier's existing deny-list survives intact under auto-mode. **High confidence**, official Anthropic docs.
+- **Q2 — Scope.** `defaultMode: "auto"` is silently ignored when set in `.claude/settings.json` or `.claude/settings.local.json` (project-level) — Claude Code only honors it from the user-level config. Whether `$CLAUDE_CONFIG_DIR/settings.json` counts as user-level is undocumented (OQ-A). **High confidence on rule; medium on `CLAUDE_CONFIG_DIR` interaction.**
+- **Q3 — 17% FN profile.** Concentrated in (a) ambiguous-consent Bash actions, (b) Tier-2 file edits exempt by design (skipped by classifier for latency), (c) batch operations. Complementary FP rate is 0.4% after the full Stage 1 → Stage 2 pipeline. The two FN-heavy surfaces are already protected by atelier's other layers (`additionalDirectories`, `deny` list), so the residual exposure is narrow. **High confidence**, published Anthropic data.
+- **Q4 — Latency.** ~200-400 ms per classifier call (fast path ~50-150 ms, thinking path 200-400 ms for ambiguous cases). 10-15% token overhead on a long refactor. Negligible for atelier's typical task wall-time. **Medium confidence**, qualitative Anthropic docs + consistent community reports.
+
+**Decisions captured:**
+
+- **Option C over Option A or B alone.** Auto-mode alone (Option A) gives up atelier's ability to express project-specific risk signals; custom hook alone (Option B) would reimplement Anthropic's production-trained classifier at higher latency and lower coverage. C — auto-mode for breadth + custom hook for the narrow residual high-risk surface — is defense in depth without redundancy.
+- **Conditional adoption, not blanket adoption.** OQ-A and OQ-B are real risks. Issue #55507 in particular could silently invalidate the whole recommendation: if the `permissions` block atelier writes to every project drops the user-level `defaultMode` from the merge, then auto-mode is unreachable from atelier without removing the project-level block — which is the whole point of the template. The doc says "adopt C *if and only if* OQ-A + OQ-B + OQ-C resolve favorably" and the implementation plan covers both the favorable and unfavorable branches explicitly.
+- **Validation deferred to M2.7, not bundled into M2.6.** M2.6 is the *research* half; M2.7 is the *empirical-validation* half. Splitting keeps M2.6 closeable (the spike artifact exists, the recommendation exists, the decision is captured in PLAN.md) and lets M2.7 land independently when the operator decides to run the test commands on a real host.
+- **`docs/research/` as the canonical location.** Per ROADMAP M2.6 acceptance literal text. Future research spikes (e.g. M4.22 Coolify) target the same directory.
+
+**Plugin scope:** documentation only — no agent, skill, command, hook, script, or template touched. Plugin patch bump **0.7.4 → 0.7.5** per PLAN.md §14.2 (docs-only, no release cut required but the manifest stays aligned with head-of-main, same convention as M7.1.F35).
+
+**Verified locally:**
+
+- `docs/research/permission-layer-3.md` exists with all four investigation sections populated (Q1-Q4 + Bonus + Recommendation + Open Questions + Implementation plan + Decision log).
+- PLAN.md §11 v2.3 contains the literal text `Decided in: docs/research/permission-layer-3.md` and the picked option (Option C, conditional), per the M2.6 acceptance criteria.
+- ROADMAP M2.6 removed; M2.7 added with concrete OQ-A/B/C reproduction steps and addendum target.
+
+**Follow-up paths:**
+
+- **M2.7 (added to ROADMAP)** — empirical validation of OQ-A / OQ-B / OQ-C, with the result written as an addendum at the bottom of `docs/research/permission-layer-3.md`.
+- **M2.8 (gated on M2.7 favorable)** — `install.sh` writes `defaultMode: "auto"` to `$ATELIER_CONFIG_DIR/settings.json`; `atelier-doctor` verifies via `/permissions`; documented in `operator-rules.md` + `docs/operator-guide.md`.
+- **PLAN §11 v2.3 promotion (gated on M2.7 unfavorable)** — if auto-mode cannot be adopted, the custom `PreToolUse` Haiku hook moves from "v2 deferred" to a v1 Phase 4 milestone, since it would be the only path to a layer 3.
+
+### M7.1.F38 — `/atelier:setup-project` preserves stale `.claude/settings.json` instead of resyncing from the refreshed template — 2026-05-28
+**PR:** [#111](https://github.com/AkaLab-Tech/atelier/pull/111)
 
 Discovered immediately after M7.1.F36 + F37 (PR [#110](https://github.com/AkaLab-Tech/atelier/pull/110)) merged and v0.7.3 was released. Operator's report after running `atelier-update`, `atelier-remove-project`, and `atelier /atelier:setup-project .` on `~/Work/storefront`: *"el proyecto me sigue pidiendo autorización para ejecutar algo tan simple como `git wt ls`"*.
 
