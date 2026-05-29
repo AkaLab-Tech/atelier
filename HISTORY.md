@@ -8,8 +8,40 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M2.6 — Permission layer-3 spike: native auto-mode vs custom `PreToolUse` LLM hook — 2026-05-29
+### M2.7 — Empirical validation of the auto-mode adoption path: OQ-A + OQ-B + OQ-C all favorable — 2026-05-29
 **PR:** _pending_
+
+Closes M2.7 (ROADMAP). Runs the three open questions that M2.6 left conditional, on a real host (macOS 25.5.0, Claude Code v2.1.156, model `claude-opus-4-8[1m]`). All three resolve favorably — the M2.6 conditional is now resolved, and adoption of auto-mode is greenlit.
+
+**Tests performed (full data in [docs/research/permission-layer-3.md §Addendum](docs/research/permission-layer-3.md)):**
+
+- **OQ-A — `CLAUDE_CONFIG_DIR` and `defaultMode: "auto"`.** Created `/tmp/cc-oqa-test/settings.json` with `{"permissions": {"defaultMode": "auto"}}` + copied OAuth state from `~/.claude-work/.claude.json` to bypass interactive login. Launched `cd /tmp/cc-oqa-cwd && CLAUDE_CONFIG_DIR=/tmp/cc-oqa-test claude` from a clean cwd. `/status` Config tab reported `Default permission mode: Auto mode`; Status tab reported `Setting sources: User settings`. **Resolution: favorable.** Claude Code reads `defaultMode: "auto"` from the user-level config wherever `CLAUDE_CONFIG_DIR` points; the docs' literal `~/.claude/settings.json` reference is shorthand for "the active user-level config dir", not a hardcoded path.
+- **OQ-B — Issue #55507 reproduction.** Created `/tmp/cc-oqb-cwd/.claude/settings.json` with `{"permissions": {"allow": ["Bash(echo *)"]}}` (a project-level `permissions` block with no `defaultMode` of its own — the precise condition the issue reports as broken). Re-launched with the same `CLAUDE_CONFIG_DIR`. `/status` Config tab still reported `Default permission mode: Auto mode`; Status tab now reported `Setting sources: User settings, Shared project settings` (both layers merged). **Resolution: favorable.** Issue #55507 does not reproduce on Claude Code v2.1.156 — either fixed upstream or the original repro conditions were narrower than the issue describes. Atelier's `templates/settings.template.json`'s `permissions` block will not invalidate user-level auto-mode in production.
+- **OQ-C — Auto-mode covers the shell-syntax branch.** Temporarily added `{"permissions": {"defaultMode": "auto"}}` to `~/.claude-work/settings.json` (backed up to `settings.json.oqc-bak`, restored at the end) so the operator's real `atelier` shell wrapper would launch a session with auto-mode active under `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR` end-to-end. Launched `cd /tmp/cc-oqa-cwd && atelier`. Confirmed `/status` Config: `Default permission mode: Auto mode`. Instructed Claude: *"Run this bash command using the Bash tool: `for p in foo bar baz; do echo "$p"; done`"*. Observed output included the literal annotation **"Allowed by auto mode classifier"** below the Bash call, followed by `foo / bar / baz` — no interactive prompt, no *"Contains shell syntax (string) that cannot be statically analyzed"* friction. **Resolution: favorable.** Auto-mode's classifier intercepts the static-analysis-bypass branch. Adopting auto-mode closes both the F37-style enumeration gaps and the shell-loop friction in one move.
+
+**Decisions captured:**
+
+- **Adoption is no longer conditional.** The three OQs resolved favorably; the M2.6 doc's "adopt-with-template-change" branch is the one we take. M2.8 is queued in ROADMAP as the implementation work; M2.9 (originally PLAN.md §11 v2.3) is the targeted second-layer hook, deferred until after M2.8 has shipped and the residual high-risk surface is observable in production.
+- **OQ-B was tested with a no-`defaultMode` project block to isolate issue #55507 from normal precedence.** Putting `defaultMode: acceptEdits` in the project file would have nubbed the test — that would have been a normal override case (project wins) rather than the silent-drop pathology issue #55507 describes. The M2.8 scope explicitly removes `defaultMode: acceptEdits` from `templates/settings.template.json` to let the user-level `auto` through; OQ-B confirmed that removing it is safe (the rest of the project's `permissions` block still merges correctly).
+- **Test harness used `~/.claude-work/.claude.json` for OAuth.** Claude Code v2.1+ stores OAuth state in `.claude.json`, not in macOS Keychain. Copying the file from the operator's atelier config dir to the test config dir let the test run without interactive login. The token rotated after the OQ-B session closed, blocking a re-launch — switching to the temporary-patch path for OQ-C (using the operator's real `atelier` wrapper) was both cleaner and a better fidelity to the real adoption scenario.
+- **`~/.claude-work/settings.json.oqc-bak` was restored at end of OQ-C.** No persistent state changes on the operator's host.
+
+**Plugin scope:** documentation only — addendum to the existing research artifact + PLAN.md §11 v2.3 update + ROADMAP transitions (M2.7 closed, M2.8 added, M2.9 added). No agent, skill, command, hook, script, or template touched. Plugin patch bump **0.7.5 → 0.7.6** per PLAN.md §14.2 (docs-only, no release cut). The next release (cut by M2.8) will be **v0.8.0** — minor bump because the operator-visible UX changes materially (no more permission prompts for shell loops or for commands within the deny-respecting envelope).
+
+**Verified locally:**
+
+- `docs/research/permission-layer-3.md` Addendum section exists with OQ-A/B/C tests, observed outputs (including the literal "Allowed by auto mode classifier" annotation), and resolutions.
+- PLAN.md §11 v2.3 carries the validated decision: "Option C — adopt Claude Code's native `auto` permission mode as the primary layer 3. The M2.6 conditional is resolved: OQ-A/B/C all favorable on Claude Code v2.1.156."
+- ROADMAP: M2.7 removed; M2.8 (adoption work) and M2.9 (custom hook second layer) added with concrete scope and acceptance criteria.
+- `~/.claude-work/settings.json` restored to its pre-OQ-C state (the operator can verify with `jq '.permissions // "(no permissions block)"' ~/.claude-work/settings.json` → reports the no-block string).
+
+**Follow-up paths:**
+
+- **M2.8** — adoption implementation: remove `defaultMode: acceptEdits` from the template, write the user-level `defaultMode: auto` from `install.sh`, doctor-check + `--fix`, operator-facing docs. Plugin minor bump 0.7.x → 0.8.0; release v0.8.0.
+- **M2.9** — custom `PreToolUse` Haiku hook as a targeted second layer for residual high-risk operations. Gated on M2.8 reaching production and producing observable residual FN incidents (target: ≥ 10 merged tasks under auto-mode before deciding whether M2.9 is worth the work).
+
+### M2.6 — Permission layer-3 spike: native auto-mode vs custom `PreToolUse` LLM hook — 2026-05-29
+**PR:** [#112](https://github.com/AkaLab-Tech/atelier/pull/112)
 
 Closes M2.6 (ROADMAP) by producing the research artifact required by its acceptance criteria. Triggered by two friction patterns surfaced during M7.1 dogfood-5 (F37 + the `for … do … done` shell-syntax prompt the operator hit after F38 merged): atelier's static allow/deny/ask matrix in `templates/settings.template.json` cannot cover (a) enumeration gaps for new helpers/aliases or (b) bash control flow that the matcher refuses to statically analyse.
 
