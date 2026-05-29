@@ -263,3 +263,28 @@ operator can:
   to act on a task the heuristics did not detect.
 - **Disable**: set `taskDecomposer.enabled: false` in
   `<project>/.atelier.json` to turn off the automatic pass project-wide.
+
+## Permission model: layer 3 is auto-mode (M2.8)
+
+Atelier ships with **Claude Code's native auto permission mode** as the layer-3 fallback for the static allow/deny/ask matrix in `templates/settings.template.json`. `install.sh` writes `{"permissions": {"defaultMode": "auto"}}` into `$ATELIER_CONFIG_DIR/settings.json`; `atelier`-launched sessions inherit auto-mode while the operator's personal `~/.claude/` config stays untouched.
+
+What auto-mode does, for the operator:
+
+- **Bash commands the matrix did not enumerate** (e.g. a new `gh` subcommand the template doesn't list yet, a `git wt ls` alias the matcher can't expand statically) are evaluated by Anthropic's classifier instead of prompting. Most pass; the residual that don't are the high-risk surface where the prompt is still the right answer.
+- **Shell control flow** (`for`/`while`/`if`, compound `&&`/`||`, command substitution) — what used to trip *"Contains shell syntax (string) that cannot be statically analyzed"* — is now classifier-judged. The friction symptom that originated M2.6 is gone.
+
+What the static matrix still does, unchanged:
+
+- `permissions.deny` from the project template **always wins** — the classifier is a second gate that fires only after the deny list. `git push --force*`, `rm -rf /`, the never-auto-merge surface, etc. are blocked categorically regardless of auto-mode.
+- `permissions.allow` from the project template still **short-circuits** the classifier — known-safe commands skip the round-trip and run immediately.
+
+What changed at install time:
+
+- `templates/settings.template.json` no longer carries `"defaultMode": "acceptEdits"`. Project-level `defaultMode` overrides user-level by normal merge precedence; leaving it would have masked the user-level `auto`. Allow / deny / additionalDirectories unchanged.
+- `atelier-doctor` checks `$ATELIER_CONFIG_DIR/settings.json` has `permissions.defaultMode == "auto"`. `atelier-doctor --fix` writes the setting if missing — useful for hosts that upgraded across the v0.8.0 cut without re-running `install.sh`.
+
+Empirical reproducibility (Q4 of the spike): the classifier adds ~200–400 ms per Bash call; reads and in-worktree edits skip it entirely. Token overhead is ~10–15% on a long refactor. Acceptable for atelier's typical task wall-time.
+
+Full design notes + the three open-questions that validated this adoption: [docs/research/permission-layer-3.md](docs/research/permission-layer-3.md) (M2.6 spike + M2.7 addendum).
+
+If you ever want to disable auto-mode for an atelier session and fall back to `acceptEdits`, edit `$ATELIER_CONFIG_DIR/settings.json` and change `.permissions.defaultMode` to `acceptEdits` (or remove the key). The deny list and allow list keep working unchanged.

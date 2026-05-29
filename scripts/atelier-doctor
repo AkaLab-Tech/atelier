@@ -458,6 +458,38 @@ check_git_identity() {
 /path/to/atelier/install.sh"
 }
 
+check_atelier_auto_mode() {
+  # M2.8 — verify $ATELIER_CONFIG_DIR/settings.json has
+  # permissions.defaultMode == "auto" so atelier-launched sessions get
+  # Claude Code's native auto-mode classifier. Empirically validated in
+  # M2.7 (docs/research/permission-layer-3.md addendum) that the setting
+  # is honored from $CLAUDE_CONFIG_DIR/settings.json wherever that env
+  # var points; it does not require literal ~/.claude/settings.json.
+  local target="$ATELIER_CONFIG_DIR/settings.json"
+  if [ ! -f "$target" ]; then
+    push_host "$FAIL atelier settings.json missing at $target — auto-mode not configurable"
+    push_fix_manual "/path/to/atelier/install.sh"
+    return
+  fi
+  if ! jq empty "$target" >/dev/null 2>&1; then
+    push_host "$FAIL $target is not valid JSON — cannot verify auto-mode"
+    push_fix_manual "# inspect and repair $target manually; then re-run install.sh"
+    return
+  fi
+  local mode
+  mode="$(jq -r '.permissions.defaultMode // ""' "$target" 2>/dev/null)"
+  if [ "$mode" = "auto" ]; then
+    push_host "$OK auto-mode enabled (permissions.defaultMode = \"auto\" in $target)"
+    return
+  fi
+  if [ -z "$mode" ]; then
+    push_host "$FAIL auto-mode not enabled ($target has no permissions.defaultMode)"
+  else
+    push_host "$FAIL auto-mode not enabled ($target has permissions.defaultMode = \"$mode\")"
+  fi
+  push_fix_auto "tmp=\"\$(mktemp \"$target.atelier.XXXXXX\")\" && jq '.permissions = (.permissions // {}) | .permissions.defaultMode = \"auto\"' \"$target\" > \"\$tmp\" && mv \"\$tmp\" \"$target\""
+}
+
 # ---------- main ----------
 #
 # Args were parsed at the top of the script into $RUN_FIXES; --help also
@@ -475,6 +507,7 @@ check_chrome
 check_docker_compose
 check_atelier_config_dir
 check_git_identity
+check_atelier_auto_mode
 
 # ---------- emit the report ----------
 

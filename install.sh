@@ -1544,6 +1544,48 @@ ATELIER_HELP_TXT
   sublog "wrote $dest"
 }
 
+# M2.8: enable Claude Code's native `auto` permission mode for atelier-launched
+# sessions by writing { "permissions": { "defaultMode": "auto" } } into
+# $ATELIER_CONFIG_DIR/settings.json. Empirically validated in M2.7 (docs/research/
+# permission-layer-3.md addendum) that defaultMode: "auto" is honored from
+# $CLAUDE_CONFIG_DIR/settings.json (the docs' literal ~/.claude/ reference is
+# shorthand for "the active user-level config dir"). The setting only takes
+# effect inside atelier sessions because atelier's shell wrapper sets
+# CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR; the operator's personal ~/.claude/ is
+# untouched.
+#
+# The merge is via jq, preserving existing keys (enabledPlugins,
+# extraKnownMarketplaces, theme, etc.) and only ensuring
+# .permissions.defaultMode == "auto". Idempotent: re-runs are a no-op when the
+# setting is already in place.
+phase_c_1_atelier_auto_mode() {
+  local target="$ATELIER_CONFIG_DIR/settings.json"
+  local existing="{}"
+  if [ -f "$target" ]; then
+    existing=$(cat "$target")
+    if ! printf '%s' "$existing" | jq empty >/dev/null 2>&1; then
+      warn "$target is not valid JSON — leaving alone (operator must repair manually)"
+      return
+    fi
+  fi
+  # Already set? Skip silently.
+  if printf '%s' "$existing" | jq -e '.permissions.defaultMode == "auto"' >/dev/null 2>&1; then
+    step_skip "auto-mode already enabled in $target"
+    return
+  fi
+  local tmp
+  if ! tmp=$(mktemp "${target}.atelier.XXXXXX"); then
+    warn "could not create temp file for $target — skipping auto-mode write"
+    return
+  fi
+  printf '%s' "$existing" \
+    | jq '.permissions = (.permissions // {}) | .permissions.defaultMode = "auto"' \
+    > "$tmp" \
+    && mv "$tmp" "$target" \
+    || { rm -f "$tmp"; warn "failed to write auto-mode to $target"; return; }
+  sublog "enabled auto-mode in $target (permissions.defaultMode = \"auto\")"
+}
+
 phase_c_1() {
   phase "Phase C.1 — host-OS configuration"
   phase_c_1_claude_config_dir
@@ -1553,6 +1595,7 @@ phase_c_1() {
   phase_c_1_git_identity
   phase_c_1_setup_project_helper
   phase_c_1_atelier_help_file
+  phase_c_1_atelier_auto_mode
   phase_c_1_shellrc_hooks
   ok "Phase C.1 complete"
 }
