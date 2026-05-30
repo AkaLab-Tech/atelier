@@ -6,6 +6,7 @@
       "Bash(rm -rf *)",
       "Bash(rm -fr *)",
       "Bash(sudo *)",
+      "Bash(* | sudo *)",
       "Bash(dd if=*)",
       "Bash(shred*)",
       "Bash(truncate -s 0 *)",
@@ -94,19 +95,9 @@
       "Edit(./docker-compose*)",
       "Write(./docker-compose*)",
 
-      "Bash(gh pr close*)",
-
-      "Bash(node -e *)",
-      "Bash(python -c *)",
-      "Bash(python3 -c *)",
-      "Bash(perl -e *)",
-      "Bash(ruby -e *)",
-
       "Bash(bash -c *)",
       "Bash(sh -c *)",
-      "Bash(zsh -c *)",
-
-      "Bash(* | sudo *)"
+      "Bash(zsh -c *)"
     ],
 
     "allow": [
