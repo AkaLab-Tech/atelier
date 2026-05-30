@@ -7,6 +7,8 @@ description: Parse a project's `ROADMAP.md` and pick the next task to work on. U
 
 A skill for picking the next task to work on from a project's `ROADMAP.md`.
 
+> **Bash output handling — never retry on success (M7.1.F39).** When you query the filesystem or git state (`git wt list`, `git -C <path> status --porcelain`, `Read` against `ROADMAP.md`), a single successful invocation per question is enough. The Bash tool's UI may collapse long output with `… +N lines (ctrl+o to expand)` — that ellipsis is cosmetic; the full output is already in your context. Do **not** re-invoke the same command "to see the rest" — there is no rest, and repeated identical invocations create a loop the operator has to interrupt. If you need different data, run a *different* command.
+
 ## What this skill produces
 
 A single structured result describing the chosen task, in this shape:
