@@ -8,8 +8,49 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M2.8 — Adopt Claude Code's native auto permission mode as layer 3 — 2026-05-29
+### M7.1.F39 — Anti-retry rule for Bash output truncation across agents/skills/commands — 2026-05-30
 **PR:** _pending_
+
+Discovered immediately after M2.8 (PR [#114](https://github.com/AkaLab-Tech/atelier/pull/114), v0.8.0) was merged and the operator started exercising auto-mode in production. While inspecting `/atelier:status` against the storefront project, the operator caught the agent invoking `git wt list 2>&1 || echo "GITWT_FAILED"` **six consecutive times**, each returning exit 0 with the same valid output. The operator had to Ctrl+C to break the loop; when asked why it stalled, the agent rationalised the duplicates as *"el sistema duplicó varias de mis llamadas"* — a post-hoc explanation. The system did not duplicate anything; the agent re-invoked the same command because it saw the Bash tool's UI collapse marker (`… +8 lines (ctrl+o to expand)`) and interpreted the truncation as *"I didn't get the full output, retry"* — pure model-side reasoning failure.
+
+This is a class of bug that auto-mode (M2.8) makes *less visible*: pre-auto-mode every retry would have surfaced a permission prompt, giving the operator six chances to interrupt the loop before the seventh call. With auto-mode the classifier silently approves each identical invocation, so the operator only notices once the bucle is obvious enough to interrupt. Auto-mode bought speed at the cost of the implicit "fail loud" the permission prompts used to provide.
+
+**Delivered:**
+
+- **`commands/status.md`** — new section "Bash output handling — never retry on success (M7.1.F39)" between the read-only directive and "## What to collect". Captures the rule in three sentences plus an inline reminder for the worktree probe in section 2 (the specific code path that loop-fired in the dogfood report). Lives at the top of the body so it loads before the agent reads the rest of the prompt.
+- **`agents/task-orchestrator.md`** — same rule, inserted between the introductory paragraph and the existing "## Operating context — your cwd is NOT inside the worktree" section. Phrasing slightly broader to cover the orchestrator's full Bash surface (worktree state queries, `git status` runs, `gh pr view` calls, environment probes).
+- **`skills/task-discovery/SKILL.md`** — same rule as a blockquote between the title sentence and "## What this skill produces". Slightly more focused phrasing on the skill's actual call surface (`git wt list`, `git -C <path> status --porcelain`, `Read` against `ROADMAP.md`).
+
+Why these three files and not all 11 Bash-heavy callers: the dogfood report cited `/atelier:status` specifically; `task-orchestrator` is the single biggest consumer of Bash queries across the lifecycle; `task-discovery` is the skill `/atelier:status` and `task-orchestrator` both call when they need to inspect worktree state. Covering the three highest-leverage surfaces first lets us measure whether the rule alone is enough (Option A in the dogfood conversation) before broadcasting it to every command and agent (which would dilute each file's specific instructions). If F39 does not eliminate the loop, M7.1.F40 ships a `PostToolUse` hook that detects identical successive Bash invocations and surfaces a structured warning back to the agent (Option B).
+
+**Decisions captured:**
+
+- **Same wording in all three files.** Resisted the temptation to tailor the phrasing per file. The rule is identical across surfaces; same wording reduces the chance of one file's slightly-different version creating a loophole the agent latches on to.
+- **Rule placement near the top of each file.** Right after the role/purpose sentence, before any procedural instructions. Models tend to weight earlier instructions more heavily; the rule needs to land before the agent reads the steps that would otherwise produce the loop.
+- **Reference M7.1.F39 explicitly in the rule heading.** Future readers see the linkage to the dogfood report and the addendum trail in HISTORY without having to git-blame.
+- **No `PostToolUse` hook yet.** The operator explicitly asked for "Option A first, B if A doesn't work." Same call: ship the cheapest fix with the highest chance of resolving the symptom; only escalate to the harder option (hook with state tracking) if the symptom persists.
+- **No fix to the agent's post-hoc rationalisation.** The agent saying *"el sistema duplicó mis llamadas"* is the easier symptom to confuse for the real bug. We're not patching the rationalisation pathway because (a) the rule above prevents the loop in the first place, removing the need to rationalise, and (b) instructing the agent to *not invent system-side failures* would be a much broader prompt change with unclear cost.
+
+**Plugin scope:** plugin-layer changes only (commands + agent + skill). No template, install.sh, or doctor touched. Plugin patch bump **0.8.0 → 0.8.1** per PLAN.md §14.2 — model-behavior nudge, no operator-visible UX surface or config change.
+
+**Verified locally:**
+
+- All three files still parse as markdown (no broken sections, no half-closed blockquotes).
+- The new section in `commands/status.md` sits before "## What to collect" and references section 2 explicitly — both the placement and the cross-reference are intentional anchors for the agent to find.
+- The new section in `agents/task-orchestrator.md` sits between the intro paragraph and "## Operating context" — preserves the existing flow.
+- `skills/task-discovery/SKILL.md` blockquote sits between the one-line description and "## What this skill produces" — visually distinct (`>` markdown blockquote) so it reads as a constraint, not a step.
+
+**Operator-visible:**
+
+After this PR merges and the operator picks up v0.8.1 via `atelier-update`, the next time they invoke `/atelier:status`, `/next-task`, or `/resume-task` (which dispatches `task-orchestrator`) the loaded prompts include the anti-retry rule. The agents that the operator caught looping in the M2.8 dogfood — specifically `/atelier:status` re-invoking `git wt list` — should stop looping. If the symptom recurs on a different command path, that's the signal to ship F40 (the `PostToolUse` hook with identical-invocation detection).
+
+**Follow-up paths:**
+
+- **M7.1.F40 — `PostToolUse` hook with identical-invocation detection.** Defensive layer above F39. Only ship if F39 does not fully resolve the loop class. Same shape as the existing M2.4 hook suite: a small Bash script reading the last N Bash invocations from `<worktree>/.task-log/`, comparing the proposed call against them, and emitting a structured warning if it matches. The agent would receive the warning in its next turn and presumably adjust.
+- **M7.1.F41 — Evaluate removing the static `ask` rules from `templates/settings.template.json` and letting auto-mode decide every non-allow/non-deny case.** Operator request captured during the M2.8 dogfood: *"el ask rule sobrescribe automode, prefiero que no lo sobrescriba, por lo que podríamos quitar todas las reglas de ask"*. Plugin scope: template change + potential M2.4 hook coverage gap analysis. Discussion needed before implementing.
+
+### M2.8 — Adopt Claude Code's native auto permission mode as layer 3 — 2026-05-29
+**PR:** [#114](https://github.com/AkaLab-Tech/atelier/pull/114)
 
 Closes M2.8 (ROADMAP). Ships the adoption work greenlit by M2.7's empirical validation (PR [#113](https://github.com/AkaLab-Tech/atelier/pull/113)): atelier-launched Claude Code sessions now run with `defaultMode: "auto"`, which replaces the operator-prompt friction for compound bash, shell loops, and unenumerated commands with Anthropic's classifier. The deny list, allow list, and per-task `additionalDirectories` scoping all carry over unchanged — auto-mode is a second gate that composes with the existing static matrix, not a replacement.
 
