@@ -114,6 +114,23 @@ CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin marketplace add AkaLab-Tec
 
 **Fix:** Don't nest. Run the inner command (`atelier-doctor`, `atelier-update`, `atelier-list-projects`, etc.) as a plain shell call without the `atelier` prefix — the `atelier-*` helpers already pin `CLAUDE_CONFIG_DIR` correctly on their own.
 
+### Auto-mode classifier still prompts for an unexpected command
+
+**Symptom:** Even though atelier sessions run under auto-mode (M2.8, v0.8.0+), a Bash command you expected to be auto-approved surfaces a permission prompt — usually framed as *"Do you want to proceed?"*.
+
+**Cause:** Auto-mode is a **second gate**, not a replacement for the static matrix. Two distinct prompt sources still fire even with auto-mode on:
+
+1. **The static `ask` matrix** in `templates/settings.template.json` — these are commands atelier explicitly marked as "always confirm with the operator" (e.g. anything touching `package.json`, `Dockerfile`, deploy paths). The classifier never sees these because the matcher resolves them first.
+2. **The classifier's own decision** — for commands not enumerated in `allow` / `deny` / `ask`, auto-mode evaluates and may decide the action is non-obvious enough to warrant a prompt anyway (e.g. a compound Bash like `cd /some/path && git fetch && gh pr view 120 --json mergeable` — multiple state-touching ops chained together).
+
+**Fix (per-call):** Accept the prompt once with **Yes**, or pick **"Yes, and don't ask again for: `<pattern>`"** to add the pattern to `.claude/settings.local.json` (project-local, untracked).
+
+**Fix (per-project):** If the command is genuinely safe and you want it pre-allowed for every task on this project, add it to the project's `.claude/settings.json` allow list (under your control). Don't add it to atelier's `templates/settings.template.json` unless it's safe for every atelier project — that file is the cross-project default.
+
+**Fix (per-machine, last resort):** Disable auto-mode by editing `$ATELIER_CONFIG_DIR/settings.json` and changing `.permissions.defaultMode` from `"auto"` to `"acceptEdits"`. You go back to pre-M2.8 behavior — more prompts, but predictable.
+
+To check whether auto-mode is currently active, inside any atelier session: `/status` → Config tab → `Default permission mode`. Should show `Auto mode`.
+
 ### `pnpm install` rejected because of `minimum-release-age`
 
 **Symptom:** A dependency install fails with a `minimum-release-age` error mentioning a 10080-minute (7-day) threshold.

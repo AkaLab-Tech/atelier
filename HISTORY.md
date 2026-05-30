@@ -8,8 +8,61 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
-### M2.7 — Empirical validation of the auto-mode adoption path: OQ-A + OQ-B + OQ-C all favorable — 2026-05-29
+### M2.8 — Adopt Claude Code's native auto permission mode as layer 3 — 2026-05-29
 **PR:** _pending_
+
+Closes M2.8 (ROADMAP). Ships the adoption work greenlit by M2.7's empirical validation (PR [#113](https://github.com/AkaLab-Tech/atelier/pull/113)): atelier-launched Claude Code sessions now run with `defaultMode: "auto"`, which replaces the operator-prompt friction for compound bash, shell loops, and unenumerated commands with Anthropic's classifier. The deny list, allow list, and per-task `additionalDirectories` scoping all carry over unchanged — auto-mode is a second gate that composes with the existing static matrix, not a replacement.
+
+**Delivered:**
+
+- **`templates/settings.template.json`** — removed `"defaultMode": "acceptEdits"` from the `permissions` block. Project-level `defaultMode` overrides user-level by normal merge precedence; leaving the project line would have masked the user-level `auto`. The allow / deny / ask blocks and `additionalDirectories` are untouched.
+- **`install.sh`** — new Phase C.1 step `phase_c_1_atelier_auto_mode` writes `{"permissions": {"defaultMode": "auto"}}` into `$ATELIER_CONFIG_DIR/settings.json` via `jq` merge, preserving existing keys (`enabledPlugins`, `extraKnownMarketplaces`, `theme`, etc.) and skipping silently if the value is already in place. Idempotent across re-runs. Registered between `phase_c_1_atelier_help_file` (M7.1.F34) and `phase_c_1_shellrc_hooks` so the setting lands before the operator's first atelier session.
+- **`scripts/atelier-doctor`** — new check `check_atelier_auto_mode` reads `$ATELIER_CONFIG_DIR/settings.json`, verifies `.permissions.defaultMode == "auto"`, reports `✓`/`✗`. The remediation is registered as `push_fix_auto` so `atelier-doctor --fix` writes the setting if missing (jq merge + atomic mv, same shape as the install.sh helper).
+- **`operator-rules.md`** — new section "Permission model: layer 3 is auto-mode (M2.8)" describing what changes for the operator (Bash command coverage, shell control flow), what stays the same (deny list, allow short-circuit, additionalDirectories scope), the install-time write, and the disable path (edit `$ATELIER_CONFIG_DIR/settings.json` and flip `.permissions.defaultMode` back to `acceptEdits`). Cross-references the research artifact.
+- **`docs/operator-guide.md`** — new "About permission prompts (auto-mode)" section between "What atelier will and won't do" and "Keep atelier up to date". Operator-facing framing: what disappears (compound bash prompts, `for`/`while` shell-syntax prompts, gh subcommand enumeration gaps), what still prompts legitimately (touching `package.json`, `Dockerfile`, deploy paths), how to verify (`/status` → Config → Default permission mode).
+- **`docs/troubleshooting.md`** — new entry "Auto-mode classifier still prompts for an unexpected command" between the fork-bomb guard and the pnpm release-age entries. Covers the two prompt sources that remain (static `ask` matrix + classifier judgement), and the three fix tiers (accept once, project-local allow, machine-level disable).
+
+**Decisions captured:**
+
+- **No `defaultMode` in the project template.** The simplest path the M2.7 addendum identified: removing the project-level `defaultMode: acceptEdits` line lets user-level `defaultMode: auto` flow through the normal settings merge. Tested in OQ-B with a project file that omitted `defaultMode` — composition worked as documented. Trying to keep the project `defaultMode` and rely on it being "more specific" would have been backwards: project always wins, so the project line would have masked auto-mode.
+- **Auto-mode in user-level config, never per-project.** The doctor check and the install.sh write both target `$ATELIER_CONFIG_DIR/settings.json`, not any project file. The security guard against repos granting themselves auto-mode (`auto` is ignored from `.claude/settings.json` and `.claude/settings.local.json`) actually helps atelier here: the setting lives in one well-known place, and projects cannot accidentally turn it off (or on) without touching the user-level config the operator chose.
+- **`push_fix_auto` for the doctor remediation.** The fix is a deterministic `jq` merge + atomic `mv` — exactly the kind of operation `--fix` is meant to apply without operator intervention. Same pattern as the F30 plumbing for the templates symlink + shellrc + marketplace fixes.
+- **No operator-facing wrapper command.** Considered adding `atelier-enable-auto-mode` / `atelier-disable-auto-mode` helpers for explicit on/off. Rejected — `atelier-doctor --fix` covers the "turn it on" case, and the disable path is a one-line manual edit. Adding wrappers would create two ways to do the same thing and a third surface for atelier-update to keep in sync.
+- **Minor bump 0.7.6 → 0.8.0, not patch.** Operator-visible UX change material enough to telegraph. The prior 0.x cuts have all been "ships a new helper/script/agent" patches; this one *changes the per-task interactive experience* for every atelier session on every machine that installs v0.8.0+. Minor bump is the right SemVer signal. Releases will cut `v0.8.0` after merge.
+
+**Plugin scope:** plugin-layer (template + scripts) + host-OS-layer (install.sh). No agent, skill, command, or hook touched. Plugin minor bump **0.7.6 → 0.8.0** per PLAN.md §14.2.
+
+**Verified locally:**
+
+- `bash -n install.sh` syntax-clean. New `phase_c_1_atelier_auto_mode` function passes the same shape checks as the existing Phase C.1 steps.
+- `bash -n scripts/atelier-doctor` syntax-clean. New `check_atelier_auto_mode` follows the established `push_host` + `push_fix_auto` shape.
+- Template still parses as JSON after the `defaultMode` removal: `jq empty templates/settings.template.json` exits 0.
+- Doctor's auto-mode check exercised inline against the operator's current `~/.claude-work/settings.json` (pre-install of v0.8.0): reports the `defaultMode` as `(unset)`, confirming the check correctly identifies the missing-setting case the doctor will surface on existing hosts upgrading through v0.8.0.
+
+**Operator-visible:**
+
+After this PR merges, the operator runs `cd ~/atelier && git pull && ./install.sh` once (per the standard upgrade flow). The Phase C.1 step writes `defaultMode: "auto"` into `$ATELIER_CONFIG_DIR/settings.json`. From the next `task` invocation onwards:
+
+- Compound Bash like `cd /path && git fetch && gh pr view <N>` runs without a prompt (the classifier judges it).
+- `for p in dir1 dir2; do git -C "$p" …; done` runs without a prompt (was the symptom that motivated the entire M2.6 + M2.7 + M2.8 chain).
+- `gh pr checks <N>`, `gh pr review --approve`, and other gh subcommands the static matrix did not enumerate are classifier-judged instead of asked.
+
+Prompts that remain by design:
+
+- Anything in the existing `deny` list — blocked categorically, classifier never sees it.
+- Anything in the `ask` list — operator-confirmed always (touching `package.json`, `Dockerfile`, etc.).
+- Compound bash that the classifier itself decides is ambiguous (e.g. multiple state-touching ops chained together with `&&`/`||` against unfamiliar paths) — the classifier may still ask, by design.
+
+`atelier-doctor` reports the new check; `atelier-doctor --fix` enables auto-mode on hosts that upgraded through v0.8.0 without re-running `install.sh`.
+
+**Follow-up paths:**
+
+- **M2.9** (queued in ROADMAP) — custom `PreToolUse` Haiku hook as a targeted second layer for the high-risk surface (anything touching `pnpm-lock.yaml`, deploy paths, never-auto-merge files). Gated on ≥ 10 merged tasks under auto-mode + observable residual FN incidents.
+- **Storefront retest.** The operator can re-run the original M7.1 dogfood-5 scenario (the `for` loop that surfaced as a friction prompt, the compound `git fetch + gh pr view` from the post-M2.7 storefront session) and verify the prompts no longer fire.
+- **PR #112 / #113 cleanup nit.** Both are docs-only research artifacts. They appear in this `HISTORY.md` block as the validation thread that led to M2.8; no behavioral change in either is being revisited.
+
+### M2.7 — Empirical validation of the auto-mode adoption path: OQ-A + OQ-B + OQ-C all favorable — 2026-05-29
+**PR:** [#113](https://github.com/AkaLab-Tech/atelier/pull/113)
 
 Closes M2.7 (ROADMAP). Runs the three open questions that M2.6 left conditional, on a real host (macOS 25.5.0, Claude Code v2.1.156, model `claude-opus-4-8[1m]`). All three resolve favorably — the M2.6 conditional is now resolved, and adoption of auto-mode is greenlit.
 

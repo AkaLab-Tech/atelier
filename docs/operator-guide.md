@@ -199,6 +199,20 @@ If atelier gets stuck (e.g. a test keeps failing), it stops and creates an issue
 
 ---
 
+## About permission prompts (auto-mode)
+
+Since v0.8.0 (M2.8), atelier-launched Claude Code sessions run with Claude Code's native **auto permission mode** enabled. This is a classifier built into Claude Code itself that decides safe Bash commands without asking you. Practical effect:
+
+- Bash commands that *used to* prompt — a compound `cd && git fetch && gh pr view 123`, a `for p in foo bar; do …; done` loop, a `gh` subcommand the template didn't enumerate yet — are **judged by the classifier** instead. Most pass through silently.
+- The categorical safety list (`git push --force`, `rm -rf /`, modifying `.github/workflows/`, etc.) **still blocks** before the classifier ever sees the command. Auto-mode adds a layer; it does not replace the existing safety net.
+- You may still see the occasional permission prompt — for commands the classifier is genuinely unsure about (touching `package.json`, `Dockerfile`, deploy paths, etc.). That's working as designed.
+
+The setting lives in `~/.claude-work/settings.json` (the atelier config dir, not your personal `~/.claude/`). Your non-atelier `claude` sessions are unaffected. `atelier-doctor` verifies the setting is in place; `atelier-doctor --fix` enables it if missing.
+
+Full design rationale + the empirical validation that drove the adoption: [docs/research/permission-layer-3.md](research/permission-layer-3.md).
+
+---
+
 ## Keep atelier up to date
 
 atelier ships fixes and new helpers regularly. To pull the latest release without touching `install.sh`:
