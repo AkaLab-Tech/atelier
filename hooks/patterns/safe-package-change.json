@@ -1,7 +1,7 @@
 {
   "version": 1,
   "hook": "safe-package-change",
-  "description": "Pattern catalogue for the safe-package-change PreToolUse hook. Maps 1:1 to PLAN.md §3 threat-model addendum. Defence in depth with the per-project .npmrc that /setup-project writes (ignore-scripts=true, minimum-release-age=10080, audit-level=moderate from PLAN.md §4) — npmrc is the silent baseline; this hook surfaces explicit decisions and catches the cases where the operator (or a transitive dep) deliberately re-enables what npmrc forbids.",
+  "description": "Pattern catalogue for the safe-package-change PreToolUse hook. Maps 1:1 to PLAN.md §3 threat-model addendum. Defence in depth with the per-project .npmrc that /atelier:setup-project writes (ignore-scripts=true, minimum-release-age=10080, audit-level=moderate from PLAN.md §4) — npmrc is the silent baseline; this hook surfaces explicit decisions and catches the cases where the operator (or a transitive dep) deliberately re-enables what npmrc forbids.",
   "typosquat_known_packages": [
     "react",
     "react-dom",

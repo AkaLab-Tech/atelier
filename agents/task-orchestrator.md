@@ -151,7 +151,7 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
      Branch task/<id>-<slug> is pushed to origin but NO PR was opened.
 
      Your options:
-       a) Re-plan: split the task into sub-tasks and re-run /next-task on each.
+       a) Re-plan: split the task into sub-tasks and re-run /atelier:next-task on each.
           Suggested slice boundaries (from atelier-pr-size-check):
             <suggested_slices verbatim>
        b) Open the PR manually: `gh pr create` from the branch.

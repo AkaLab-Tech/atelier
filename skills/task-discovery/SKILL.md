@@ -1,6 +1,6 @@
 ---
 name: task-discovery
-description: Parse a project's `ROADMAP.md` and pick the next task to work on. Use this skill whenever the user wants to start work, asks "what's next?", invokes `/next-task`, asks the orchestrator to plan a task, or you need to identify the highest-priority unblocked item from a `ROADMAP.md` formatted per PLAN.md §5 (P0/P1/P2 sections with `bug`/`feat`/`chore`/`docs`/`refactor` type tags, `#id`, `~estimate`, `blocked_by:` metadata). Returns the chosen task's id, title, type, priority, estimate, and acceptance criteria so the caller can route the task through the agent chain. Trigger this even if the user does not say "ROADMAP" explicitly — any phrasing about picking up the next thing to ship belongs here.
+description: Parse a project's `ROADMAP.md` and pick the next task to work on. Use this skill whenever the user wants to start work, asks "what's next?", invokes `/atelier:next-task`, asks the orchestrator to plan a task, or you need to identify the highest-priority unblocked item from a `ROADMAP.md` formatted per PLAN.md §5 (P0/P1/P2 sections with `bug`/`feat`/`chore`/`docs`/`refactor` type tags, `#id`, `~estimate`, `blocked_by:` metadata). Returns the chosen task's id, title, type, priority, estimate, and acceptance criteria so the caller can route the task through the agent chain. Trigger this even if the user does not say "ROADMAP" explicitly — any phrasing about picking up the next thing to ship belongs here.
 ---
 
 # task-discovery

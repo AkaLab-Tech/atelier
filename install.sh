@@ -1325,7 +1325,7 @@ phase_c_1_shellrc_hooks() {
   # below. Existing operators' rc files carry their version inline; on
   # install.sh re-run, an older or missing version triggers a strip +
   # re-inject so the upgrade propagates automatically.
-  local current_version=3
+  local current_version=4
 
   # Heredoc is single-quoted: `$(fnm env --use-on-cd)`, `$*`, and the alias
   # body are written as literal text, expanded later when the shell sources
@@ -1333,7 +1333,7 @@ phase_c_1_shellrc_hooks() {
   local block
   block=$(cat <<'BLOCK'
 # >>> atelier hooks (managed by install.sh) >>>
-# atelier-hooks-version: 3
+# atelier-hooks-version: 4
 # (install.sh reads the version above; bump it when you edit anything between
 #  these sentinels so existing operators get the refreshed block on re-run.)
 # Ensure ~/.local/bin is on PATH so atelier-setup-project (and any future
@@ -1387,7 +1387,7 @@ task() {
   CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" \
     GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" \
     GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
-    claude "/next-task $*"
+    claude "/atelier:next-task $*"
 }
 # `atelier`: general-purpose entry point that opens a Claude Code session
 # under atelier's isolated config root, optionally with arbitrary arguments

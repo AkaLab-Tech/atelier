@@ -89,6 +89,6 @@ On refusal / error, the summary is the agent's reason plus the suggested next ac
 
 ## Edge cases
 
-- **The operator runs the command inside a task worktree** (not the main worktree): the project root resolution lands on the task worktree's copy of `ROADMAP.md`, which is the wrong target — `ROADMAP.md` belongs on `main`. Detect this by checking `git rev-parse --abbrev-ref HEAD`; if it starts with `task/`, refuse with: *"/slice-task must be run from the main worktree, not a task worktree. The ROADMAP.md you'd be editing is on the wrong branch."*
+- **The operator runs the command inside a task worktree** (not the main worktree): the project root resolution lands on the task worktree's copy of `ROADMAP.md`, which is the wrong target — `ROADMAP.md` belongs on `main`. Detect this by checking `git rev-parse --abbrev-ref HEAD`; if it starts with `task/`, refuse with: *"/atelier:slice-task must be run from the main worktree, not a task worktree. The ROADMAP.md you'd be editing is on the wrong branch."*
 - **The task id resolves to a sub-task inside an existing epic** (e.g. `#42b`): the decomposer's `refused-already-epic` path covers this — the sub-task is already part of an epic, which is a decomposed shape. Surface the existing epic's id so the operator can navigate to it.
 - **Multiple tasks share the same id** (data quality issue in `ROADMAP.md`): the decomposer reads the first match top-down. Surface a warning in the report so the operator can deduplicate the ROADMAP.

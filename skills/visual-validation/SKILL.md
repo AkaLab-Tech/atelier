@@ -145,6 +145,6 @@ Playwright suite: <N passed, M failed, K skipped> (<duration>s).
 - **Installing `playwright` (deprecated).** Only `@playwright/test` is supported.
 - **Overwriting an existing `playwright.config.*`.** The project's config is owned by the operator. Append-only is not a thing for ESM configs.
 - **`--with-deps`** for `playwright install`. This runs `apt-get install` (Linux) or equivalent — invasive system change. Operator must confirm.
-- **Committing screenshots to the repository.** They live in `.task-log/screenshots/` (already gitignored by `/setup-project`) and on the gist server. Never under version control.
+- **Committing screenshots to the repository.** They live in `.task-log/screenshots/` (already gitignored by `/atelier:setup-project`) and on the gist server. Never under version control.
 - **Modifying test files** to mask flakes. Flakes are surfaced; the operator decides what to do.
 

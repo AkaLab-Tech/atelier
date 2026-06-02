@@ -58,7 +58,7 @@ Use this exact dashboard shape so the operator can grep / scan reliably:
     Worktree: <absolute-path> [clean | dirty: N file(s)]
     Branch:   task/<id>-<slug>
 
-  (or: no active task — operator can run /next-task)
+  (or: no active task — operator can run /atelier:next-task)
 
 ▶ Oversize (PR refused by size gate)
   • <#id> — <title>
@@ -100,6 +100,6 @@ Use this exact dashboard shape so the operator can grep / scan reliably:
 
 ## Edge cases
 
-- **No `IN_PROGRESS.md` at all** (operator hasn't run roadmap-tracking-flow init): report it once and recommend the operator initialise tracking (or run `/setup-project`).
+- **No `IN_PROGRESS.md` at all** (operator hasn't run roadmap-tracking-flow init): report it once and recommend the operator initialise tracking (or run `/atelier:setup-project`).
 - **PR title is very long**: truncate to 80 chars + `…` for the dashboard; the operator can run `gh pr view <NN>` for full detail.
 - **The current directory is not inside a registered atelier project** — surface that clearly. `/status` makes sense only inside a project.

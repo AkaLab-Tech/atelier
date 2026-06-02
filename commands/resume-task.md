@@ -97,7 +97,7 @@ The contract: closing the issue is the operator's signal. The 6 attempt logs are
    git add IN_PROGRESS.md
    # M7.1.F7b: commit under atelier-author identity (mirror unblocker.md).
    GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
-     git commit -m "docs(tracking): unmark task <id> [BLOCKED] — resuming via /resume-task (issue #<NN> closed)"
+     git commit -m "docs(tracking): unmark task <id> [BLOCKED] — resuming via /atelier:resume-task (issue #<NN> closed)"
    git push origin docs/resume-<id>
    gh pr create \
      --title "docs(tracking): unmark task <id> [BLOCKED] — resuming" \
@@ -131,7 +131,7 @@ For **interrupted-resume**, the budget continues — `.task-log/` may have N exi
 End the command with a single status block:
 
 ```text
-✓ /resume-task <id>
+✓ /atelier:resume-task <id>
   Mode:           blocked-resume | interrupted-resume
   Worktree:       <absolute-path>
   Branch:         task/<id>-<slug>
