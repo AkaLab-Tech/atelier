@@ -11,7 +11,7 @@ description: >-
   sequence, exhaustive hard-refusal list, and the `IN_PROGRESS.md` →
   `HISTORY.md` tracking move that must land in the same PR. Use this skill
   whenever the user wants to ship/finalise/PR a change, invokes
-  `/finish-task`, says "open the PR", "push my work", "ship this", "finish
+  `/atelier:finish-task`, says "open the PR", "push my work", "ship this", "finish
   the task", or anywhere the `pr-author` agent needs the recipe. Enforces
   push and PR gates from PLAN.md §6 (push only to `origin task/<id>-<slug>`,
   Conventional Commits). Refuses protected-branch pushes, `--force`,

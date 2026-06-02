@@ -18,7 +18,7 @@ Before any `pnpm add`:
 5. **Never** install a package with reported moderate+ vulnerabilities.
 
 Steps 4 and 5 are also enforced by the per-project `.npmrc` that
-`/setup-project` writes (`minimum-release-age=10080`,
+`/atelier:setup-project` writes (`minimum-release-age=10080`,
 `audit-level=moderate`) — but you must reason about them explicitly, not
 rely on the npmrc as a silent backstop.
 
@@ -37,7 +37,7 @@ Never `git commit` (or `git push`) to `main`, `master`, `develop`,
 For every code change, create a branch first:
 
 1. `git checkout -b task/<id>-<slug>` for ROADMAP-driven tasks. The
-   `/next-task` flow does this automatically via the `git-wt` skill.
+   `/atelier:next-task` flow does this automatically via the `git-wt` skill.
 2. `git checkout -b chore/<short-name>` for non-roadmap chores
    (migrations, dependency bumps, cleanups, infrastructure).
 3. `git checkout -b docs/<topic>` for documentation-only changes.
@@ -144,7 +144,7 @@ The orchestrator routes specialists in this order for a typical task:
 On hard stop, `unblocker` (Sonnet) opens the blocked GitHub issue with the
 attached logs.
 
-Entry point: the `/next-task` slash command picks the highest-priority
+Entry point: the `/atelier:next-task` slash command picks the highest-priority
 unblocked item from the project's `ROADMAP.md` and routes it through this
 chain.
 

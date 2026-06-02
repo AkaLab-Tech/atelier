@@ -242,6 +242,6 @@ Next step:  hand off to the `unblocker` agent. Do NOT retry. Do NOT
   confirmation. The dirty state is itself a signal that something
   unexpected happened mid-attempt; surface it.
 - **Never** write the log under any directory other than
-  `<worktree>/.task-log/`. The `unblocker` agent and `/resume-task`
+  `<worktree>/.task-log/`. The `unblocker` agent and `/atelier:resume-task`
   both rely on this fixed location.
 

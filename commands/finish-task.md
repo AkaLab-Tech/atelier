@@ -67,6 +67,6 @@ End with:
 
 ## Edge cases
 
-- **The implementer or tester crashed mid-chain** and there is no clean change to ship → `/finish-task` should detect this from `git diff` being empty + the worktree being on a fresh branch. Surface it and suggest `/resume-task <id>` instead.
-- **`IN_PROGRESS.md` is empty** → there is no task to finalise. Surface and stop; the operator should run `/next-task` first.
+- **The implementer or tester crashed mid-chain** and there is no clean change to ship → `/finish-task` should detect this from `git diff` being empty + the worktree being on a fresh branch. Surface it and suggest `/atelier:resume-task <id>` instead.
+- **`IN_PROGRESS.md` is empty** → there is no task to finalise. Surface and stop; the operator should run `/atelier:next-task` first.
 - **A previous run already pushed** but didn't open the PR (Ctrl+C between push and `gh pr create`) → detect this via `git status` showing the branch is ahead-of-remote = 0 commits, then **skip steps 1-2 of pr-flow** and call only `gh pr create`. Surface the partial-recovery clearly so the operator knows what happened.

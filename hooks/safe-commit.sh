@@ -7,7 +7,7 @@
 # Layered defence (PLAN.md §3 "Defense-in-depth", §6 push gate):
 #   - Operators reach the push gate two ways:
 #       1. Deliberately, via the `atelier:safe-commit` skill —
-#          invoked by `pr-author` agent / `/finish-task` slash command.
+#          invoked by `pr-author` agent / `/atelier:finish-task` slash command.
 #       2. Reflexively, when an agent just runs `git commit` without
 #          first invoking the skill.
 #   - This hook is the runtime safety net for case (2). It re-runs the

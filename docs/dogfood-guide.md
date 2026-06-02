@@ -162,7 +162,7 @@ atelier --help | head -20
 
 ## Stage 2 — `/atelier:doctor` (verify integrated state)
 
-This is the most important post-install validation. `/doctor` checks 3 plugin updates + git-wt SHA + 6 auxiliary host checks (now includes docker compose v2 plugin per M4.17).
+This is the most important post-install validation. `/atelier:doctor` checks 3 plugin updates + git-wt SHA + 6 auxiliary host checks (now includes docker compose v2 plugin per M4.17).
 
 ### TC-2.1 — Open a Claude Code session against `$ATELIER_CONFIG_DIR`
 
@@ -201,7 +201,7 @@ Host checks
 **Failure modes to capture:**
 
 - Plugin version mismatch (drift). Note current + expected.
-- Any `✗` line. The `/doctor` output gives the exact fix command — try it, capture if it works.
+- Any `✗` line. The `/atelier:doctor` output gives the exact fix command — try it, capture if it works.
 - Any `–` (skipped) that you DIDN'T expect to be skipped.
 
 ### TC-2.2 — Exercise `--fix` and `atelier-update`
@@ -313,12 +313,12 @@ Avoid: tasks that touch `package.json` / `pnpm-lock.yaml` / `Dockerfile` / `.git
 ```bash
 cd <chosen-project>
 task #1   # uses the shell function from shellrc — or:
-claude '/next-task #1'
+claude '/atelier:next-task #1'
 ```
 
 **Expected chain**:
 
-1. `/next-task` sanity check, IN_PROGRESS empty
+1. `/atelier:next-task` sanity check, IN_PROGRESS empty
 2. Task #1 picked, summary shown
 3. Worktree created at `<project>-worktrees/task-1-<slug>/`
 4. ROADMAP → IN_PROGRESS move (commit `chore(tracking): start task #1`)
@@ -327,10 +327,10 @@ claude '/next-task #1'
 7. Orchestrator dispatches `implementer`
 8. (M4.17) If task mentions `postgres`/etc., `docker-runner` first
 9. `implementer` writes code, returns
-10. (M4.14) `/validate` runs (fast layer); if fails → retry with logs
+10. (M4.14) `/atelier:validate` runs (fast layer); if fails → retry with logs
 11. `tester` writes tests, returns
 12. `e2e-runner` if UI surface, else skip
-13. `/validate --full` (fast + slow)
+13. `/atelier:validate --full` (fast + slow)
 14. `pr-author` opens PR + ROADMAP IN_PROGRESS → HISTORY move
 15. `reviewer` posts review
 16. `auto-merge` evaluates 6 PLAN.md §6 guardrails
@@ -456,10 +456,10 @@ This section catalogs the exact behaviors to validate and what to record. Use it
 | NT-5 | Per-task `.claude/settings.json` (M4.16) | settings.json in worktree with correct path | additionalDirectories[0] matches |
 | NT-6 | Orchestrator handoff (M4.20) | subagent uses worktree path correctly | no cwd errors |
 | NT-7 | implementer attempt | code written | files changed |
-| NT-8 | /validate fast layer (M4.14) | pass/fail report | inner-loop iterations count |
+| NT-8 | /atelier:validate fast layer (M4.14) | pass/fail report | inner-loop iterations count |
 | NT-9 | tester attempt | tests written + pass | test files |
 | NT-10 | e2e-runner (if UI) or skip | screenshots or `skipped` | which |
-| NT-11 | /validate --full | pass | |
+| NT-11 | /atelier:validate --full | pass | |
 | NT-12 | pr-author opens PR | PR URL | url |
 | NT-13 | IN_PROGRESS → HISTORY commit | commit on task branch | sha |
 | NT-14 | reviewer review | approve / request-changes | which + count of findings |

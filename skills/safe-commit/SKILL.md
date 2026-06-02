@@ -5,7 +5,7 @@ description: Run the project's full lint + typecheck + unit + integration test p
 
 # safe-commit
 
-A skill that runs the push gate from PLAN.md §6 — lint + typecheck + unit + integration tests — and reports the result the same way every time. Callers (`pr-author`, `/finish-task`, manual `git commit` via the operator) rely on this skill to decide whether the commit can proceed.
+A skill that runs the push gate from PLAN.md §6 — lint + typecheck + unit + integration tests — and reports the result the same way every time. Callers (`pr-author`, `/atelier:finish-task`, manual `git commit` via the operator) rely on this skill to decide whether the commit can proceed.
 
 ## What "the push gate" means
 
