@@ -52,6 +52,10 @@ OPTIONS:
   --yes, -y              Non-interactive mode. Auto-resolves every prompt
                          with the safe default (never overwrite, never
                          weaken). Also honored if \$ATELIER_AUTO is set.
+  --skip-policy          Skip the interactive decision-policy step (M4.26.b).
+                         The .atelier.json keeps the template's conservative
+                         defaults (every category falls back to "ask").
+                         Run /atelier:set-policy later to configure.
   --mode <new|existing>  Force the project-mode detection (M4.19) used
                          by the /setup-project slash command to decide
                          whether to interview the operator (new) or
@@ -87,6 +91,7 @@ PROJECT_PATH_ARG=""
 PLUGIN_ROOT_FLAG=""
 PER_TASK_SETTINGS_PATH=""
 MODE_OVERRIDE=""           # M4.19: --mode=new|existing forces detection
+SKIP_POLICY=false          # M4.26.b: --skip-policy skips the interactive decision-policy step
 NONINTERACTIVE=false
 [ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
 
@@ -114,6 +119,14 @@ while [ $# -gt 0 ]; do
       MODE_OVERRIDE="${1#--mode=}"; shift ;;
     --yes|-y)
       NONINTERACTIVE=true; shift ;;
+    --skip-policy)
+      # M4.26.b: skip the interactive decision-policy prompt. Useful for
+      # automation that does not want to walk the operator through each
+      # catalog category. The .atelier.json keeps the template's
+      # conservative defaults (decisionPolicy.default = "ask",
+      # byCategory = {}). The operator can revise later with
+      # /atelier:set-policy.
+      SKIP_POLICY=true; shift ;;
     --help|-h)
       usage; exit 0 ;;
     --)
@@ -275,6 +288,7 @@ is_configured() {
 # ---------- step status (one variable per step for the final summary) ----------
 SETTINGS_STATUS=""
 ATELIER_CONFIG_STATUS=""
+POLICY_STATUS=""             # M4.26.b: set by step_decision_policy
 ROADMAP_STATUS=""
 INPROGRESS_STATUS=""
 HISTORY_STATUS=""
@@ -586,6 +600,124 @@ step_atelier_config_json() {
   ATELIER_CONFIG_STATUS="created"
 }
 
+# ---------- step 3.6: decision policy (M4.26.b) ----------
+# Walks the operator through each category in the decision-broker catalog
+# and writes their per-category answer to <project>/.atelier.json's
+# decisionPolicy.byCategory block. Runs only when:
+#   - $SKIP_POLICY is false (default)
+#   - $NONINTERACTIVE is false (interactive mode required)
+#   - ATELIER_CONFIG_STATUS == "created" (do NOT re-prompt on preserved files;
+#     the operator can run /atelier:set-policy to revise without re-running
+#     the full setup)
+#   - the catalog file is readable under $PLUGIN_ROOT/agents/decision-broker/
+#
+# Per category, the operator chooses one of:
+#   [a] Auto    — broker decides per-case (uses Haiku/Sonnet/Opus per riskLevel)
+#   [f] Fix     — always pick the catalog's default option without thinking
+#   [s] Ask     — atelier asks the operator each time (current behavior)
+#
+# The choice writes into decisionPolicy.byCategory.<category>:
+#   "auto"    → the broker dispatches to the right-risk-tier evaluator agent
+#   "<id>"    → fixed option id from the catalog (when operator picks [f])
+#   "ask"    → no entry written; falls through to decisionPolicy.default
+#              (which is "ask" by the template); semantically equivalent to
+#              "ask" without bloating the file.
+#
+# The step is idempotent across re-invocations only via the
+# ATELIER_CONFIG_STATUS gate. To re-run the prompts, the operator deletes
+# .atelier.json (or runs /atelier:set-policy when that command lands in
+# M4.26.b).
+step_decision_policy() {
+  POLICY_STATUS="skipped"
+
+  if $SKIP_POLICY; then
+    POLICY_STATUS="skipped (--skip-policy)"
+    return
+  fi
+  if $NONINTERACTIVE; then
+    POLICY_STATUS="skipped (non-interactive)"
+    return
+  fi
+  if [ "$ATELIER_CONFIG_STATUS" != "created" ]; then
+    # The .atelier.json was preserved or skipped — the operator already
+    # has their answers (or doesn't have the template yet). Do not
+    # re-prompt; /atelier:set-policy is the right surface for revising.
+    POLICY_STATUS="skipped (.atelier.json $ATELIER_CONFIG_STATUS)"
+    return
+  fi
+
+  local catalog="$PLUGIN_ROOT/agents/decision-broker/catalog.json"
+  if [ ! -f "$catalog" ]; then
+    POLICY_STATUS="skipped (catalog missing at $catalog — re-run install.sh)"
+    return
+  fi
+  if ! jq -e '.categories | type == "object"' "$catalog" >/dev/null 2>&1; then
+    POLICY_STATUS="skipped (catalog malformed at $catalog)"
+    return
+  fi
+
+  local target="$PROJECT/.atelier.json"
+  if [ ! -f "$target" ]; then
+    # ATELIER_CONFIG_STATUS said "created" but the file is gone — race or
+    # error. Surface and move on.
+    POLICY_STATUS="skipped ($target missing)"
+    return
+  fi
+
+  log "Decision policy (M4.26)"
+  sublog "for each strategic decision atelier may face, choose how it should be handled:"
+  sublog "  [a] Auto  — atelier decides per-case (uses an evaluator agent)"
+  sublog "  [f] Fix   — always use the recommended default (no thinking)"
+  sublog "  [s] Ask   — atelier asks you each time (current behavior, conservative)"
+
+  # jq -r '.categories | keys[]' emits category ids in key order. bash 3.2
+  # cannot use mapfile/readarray; iterate via process substitution.
+  local category
+  while IFS= read -r category; do
+    local description default risk model
+    description="$(jq -r --arg c "$category" '.categories[$c].description' "$catalog")"
+    default="$(jq -r --arg c "$category" '.categories[$c].default' "$catalog")"
+    risk="$(jq -r --arg c "$category" '.categories[$c].riskLevel' "$catalog")"
+    model="$(jq -r --arg c "$category" '.categories[$c].model' "$catalog")"
+
+    printf '\n'
+    printf '  %s%s%s\n' "$_C_BOLD" "$category" "$_C_RESET"
+    # Word-wrap the description in a basic way: print as-is; the operator
+    # reads at their pace.
+    printf '    %s\n' "$description"
+    printf '    Recommended default: %s\n' "$default"
+    printf '    Risk level: %s   Model when auto: %s\n' "$risk" "$model"
+
+    local choice=""
+    while [ -z "$choice" ]; do
+      printf '    Handle as [a]uto / [f]ix-default / [s]ask? [a/f/s]: '
+      read -r choice
+      case "$choice" in
+        a|A|auto)        choice="auto" ;;
+        f|F|fix|fix-default) choice="$default" ;;
+        s|S|ask)         choice="ask" ;;
+        *)               choice="" ;;
+      esac
+    done
+
+    # Update .atelier.json. We use jq to merge in the new entry; atomic
+    # via temp file. "ask" is the template default so we omit it to keep
+    # the file small.
+    if [ "$choice" != "ask" ]; then
+      local tmp
+      tmp="$(mktemp)"
+      jq --arg c "$category" --arg v "$choice" \
+        '.decisionPolicy.byCategory[$c] = $v' \
+        "$target" > "$tmp" \
+        && mv "$tmp" "$target" \
+        || { rm -f "$tmp"; die "failed to write $target while updating policy for $category"; }
+    fi
+    sublog "  → $category: $choice"
+  done < <(jq -r '.categories | keys[]' "$catalog")
+
+  POLICY_STATUS="configured"
+}
+
 # ---------- step 4: ROADMAP.md / IN_PROGRESS.md / HISTORY.md ----------
 step_roadmap_files() {
   if [ ! -f "$PROJECT/ROADMAP.md" ]; then
@@ -854,6 +986,7 @@ fi
 
 step_settings_json
 step_atelier_config_json
+step_decision_policy
 step_roadmap_files
 step_project_claude_md
 step_npmrc
@@ -872,6 +1005,7 @@ echo ""
 ok "$PROJECT set up for atelier"
 sublog ".claude/settings.json:          $SETTINGS_STATUS"
 sublog ".atelier.json:                  $ATELIER_CONFIG_STATUS"
+sublog "decision policy:                $POLICY_STATUS"
 sublog "ROADMAP.md:                     $ROADMAP_STATUS"
 sublog "IN_PROGRESS.md:                 $INPROGRESS_STATUS"
 sublog "HISTORY.md:                     $HISTORY_STATUS"
@@ -895,4 +1029,4 @@ else
   sublog "Root CLAUDE.md already present — preserved."
 fi
 echo ""
-sublog "Next: cd $PROJECT && run /next-task to claim the first ROADMAP.md item."
+sublog "Next: cd $PROJECT && run /atelier:next-task to claim the first ROADMAP.md item."

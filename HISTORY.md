@@ -8,8 +8,56 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
-### M4.26.a — Decision broker base: catalog + skill + three risk-tiered evaluator agents (Haiku / Sonnet / Opus) — 2026-06-02
+### M4.26.b — Decision broker: per-project policy schema + setup-project interactive step + /atelier:set-policy slash command — 2026-06-02
 **PR:** _pending_
+
+Second slice of M4.26. M4.26.a (PR [#120](https://github.com/AkaLab-Tech/atelier/pull/120)) shipped the framework dormant — the catalog, the skill, and the three risk-tier evaluator agents existed but no specialist invoked them. M4.26.b adds the **per-project configuration surface** so the operator can decide, per category, whether atelier handles a strategic decision autonomously (auto), surfaces it (ask), or always picks a specific catalog option (fixed id). Without M4.26.b an operator has no way to opt into the broker — every category falls back to `ask` because the project file has no policy block to read.
+
+**Delivered:**
+
+- **`templates/atelier.template.json`** — new `decisionPolicy` block. Body: `{ "_comment": "...", "default": "ask", "byCategory": {} }`. The default is conservative — operators upgrading to v0.9.0 see no behavioural change until they actively opt-in via the interactive step (or `/atelier:set-policy` after the fact). The `_comment` explains how the broker uses the block (consumed by M4.26.c) and where the catalog lives (atelier-managed, operator does NOT edit).
+
+- **`scripts/atelier-setup-project`** — new `step_decision_policy()` function inserted between `step_atelier_config_json` and `step_roadmap_files` in the main flow. The step:
+  - Runs only when (a) `--skip-policy` flag NOT set, (b) `$NONINTERACTIVE` NOT true (no TTY → skip silently), (c) `ATELIER_CONFIG_STATUS == "created"` (do NOT re-prompt on preserved files), (d) catalog file readable under `$PLUGIN_ROOT/agents/decision-broker/catalog.json`.
+  - Iterates over `jq -r '.categories | keys[]' "$catalog"` — bash 3.2-portable, no `mapfile`/`readarray`. Uses process substitution `< <(...)` which is bash 3.2 OK.
+  - Per category prints (a) the category id in bold, (b) the human description, (c) the catalog's recommended `default`, (d) the `riskLevel`, (e) which model is used in auto mode. Then prompts `[a]uto / [f]ix-default / [s]ask?`.
+  - Writes the answer to `.atelier.json` via `jq` atomic merge (mktemp + `mv`). The `"ask"` answer is omitted from `byCategory` (falls through to `decisionPolicy.default = "ask"`); only `"auto"` and fixed option ids are written.
+  - Sets `POLICY_STATUS` to one of: `configured`, `skipped (--skip-policy)`, `skipped (non-interactive)`, `skipped (.atelier.json <prior-status>)`, `skipped (catalog missing — re-run install.sh)`, `skipped (catalog malformed)`. Surfaced in the final summary.
+
+- **`scripts/atelier-setup-project` flag** — `--skip-policy` parsed at the top of the script and documented in `usage()`. Pattern matches the existing flags (no value; sets `SKIP_POLICY=true`).
+
+- **`commands/set-policy.md`** — new slash command `/atelier:set-policy [category]`. Used by operators who (a) ran setup-project before M4.26.b shipped, (b) used `--skip-policy` and now want to configure, or (c) want to revise a single answer without re-running the full setup. Walks the same per-category prompt as the bash step but via `AskUserQuestion` (richer UI than read in a shell). Adds a "Keep current" option to each category prompt when a non-default value is already set, so the operator can revise one category without re-answering the others.
+
+- **`scripts/atelier-setup-project` minor fix** — the final-summary `sublog` line said *"run /next-task"* (bare slash command, would hit the F44 bug). Corrected to `/atelier:next-task`. Caught during F45 audit but missed because it lives in the script body, not in the prose I swept. F45 grep didn't include `scripts/`.
+
+**Decisions captured:**
+
+- **`POLICY_STATUS` gates re-prompt on idempotent re-runs.** Re-running `/atelier:setup-project` after an initial successful run is supposed to be a quiet no-op for files that already exist. Walking the catalog again would surprise the operator. The gate `ATELIER_CONFIG_STATUS == "created"` ensures the step only runs the first time `.atelier.json` is freshly written. After that, `/atelier:set-policy` is the right surface for revisions.
+- **`"ask"` answer deletes the entry rather than writing it.** Equivalent semantics (no entry in `byCategory` → fall through to `decisionPolicy.default = "ask"`), smaller file. Trade-off: a reader of `.atelier.json` doesn't see *"the operator explicitly said ask for this category"* — they see no entry. Accepted because the default is `"ask"` and the file is mostly read by the broker, not by humans.
+- **Catalog is read at setup-project time, not at .atelier.json creation time.** The `byCategory` block lives separately from the catalog; if a future atelier version adds a category that wasn't in the catalog when the operator set up the project, the new category gets the global default (`"ask"`) and the operator can opt-in via `/atelier:set-policy <new-category>` when they're ready. This avoids forcing operators to re-walk every project every time the catalog grows.
+- **`commands/set-policy.md` is prose-driven, not bash-driven.** The setup-project step is bash (no LLM cost, immediate); the slash command is an agent prose that uses `AskUserQuestion`. Two paths for the same configuration because the contexts differ: setup-project is one-shot during initial scaffolding (bash is faster), the slash command is operator-initiated for ad-hoc revisions (the richer UI makes one-off edits easier).
+- **No `Bash(jq:*)` allowed-tools dependency in the slash command body.** The `set-policy.md` says the agent "uses `jq` through `Bash`" but specifies `Edit` for the actual write. This goes through atelier's standard write path (M2.4 hooks fire, settings.json allow/deny matrix applies). A direct write via `Bash(jq | tee)` would bypass that — wrong shape for a configuration command.
+
+**Plugin scope:** plugin-layer (`templates/`, `commands/`) + script-layer (`scripts/atelier-setup-project`). No agent, skill, hook, install.sh change. **Plugin version stays at 0.9.0** — per the operator's directive, the M4.26 series ships as a single release after `.e` merges. The manifest stays aligned with head-of-main but the release is deferred.
+
+**Verified locally:**
+
+- `bash -n scripts/atelier-setup-project` syntax-clean.
+- `jq empty templates/atelier.template.json` valid JSON.
+- The new `step_decision_policy()` uses only bash 3.2-compatible constructs (`while IFS= read; do ...; done < <(...)` — verified against the M4.16-era F33 lesson where `mapfile` was bash-4-only).
+
+**Operator-visible:**
+
+After this PR merges and the operator runs `/atelier:setup-project` on a NEW project, the script walks through each catalogued category and asks `[a/f/s]`. Existing projects (already configured) see no change — `/atelier:set-policy` is the path for them. The `.atelier.json` files of existing projects keep their absent `decisionPolicy` block, which the broker (when M4.26.c lands) treats as the conservative "fall back to ask" default.
+
+**Follow-up paths:**
+
+- **M4.26.c** (queued) — integrate the broker skill into `task-orchestrator`, `pr-author`, and `unblocker`. The `decisionPolicy` block written by this PR becomes consequential when the specialists invoke `Skill(decision-broker)` instead of `AskUserQuestion` for catalogued situations.
+- **M4.26.d** (queued) — panic switch + task wrapper flags.
+- **M4.26.e** (queued) — PR-body audit section + docs.
+
+### M4.26.a — Decision broker base: catalog + skill + three risk-tiered evaluator agents (Haiku / Sonnet / Opus) — 2026-06-02
+**PR:** [#120](https://github.com/AkaLab-Tech/atelier/pull/120)
 
 First slice of M4.26 — the framework that lets atelier make **strategic decisions** (situations with several legitimate options) autonomously instead of always asking the operator. Sub-milestone `.a` ships the **base** (catalog, skill, evaluator agents) without integration; the specialists still use `AskUserQuestion` directly. The follow-up PR (M4.26.b-e) wires the skill into `task-orchestrator`, `pr-author`, `unblocker`, adds the `setup-project` policy step, the `.atelier.json` schema, the `/atelier:abort-auto` panic switch, and the `--policy` / `--ask-for` task wrapper flags.
 

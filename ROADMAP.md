@@ -87,23 +87,6 @@ Research spike to inform a future implementation (M4.23). Atelier today has no p
 
 **Trigger to revisit:** captured 2026-05-23. Operator wants a path to deploy atelier-managed projects to VPS-hosted Coolify. Spike runs immediately because the implementation cost depends heavily on whether existing tooling already covers the use cases — building from scratch when a maintained MCP already exists would be waste.
 
-### M4.26.b — Decision broker: per-project policy schema + setup-project step
-
-`[security-design]` · Source: M4.26 design conversation (2026-06-02) · `blocked_by: M4.26.a (already closed in v0.9.0)`
-
-M4.26.a shipped the base (catalog + skill + 3 evaluator agents) dormant — no specialist invokes the broker yet. M4.26.b adds the **per-project configuration surface** so the operator can choose, per category, between `auto` (broker decides), `ask` (current behavior — atelier asks), or a fixed option id (e.g. `"fix-first"` — always pick this answer).
-
-**Scope:**
-
-- [ ] **`templates/atelier.template.json`** — add a `decisionPolicy` block. Default body: `{ "default": "ask" }` (conservative; existing operators see no behaviour change until they actively opt-in). The block has `_comment` like the rest of the file explaining how the broker uses it.
-- [ ] **`scripts/atelier-setup-project`** — new interactive step after the current scaffolding finishes. For each category in `agents/decision-broker/catalog.json`: display the human description + the recommended default + the risk level + which model is used; ask the operator to choose `a` (auto), `f` (fixed option default), or `s` (ask). Write the per-category answer to `<project>/.atelier.json`'s `decisionPolicy` section.
-- [ ] **`scripts/atelier-setup-project` flag** — add `--skip-policy` to skip the interactive step and leave `decisionPolicy: { "default": "ask" }`. Used by automation that does not want the interactive prompt.
-- [ ] **New helper command `/atelier:set-policy`** (in `commands/`) — for operators that ran setup-project before M4.26.b, or who want to revise their policy without re-running setup-project. Same interactive prompt as the setup-project step, in isolation.
-
-**Acceptance:** a fresh setup-project on a new project produces a `.atelier.json` with a `decisionPolicy` block reflecting the operator's per-category answers. The catalog format documented in the M4.26.a HISTORY entry is unchanged.
-
-**Trigger to revisit:** captured 2026-06-02 as the next slice of M4.26 after the base ships. Run immediately after M4.26.a merges so operators can configure policies before M4.26.c wires the specialists in.
-
 ### M4.26.c — Decision broker: integrate broker into task-orchestrator, pr-author, unblocker
 
 `[security-design]` · Source: M4.26 design conversation · `blocked_by: M4.26.b`
