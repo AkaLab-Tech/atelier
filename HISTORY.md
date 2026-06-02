@@ -6,10 +6,65 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ---
 
-## 2026-05
+## 2026-06
+
+### M7.1.F42 — `install.sh` Phase B (and verification + Phase C.2) was validating the operator's personal Claude auth instead of the atelier-scoped one — 2026-06-02
+**PR:** _pending_
+
+Discovered immediately after v0.8.2 (F39 + F41) was released and the operator went through the post-merge upgrade flow on storefront. `install.sh` reported *"Claude Code already authenticated as miguelmail2006@gmail.com. Keep (Y) or switch to another account (s)?"* and `atelier-update` reported success. But the very next command — `atelier` + `/atelier:doctor` inside storefront — failed with `Please run /login · API Error: 401 Invalid authentication credentials`. The operator's reaction was the right one: *"no debería haber pasado, el install y el update deberían validar el login de forma correcta, porque entonces esto está mal"*.
+
+**Root cause:**
+
+[install.sh:728](install.sh) (the pre-F42 line numbering) called `claude auth status` and `claude auth login` **without prefixing `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR`**. By default, `claude` reads `~/.claude/.claude.json` — the operator's *personal* config directory. So Phase B's idempotency hinge was checking the wrong file: it confirmed the operator's personal auth, never validated `$ATELIER_CONFIG_DIR/.claude.json` (the file every `atelier`-launched session actually loads, because the shell wrapper sets `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR`).
+
+This produced a class of failures that looked like "auth flapping" but were really "the auth I just verified is not the auth that gets used":
+
+- A fresh-machine install would leave `$ATELIER_CONFIG_DIR/.claude.json` either absent or with whatever OAuth state happened to land there incidentally during Phase C.2's `claude plugin install` calls.
+- A re-install (idempotency path) on a host where the operator had once logged in to atelier manually would happily report "already authenticated" by reading the personal config — even if the atelier-scoped token had since expired or rotated. The 401 would only surface on the first real session API call.
+
+The post-install Verification phase had the same blind spot (`verify_cmd "claude auth status" claude auth status`), as did Phase C.2's pre-flight guard before installing plugins.
+
+**Delivered:**
+
+- **`install.sh:phase_b_claude_login`** — every `claude auth status` / `claude auth logout` / `claude auth login` invocation now prefixes `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"`. Five call sites in this function were updated. The interactive prompts now say "**atelier** Claude Code already authenticated as …" so the operator knows which config dir is being validated. The fresh-login sublog now also says *"this is separate from your personal ~/.claude/ login"* on the no-prior-auth path, since the operator may legitimately end up with two auths for the same account (one for personal claude, one for atelier-scoped claude).
+- **`install.sh:phase_b` (no-TTY branch)** — the manual-fallback warning that prints when install.sh runs without a TTY now suggests `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth login` instead of the bare `claude auth login`. Before F42 the bare form would have authenticated the personal config and reproduced the same bug on the next atelier session.
+- **`install.sh:phase_c_2`** — the plugin-install pre-flight `if ! claude auth status` guard now uses `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"`. The plugin install itself was already running through the right config dir; this just makes the guard check the same dir as the operation.
+- **`install.sh:phase_verify`** — the post-install `verify_cmd "claude auth status"` line now uses `env CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"` and renames the label to `"atelier claude auth status"`. The check is now meaningful: green means atelier sessions will work, not "the operator has at-least-one logged-in claude on their machine".
+- **`scripts/atelier-doctor`** — new `check_atelier_claude_auth` between `check_atelier_config_dir` and `check_git_identity`. Reports `✓ atelier Claude auth valid (account: <email>)` when the atelier-scoped `claude auth status` succeeds, and `✗ atelier Claude auth invalid or missing in $ATELIER_CONFIG_DIR/.claude.json` otherwise with a `push_fix_manual` containing the exact relogin command. Manual rather than auto because `claude auth login` is an interactive browser flow that cannot be silently driven by `--fix`.
+
+**Decisions captured:**
+
+- **Scope every `claude auth …` invocation, not just the failing one.** The operator's symptom was Phase B reporting false success, but the same blind spot was in the post-install Verification (`verify_cmd`) and in Phase C.2's pre-flight guard. Fixing only Phase B would have left a confusing intermediate state where the doctor said `✓` but the verify phase reported the personal auth. Single-axis fix across all four sites.
+- **`push_fix_manual` for the doctor, not `push_fix_auto`.** The fix is `CLAUDE_CONFIG_DIR=… claude auth login`, which opens a browser tab and requires human interaction. Auto-fixes are supposed to run cleanly without operator intervention; a browser-OAuth flow cannot. Same shape as the existing `push_fix_manual` cases (e.g. legacy hooks cleanup, git-wt drift remediation).
+- **No documentation update to operator-rules.md or operator-guide.md.** The "Invoking `claude` from atelier scripts (M7.1.F29)" rule already states the convention. F42 is the install.sh + doctor *enforcing* that rule, not extending it. The follow-up that *would* document is M7.1.F43 if we add a section to operator-rules.md about "two separate Claude auths (personal + atelier)" — currently deferred because the install-time `warn` already explains the split on the screen where the operator is most likely to read it.
+- **Patch bump 0.8.2 → 0.8.3.** Auth wiring fix, no operator-facing UX change beyond the labels. Same precedent as F36's `current_version` comparator fix (patch bump, no release cut required to ship a tag, but the manifest stays aligned with head-of-main).
+
+**Plugin scope:** host-OS-layer (`install.sh`) + plugin-layer (`scripts/atelier-doctor`). No agent, skill, command, hook, or template touched. Patch bump **0.8.2 → 0.8.3**.
+
+**Verified locally:**
+
+- `bash -n install.sh` syntax-clean post all edits.
+- `bash -n scripts/atelier-doctor` syntax-clean.
+- `grep -nE "claude auth (status|login|logout)" install.sh` shows every invocation now prefixed with `CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"` (or `env CLAUDE_CONFIG_DIR=…` in the `verify_cmd` line which passes the env via `env <name=val> cmd…` per the existing pattern for `verify_cmd "atelier gh auth (author)"`).
+- `check_atelier_claude_auth` exercised against the operator's current host: at the time of this commit the operator had already manually run `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR claude /login` to unblock the storefront test, so the check reports `✓ atelier Claude auth valid (account: <email>)` — confirming the check correctly recognises the post-fix state. On a host where the atelier-scoped auth is still missing or expired, the check would surface `✗` with the relogin command.
+
+**Operator-visible:**
+
+After this PR merges and the operator picks up v0.8.3 via `atelier-update` (or a fresh `install.sh` run), the next `install.sh` run will:
+
+1. **Detect missing atelier-scoped auth** even on hosts where the personal `~/.claude/` is logged in. Operator sees one of: *"atelier Claude Code already authenticated as <email>"* (existing valid token in `$ATELIER_CONFIG_DIR`), or *"starting atelier Claude Code login (a browser tab will open) — this is separate from your personal ~/.claude/ login"* (no prior atelier auth — browser opens).
+2. **Refuse to install plugins in Phase C.2** if the atelier-scoped auth is missing (matches the Phase B behavior — fail loudly, give a manual fallback, do not silently proceed and let plugins land under the wrong auth).
+3. **Surface the same check at the doctor level** — `atelier-doctor` reports `✓` if the auth is valid, `✗` with the exact relogin command otherwise. The operator can now diagnose 401 issues from outside any Claude session.
+
+If the operator had previously been operating with a "valid personal auth + missing/expired atelier auth", the first `install.sh` re-run after F42 lands will detect the gap and walk them through the relogin. The 401 the operator hit on `/atelier:doctor` becomes impossible to ship past Phase B undetected.
+
+**Follow-up paths:**
+
+- **M7.1.F43 (deferred)** — add a section to `operator-rules.md` titled "Two Claude Code auths: personal (~/.claude/) vs atelier ($ATELIER_CONFIG_DIR/.claude.json)" explaining the split. Currently deferred because the install-time messaging covers the case in the moment the operator sees it. Promote if a second operator hits the same confusion at a different entry point (e.g. someone reading the operator-guide before running install).
+- **Token-rotation observability.** F42 catches "no atelier auth" and "atelier auth invalid" at install/doctor time, but does not catch a token that becomes invalid mid-session (e.g. a long-running task that outlasts the OAuth refresh window). The proper fix is a `PostToolUse` hook that watches for 401s and surfaces a structured error to the agent, but that is M2.9-shaped work — defer until the symptom recurs in production.
 
 ### M7.1.F41 — Prune low-value `ask` rules so auto-mode classifier covers them (template diet) — 2026-05-30
-**PR:** _pending_
+**PR:** [#116](https://github.com/AkaLab-Tech/atelier/pull/116)
 
 Captured during M2.8 (PR [#114](https://github.com/AkaLab-Tech/atelier/pull/114), v0.8.0) dogfood. After auto-mode landed in production, the operator hit a permission prompt for `node -e "require('./package.json').scripts"` — a benign inspection call. The prompt's own footer explained why: *"Ask rule `Bash(node -e *)` overrides auto mode for this command. /permissions to let auto mode decide"*. The static matrix's `ask` rules sit **above** the auto-mode classifier in precedence (per Claude Code's documented order: deny → ask → allow → classifier), so any `ask` match short-circuits the classifier even when the classifier would have judged the action safe.
 

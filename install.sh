@@ -722,40 +722,50 @@ phase_a() {
 # ---------- phase B: authentication ----------
 
 phase_b_claude_login() {
+  # M7.1.F42 — All `claude auth …` calls below are scoped to atelier's
+  # CLAUDE_CONFIG_DIR ($ATELIER_CONFIG_DIR), NOT the operator's personal
+  # ~/.claude/. Before F42 these calls ran without the env override, which
+  # meant install.sh would happily report "already authenticated" by
+  # reading the operator's personal config — leaving
+  # $ATELIER_CONFIG_DIR/.claude.json potentially empty or with an expired
+  # token. Sessions launched via the `atelier` wrapper (which pins
+  # CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR) would then fail with a 401 at
+  # the first API call, despite install.sh saying everything was fine.
+  #
   # `claude auth status` exits 0 if authenticated, non-0 otherwise. This is
   # the idempotency hinge — re-runs of install.sh on an already-logged-in
   # machine short-circuit here without touching the browser.
-  if claude auth status >/dev/null 2>&1; then
+  if CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status >/dev/null 2>&1; then
     # M7.1.F4: offer to switch accounts. Skip the prompt in non-interactive
     # mode (--yes / no TTY) — keep the existing account silently.
     if $NONINTERACTIVE || [ ! -t 0 ]; then
-      step_skip "Claude Code already authenticated (keeping existing account)"
+      step_skip "atelier Claude Code already authenticated (keeping existing account)"
       return
     fi
     local current=""
-    current="$(claude auth status 2>&1 | grep -Eio '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' | head -1 || true)"
+    current="$(CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status 2>&1 | grep -Eio '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' | head -1 || true)"
     if [ -n "$current" ]; then
-      printf '    Claude Code already authenticated as %s%s%s. Keep (Y) or switch to another account (s)? [Y/s]: ' "$_C_BOLD" "$current" "$_C_RESET"
+      printf '    atelier Claude Code already authenticated as %s%s%s. Keep (Y) or switch to another account (s)? [Y/s]: ' "$_C_BOLD" "$current" "$_C_RESET"
     else
-      printf '    Claude Code already authenticated. Keep current account (Y) or switch (s)? [Y/s]: '
+      printf '    atelier Claude Code already authenticated. Keep current account (Y) or switch (s)? [Y/s]: '
     fi
     local switch_choice=""
     read -r switch_choice
     case "$switch_choice" in
       s|S|switch|SWITCH)
-        sublog "logging out current Claude account, fresh login coming up"
-        claude auth logout 2>/dev/null || true
-        sublog "starting Claude Code login (a browser tab will open)"
-        claude auth login
+        sublog "logging out current atelier Claude account, fresh login coming up"
+        CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth logout 2>/dev/null || true
+        sublog "starting atelier Claude Code login (a browser tab will open)"
+        CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth login
         ;;
       *)
-        step_skip "Claude Code already authenticated (keeping existing account)"
+        step_skip "atelier Claude Code already authenticated (keeping existing account)"
         ;;
     esac
     return
   fi
-  sublog "starting Claude Code login (a browser tab will open)"
-  claude auth login
+  sublog "starting atelier Claude Code login (a browser tab will open) — this is separate from your personal ~/.claude/ login"
+  CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth login
 }
 
 # Authenticate one of the two atelier-isolated `gh` identities (M5.0.1). Each
@@ -958,7 +968,7 @@ phase_b() {
   if [ ! -t 0 ] || [ ! -t 1 ]; then
     warn "no TTY detected — skipping Phase B (interactive auth)"
     warn "to complete auth, re-run on a real terminal, or run these by hand:"
-    warn "  claude auth login"
+    warn "  CLAUDE_CONFIG_DIR=\"$ATELIER_CONFIG_DIR\" claude auth login"
     warn "  GH_CONFIG_DIR=\"$ATELIER_CONFIG_DIR/gh/author\" gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key --scopes 'repo,workflow,project,read:org'"
     warn "  GH_CONFIG_DIR=\"$ATELIER_CONFIG_DIR/gh/author\" gh auth setup-git"
     warn "  GH_CONFIG_DIR=\"$ATELIER_CONFIG_DIR/gh/reviewer\" gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key --scopes 'repo,workflow,project,read:org'"
@@ -1662,8 +1672,11 @@ phase_c_2() {
     phase_c_2_print_manual_commands
     return
   fi
-  if ! claude auth status >/dev/null 2>&1; then
-    warn "claude not authenticated — skipping Phase C.2"
+  # M7.1.F42 — scope auth check to atelier's CLAUDE_CONFIG_DIR, not the
+  # operator's personal ~/.claude/. Phase C.2 installs plugins under the
+  # atelier config dir, so the auth that matters here is the atelier one.
+  if ! CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status >/dev/null 2>&1; then
+    warn "atelier-scoped claude not authenticated — skipping Phase C.2"
     warn "Phase B should have authenticated; if it skipped (no TTY), re-run install.sh from a real terminal"
     phase_c_2_print_manual_commands
     return
@@ -1708,7 +1721,10 @@ verify_plugin() {
 phase_verify() {
   phase "Verification"
   verify_cmd    "claude --version"        claude --version
-  verify_cmd    "claude auth status"      claude auth status
+  # M7.1.F42 — verify the atelier-scoped auth (sessions launched by the
+  # `atelier` wrapper use CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR). The
+  # operator's personal ~/.claude/ is unrelated to whether atelier works.
+  verify_cmd    "atelier claude auth status" env CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status
   # M5.0.1: verify both atelier-isolated gh identities. `env VAR=val cmd ...`
   # prefixes the env transparently for verify_cmd's "$@" passthrough.
   verify_cmd    "atelier gh auth (author)"   env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"   gh auth status --hostname github.com
