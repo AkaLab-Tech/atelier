@@ -87,23 +87,6 @@ Research spike to inform a future implementation (M4.23). Atelier today has no p
 
 **Trigger to revisit:** captured 2026-05-23. Operator wants a path to deploy atelier-managed projects to VPS-hosted Coolify. Spike runs immediately because the implementation cost depends heavily on whether existing tooling already covers the use cases — building from scratch when a maintained MCP already exists would be waste.
 
-### M4.26.c — Decision broker: integrate broker into task-orchestrator, pr-author, unblocker
-
-`[security-design]` · Source: M4.26 design conversation · `blocked_by: M4.26.b`
-
-The base + policy surface are dormant until the specialists actually invoke the broker. M4.26.c wires the three specialists that face strategic decisions: `task-orchestrator` (baseline-conflict, oversize-handling, scope-creep-detected), `pr-author` (oversize-handling as a last-chance check, merge-conflict-tracking during the same-PR IN_PROGRESS → HISTORY move), `unblocker` (merge-conflict-substantive during hard-stop rebase attempts).
-
-**Scope:**
-
-- [ ] **`agents/task-orchestrator.md`** — replace the inline `AskUserQuestion` for the 3 catalogued categories with `Skill(decision-broker)` invocations. The skill returns `mode` + `choice` + `rationale`; the orchestrator switches on `mode` per the skill's contract.
-- [ ] **`agents/pr-author.md`** — same pattern for oversize last-chance + tracking-merge-conflict.
-- [ ] **`agents/unblocker.md`** — same for substantive merge conflicts on real code during the rebase path.
-- [ ] **`operator-rules.md`** — new section "Decision policy" explaining the 3-mode policy surface (auto / ask / fixed-id), the panic switch, and the per-category vs project-default precedence.
-
-**Acceptance:** a task that hits a catalogued strategic decision flows through the broker skill rather than directly to `AskUserQuestion`. The decisions.jsonl log in the worktree captures each resolution; the `pr-author` does not yet surface the log in the PR body (that is M4.26.e).
-
-**Trigger to revisit:** after M4.26.b merges and operators have configured at least one project's policy. Without configuration the broker still falls back to `ask`, so the integration is safe to ship before every operator has opted in.
-
 ### M4.26.d — Decision broker: panic switch + task wrapper flags
 
 `[security-design]` · Source: M4.26 design conversation · `blocked_by: M4.26.c`

@@ -8,8 +8,52 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
-### M4.26.b — Decision broker: per-project policy schema + setup-project interactive step + /atelier:set-policy slash command — 2026-06-02
+### M4.26.c — Decision broker: integrate into task-orchestrator + pr-author + operator-rules.md — 2026-06-02
 **PR:** _pending_
+
+Third slice of M4.26. With the framework (M4.26.a, PR [#120](https://github.com/AkaLab-Tech/2/atelier/pull/120)) and the per-project configuration surface (M4.26.b, PR [#121](https://github.com/AkaLab-Tech/atelier/pull/121)) shipped, M4.26.c **wires the specialists** so the broker actually fires during task execution. The framework was dormant in v0.9.0 base; after this PR, an operator with `decisionPolicy.byCategory.oversize-handling = "auto"` in their `.atelier.json` will see the orchestrator carry out the broker's choice (slice-task / open-anyway / abort) without the operator being asked, with the autonomous rationale surfaced in the chain log.
+
+**Delivered:**
+
+- **`agents/task-orchestrator.md`** — new section "## Strategic decisions via the decision-broker (M4.26)" between "## Bash output handling" and "## Operating context". Explains the broker pattern, enumerates the 3 categories owned by the orchestrator (`baseline-conflict`, `oversize-handling`, `scope-creep-detected`), and documents the invocation protocol (briefing → `Skill(decision-broker)` → switch on `mode`). Plus a specific integration in step 8's `oversized` branch: the orchestrator now consults the broker BEFORE surfacing the three resolution paths to the operator. The `direct` and `auto` branches carry out the choice; `ask` / `panic` fall through to the original operator-facing path verbatim. The current behavior is fully preserved when the policy is `ask` (the conservative default), so existing operators see no behaviour change until they opt-in.
+- **`agents/pr-author.md`** — step 5's OVERSIZE branch gets a brief note that `oversize-handling` is owned by the orchestrator, not `pr-author`. The size-check still detects + marks + returns `oversized` unchanged; the orchestrator consults the broker. Splitting the decision across two agents would double-log it and violate the broker's "one decision per category per task" invariant.
+- **`operator-rules.md`** — new section "## Decision policy (M4.26)" at the end of the file. Explains in operator-facing prose what the broker is, what it is NOT (not a permission gate, not a safety net for unsafe writes, not operator-extensible), the 5 catalogued categories with their defaults / risk / model / owner agent, how to configure (`/atelier:setup-project`, `/atelier:set-policy`, manual edit), the deferred panic switch + wrapper flags (cross-references M4.26.d), and the deferred PR-body audit section (M4.26.e). Provides a single canonical reference for operators wondering "what does atelier decide autonomously and how do I control it".
+
+**Why `unblocker` is NOT touched:**
+
+The catalog includes `merge-conflict-substantive` and `merge-conflict-tracking` as categories. Conceptually `unblocker` owns the substantive flavor (when a rebase during the hard-stop path conflicts on real code). But atelier today does NOT rebase during `unblocker`'s flow — `unblocker` just creates the GitHub blocked issue with logs and marks `IN_PROGRESS.md`; the operator handles the rebase manually. The merge-conflict categories are catalogued for **future** integration (when atelier adds rebase support to the hard-stop or auto-resume flows). M4.26.c leaves `unblocker` untouched and adds a marker in `operator-rules.md` flagging the categories as "reserved for future rebase flows".
+
+**Decisions captured:**
+
+- **Single point of authority per category.** `oversize-handling` belongs to the orchestrator, not `pr-author`. `pr-author` detects + returns; the orchestrator decides. Inverting that would double-invoke the broker and split the audit log. The same pattern applies to `scope-creep-detected` (orchestrator owns; `implementer` returns the diff and the orchestrator detects the creep) and `baseline-conflict` (orchestrator detects from `/atelier:validate` output).
+- **Existing operator-facing prose stays as the fallback.** The oversized branch in `task-orchestrator.md` step 8 still contains the original three-resolution-paths text verbatim. The broker integration is wrapped as "consult the broker FIRST; if it returns `ask` or `panic`, the original path applies." This keeps the diff small, the fallback obvious, and makes the integration auditable — a reviewer can see exactly what changed and what stayed the same.
+- **`pr-author` does NOT invoke the broker.** Even though `pr-author` is the agent that first detects the oversize condition, the orchestrator is the authority for the decision. Keeps `pr-author` narrowly scoped to "open the PR or report why not", which matches its role across all the other failure modes (validation failures, push failures, gate failures — all surface to the orchestrator).
+- **No `task-orchestrator` step-1 invocation for `baseline-conflict`.** The category is *catalogued* — the orchestrator will consult the broker when a baseline conflict actually arises — but there is no explicit step in the orchestrator's flow today that detects baseline conflicts. The detection happens inside `/atelier:validate`; when validate reports failures that look like pre-existing baseline issues (heuristic: failing files outside the diff's touched paths), step 7's inner loop is the natural place to invoke the broker. M4.26.c documents the category in the new section but does NOT add the detection logic — that is a follow-up if/when an operator hits the symptom for a second time and the heuristic can be calibrated against the real case.
+- **`operator-rules.md` covers configuration, not invocation.** The orchestrator prose covers HOW to invoke the broker (briefing schema, mode switch); the operator-rules prose covers WHAT the policy means and HOW to configure it. Two audiences, two documents.
+
+**Plugin scope:** plugin-layer (agents/, operator-rules.md). No template / script / hook / install.sh change. **Plugin version stays at 0.9.0** per the operator's directive — M4.26 series ships as a single release after `.e` merges.
+
+**Verified locally:**
+
+- Each touched agent still parses as markdown (no broken sections).
+- The new section in `task-orchestrator.md` sits before "## Operating context" — same placement convention used for the F39 "Bash output handling" section in the same file.
+- The integration in step 8's oversized branch preserves the original operator-facing text under "The original path (broker said `ask`, or broker not available):" — verifiable by diff.
+
+**Operator-visible:**
+
+After this PR merges and the operator picks up head-of-main via `atelier-update`, the broker actually starts firing during task chains. The behaviour the operator experiences depends entirely on their `decisionPolicy`:
+
+- Fresh-install default (`decisionPolicy.default = "ask"`, `byCategory: {}`) → zero behaviour change from pre-M4.26.c. Every catalogued situation surfaces to the operator exactly as before, via `AskUserQuestion` in the original prose paths.
+- Operator opted-in to `auto` for `oversize-handling` → next time `pr-author` returns `oversized`, the orchestrator consults the broker (Haiku 4.5, ~3s), gets back `{choice: "slice-task" | "open-anyway" | "abort"}` plus a rationale, carries out the choice, and surfaces the rationale in the chain log. The operator sees `"==> oversize-handling: slice-task per broker (high, haiku) — <rationale>"` instead of the three-options-stop block. The PR body section (M4.26.e) will surface this same decision visibly when M4.26.e merges.
+- Operator opted-in to a fixed option (`decisionPolicy.byCategory.oversize-handling = "slice-task"`) → no LLM call. The orchestrator invokes `/atelier:slice-task` immediately and restarts step 1.
+
+**Follow-up paths:**
+
+- **M4.26.d** (queued, next) — panic switch (`/atelier:abort-auto` + `/atelier:resume-auto`) and `task --policy=` / `--ask-for=` wrapper flags. The operator-rules.md section already references these as deferred; the slash commands + the install.sh `task()` heredoc extension + the broker skill's env-var override land in M4.26.d.
+- **M4.26.e** (queued, last) — `pr-author` reads `<worktree>/.task-log/decisions.jsonl` and adds a `## Autonomous decisions taken` section to the PR body so the reviewer can audit. Plus `docs/operator-guide.md` and `docs/troubleshooting.md` entries. Closes the audit loop.
+
+### M4.26.b — Decision broker: per-project policy schema + setup-project interactive step + /atelier:set-policy slash command — 2026-06-02
+**PR:** [#121](https://github.com/AkaLab-Tech/atelier/pull/121)
 
 Second slice of M4.26. M4.26.a (PR [#120](https://github.com/AkaLab-Tech/atelier/pull/120)) shipped the framework dormant — the catalog, the skill, and the three risk-tier evaluator agents existed but no specialist invoked them. M4.26.b adds the **per-project configuration surface** so the operator can decide, per category, whether atelier handles a strategic decision autonomously (auto), surfaces it (ask), or always picks a specific catalog option (fixed id). Without M4.26.b an operator has no way to opt into the broker — every category falls back to `ask` because the project file has no policy block to read.
 

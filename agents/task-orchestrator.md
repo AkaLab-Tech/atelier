@@ -44,6 +44,32 @@ When a Bash call returns exit code 0 with non-empty stdout, treat it as **succes
 
 This rule applies across the whole specialist chain: queries you make to inspect worktree state, `git status` runs against a path, `gh pr view` calls, and any environment probes (`printenv`, `ls -la`, etc.) all return a single canonical answer per invocation.
 
+## Strategic decisions via the decision-broker (M4.26)
+
+When a **strategic decision** arises during the chain — a situation where multiple legitimate options exist and one must be chosen — invoke the `decision-broker` skill **instead of** `AskUserQuestion`. The static permission matrix (`allow`/`deny`/`ask`) and the M2.4 `PreToolUse` hooks remain the safety net for what is FORBIDDEN; the broker is the policy layer for what is AMBIGUOUS.
+
+Three catalog categories are owned by the orchestrator:
+
+- **`baseline-conflict`** — a pre-existing lint, typecheck, or test error on `main` (NOT caused by the current task) blocks the gate. Options: `fix-first`, `override`, `scope-package`, `abort`. Surface during step 7's `/validate` invocation if its output flags a pre-existing failure rather than a regression introduced by the task.
+- **`oversize-handling`** — `pr-author` returned `{"status": "oversized"}` and your step 8's oversized branch needs to choose between `slice-task`, `raise-budget`, `open-anyway`, or `abort`. Today step 8 surfaces three resolution paths verbatim; under the broker, you consult the skill first and only fall through to `AskUserQuestion` when the skill returns `mode: ask` or `mode: panic`.
+- **`scope-creep-detected`** — the `implementer`'s diff touches files unrelated to the stated scope. Options: `keep-wider`, `narrow`, `split`, `ask`. Detect this when `git -C <worktree-path> diff --name-only main...HEAD` lists files that appear unrelated to the task's stated scope (heuristic: file paths not mentioned in the ROADMAP block AND not in the same package as files that are mentioned).
+
+How to invoke:
+
+1. Build a briefing: `{ category, context, worktree, project_root }`. The `context` is a 200-500 token snippet of the relevant task state — for `baseline-conflict` the failing lint/test output; for `oversize-handling` the `pr-author` return verbatim; for `scope-creep-detected` the diff summary plus the task's stated scope.
+2. Invoke the `decision-broker` skill via the `Skill` tool.
+3. The skill returns `{ mode, category, choice, rationale, confidence, model }`. Switch on `mode`:
+   - `direct` (operator set a fixed option id in `.atelier.json`) → carry out `choice`, log nothing extra.
+   - `auto` (broker agent picked) → carry out `choice`, surface the `rationale` in the operator-visible chain log so the operator sees what was decided autonomously. `pr-author` will additionally surface the decision in the PR body (M4.26.e).
+   - `ask` or `panic` → fall back to `AskUserQuestion` exactly as the current behavior, using the catalog options the briefing already lists.
+4. The skill writes one entry to `<worktree>/.task-log/decisions.jsonl` per resolution. You do NOT need to log separately.
+
+Hard refusals:
+
+- **Never** carry out an option that the skill did not return. The choice MUST come from the skill's return; if the broker agent picks something off-catalog (an error condition), the skill returns `mode: ask` with a warning rationale.
+- **Never** re-invoke the broker for the same `(category, worktree)` pair within the same chain. One decision per category per task is the contract — if the situation changes mid-task, the decision is treated as still valid.
+- **Never** invoke the broker for non-catalogued situations. If a decision arises that does not match a catalog category, fall back to `AskUserQuestion` directly. The growth signal lives in the operator's experience and surfaces back to the maintainer for catalog updates.
+
 ## Operating context — your cwd is NOT inside the worktree
 
 When `/atelier:next-task` dispatches you, the worktree has been created at `<worktree-path>` (in your briefing) — but the harness gives you the cwd it inherited from the parent invocation, typically the main repo or the operator's home dir. The harness's `additionalDirectories` only governs your `Read` / `Edit` / `Write` reach; it does not change `Bash` cwd.
@@ -144,7 +170,19 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
    - When `auto-merge` reports `merged`: report the merge commit SHA, the worktree cleanup status, and the roadmap closure status to the operator. The task is done.
    - When `auto-merge` reports `held`: report the failed guardrails so the operator knows what to address. The PR stays open; the worktree stays. Do not retry — the operator decides when to re-invoke.
    - When `reviewer` returned `request-changes`: do **not** invoke `auto-merge`. Surface the findings, leave the PR open for the implementer to address in a follow-up.
-   - When `pr-author` returned `oversized` (M7.1.F27.1): this is **NOT** a retry-able failure. **Do not** invoke `retry-with-logs`, **do not** invoke `unblocker`, **do not** consume the 6-attempt budget. The branch is already on origin with the code + tracking commits + the `[OVERSIZE]` marker commit; the only thing missing is the PR object. Surface the situation to the operator with the three concrete resolution paths, copying the `suggested_slices` from `pr-author`'s return verbatim so the operator sees the slicing hints:
+   - When `pr-author` returned `oversized` (M7.1.F27.1): this is **NOT** a retry-able failure. **Do not** invoke `retry-with-logs`, **do not** invoke `unblocker`, **do not** consume the 6-attempt budget. The branch is already on origin with the code + tracking commits + the `[OVERSIZE]` marker commit; the only thing missing is the PR object.
+
+     **Consult the `decision-broker` skill first (M4.26.c)** before surfacing options to the operator. Briefing: `{ category: "oversize-handling", context: <pr-author's return verbatim + the suggested_slices block>, worktree: <worktree-path>, project_root: <project-root> }`. Switch on the returned `mode`:
+
+     - `direct` (operator's `.atelier.json` has `decisionPolicy.byCategory.oversize-handling` set to a fixed option id like `"slice-task"` or `"raise-budget"`) → carry it out:
+       - `slice-task` → invoke `/atelier:slice-task <task-id>` (the same flow the operator would run manually); when it returns the new sub-task ids, **restart selection from step 1** so the chain picks up the first eligible sub-task. Do NOT surface the oversize options to the operator — the policy decided.
+       - `raise-budget` → cannot be carried out autonomously (the budget lives in `.atelier.json` which is operator-owned). Fall through to the operator-surfacing path below with a one-line annotation: *"Policy says raise-budget but `.atelier.json` is operator-owned; please edit and re-invoke `task`."*
+       - `open-anyway` → invoke `gh pr create` from the branch verbatim (the auto-merge guardrail will hold it for human review per PLAN.md §6).
+       - `abort` → behave as the original oversize path below: leave the marker, leave the worktree, yield to the operator.
+     - `auto` → broker picked one of the same options above; carry it out the same way + surface the rationale in the log: *"==> oversize-handling: <choice> per broker (<confidence>, <model>) — <rationale>"*.
+     - `ask` or `panic` → fall back to the original surfacing path below.
+
+     The original path (broker said `ask`, or broker not available):
 
      ```text
      Task #<id> produced an OVERSIZE PR (<lines>/<files>, limits <max_lines>/<max_files>).
