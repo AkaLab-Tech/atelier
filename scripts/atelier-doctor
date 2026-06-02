@@ -491,34 +491,56 @@ check_atelier_auto_mode() {
 }
 
 check_atelier_claude_auth() {
-  # M7.1.F42 — verify the atelier-scoped Claude Code auth is valid.
-  # Before F42 install.sh validated only the operator's personal ~/.claude/
-  # (i.e. `claude auth status` without CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR),
-  # so a missing or expired token in $ATELIER_CONFIG_DIR/.claude.json went
-  # undetected. The symptom was a 401 inside an `atelier`-launched session
-  # — the first one the operator hit was on `/atelier:doctor` itself,
-  # which is what this check now surfaces upfront. `--fix` re-runs the
-  # login under the atelier config dir.
+  # M7.1.F42 + F43 — verify the atelier-scoped Claude Code auth is valid
+  # AGAINST THE ANTHROPIC API, not just by reading .claude.json.
+  #
+  # F42 used `claude auth status` which only reads the local config file
+  # and checks for the presence of oauthAccount. It returns success even
+  # when the OAuth access token has expired or been revoked server-side.
+  # The operator hit this exact false positive: install.sh said
+  # "atelier Claude Code already authenticated", atelier-doctor said
+  # "✓ atelier Claude auth valid", but the next interactive session
+  # failed with `API Error: 401 Invalid authentication credentials`.
+  #
+  # F43 (this): a real API ping via `claude -p "ok" --output-format json
+  # --max-turns 1`. If the token is expired/revoked the call returns
+  # exit 0 (the CLI ran) but the JSON has `api_error_status: 401`. The
+  # model is never invoked when the call fails at auth, so the cost is
+  # ~3s of latency and $0 in tokens. The cost is acceptable because the
+  # alternative is silent false positives that surface as 401 inside
+  # agent sessions the operator did not expect to fail.
   if ! command -v claude >/dev/null 2>&1; then
     push_host "$SKIP atelier Claude auth (claude CLI not on PATH)"
     return
   fi
-  if CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status >/dev/null 2>&1; then
-    local email
-    email="$(CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status 2>&1 | grep -Eio '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' | head -1 || true)"
-    if [ -n "$email" ]; then
-      push_host "$OK atelier Claude auth valid (account: $email)"
-    else
-      push_host "$OK atelier Claude auth valid"
-    fi
+  # Step 1 — cheap local check. If the config file itself is missing
+  # there's no point doing the deep check; report and move on.
+  if ! CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status >/dev/null 2>&1; then
+    push_host "$FAIL atelier Claude auth missing in $ATELIER_CONFIG_DIR/.claude.json"
+    push_fix_manual "CLAUDE_CONFIG_DIR=\"$ATELIER_CONFIG_DIR\" claude auth login"
     return
   fi
-  push_host "$FAIL atelier Claude auth invalid or missing in $ATELIER_CONFIG_DIR/.claude.json"
-  # NOTE: `claude auth login` is an interactive browser flow. It cannot be
-  # run silently from --fix, so we use push_fix_manual rather than
-  # push_fix_auto. The operator runs the command themselves; the browser
-  # opens; they log in once; future re-runs short-circuit.
-  push_fix_manual "CLAUDE_CONFIG_DIR=\"$ATELIER_CONFIG_DIR\" claude auth login"
+  # Step 2 — deep check via minimal API ping. Catches expired or
+  # revoked tokens that the local file still claims are valid.
+  local response api_status email
+  response="$(CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude -p "ok" --output-format json --max-turns 1 2>/dev/null || true)"
+  api_status="$(printf '%s' "$response" | jq -r '.api_error_status // empty' 2>/dev/null)"
+  if [ -n "$api_status" ]; then
+    push_host "$FAIL atelier Claude auth invalid (Anthropic API returned $api_status — token expired or revoked)"
+    push_fix_manual "CLAUDE_CONFIG_DIR=\"$ATELIER_CONFIG_DIR\" claude auth logout
+CLAUDE_CONFIG_DIR=\"$ATELIER_CONFIG_DIR\" claude auth login"
+    return
+  fi
+  # All good — emit the OK with the account email for context.
+  email="$(CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status --json 2>/dev/null | jq -r '.email // empty')"
+  if [ -z "$email" ]; then
+    email="$(CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status 2>&1 | grep -Eio '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' | head -1 || true)"
+  fi
+  if [ -n "$email" ]; then
+    push_host "$OK atelier Claude auth valid (account: $email, API ping OK)"
+  else
+    push_host "$OK atelier Claude auth valid (API ping OK)"
+  fi
 }
 
 # ---------- main ----------
