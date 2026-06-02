@@ -87,6 +87,76 @@ Research spike to inform a future implementation (M4.23). Atelier today has no p
 
 **Trigger to revisit:** captured 2026-05-23. Operator wants a path to deploy atelier-managed projects to VPS-hosted Coolify. Spike runs immediately because the implementation cost depends heavily on whether existing tooling already covers the use cases — building from scratch when a maintained MCP already exists would be waste.
 
+### M4.26.b — Decision broker: per-project policy schema + setup-project step
+
+`[security-design]` · Source: M4.26 design conversation (2026-06-02) · `blocked_by: M4.26.a (already closed in v0.9.0)`
+
+M4.26.a shipped the base (catalog + skill + 3 evaluator agents) dormant — no specialist invokes the broker yet. M4.26.b adds the **per-project configuration surface** so the operator can choose, per category, between `auto` (broker decides), `ask` (current behavior — atelier asks), or a fixed option id (e.g. `"fix-first"` — always pick this answer).
+
+**Scope:**
+
+- [ ] **`templates/atelier.template.json`** — add a `decisionPolicy` block. Default body: `{ "default": "ask" }` (conservative; existing operators see no behaviour change until they actively opt-in). The block has `_comment` like the rest of the file explaining how the broker uses it.
+- [ ] **`scripts/atelier-setup-project`** — new interactive step after the current scaffolding finishes. For each category in `agents/decision-broker/catalog.json`: display the human description + the recommended default + the risk level + which model is used; ask the operator to choose `a` (auto), `f` (fixed option default), or `s` (ask). Write the per-category answer to `<project>/.atelier.json`'s `decisionPolicy` section.
+- [ ] **`scripts/atelier-setup-project` flag** — add `--skip-policy` to skip the interactive step and leave `decisionPolicy: { "default": "ask" }`. Used by automation that does not want the interactive prompt.
+- [ ] **New helper command `/atelier:set-policy`** (in `commands/`) — for operators that ran setup-project before M4.26.b, or who want to revise their policy without re-running setup-project. Same interactive prompt as the setup-project step, in isolation.
+
+**Acceptance:** a fresh setup-project on a new project produces a `.atelier.json` with a `decisionPolicy` block reflecting the operator's per-category answers. The catalog format documented in the M4.26.a HISTORY entry is unchanged.
+
+**Trigger to revisit:** captured 2026-06-02 as the next slice of M4.26 after the base ships. Run immediately after M4.26.a merges so operators can configure policies before M4.26.c wires the specialists in.
+
+### M4.26.c — Decision broker: integrate broker into task-orchestrator, pr-author, unblocker
+
+`[security-design]` · Source: M4.26 design conversation · `blocked_by: M4.26.b`
+
+The base + policy surface are dormant until the specialists actually invoke the broker. M4.26.c wires the three specialists that face strategic decisions: `task-orchestrator` (baseline-conflict, oversize-handling, scope-creep-detected), `pr-author` (oversize-handling as a last-chance check, merge-conflict-tracking during the same-PR IN_PROGRESS → HISTORY move), `unblocker` (merge-conflict-substantive during hard-stop rebase attempts).
+
+**Scope:**
+
+- [ ] **`agents/task-orchestrator.md`** — replace the inline `AskUserQuestion` for the 3 catalogued categories with `Skill(decision-broker)` invocations. The skill returns `mode` + `choice` + `rationale`; the orchestrator switches on `mode` per the skill's contract.
+- [ ] **`agents/pr-author.md`** — same pattern for oversize last-chance + tracking-merge-conflict.
+- [ ] **`agents/unblocker.md`** — same for substantive merge conflicts on real code during the rebase path.
+- [ ] **`operator-rules.md`** — new section "Decision policy" explaining the 3-mode policy surface (auto / ask / fixed-id), the panic switch, and the per-category vs project-default precedence.
+
+**Acceptance:** a task that hits a catalogued strategic decision flows through the broker skill rather than directly to `AskUserQuestion`. The decisions.jsonl log in the worktree captures each resolution; the `pr-author` does not yet surface the log in the PR body (that is M4.26.e).
+
+**Trigger to revisit:** after M4.26.b merges and operators have configured at least one project's policy. Without configuration the broker still falls back to `ask`, so the integration is safe to ship before every operator has opted in.
+
+### M4.26.d — Decision broker: panic switch + task wrapper flags
+
+`[security-design]` · Source: M4.26 design conversation · `blocked_by: M4.26.c`
+
+Two complementary controls layered on top of the per-project policy:
+
+- **Panic switch.** A slash command `/atelier:abort-auto` that writes `<worktree>/.atelier-abort-auto.flag`. The broker checks this file first on every resolution; if present, it returns `mode: panic` and the caller falls back to `AskUserQuestion`. Used when the operator notices a task going sideways and wants every remaining strategic decision routed through them, without aborting the task. Complementary `/atelier:resume-auto` removes the flag.
+- **Task wrapper flags.** `task --policy=auto` (override `.atelier.json` to all-auto for this invocation), `task --policy=ask` (override to all-ask), `task --ask-for=<categories>` (override only those categories to ask). Used for one-off invocations where the project's persistent policy doesn't match the operator's intent for this specific task.
+
+**Scope:**
+
+- [ ] **`commands/abort-auto.md`** + **`commands/resume-auto.md`** — the two slash commands.
+- [ ] **`install.sh` shellrc heredoc (`task()` body)** — parse `--policy` and `--ask-for` flags, translate to env vars the broker skill reads. Bump shellrc hooks-version `4 → 5` AND `current_version=4 → 5` atomically (F36 invariant).
+- [ ] **`skills/decision-broker/SKILL.md`** — read the env vars in addition to `.atelier.json`; flags override the file-level policy.
+
+**Acceptance:** `/atelier:abort-auto` from inside a Claude session causes every subsequent strategic decision in that worktree to go to the operator; `/atelier:resume-auto` restores the file-level policy. `task --policy=auto` from the shell runs an entire task in auto mode regardless of `.atelier.json`.
+
+**Trigger to revisit:** immediately after M4.26.c. The panic switch is the operator's safety valve; ship it before any operator runs a long task under auto-mode for the first time.
+
+### M4.26.e — Decision broker: PR-body audit section + docs
+
+`[security-design]` · Source: M4.26 design conversation · `blocked_by: M4.26.c`
+
+Closes the audit loop: every autonomous decision the broker takes during a task is surfaced in the resulting PR's body so the reviewer (and the operator reviewing the PR later) can see what was decided autonomously and challenge it.
+
+**Scope:**
+
+- [ ] **`agents/pr-author.md`** — read `<worktree>/.task-log/decisions.jsonl`; if non-empty, add a `## Autonomous decisions taken` section to the PR body. One row per decision: category, choice, rationale, confidence, model. High-risk decisions or `confidence: low` decisions are visually marked (e.g. emoji, bold) so the reviewer cannot miss them.
+- [ ] **`docs/operator-guide.md`** — section "How atelier makes decisions" linking the operator to the catalog, the policy surface, the panic switch, and the PR-body audit.
+- [ ] **`docs/troubleshooting.md`** — symptom entry: *"atelier made a decision I disagree with"* with the fix path (revise `.atelier.json` to `ask` for that category, or set a fixed option id).
+- [ ] **`docs/research/decision-broker-catalog.md`** — research artifact pinning the catalog format + a backlog of candidate categories the maintainer should add when dogfood surfaces them.
+
+**Acceptance:** every PR that exercised the broker carries an `Autonomous decisions taken` section the reviewer can scan in <30 seconds. The operator guide and troubleshooting have entries for the new surface.
+
+**Trigger to revisit:** after M4.26.c + M4.26.d. M4.26.e is the polish layer — without it the framework works but the operator has to dig into `.task-log/` to audit decisions; with it the audit is one click in GitHub.
+
 ---
 
 ## Low Priority / Ideas
