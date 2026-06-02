@@ -1325,7 +1325,7 @@ phase_c_1_shellrc_hooks() {
   # below. Existing operators' rc files carry their version inline; on
   # install.sh re-run, an older or missing version triggers a strip +
   # re-inject so the upgrade propagates automatically.
-  local current_version=4
+  local current_version=5
 
   # Heredoc is single-quoted: `$(fnm env --use-on-cd)`, `$*`, and the alias
   # body are written as literal text, expanded later when the shell sources
@@ -1333,7 +1333,7 @@ phase_c_1_shellrc_hooks() {
   local block
   block=$(cat <<'BLOCK'
 # >>> atelier hooks (managed by install.sh) >>>
-# atelier-hooks-version: 4
+# atelier-hooks-version: 5
 # (install.sh reads the version above; bump it when you edit anything between
 #  these sentinels so existing operators get the refreshed block on re-run.)
 # Ensure ~/.local/bin is on PATH so atelier-setup-project (and any future
@@ -1376,7 +1376,48 @@ fi
 # push token. The operator's ~/.gitconfig stays untouched (M7.1.F7b).
 # The operator's normal shell (outside `task`) is unaffected by these exports.
 task() {
-  local project
+  # M4.26.d: parse --policy and --ask-for flags that override the project's
+  # .atelier.json decisionPolicy for this invocation only. The flags become
+  # env vars (ATELIER_POLICY_OVERRIDE, ATELIER_ASK_FOR) read by the
+  # decision-broker skill on every resolution. The flag parser uses
+  # if/elif/else (not case) because the case-statement closing ")" would
+  # terminate the surrounding $(cat <<'BLOCK' ...) substitution that ships
+  # this function — same reason as the PATH check above.
+  local project policy_override="" ask_for="" remaining=""
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "--policy" ]; then
+      if [ -z "${2:-}" ]; then
+        printf 'atelier: --policy requires a value (auto or ask)\n' >&2
+        return 1
+      fi
+      policy_override="$2"
+      shift 2
+    elif [ "${1#--policy=}" != "$1" ]; then
+      policy_override="${1#--policy=}"
+      shift
+    elif [ "$1" = "--ask-for" ]; then
+      if [ -z "${2:-}" ]; then
+        printf 'atelier: --ask-for requires a value (comma-separated categories)\n' >&2
+        return 1
+      fi
+      ask_for="$2"
+      shift 2
+    elif [ "${1#--ask-for=}" != "$1" ]; then
+      ask_for="${1#--ask-for=}"
+      shift
+    else
+      if [ -z "$remaining" ]; then
+        remaining="$1"
+      else
+        remaining="$remaining $1"
+      fi
+      shift
+    fi
+  done
+  if [ -n "$policy_override" ] && [ "$policy_override" != "auto" ] && [ "$policy_override" != "ask" ]; then
+    printf 'atelier: --policy must be auto or ask, got: %s\n' "$policy_override" >&2
+    return 1
+  fi
   if ! project="$(atelier-task-resolve "$(pwd)")"; then
     return 1
   fi
@@ -1387,7 +1428,9 @@ task() {
   CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" \
     GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" \
     GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
-    claude "/atelier:next-task $*"
+    ATELIER_POLICY_OVERRIDE="$policy_override" \
+    ATELIER_ASK_FOR="$ask_for" \
+    claude "/atelier:next-task $remaining"
 }
 # `atelier`: general-purpose entry point that opens a Claude Code session
 # under atelier's isolated config root, optionally with arbitrary arguments

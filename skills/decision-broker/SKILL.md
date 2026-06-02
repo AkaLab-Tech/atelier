@@ -76,14 +76,36 @@ rationale:  "Category '<id>' is not in the atelier catalog yet. Falling back to 
 
 The caller falls back to `AskUserQuestion`. Surface the missing category prominently — it is a signal atelier's catalog needs to grow.
 
+### Step 2.5 — Read per-invocation flag overrides (M4.26.d)
+
+Before reading the project policy, check two env vars set by the `task` shell wrapper when the operator passed `--policy` or `--ask-for`:
+
+- **`ATELIER_POLICY_OVERRIDE`** — if set to `"auto"` or `"ask"`, this value REPLACES `decisionPolicy.default` for THIS invocation. The catalogued category's per-category entry in `.atelier.json` (Step 3 below) is still honored — only the default changes. Conceptually the operator is saying *"for this task, use auto/ask globally unless I've already configured a specific category."*
+- **`ATELIER_ASK_FOR`** — if set to a comma-separated list of category ids (e.g. `oversize-handling,scope-creep-detected`), every category in the list is treated as `"ask"` regardless of what `.atelier.json` says. Other categories are unaffected. This is the surgical "I want to be asked about these specific cases" override.
+
+Both env vars are empty strings when the operator did not pass the flags — treat empty as "not set". The `task` wrapper sets the env vars unconditionally with empty values so the resolution does not have to test for unset.
+
+If `ATELIER_ASK_FOR` contains the current `category`, return `mode: ask` immediately with rationale: *"Operator passed `--ask-for=<list>` which includes this category."*
+
+`ATELIER_POLICY_OVERRIDE` only takes effect after Step 3 has consulted `.atelier.json` and found NO `byCategory.<category>` entry — see the precedence note at the end of Step 3.
+
 ### Step 3 — Read project policy
 
 Read `<project_root>/.atelier.json`. Locate `decisionPolicy.<category>`. Three possible shapes:
 
-- **Fixed option id** (e.g. `"fix-first"`) → `mode: direct`. Verify the id is in the catalog entry's `options[]`. If not, return `mode: ask` with a warning rationale ("Project policy specifies '<id>' but catalog does not list it as an option — falling back to operator").
+- **Fixed option id** (e.g. `"fix-first"`) → `mode: direct`. Verify the id is in the catalog entry's `options[]`. If not, return `mode: ask` with a warning rationale ("Project policy specifies '<id>' but catalog does not list it as an option — falling back to operator"). **Note**: a fixed value here is NOT overridden by `ATELIER_POLICY_OVERRIDE` — the operator already configured a specific answer for this category, the wrapper flag is global, specific beats global.
 - **`"auto"`** → continue to Step 4.
 - **`"ask"`** → return `mode: ask`. Caller falls back to `AskUserQuestion`.
-- **Missing** → check `decisionPolicy.default`. If that is also missing, treat as `"ask"`. This is the conservative fallback for projects that haven't run the setup-project policy step.
+- **Missing** → check `ATELIER_POLICY_OVERRIDE` first. If set to `"auto"` → continue to Step 4 (as if the per-category value were `"auto"`). If set to `"ask"` → return `mode: ask`. If unset, check `decisionPolicy.default`. If that is also missing, treat as `"ask"`. This is the conservative fallback for projects that haven't run the setup-project policy step.
+
+Precedence summary, highest to lowest:
+
+1. Panic flag (Step 1).
+2. `ATELIER_ASK_FOR` mentions the category (Step 2.5).
+3. `decisionPolicy.byCategory.<category>` in `.atelier.json` (this step).
+4. `ATELIER_POLICY_OVERRIDE` (this step, when byCategory missing).
+5. `decisionPolicy.default` in `.atelier.json`.
+6. Conservative fallback: `ask`.
 
 ### Step 4 — Dispatch to the right broker agent
 
