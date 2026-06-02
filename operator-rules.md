@@ -288,3 +288,41 @@ Empirical reproducibility (Q4 of the spike): the classifier adds ~200–400 ms p
 Full design notes + the three open-questions that validated this adoption: [docs/research/permission-layer-3.md](docs/research/permission-layer-3.md) (M2.6 spike + M2.7 addendum).
 
 If you ever want to disable auto-mode for an atelier session and fall back to `acceptEdits`, edit `$ATELIER_CONFIG_DIR/settings.json` and change `.permissions.defaultMode` to `acceptEdits` (or remove the key). The deny list and allow list keep working unchanged.
+
+## Decision policy (M4.26)
+
+Atelier sometimes faces **strategic decisions** during a task — situations where multiple legitimate options exist and one must be chosen. The classic example is the M7.1 dogfood Nivel 4 friction: a pre-existing lint error on `main` blocks the gate, the operator can fix-first, override, scope-package, or abort. The static permission matrix doesn't cover these (none is forbidden); the M2.4 PreToolUse hooks don't cover them either (none is unsafe). They are **ambiguous** by construction, and historically atelier surfaced every one to the operator.
+
+Since v0.9.0, atelier ships a **decision broker** as the configurable policy layer for this class. The broker:
+
+- Reads a catalog of known strategic-decision categories (atelier-managed at `$CLAUDE_PLUGIN_ROOT/agents/decision-broker/catalog.json`; operators do NOT edit the catalog).
+- Reads each project's `.atelier.json` `decisionPolicy` block: `default` (catch-all for unlisted categories) + `byCategory.<category>` (per-category override).
+- Dispatches the decision to a risk-tiered evaluator agent (Haiku for `low`, Sonnet for `medium`, Opus for `high`) when the policy is `auto`, returns a fixed option when the policy is an option id, or falls back to `AskUserQuestion` when the policy is `ask` (the conservative default).
+- Logs every resolution to `<worktree>/.task-log/decisions.jsonl`. The `pr-author` surfaces the log in the PR body (M4.26.e, deferred) so the reviewer can audit autonomous decisions before merge.
+
+Categories shipping in v0.9.0:
+
+| Category | Default | Risk | Model | Owner agent |
+|---|---|---|---|---|
+| `baseline-conflict` | `fix-first` | low | haiku | `task-orchestrator` |
+| `oversize-handling` | `slice-task` | low | haiku | `task-orchestrator` |
+| `scope-creep-detected` | `narrow` | medium | sonnet | `task-orchestrator` |
+| `merge-conflict-tracking` | `auto-resolve` | low | haiku | (reserved for future rebase flows) |
+| `merge-conflict-substantive` | `ask` | high | opus | (reserved for future rebase flows) |
+
+How operators configure it:
+
+- **First-time setup**: `/atelier:setup-project` walks each category interactively and writes the per-category answer to `.atelier.json`. Use `--skip-policy` to skip and accept the conservative default (`ask` for every category).
+- **Later revisions**: `/atelier:set-policy [category]` re-prompts a single category (or all of them when no argument is given) without re-running the full setup.
+- **Manual edit**: `.atelier.json`'s `decisionPolicy.byCategory.<category>` accepts `"auto"`, `"ask"`, or a fixed option id from the catalog (e.g. `"fix-first"`).
+
+Two complementary controls layered on top of the per-project policy (M4.26.d, deferred):
+
+- **Panic switch**: `/atelier:abort-auto` writes a flag file the broker checks first. Until cleared with `/atelier:resume-auto`, every decision falls back to `AskUserQuestion`. Useful when the operator notices a task going sideways and wants every remaining decision routed through them, without aborting the task.
+- **Task wrapper flags**: `task --policy=auto` overrides `.atelier.json` to all-auto for the invocation; `task --policy=ask` overrides to all-ask; `task --ask-for=<categories>` overrides only those categories.
+
+What the broker is NOT:
+
+- **Not a permission gate.** That is auto-mode (M2.8). The broker handles strategic AMBIGUITY, not forbidden actions.
+- **Not a safety net for unsafe writes.** That is the M2.4 PreToolUse hook suite. `safe-package-change rejected`, `block-env-commit`, `scan-edit-write` do NOT go through the broker — they bypass to their own escalation per PLAN.md §3.
+- **Not extensible by the operator.** If a strategic decision arises that does not match a catalog category, the broker falls back to `ask`. The growth signal lives in the operator's experience; the catalog grows in a future atelier version when the maintainer adds the category.
