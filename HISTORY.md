@@ -8,8 +8,51 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
-### M7.1.F43 — `install.sh` + `atelier-doctor` Claude-auth check was a local-only file read, missed expired/revoked tokens — 2026-06-02
+### M7.1.F44 — `task()` shell wrapper invoked `/next-task` without the `atelier:` plugin namespace — 2026-06-02
 **PR:** _pending_
+
+Discovered during the M7.1 dogfood Nivel 4 (task lifecycle end-to-end). After v0.8.4 (F43) shipped and the auth chain was reporting truth, the operator ran `task` from `~/Work/storefront` for the first time. Claude Code arrived at the project under the right config dir (CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR), auto-mode on, Opus 4.8 — and the initial slash prompt the wrapper passed died with `Unknown command: /next-task`.
+
+**Root cause:**
+
+[install.sh:1390](install.sh) (the shellrc heredoc that defines the `task()` shell function) ended with:
+
+```bash
+claude "/next-task $*"
+```
+
+But the plugin exposes the command as `/atelier:next-task` (the `atelier:` prefix is the plugin namespace Claude Code requires for plugin-registered slash commands). The bare `/next-task` name worked at some pre-plugin point in atelier's history; nothing updated the wrapper when the surface moved to plugin form. Every operator who used `task` for the first time hit this — but until M7.1 dogfood Nivel 4 nobody had actually exercised the wrapper in the new plugin layout end-to-end (typing slash commands by hand with `/atelier:next-task` worked, masking the bug).
+
+**Delivered:**
+
+- **`install.sh` shellrc heredoc (`task()` body)** — `claude "/next-task $*"` → `claude "/atelier:next-task $*"`. One-character class of fix; the namespace prefix is now correct.
+- **`install.sh` shellrc hooks version bump** — `# atelier-hooks-version: 3` → `4` (the heredoc text) AND `local current_version=3` → `4` (the F7c comparator). Bumped together per the F36 invariant: the heredoc value goes into newly-installed blocks, the `current_version` is what F7c compares the operator's existing block against. If the comparator stays at the old value, F7c sees `existing == current` and silently skips the refresh — exactly the bug F36 documented. F44 honors that lesson.
+
+**Decisions captured:**
+
+- **Bump both versions atomically.** Lesson from F36 (which itself was the cleanup of an F34 mistake that bumped only the heredoc). The pattern is: when you change anything inside the heredoc, increment both the heredoc literal and the comparator. The block comment above `current_version` already says this; F44 follows it.
+- **No `atelier()` wrapper change.** The `atelier()` shell function passes args through verbatim to `claude` and does NOT inject a default slash command (operators type the slash they want, e.g. `atelier /atelier:doctor`). The bug was specific to `task()` which DOES inject one. Read all 4 occurrences of slash-command invocations in install.sh's heredoc to confirm only `task()` is affected.
+- **No documentation update needed in operator-guide.md.** The guide says `task` should "just work"; the fix makes that true. The error message Claude Code printed (`Unknown command: /next-task`) was informative enough that the operator could route to `/atelier:next-task` manually if needed.
+
+**Plugin scope:** host-OS-layer change to `install.sh` only. No plugin file touched, no agent / skill / command / hook / template change. Patch bump **0.8.4 → 0.8.5** per PLAN.md §14.2. Cut **release v0.8.5** post-merge — same rationale as F43: every operator using `task` to start a task hits this on first try, and `task` is the operator-facing entry point of the entire system.
+
+**Verified locally:**
+
+- `bash -n install.sh` syntax-clean.
+- `grep -nE "current_version=|atelier-hooks-version:" install.sh` confirms both lines at `4`.
+- `grep -E 'claude "/' install.sh` confirms the only auto-injected slash command in the heredoc is now `/atelier:next-task` (no other bare slash names left).
+
+**Operator-visible:**
+
+After this PR merges and the operator picks up v0.8.5 via `atelier-update` plus `./install.sh` (the F7c re-inject path), the `task()` shell function in their `~/.zshrc` is refreshed to invoke `claude "/atelier:next-task $*"`. From the next `task` invocation, the lifecycle proceeds past the slash-command dispatch into `task-orchestrator` instead of dying with `Unknown command`.
+
+**Follow-up paths:**
+
+- **Audit other auto-injected slash commands.** F44 only touched `task()`. If any future shell wrapper auto-injects a slash command, the same plugin-namespace rule applies. Captured here for the next maintainer adding an entry point: `atelier-resume` (hypothetical), `atelier-next-blocker` (hypothetical), etc. would need `/atelier:resume-task`, `/atelier:next-blocker`, etc.
+- **post-update propagation of project settings.** Separately raised by the operator during the same dogfood session: `atelier-update` refreshes `$ATELIER_CONFIG_DIR/templates/` but does not propagate the refreshed template to the registered projects' `.claude/settings.json`. Deferred to its own milestone (provisionally M7.1.F45) once the operator decides on the UX (auto, opt-in flag, or stay manual).
+
+### M7.1.F43 — `install.sh` + `atelier-doctor` Claude-auth check was a local-only file read, missed expired/revoked tokens — 2026-06-02
+**PR:** [#118](https://github.com/AkaLab-Tech/atelier/pull/118)
 
 Discovered immediately after v0.8.3 (F42) shipped and the operator went through the upgrade flow. F42 had correctly switched all `claude auth …` calls to use `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR`, but **all of them still relied on `claude auth status`**, which only reads the local `.claude.json` file and confirms the presence of an `oauthAccount` block. It does NOT validate the OAuth access token against the Anthropic API. So when the operator's atelier-scoped token had been revoked or expired server-side, every check still reported success — and the very next agent session failed with `Please run /login · API Error: 401 Invalid authentication credentials`.
 
