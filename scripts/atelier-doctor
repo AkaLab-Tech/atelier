@@ -490,6 +490,37 @@ check_atelier_auto_mode() {
   push_fix_auto "tmp=\"\$(mktemp \"$target.atelier.XXXXXX\")\" && jq '.permissions = (.permissions // {}) | .permissions.defaultMode = \"auto\"' \"$target\" > \"\$tmp\" && mv \"\$tmp\" \"$target\""
 }
 
+check_atelier_claude_auth() {
+  # M7.1.F42 — verify the atelier-scoped Claude Code auth is valid.
+  # Before F42 install.sh validated only the operator's personal ~/.claude/
+  # (i.e. `claude auth status` without CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR),
+  # so a missing or expired token in $ATELIER_CONFIG_DIR/.claude.json went
+  # undetected. The symptom was a 401 inside an `atelier`-launched session
+  # — the first one the operator hit was on `/atelier:doctor` itself,
+  # which is what this check now surfaces upfront. `--fix` re-runs the
+  # login under the atelier config dir.
+  if ! command -v claude >/dev/null 2>&1; then
+    push_host "$SKIP atelier Claude auth (claude CLI not on PATH)"
+    return
+  fi
+  if CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status >/dev/null 2>&1; then
+    local email
+    email="$(CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status 2>&1 | grep -Eio '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' | head -1 || true)"
+    if [ -n "$email" ]; then
+      push_host "$OK atelier Claude auth valid (account: $email)"
+    else
+      push_host "$OK atelier Claude auth valid"
+    fi
+    return
+  fi
+  push_host "$FAIL atelier Claude auth invalid or missing in $ATELIER_CONFIG_DIR/.claude.json"
+  # NOTE: `claude auth login` is an interactive browser flow. It cannot be
+  # run silently from --fix, so we use push_fix_manual rather than
+  # push_fix_auto. The operator runs the command themselves; the browser
+  # opens; they log in once; future re-runs short-circuit.
+  push_fix_manual "CLAUDE_CONFIG_DIR=\"$ATELIER_CONFIG_DIR\" claude auth login"
+}
+
 # ---------- main ----------
 #
 # Args were parsed at the top of the script into $RUN_FIXES; --help also
@@ -506,6 +537,7 @@ check_project_npmrc
 check_chrome
 check_docker_compose
 check_atelier_config_dir
+check_atelier_claude_auth
 check_git_identity
 check_atelier_auto_mode
 
