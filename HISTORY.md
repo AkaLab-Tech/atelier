@@ -8,8 +8,68 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
-### M7.1.F42 — `install.sh` Phase B (and verification + Phase C.2) was validating the operator's personal Claude auth instead of the atelier-scoped one — 2026-06-02
+### M7.1.F43 — `install.sh` + `atelier-doctor` Claude-auth check was a local-only file read, missed expired/revoked tokens — 2026-06-02
 **PR:** _pending_
+
+Discovered immediately after v0.8.3 (F42) shipped and the operator went through the upgrade flow. F42 had correctly switched all `claude auth …` calls to use `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR`, but **all of them still relied on `claude auth status`**, which only reads the local `.claude.json` file and confirms the presence of an `oauthAccount` block. It does NOT validate the OAuth access token against the Anthropic API. So when the operator's atelier-scoped token had been revoked or expired server-side, every check still reported success — and the very next agent session failed with `Please run /login · API Error: 401 Invalid authentication credentials`.
+
+Operator's framing was exact: *"si el login está mal, el install.sh debe saberlo y pedirme que me logee, y si atelier-doctor dice que está mal, también"*. F42 had moved the false positive from "wrong config dir" to "right config dir, but no server-side validation". F43 closes the gap.
+
+**Diagnosis** (recorded for the next person who hits a similar shape):
+
+| Check command | Result on operator's broken state |
+|---|---|
+| `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR claude auth status` | `{"loggedIn": true, "email": "miguelmail2006@gmail.com", "orgId": "...", "subscriptionType": "max"}` ← **success** |
+| `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR claude -p "ok" --output-format json --max-turns 1` | `{"is_error": true, "api_error_status": 401, "result": "Failed to authenticate. API Error: 401 Invalid authentication credentials"}` ← **realistic failure** |
+
+`auth status` is a local-only file read; only an actual API ping detects expired/revoked tokens. The fix is to do both: cheap local check first (no point hitting the API if the file is missing), then real API ping if the file says OK.
+
+**Cost of the deep check**: ~3s of wall-clock + $0 in tokens **when auth fails** (the model is never invoked — the call is rejected at the auth gate). ~3s + a trivial token cost (~50 input + ~5 output, ~$0.001) **when auth succeeds**. Acceptable for install-time and doctor-time checks; would NOT be acceptable in a per-session preflight. The check runs at exactly two points: install.sh Phase B (once per install) and `atelier-doctor` (operator-initiated).
+
+**Delivered:**
+
+- **`install.sh` — new helper `_phase_b_claude_api_ping`** that runs `claude -p "ok" --output-format json --max-turns 1`, parses `api_error_status` from the JSON, and returns 0/1 accordingly. Single source of truth for the deep check; reused by Phase B and Verification.
+- **`install.sh` Phase B — `phase_b_claude_login`** now does a real API ping after the local `auth status` succeeds. Three paths:
+  1. Local status OK + API ping OK → behave as before (offer to switch accounts interactively, skip in non-interactive mode).
+  2. Local status OK + API ping returns 401 → `warn` about the stale credentials, log out the broken auth, force a fresh login. Non-interactive mode dies with a clear message pointing at the manual command.
+  3. Local status fails → fresh-login path unchanged.
+- **`install.sh` Verification — `phase_verify`** now emits two separate `step_ok`/`step_fail` lines: `atelier claude auth status (local)` and `atelier claude auth (API ping)`. If the API ping fails, the operator sees `✗ atelier claude auth (API ping returned 401 — token expired or revoked, re-run install.sh)` instead of a misleading `✓`.
+- **`scripts/atelier-doctor` — `check_atelier_claude_auth`** rewritten with the same two-step pattern. The deep-check failure produces a `push_fix_manual` containing both `claude auth logout` and `claude auth login`, properly ordered (logout first so the next login overwrites cleanly).
+
+**Decisions captured:**
+
+- **Reuse the same `claude -p` ping in install.sh + doctor.** A different probe in each tool would risk drift; the symptom they're catching is identical. The helper lives in `install.sh` (not a shared shell library) because there is no shared library between `install.sh` and `scripts/atelier-doctor`; copying ~10 lines is cheaper than introducing one.
+- **`push_fix_manual` not `push_fix_auto` for the doctor.** Same call as F42: `claude auth login` is interactive (browser-based). Auto-fixes are supposed to run silently. Manual is the correct affordance.
+- **Run the deep check unconditionally in Phase B + Verification + doctor, not behind a flag.** The whole point of F43 is to stop reporting false positives. A flag-gated deep check would mean the operator has to know to ask for it, which defeats the purpose. The ~3s cost is acceptable at install/doctor time.
+- **Skip the deep check in non-interactive mode (`--yes`/no TTY) for the "local OK + API 401" branch.** The fix is interactive (browser flow); auto-mode cannot complete it. Instead we `die` with the manual command. This preserves the property that automated CI/scripted installs fail loud instead of silently leaving a broken auth in place.
+- **No update to operator-rules.md or operator-guide.md.** The new check messages explain the situation in the moment the operator sees it. Documentation duplication would just go stale.
+- **No `apiKeyHelper` / `ANTHROPIC_API_KEY` special-case.** Operators using an API key instead of OAuth (the `--bare` flow per `claude --help`) are not the target case; if a future user runs atelier under API-key auth the `auth status` check still works and the API ping uses that same key. Defer if it ever surfaces.
+
+**Plugin scope:** host-OS-layer (`install.sh`) + plugin-layer (`scripts/atelier-doctor`). No agent, skill, command, hook, or template touched. Patch bump **0.8.3 → 0.8.4** per PLAN.md §14.2 — bug fix in a check that was previously reporting false positives; operator-visible behaviour shift is "the truth, finally". Cut **release v0.8.4** because the bug class blocks every new operator hitting the install on a stale-token host.
+
+**Verified locally:**
+
+- `bash -n install.sh` syntax-clean post all edits.
+- `bash -n scripts/atelier-doctor` syntax-clean.
+- The new `check_atelier_claude_auth` exercised inline against the operator's currently-broken host (atelier-scoped token returning 401 from the real API) — correctly reports `✗ atelier Claude auth invalid (Anthropic API returned 401 — token expired or revoked)` and emits the correct manual-fix command pair. Pre-F43 the same host reported `✓ atelier Claude auth valid (account: miguelmail2006@gmail.com)` — the false positive that motivated this PR.
+
+**Operator-visible:**
+
+After this PR merges and the operator picks up v0.8.4 via `atelier-update` and re-runs `install.sh`:
+
+1. **Phase B** runs the local check first; if it passes, immediately runs `_phase_b_claude_api_ping`. On a broken token: `⚠ atelier Claude token is present but Anthropic API rejected it (401 — token expired or revoked)` + `⚠ logging out the stale credentials and starting a fresh login` + browser opens. On a healthy token: `↷ atelier Claude Code already authenticated (token verified, keeping existing account)`.
+2. **Verification phase** prints two distinct lines: `atelier claude auth status (local)` and `atelier claude auth (API ping)`. The second one is the new truth-telling one.
+3. **`atelier-doctor`** reports `✓ atelier Claude auth valid (account: <email>, API ping OK)` when both checks pass, or `✗ atelier Claude auth invalid (Anthropic API returned 401 — token expired or revoked)` with the manual fix command otherwise.
+
+The specific scenario that triggered F43 — the operator running `install.sh` after F42, seeing all greens, then hitting 401 inside `atelier /atelier:doctor` — is now impossible: either install.sh repairs the auth itself (interactive path), or it dies clearly pointing at the manual relogin command (non-interactive path).
+
+**Follow-up paths:**
+
+- **Mid-session 401 detection.** F43 catches stale tokens at install/doctor time. A token can still go bad mid-session (rare but possible). The proper fix is a `PostToolUse` hook that detects 401s in tool outputs and surfaces a structured error to the agent. Defer until the symptom recurs in production.
+- **Account-level mismatch warning.** F43's API ping does not currently warn if the local-file account differs from the API-reported account (e.g. operator logged out elsewhere with a different account). Deferred — the symptom is rare and the operator's intent is recoverable with a logout + login.
+
+### M7.1.F42 — `install.sh` Phase B (and verification + Phase C.2) was validating the operator's personal Claude auth instead of the atelier-scoped one — 2026-06-02
+**PR:** [#117](https://github.com/AkaLab-Tech/atelier/pull/117)
 
 Discovered immediately after v0.8.2 (F39 + F41) was released and the operator went through the post-merge upgrade flow on storefront. `install.sh` reported *"Claude Code already authenticated as miguelmail2006@gmail.com. Keep (Y) or switch to another account (s)?"* and `atelier-update` reported success. But the very next command — `atelier` + `/atelier:doctor` inside storefront — failed with `Please run /login · API Error: 401 Invalid authentication credentials`. The operator's reaction was the right one: *"no debería haber pasado, el install y el update deberían validar el login de forma correcta, porque entonces esto está mal"*.
 

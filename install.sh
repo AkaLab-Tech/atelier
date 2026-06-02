@@ -721,6 +721,21 @@ phase_a() {
 
 # ---------- phase B: authentication ----------
 
+# M7.1.F43 — verify the atelier-scoped Claude token works against the real
+# Anthropic API, not just the local .claude.json. `claude auth status`
+# returns success whenever the file is present and well-formed, even when
+# the OAuth token has been expired/revoked server-side. This helper
+# returns 0 if a minimal `claude -p` API call succeeds, 1 if it returns
+# api_error_status (401 typically). Cost: ~3s and $0 in tokens on
+# failure (the model is never invoked when auth fails first); ~3s and a
+# trivial token cost (~50 input + ~5 output) on success.
+_phase_b_claude_api_ping() {
+  local response api_status
+  response="$(CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude -p "ok" --output-format json --max-turns 1 2>/dev/null || true)"
+  api_status="$(printf '%s' "$response" | jq -r '.api_error_status // empty' 2>/dev/null)"
+  [ -z "$api_status" ]
+}
+
 phase_b_claude_login() {
   # M7.1.F42 — All `claude auth …` calls below are scoped to atelier's
   # CLAUDE_CONFIG_DIR ($ATELIER_CONFIG_DIR), NOT the operator's personal
@@ -728,40 +743,62 @@ phase_b_claude_login() {
   # meant install.sh would happily report "already authenticated" by
   # reading the operator's personal config — leaving
   # $ATELIER_CONFIG_DIR/.claude.json potentially empty or with an expired
-  # token. Sessions launched via the `atelier` wrapper (which pins
-  # CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR) would then fail with a 401 at
-  # the first API call, despite install.sh saying everything was fine.
+  # token.
+  #
+  # M7.1.F43 — even with F42 in place, `claude auth status` is a local-only
+  # check that does not validate the token against the Anthropic API. An
+  # expired or revoked token still produces a success here, and the operator
+  # only finds out when an `atelier`-launched session fails with 401. Phase B
+  # now does a real API ping via `_phase_b_claude_api_ping` after the
+  # local check passes, and forces a fresh login if the deep check returns
+  # api_error_status. The browser opens, the operator re-authenticates, and
+  # the next session works.
   #
   # `claude auth status` exits 0 if authenticated, non-0 otherwise. This is
   # the idempotency hinge — re-runs of install.sh on an already-logged-in
   # machine short-circuit here without touching the browser.
   if CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status >/dev/null 2>&1; then
-    # M7.1.F4: offer to switch accounts. Skip the prompt in non-interactive
-    # mode (--yes / no TTY) — keep the existing account silently.
-    if $NONINTERACTIVE || [ ! -t 0 ]; then
-      step_skip "atelier Claude Code already authenticated (keeping existing account)"
+    # Deep-check before declaring victory: a local "logged in" answer can be
+    # stale if the OAuth token has been revoked or expired server-side.
+    sublog "verifying atelier Claude token against the Anthropic API (~3s)..."
+    if _phase_b_claude_api_ping; then
+      # M7.1.F4: offer to switch accounts. Skip the prompt in non-interactive
+      # mode (--yes / no TTY) — keep the existing account silently.
+      if $NONINTERACTIVE || [ ! -t 0 ]; then
+        step_skip "atelier Claude Code already authenticated (token verified, keeping existing account)"
+        return
+      fi
+      local current=""
+      current="$(CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status 2>&1 | grep -Eio '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' | head -1 || true)"
+      if [ -n "$current" ]; then
+        printf '    atelier Claude Code already authenticated as %s%s%s (token verified). Keep (Y) or switch to another account (s)? [Y/s]: ' "$_C_BOLD" "$current" "$_C_RESET"
+      else
+        printf '    atelier Claude Code already authenticated (token verified). Keep current account (Y) or switch (s)? [Y/s]: '
+      fi
+      local switch_choice=""
+      read -r switch_choice
+      case "$switch_choice" in
+        s|S|switch|SWITCH)
+          sublog "logging out current atelier Claude account, fresh login coming up"
+          CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth logout 2>/dev/null || true
+          sublog "starting atelier Claude Code login (a browser tab will open)"
+          CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth login
+          ;;
+        *)
+          step_skip "atelier Claude Code already authenticated (keeping existing account)"
+          ;;
+      esac
       return
     fi
-    local current=""
-    current="$(CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status 2>&1 | grep -Eio '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' | head -1 || true)"
-    if [ -n "$current" ]; then
-      printf '    atelier Claude Code already authenticated as %s%s%s. Keep (Y) or switch to another account (s)? [Y/s]: ' "$_C_BOLD" "$current" "$_C_RESET"
-    else
-      printf '    atelier Claude Code already authenticated. Keep current account (Y) or switch (s)? [Y/s]: '
+    # Local says yes, API says 401 — token expired or revoked.
+    warn "atelier Claude token is present but Anthropic API rejected it (401 — token expired or revoked)"
+    warn "logging out the stale credentials and starting a fresh login"
+    CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth logout 2>/dev/null || true
+    if $NONINTERACTIVE || [ ! -t 0 ]; then
+      die "no TTY available to complete the browser-based login. Re-run \`./install.sh\` from a real terminal, or run by hand: CLAUDE_CONFIG_DIR=\"$ATELIER_CONFIG_DIR\" claude auth login"
     fi
-    local switch_choice=""
-    read -r switch_choice
-    case "$switch_choice" in
-      s|S|switch|SWITCH)
-        sublog "logging out current atelier Claude account, fresh login coming up"
-        CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth logout 2>/dev/null || true
-        sublog "starting atelier Claude Code login (a browser tab will open)"
-        CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth login
-        ;;
-      *)
-        step_skip "atelier Claude Code already authenticated (keeping existing account)"
-        ;;
-    esac
+    sublog "starting atelier Claude Code login (a browser tab will open)"
+    CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth login
     return
   fi
   sublog "starting atelier Claude Code login (a browser tab will open) — this is separate from your personal ~/.claude/ login"
@@ -1721,10 +1758,18 @@ verify_plugin() {
 phase_verify() {
   phase "Verification"
   verify_cmd    "claude --version"        claude --version
-  # M7.1.F42 — verify the atelier-scoped auth (sessions launched by the
-  # `atelier` wrapper use CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR). The
+  # M7.1.F42 + F43 — verify the atelier-scoped auth (sessions launched by
+  # the `atelier` wrapper use CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR). The
   # operator's personal ~/.claude/ is unrelated to whether atelier works.
-  verify_cmd    "atelier claude auth status" env CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status
+  # `auth status` only reads the local file; F43 adds a real API ping via
+  # `_phase_b_claude_api_ping` so an expired/revoked token surfaces here
+  # instead of inside a future agent session as a 401.
+  verify_cmd    "atelier claude auth status (local)" env CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude auth status
+  if _phase_b_claude_api_ping; then
+    step_ok "atelier claude auth (API ping)"
+  else
+    step_fail "atelier claude auth (API ping returned 401 — token expired or revoked, re-run install.sh)"
+  fi
   # M5.0.1: verify both atelier-isolated gh identities. `env VAR=val cmd ...`
   # prefixes the env transparently for verify_cmd's "$@" passthrough.
   verify_cmd    "atelier gh auth (author)"   env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"   gh auth status --hostname github.com
