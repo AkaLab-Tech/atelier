@@ -8,6 +8,73 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F49 — auto-merge skill asked the operator to confirm after the six guardrails resolved to `merged` — 2026-06-03
+**PR:** _pending_
+
+Discovered during M7.1 dogfood Nivel 4 immediately after F48 (v0.9.3) shipped. The operator ran a fresh task on storefront whose PR (#128) passed every guardrail cleanly — no draft, reviewer approved, claude-review CI green, only `.md` files, 3 files (under the AND-gate), no pending human comments. The auto-merge skill formatted the report:
+
+```text
+== auto-merge report — PR #128 ==
+  draft:     ✓ no
+  review:    ✓ APPROVED
+  CI:        ✓ claude-review SUCCESS · claude SKIPPED (neutral)
+  forbidden: ✓ solo .md (3 archivos), sin rutas prohibidas
+  size:      ✓ 3 archivos (< 10 → no dispara el AND-gate)
+  comments:  ✓ sin comentarios humanos pendientes
+Decision: ✅ AUTO-MERGEABLE (todos los guardrails verdes)
+```
+
+…and then asked the operator: *"Como en cada merge anterior me diste el OK explícito, confirmo una vez más antes de tocar main: ¿mergeo #128 (squash + delete-branch) y limpio el worktree?"*
+
+Operator framing was exact: *"Ahora este sí es un bug. Se supone que debería pasar derecho, no preguntarme que hacer"*. Correct — the entire purpose of the six-guardrail gate is to BE the decision. Re-prompting after `Decision: merged` converts the gate from a policy into a per-PR request-for-permission, which negates the gate.
+
+**Root cause:**
+
+No surface in atelier explicitly declared *"once the gate resolves to merged, executing `gh pr merge` is pre-authorized — do NOT prompt"*. Three surfaces participate in the decision:
+
+1. [skills/auto-merge/SKILL.md](skills/auto-merge/SKILL.md) — Authoritative skill. The pre-F49 version went directly from "The six guardrails" to "Merge — only when all six guardrails pass" with the `gh pr merge` command, but its **Hard refusals** section did NOT include "never ask before merging when gates pass".
+2. [agents/task-orchestrator.md](agents/task-orchestrator.md) step 8 — Said *"When `auto-merge` reports `merged`: report the merge commit SHA…"* but did NOT say *"do not ask the operator to confirm"*.
+3. [operator-rules.md](operator-rules.md) § Auto-merge gate — Defined the conditions for auto-merge but did NOT state that the gate's positive verdict is the operator's pre-authorization.
+
+With no explicit override, the default Claude Code disposition ("for actions affecting shared state — pushing code, creating PRs, modifying main — confirm first") kicked in and pisaba the gate. The behavioral pattern made the drift worse: after several PRs in the same session where the operator manually OK'd each merge, the agent generalised *"the operator always confirms"* into *"I should always ask"*, and re-emitted the prompt even when the gate's report was unambiguously green.
+
+**Delivered:**
+
+- **`skills/auto-merge/SKILL.md` — new § Authorization model — the gate IS the consent.** Inserted between "The six guardrails" and "Merge — only when all six guardrails pass". States explicitly that the operator's adoption + project policy + `/atelier:next-task` invocation IS the pre-authorization; re-prompting after `Decision: merged` is a contract violation; the default Claude Code disposition to confirm before "actions affecting shared state" is explicitly overridden for this path. Lists the per-PR opt-outs that DO exist (panic switch, project policy, per-task flags) so the operator knows the legitimate channels for routing through them.
+- **`skills/auto-merge/SKILL.md` — new entry in § Hard refusals.** *"Never ask the operator to confirm the merge after the six guardrails resolve to `merged`. The gate is the authorization. An ad-hoc 'should I merge?' prompt is a contract violation regardless of phrasing (`confirm before touching main?`, `shall I land this?`, `OK to merge?` are all the same violation)."* The phrasing enumeration prevents the agent from rewording the prompt and claiming compliance.
+- **`agents/task-orchestrator.md` step 8** — Refined the post-merge branch: *"…**Do not** ask the operator to confirm the merge — by the time `auto-merge` returns `merged`, the merge has already executed. Re-prompting after the gate's positive verdict is a contract violation — see `skills/auto-merge/SKILL.md` § Authorization model."* So the orchestrator does not introduce its own confirmation pass over the skill's output.
+- **`operator-rules.md` § Auto-merge gate** — Added an "Authorization model (M7.1.F49)" paragraph between "Merge strategy: squash" and "Post-merge". Same content shape as the skill's section but condensed for the always-loaded operator rules. Critically calls out that the Claude Code default disposition is **explicitly overridden** here, so any specialist loaded with these rules has the override before the SessionStart context settles.
+
+**Decisions captured:**
+
+- **Override the Claude Code default, do not work around it.** The default behaviour ("confirm before main") exists for a reason — it's a safe disposition for an LLM acting in an unspecified context. Atelier's context is *not* unspecified: the auto-merge gate IS the specification. The right intervention is to explicitly tell the LLM *"this surface is governed; the gate's verdict is the authorization"*, rather than to add a counter-flag like `--no-confirm`. Counter-flags ossify the override into an operator action; explicit governance makes the override the default for atelier.
+- **Three-surface fix, not one.** Could have stopped at the skill (`auto-merge`). Did not — because (a) the orchestrator step 8 is what runs after the skill returns, and a stale instruction there would re-introduce the prompt one layer up; (b) `operator-rules.md` is loaded into every specialist's SessionStart context, so the override needs to land there too; and (c) any future review of "does the agent confirm before main?" needs the rule to be visible in the three places it'd plausibly be looked for (skill, orchestrator, operator rules). Defense in depth, not redundancy.
+- **Enumerate the phrasings of the violation.** The Hard refusals entry lists three example phrasings (*"confirm before touching main?"*, *"shall I land this?"*, *"OK to merge?"*) so the LLM cannot reword the prompt and claim it's not the same thing. The behavior pattern is the violation, not any single phrase.
+- **The panic switch, project policy, and per-task flags ARE the opt-outs.** If the operator wants a confirmation pass for a specific PR or project, those mechanisms exist (each leaves an auditable trail in the project/task). Adding a per-PR ad-hoc confirmation prompt would be a fourth channel that bypasses the audit trail.
+- **No code change required.** The fix is entirely prose-level governance in three already-loaded surfaces. The `gh pr merge` invocation in the skill was already correct (no confirm flag, executes directly); what was missing was the explicit *"do not detour through asking the operator first"* instruction.
+
+**Plugin scope:** plugin-layer (skill + agent + operator-rules). No template / install.sh / hook / command / catalog change. Patch bump **0.9.3 → 0.9.4** per PLAN.md §14.2 — behavioural fix, no contract reshape. Cut **release v0.9.4** post-merge.
+
+**Verified locally:**
+
+- `python3 -m json.tool .claude-plugin/plugin.json` clean.
+- Read-through of the three edited surfaces: the override lands as the **first** content the LLM sees in each authorization-adjacent context (skill's § Authorization model is before the merge command; operator-rules paragraph is before "Post-merge"; orchestrator step 8 carries the override inline). A specialist that loads any one of the three surfaces gets the override.
+- Behavioural smoke test deferred — the fix changes governance prose, and the only way to verify is to run a fresh task lifecycle on storefront. Operator will verify on the next task after v0.9.4 ships (next iteration of M7.1 dogfood Nivel 4).
+
+**Operator-visible:**
+
+After this PR merges and v0.9.4 ships, the next clean task on storefront whose PR passes the six guardrails will merge directly via `gh pr merge --squash --delete-branch` without asking the operator first. The structured `auto-merge report` with `Decision: merged` IS the report — `Merge commit: <sha>` appends after execution.
+
+If the operator wants a confirmation pass for a specific case, they use:
+- `/atelier:abort-auto [reason]` (whole-session panic switch — every remaining decision routes through `AskUserQuestion`).
+- `<project>/.atelier.json` `decisionPolicy.byCategory` (per-project override).
+- `task --policy=ask` or `task --ask-for=auto-merge` (per-task flag).
+
+**Follow-up paths:**
+
+- **Audit other auto-* skills for the same gap.** `auto-merge` is the most visible, but if/when other governance gates ship (auto-rebase, auto-cherry-pick, auto-revert), each will need the same Authorization-model section. Capture as a checklist in PLAN.md §14 when the next auto-* skill is designed.
+- **Strengthen the behavioural-drift counter-measure.** The agent self-reported *"como en cada merge anterior me diste el OK explícito"* — i.e., it noticed and internalised that the operator confirmed previous merges in this session. The fix in this PR makes that internalisation policy-wrong, but the pattern (LLM generalises operator behaviour into policy) is worth a broader audit of every place where "the operator did X N times before" could leak into "I should keep asking". Out of scope for v0.9.4.
+
 ### M7.1.F48 — `safe-commit` hook ran the push gate on docs-only commits and asked the operator to skip when the lint failed for missing deps — 2026-06-03
 **PR:** _pending_
 

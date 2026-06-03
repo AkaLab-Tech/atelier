@@ -111,6 +111,26 @@ This is heuristic — GitHub does not expose a structured "resolved" flag for to
 
 → `held: <N> pending human comment(s) (latest by @<user>)`.
 
+## Authorization model — the gate IS the consent
+
+The six guardrails ARE the operator's pre-given authorization. Atelier's contract with the operator is: *"configure the policy, configure the gates, then the chain runs autonomously"*. The operator has already consented to merging by:
+
+- Adopting atelier (which ships PLAN.md §6's auto-merge policy as its default).
+- Authoring the project (which version-controls the size budget + per-category policy in `<project>/.atelier.json`).
+- Running `/atelier:next-task` (which dispatches the chain).
+
+Asking *"should I merge now?"* after the gate resolves to `merged` converts the gate from a policy decision into a request-for-permission, which negates the entire reason the gate exists. The default Claude Code disposition to confirm before "actions affecting shared state" is **explicitly overridden** here: the gate's positive verdict IS the authorization.
+
+**Do NOT** prompt the operator to confirm the merge when all six guardrails resolve to `merged`. Execute the `gh pr merge` command directly. The structured output (with `Decision: merged` plus `Merge commit: <sha>` below) IS the report — no additional confirmation step exists between the gate and the merge.
+
+**Per-PR opt-outs already exist** (no ad-hoc confirmation needed):
+
+- **Panic switch**: `/atelier:abort-auto [reason]` flips every remaining decision to `ask` per `[[decision-broker]]`. Use this when the operator wants every remaining call in the active task routed through them.
+- **Per-project policy**: `<project>/.atelier.json` `decisionPolicy.byCategory` routes specific categories to `ask` (or to a fixed option) for the whole project.
+- **Per-task flags**: `task --policy=ask` (everything ask) or `task --ask-for=auto-merge` (just this) for a single task lifecycle.
+
+These escape hatches leave a paper trail in the project / task; an ad-hoc *"confirm before main?"* prompt does not.
+
 ## Merge — only when all six guardrails pass
 
 ```bash
@@ -179,6 +199,7 @@ Next step:     human review required. Operator can:
 
 ## Hard refusals
 
+- **Never** ask the operator to confirm the merge after the six guardrails resolve to `merged`. The gate is the authorization — see § Authorization model. Per-PR opt-outs live in `/atelier:abort-auto`, `<project>/.atelier.json`, and the `task --policy` / `--ask-for` flags. An ad-hoc *"should I merge?"* prompt is a contract violation regardless of phrasing (*"confirm before touching main?"*, *"shall I land this?"*, *"OK to merge?"* are all the same violation).
 - **Never** merge when ANY guardrail fails. The whole point of the six is short-circuiting safety.
 - **Never** use `--merge` or `--rebase` strategies. Squash only.
 - **Never** retry on a transient guardrail failure (CI still running, comment pending). Report the held state and return — the operator decides when to re-invoke.

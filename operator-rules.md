@@ -94,6 +94,19 @@ following applies:
 
 **Merge strategy:** squash.
 
+**Authorization model:** when the six guardrails resolve to
+auto-merge, executing the merge is **pre-authorized** by the operator's
+adoption of atelier + project policy + `/atelier:next-task` invocation.
+Neither the orchestrator nor the `auto-merge` skill asks the operator to
+confirm before `gh pr merge` — re-prompting after the gate's positive
+verdict defeats the purpose of the gate. The default Claude Code
+disposition to confirm before "actions affecting shared state" is
+**explicitly overridden** for the auto-merge path. Per-PR opt-outs live
+in `/atelier:abort-auto` (panic switch), `<project>/.atelier.json`
+(per-category policy), and `task --policy=ask` / `--ask-for=` (per-task
+flags). An ad-hoc *"should I merge?"* prompt is a contract violation
+regardless of phrasing.
+
 **Post-merge:** delete the remote branch, remove the local worktree, mark
 the roadmap item `[x]`.
 
