@@ -8,8 +8,67 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
-### M7.1.F46 — `step_decision_policy` locked out operators whose `.atelier.json` predated M4.26.b — 2026-06-03
+### M7.1.F47 — `step_decision_policy` crashed under non-TTY invocation + used undefined color vars — 2026-06-03
 **PR:** _pending_
+
+Hot-fix to v0.9.1. Discovered immediately after F46 shipped and the operator tried the post-merge migration flow on storefront via `/atelier:setup-project` (the slash command). The Bash output:
+
+```
+F46: initialized decisionPolicy block in pre-M4.26.b /Users/mike/Work/storefront/.atelier.json
+==> Decision policy (M4.26)
+    for each strategic decision atelier may face, choose how it should be handled:
+      [a] Auto  — atelier decides per-case (uses an evaluator agent)
+      [f] Fix   — always use the recommended default (no thinking)
+    … +3 lines (ctrl+o to expand)
+
+/Users/mike/.local/bin/atelier-setup-project: line 721: _C_BOLD: unbound variable
+```
+
+F46 ran correctly — the `decisionPolicy` block was initialized on the preserved `.atelier.json`. But the prompt loop then crashed on line 721 with `_C_BOLD: unbound variable`, leaving the byCategory configuration empty and exit-code-1ing the whole helper. The operator's `.atelier.json` is in a half-state (block present, byCategory empty), which is recoverable but UX-broken: the slash command reports failure and the operator has to fix it via `/atelier:set-policy` regardless.
+
+**Two root causes, one fix path:**
+
+1. **`_C_BOLD` and `_C_RESET` are not defined in `atelier-setup-project`.** Those color escape variables live in `install.sh` and are exported into the shellrc heredoc; they were never defined in this script. M4.26.b's `step_decision_policy` copy-pasted the pattern from a different file in my head and assumed they would be present. With `set -euo pipefail` active at the top of the script, the first reference (line 721 of v0.9.1) trips the `nounset` and aborts.
+
+2. **The step has no TTY guard.** When the operator runs `/atelier:setup-project` as a slash command, the Claude session's `Bash` tool spawns the binary in a subshell with no attached terminal. The existing gates check `$NONINTERACTIVE` and `$SKIP_POLICY` but neither is set in this path — the slash command does not pass `--yes` or `ATELIER_AUTO`. Without a TTY guard the prompt loop tries to `read -r choice` from a stdin that has no terminal, which depending on the parent flow either silently EOFs (writes nothing useful) or — under `set -u` with the color var bug — crashes outright.
+
+**Delivered:**
+
+- **`scripts/atelier-setup-project` `step_decision_policy` — non-TTY skip.** New gate after `$NONINTERACTIVE`: `if [ ! -t 0 ] || [ ! -t 1 ]; then POLICY_STATUS="skipped (no TTY — run /atelier:set-policy from a Claude session to configure)"; return; fi`. The status message tells the operator the right next step. `/atelier:set-policy` runs inside a Claude session but uses `AskUserQuestion` rather than `read`, so it works under any shell parent.
+- **`scripts/atelier-setup-project` `step_decision_policy` — remove `_C_BOLD` / `_C_RESET` usage.** The single `printf '  %s%s%s\n' "$_C_BOLD" "$category" "$_C_RESET"` becomes `printf '  %s\n' "$category"`. Plain category name without bold emphasis. The per-category structure (blank line + indented name + indented metadata + indented prompt) still reads cleanly. Inline comment explains why colors went away.
+
+**Decisions captured:**
+
+- **Skip cleanly in non-TTY rather than define safe-default colors.** The original prompt loop's `read -r choice` cannot work without a TTY — even if the color crash were fixed via `${_C_BOLD:-}`, the function would just hang or EOF-loop through every category. Removing the color usage is a quality bug fix; adding the TTY guard is the functional bug fix. Both were needed.
+- **TTY guard fails open with an informational message, not an exit-2 error.** A failed setup-project would block the rest of the slash command's Phase 2 (the project-profiler dispatch). The skip path with `POLICY_STATUS="skipped (no TTY — ...)"` lets the slash command proceed past Phase 1 and surface a final summary that names the right next step. The operator runs `/atelier:set-policy` and configures interactively; no half-state.
+- **Operator's existing partial state from the crash is recoverable.** F46 already initialized the block to `{ "default": "ask", "byCategory": {} }` before the crash. That state is semantically correct — every category falls back to "ask", which is the conservative pre-broker behaviour. Running `/atelier:set-policy` from inside a Claude session walks the categories and fills in `byCategory`. No manual edit required; F47 just makes future runs not crash.
+- **No fix for the slash command itself.** `commands/setup-project.md` could pass `--skip-policy` to the bash helper to sidestep the entire step (with the operator running `/atelier:set-policy` after as a separate action). But that would silently never prompt operators who run setup-project from a real shell with a TTY — they would lose the streamlined first-time-setup walk. The TTY guard in the bash helper is the right scope; the slash command flow continues to delegate the configuration to `/atelier:set-policy` for its own UX reasons.
+
+**Plugin scope:** plugin-layer (`scripts/atelier-setup-project`). No template / hook / install.sh / agent / skill / command / catalog / docs change. Patch bump **0.9.1 → 0.9.2**. Cut **release v0.9.2** post-merge — same rationale as F46: every operator upgrading via `atelier-update` and running `/atelier:setup-project` on a pre-M4.26.b project hits this.
+
+**Verified locally:**
+
+- `bash -n scripts/atelier-setup-project` syntax-clean.
+- `grep -nE "_C_BOLD|_C_RESET" scripts/atelier-setup-project` shows only the new inline comment that mentions the variables — no actual reference remains.
+- Manual walkthrough of the four gate branches (`$SKIP_POLICY`, `$NONINTERACTIVE`, TTY check, `ATELIER_CONFIG_STATUS` case) — each routes to the right outcome with the right status message.
+
+**Operator-visible:**
+
+After this PR merges and the operator picks up v0.9.2 via `atelier-update`, re-running `/atelier:setup-project .` from inside an `atelier` Claude session will:
+
+1. F46 init (if applicable) — write the `decisionPolicy` block with conservative defaults.
+2. F47 TTY check — skip the prompt loop cleanly with status `skipped (no TTY — run /atelier:set-policy from a Claude session to configure)`.
+3. Final summary names the right next step.
+
+Then the operator runs `/atelier:set-policy` (separately, inside the same or a fresh Claude session) and the slash command walks each category via `AskUserQuestion`. Each answer goes into `byCategory` via the agent's `Edit` of `.atelier.json`. No bash `read` involved; no TTY required; clean UX.
+
+**Follow-up paths:**
+
+- **`atelier-setup-project` test harness.** This script has shipped four bugs that a smoke-test would have caught: F38 (stale settings preserved), F46 (block missing on preserved file), F47 (TTY guard + undefined colors). A simple harness that exercises the function in non-TTY mode would have caught F47 immediately. Defer until 0.9.x stabilizes.
+- **Export color helpers consistently.** `install.sh` has `_C_BOLD` etc as common helpers; other scripts (`atelier-setup-project`, `atelier-doctor`, `atelier-update`) define their own or skip colors. Standardize via a shared `scripts/_colors.sh` sourcing pattern. Out of scope for v0.9.2.
+
+### M7.1.F46 — `step_decision_policy` locked out operators whose `.atelier.json` predated M4.26.b — 2026-06-03
+**PR:** [#125](https://github.com/AkaLab-Tech/atelier/pull/125)
 
 Discovered immediately after v0.9.0 (the M4.26 series) was released and the operator went through the post-merge validation flow on storefront. The operator had already run `atelier /atelier:setup-project .` to migrate the project to M4.26.b's template, but a subsequent grep showed `.atelier.json` still lacked the `decisionPolicy` block. The broker would forever fall back to `ask` because the project had no policy to read.
 

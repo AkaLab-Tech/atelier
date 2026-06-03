@@ -640,6 +640,18 @@ step_decision_policy() {
     POLICY_STATUS="skipped (non-interactive)"
     return
   fi
+  # M7.1.F47: detect non-TTY contexts (e.g. invoked from the /atelier:setup-project
+  # slash command via the Claude session's `Bash` tool, which spawns the binary
+  # without an attached terminal). The prompt loop below requires `read` from a
+  # TTY; running it without one either silently EOFs every prompt (bad: writes
+  # nothing useful) or crashes under `set -u` (worse). Skip cleanly here and
+  # tell the operator that /atelier:set-policy is the right surface for this
+  # context — that command IS interactive even inside a Claude session because
+  # it uses AskUserQuestion rather than `read`.
+  if [ ! -t 0 ] || [ ! -t 1 ]; then
+    POLICY_STATUS="skipped (no TTY — run /atelier:set-policy from a Claude session to configure)"
+    return
+  fi
 
   local target="$PROJECT/.atelier.json"
 
@@ -718,7 +730,13 @@ step_decision_policy() {
     model="$(jq -r --arg c "$category" '.categories[$c].model' "$catalog")"
 
     printf '\n'
-    printf '  %s%s%s\n' "$_C_BOLD" "$category" "$_C_RESET"
+    # M7.1.F47: the script does not export _C_BOLD/_C_RESET (those live in
+    # install.sh). Plain printf is enough; the per-category structure (blank
+    # line + indented category name + indented description + indented metadata
+    # + indented prompt) reads cleanly without color emphasis. Operators on a
+    # color-capable TTY would have liked the bold, but losing it is cheaper
+    # than the original unbound-variable crash this step shipped with.
+    printf '  %s\n' "$category"
     # Word-wrap the description in a basic way: print as-is; the operator
     # reads at their pace.
     printf '    %s\n' "$description"
