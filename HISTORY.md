@@ -8,8 +8,68 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
-### M4.26.e — Decision broker: PR-body audit section + operator-guide + troubleshooting — 2026-06-03
+### M7.1.F46 — `step_decision_policy` locked out operators whose `.atelier.json` predated M4.26.b — 2026-06-03
 **PR:** _pending_
+
+Discovered immediately after v0.9.0 (the M4.26 series) was released and the operator went through the post-merge validation flow on storefront. The operator had already run `atelier /atelier:setup-project .` to migrate the project to M4.26.b's template, but a subsequent grep showed `.atelier.json` still lacked the `decisionPolicy` block. The broker would forever fall back to `ask` because the project had no policy to read.
+
+**Root cause:**
+
+[scripts/atelier-setup-project:641](scripts/atelier-setup-project) (the M4.26.b `step_decision_policy` gate) only ran the interactive prompts when `ATELIER_CONFIG_STATUS == "created"` — i.e. when this run of setup-project freshly wrote the `.atelier.json` from the template. Existing `.atelier.json` files were preserved by `step_atelier_config_json` (correct behaviour — F27's *"operator-owned after creation"* invariant), but `step_decision_policy` then bailed out with `POLICY_STATUS=skipped (.atelier.json preserved)` without ever checking whether the `decisionPolicy` block was present.
+
+Operationally:
+
+- An operator who set up the project BEFORE M4.26.b shipped had a `.atelier.json` that pre-dated the `decisionPolicy` schema.
+- They ran `atelier-update` → templates refreshed at the config-dir layer with the new schema (M4.26.b's template now has the block).
+- They re-ran `/atelier:setup-project .` → `.atelier.json` was preserved (correct; F27 invariant).
+- `step_decision_policy` bailed out → block was never added.
+- `/atelier:set-policy` is the intended revisit surface, but the operator did not know they needed to run it (and the command's prose is framed as "revise existing answers", not "initialize the block").
+
+The intended UX from the M4.26.b HISTORY entry was *"`/atelier:set-policy` is the right surface for revising"* — but "revising" implies prior answers exist. For operators migrating from a pre-M4.26.b file, the block needed to be *initialized*, not *revised*. The gate was too coarse.
+
+**Delivered:**
+
+- **`scripts/atelier-setup-project` `step_decision_policy`** — refactored the early-return gate from `if [ "$ATELIER_CONFIG_STATUS" != "created" ]; then skip; fi` to a `case` block with three branches:
+  - `created` — fresh file from this run; run prompts (unchanged from M4.26.b).
+  - `preserved` — existing file. If `jq -e '.decisionPolicy'` returns true, skip silently with `POLICY_STATUS=skipped (.atelier.json preserved, decisionPolicy already present)`. If `.decisionPolicy` is missing, initialize the block via `jq '. + {decisionPolicy: {default: "ask", byCategory: {}}}'` (atomic via mktemp + mv, same pattern as the byCategory write later in the function), log `F46: initialized decisionPolicy block in pre-M4.26.b $target`, then fall through to the prompts.
+  - Other (template missing, etc.) — skip with the original message.
+
+- **Function-level documentation** — updated the comment block above `step_decision_policy` to describe the three-branch gate explicitly. The previous prose described only the "created" path, which made the M4.26.b skip-on-preserve invariant look like the intended behaviour for the F46 case it broke.
+
+**Decisions captured:**
+
+- **Initialize `decisionPolicy.default = "ask"` explicitly during the F46 path, not just `byCategory: {}`.** The broker reads `decisionPolicy.default` when a category is missing from `byCategory` (M4.26.a Step 3); leaving `default` undefined would have the broker fall back to its hardcoded "ask" — works but is implicit. Initializing the block in full is more legible and matches what M4.26.b's template ships.
+- **F46 path runs ONLY when the block is missing entirely.** Preserved files with the block already configured stay untouched — same conservative invariant as before, just now correctly detected. An operator who explicitly set `decisionPolicy.byCategory.oversize-handling = "auto"` and then re-ran setup-project will NOT lose that setting; the gate sees the block, returns `skipped (preserved, decisionPolicy already present)`, and the prompts never run.
+- **`case` block instead of nested `if`s.** Three distinct branches; the `case` form is more legible than chained `[ ... && ... ] || [ ... && ... ]` boolean. The script is plain bash 3.2 outside the install.sh shellrc heredoc (where `case`'s `)` would be problematic per the F44 lesson), so the construct is safe here.
+- **`sublog "F46: initialized..."` makes the init path operator-visible.** When operator re-runs setup-project on a pre-M4.26.b project, they will see the explicit log line before the prompts start. Lets them understand WHY the prompts are running on a project they thought was already configured.
+- **No changes to `commands/set-policy.md`.** The slash command's edge case *"`.atelier.json` is missing `decisionPolicy.byCategory`"* already covers the case where the operator never ran setup-project after M4.26.b (or used `--skip-policy`). F46 closes a different gap — the operator DID run setup-project but the gate locked them out. The slash command stays as a complementary revision surface.
+
+**Plugin scope:** plugin-layer (`scripts/atelier-setup-project`). No template / hook / install.sh / agent / skill / command / catalog / docs change. Plugin patch bump **0.9.0 → 0.9.1** per PLAN.md §14.2. Cut **release v0.9.1** post-merge — the bug class blocks every operator who upgraded from v0.8.x to v0.9.0 via `atelier-update` (the supported flow). Without the release, those operators silently never get the broker, defeating M4.26.
+
+**Verified locally:**
+
+- `bash -n scripts/atelier-setup-project` syntax-clean post the refactor.
+- Smoke-tested the F46 init path against a synthetic pre-M4.26.b `.atelier.json` (`{"prSize":{...}}` without the block). The `jq '. + {decisionPolicy: ...}'` merge correctly added the block AND preserved the existing `prSize` field. Re-running `jq -e '.decisionPolicy'` returned true.
+
+**Operator-visible:**
+
+After this PR merges and the operator picks up v0.9.1 via `atelier-update`, the next `atelier /atelier:setup-project <path>` invocation on an existing project will:
+
+1. Preserve `.atelier.json` as before (operator-owned-after-creation per F27).
+2. Detect that `.atelier.json` lacks the `decisionPolicy` block.
+3. Initialize the block with the template's conservative defaults (`default: "ask"`, `byCategory: {}`).
+4. Walk the 5-category interactive prompts.
+5. Write the operator's per-category answers to `byCategory`.
+
+For the specific operator who hit this on storefront: after merging v0.9.1, re-run `cd ~/Work/storefront && atelier /atelier:setup-project .` → the prompts will walk the catalog and the block will land. Replaces the manual `jq` workaround from the original message.
+
+**Follow-up paths:**
+
+- **`atelier-doctor` check for projects missing the `decisionPolicy` block.** Cross-reference `~/.claude-work/projects.json` against each project's `.atelier.json`; surface projects that lack the block as a friendly nudge. Defer until M4.26 has more dogfood — the doctor surface is for sticky persistent issues; F46 fixes the setup-project path which is the primary surface.
+- **F46 self-test integration.** `atelier-setup-project` could emit a marker line when it ran the F46 init path (e.g. `atelier-decision-policy-bootstrapped=true`) so an upstream automation can detect migration events. Out of scope for v0.9.1.
+
+### M4.26.e — Decision broker: PR-body audit section + operator-guide + troubleshooting — 2026-06-03
+**PR:** [#124](https://github.com/AkaLab-Tech/atelier/pull/124)
 
 Final slice of M4.26. Closes the audit loop and triggers the v0.9.0 release.
 
