@@ -111,7 +111,7 @@ This is heuristic — GitHub does not expose a structured "resolved" flag for to
 
 → `held: <N> pending human comment(s) (latest by @<user>)`.
 
-## Authorization model — the gate IS the consent (M7.1.F49)
+## Authorization model — the gate IS the consent
 
 The six guardrails ARE the operator's pre-given authorization. Atelier's contract with the operator is: *"configure the policy, configure the gates, then the chain runs autonomously"*. The operator has already consented to merging by:
 
@@ -199,7 +199,7 @@ Next step:     human review required. Operator can:
 
 ## Hard refusals
 
-- **Never** ask the operator to confirm the merge after the six guardrails resolve to `merged` (M7.1.F49). The gate is the authorization — see § Authorization model. Per-PR opt-outs live in `/atelier:abort-auto`, `<project>/.atelier.json`, and the `task --policy` / `--ask-for` flags. An ad-hoc *"should I merge?"* prompt is a contract violation regardless of phrasing (*"confirm before touching main?"*, *"shall I land this?"*, *"OK to merge?"* are all the same violation).
+- **Never** ask the operator to confirm the merge after the six guardrails resolve to `merged`. The gate is the authorization — see § Authorization model. Per-PR opt-outs live in `/atelier:abort-auto`, `<project>/.atelier.json`, and the `task --policy` / `--ask-for` flags. An ad-hoc *"should I merge?"* prompt is a contract violation regardless of phrasing (*"confirm before touching main?"*, *"shall I land this?"*, *"OK to merge?"* are all the same violation).
 - **Never** merge when ANY guardrail fails. The whole point of the six is short-circuiting safety.
 - **Never** use `--merge` or `--rebase` strategies. Squash only.
 - **Never** retry on a transient guardrail failure (CI still running, comment pending). Report the held state and return — the operator decides when to re-invoke.

@@ -94,7 +94,7 @@ following applies:
 
 **Merge strategy:** squash.
 
-**Authorization model (M7.1.F49):** when the six guardrails resolve to
+**Authorization model:** when the six guardrails resolve to
 auto-merge, executing the merge is **pre-authorized** by the operator's
 adoption of atelier + project policy + `/atelier:next-task` invocation.
 Neither the orchestrator nor the `auto-merge` skill asks the operator to
