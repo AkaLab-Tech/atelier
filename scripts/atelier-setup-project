@@ -600,16 +600,23 @@ step_atelier_config_json() {
   ATELIER_CONFIG_STATUS="created"
 }
 
-# ---------- step 3.6: decision policy (M4.26.b) ----------
+# ---------- step 3.6: decision policy (M4.26.b + M7.1.F46) ----------
 # Walks the operator through each category in the decision-broker catalog
 # and writes their per-category answer to <project>/.atelier.json's
-# decisionPolicy.byCategory block. Runs only when:
+# decisionPolicy.byCategory block. Runs when:
 #   - $SKIP_POLICY is false (default)
 #   - $NONINTERACTIVE is false (interactive mode required)
-#   - ATELIER_CONFIG_STATUS == "created" (do NOT re-prompt on preserved files;
-#     the operator can run /atelier:set-policy to revise without re-running
-#     the full setup)
-#   - the catalog file is readable under $PLUGIN_ROOT/agents/decision-broker/
+#   - The .atelier.json file exists AND either:
+#       (a) ATELIER_CONFIG_STATUS == "created" — fresh file from this run, OR
+#       (b) ATELIER_CONFIG_STATUS == "preserved" AND the file lacks the
+#           decisionPolicy block entirely (M7.1.F46 — covers operators who
+#           created .atelier.json before M4.26.b shipped). The block is
+#           initialized to {"default": "ask", "byCategory": {}} before the
+#           prompts run.
+#   - The catalog file is readable under $PLUGIN_ROOT/agents/decision-broker/
+#
+# Preserved files that ALREADY have a decisionPolicy block are NOT re-prompted
+# — the operator has their answers and revisions go through /atelier:set-policy.
 #
 # Per category, the operator chooses one of:
 #   [a] Auto    — broker decides per-case (uses Haiku/Sonnet/Opus per riskLevel)
@@ -622,11 +629,6 @@ step_atelier_config_json() {
 #   "ask"    → no entry written; falls through to decisionPolicy.default
 #              (which is "ask" by the template); semantically equivalent to
 #              "ask" without bloating the file.
-#
-# The step is idempotent across re-invocations only via the
-# ATELIER_CONFIG_STATUS gate. To re-run the prompts, the operator deletes
-# .atelier.json (or runs /atelier:set-policy when that command lands in
-# M4.26.b).
 step_decision_policy() {
   POLICY_STATUS="skipped"
 
@@ -638,13 +640,50 @@ step_decision_policy() {
     POLICY_STATUS="skipped (non-interactive)"
     return
   fi
-  if [ "$ATELIER_CONFIG_STATUS" != "created" ]; then
-    # The .atelier.json was preserved or skipped — the operator already
-    # has their answers (or doesn't have the template yet). Do not
-    # re-prompt; /atelier:set-policy is the right surface for revising.
-    POLICY_STATUS="skipped (.atelier.json $ATELIER_CONFIG_STATUS)"
-    return
-  fi
+
+  local target="$PROJECT/.atelier.json"
+
+  # F46: decide whether to run the prompts based on (config-status, block-present).
+  # M4.26.b only ran when ATELIER_CONFIG_STATUS=="created", which silently
+  # locked out operators whose .atelier.json predated M4.26.b — F38's drift
+  # detector preserves the existing file and step_decision_policy then bailed
+  # out without ever adding the block. F46 routes preserved-but-missing-block
+  # into the prompts path with an explicit initialization.
+  case "$ATELIER_CONFIG_STATUS" in
+    created)
+      # Fresh file from this run; the template already shipped the block.
+      # Run prompts to fill it in.
+      :
+      ;;
+    preserved)
+      if [ ! -f "$target" ]; then
+        POLICY_STATUS="skipped ($target missing despite preserved status)"
+        return
+      fi
+      if jq -e '.decisionPolicy' "$target" >/dev/null 2>&1; then
+        # Operator already has the block; revisions go through
+        # /atelier:set-policy to avoid surprising them on re-runs.
+        POLICY_STATUS="skipped (.atelier.json preserved, decisionPolicy already present)"
+        return
+      fi
+      # F46 path: preserved file lacks the block. Initialize it with the
+      # template's defaults before prompting so the prompts can write into
+      # byCategory and decisionPolicy.default is set to "ask" up front
+      # (consumed by the broker for unlisted categories).
+      local init_tmp
+      init_tmp="$(mktemp)"
+      jq '. + {decisionPolicy: {default: "ask", byCategory: {}}}' "$target" > "$init_tmp" \
+        && mv "$init_tmp" "$target" \
+        || { rm -f "$init_tmp"; die "F46: failed to initialize decisionPolicy block in $target"; }
+      sublog "F46: initialized decisionPolicy block in pre-M4.26.b $target"
+      ;;
+    *)
+      # Template missing, or some other non-created/non-preserved status.
+      # Nothing meaningful to prompt about.
+      POLICY_STATUS="skipped (.atelier.json $ATELIER_CONFIG_STATUS)"
+      return
+      ;;
+  esac
 
   local catalog="$PLUGIN_ROOT/agents/decision-broker/catalog.json"
   if [ ! -f "$catalog" ]; then
@@ -656,10 +695,8 @@ step_decision_policy() {
     return
   fi
 
-  local target="$PROJECT/.atelier.json"
   if [ ! -f "$target" ]; then
-    # ATELIER_CONFIG_STATUS said "created" but the file is gone — race or
-    # error. Surface and move on.
+    # Defensive: the file should exist at this point per the case above.
     POLICY_STATUS="skipped ($target missing)"
     return
   fi
