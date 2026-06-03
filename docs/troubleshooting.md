@@ -254,3 +254,79 @@ atelier-remove-project <path> --purge   # also strip the .gitignore / .npmrc ate
 ```
 
 Then re-run `atelier /atelier:setup-project <path>` if you want to start fresh on that project.
+
+---
+
+## Decision broker (M4.26, v0.9.0+)
+
+### atelier made a strategic decision I disagree with
+
+**Symptom:** the PR's `## Autonomous decisions taken` section shows atelier picked an option for a catalogued category (e.g. `oversize-handling: open-anyway`) that you would have decided differently.
+
+**Cause:** your project's `.atelier.json` `decisionPolicy` has that category set to `"auto"`, and the broker's evaluator agent picked the option. The choice is logged with a rationale; the choice is not a bug — it's the broker doing exactly what the policy said.
+
+**Fix:**
+
+1. **For this PR specifically**: revert the autonomous decision by hand (e.g. close the PR and split the task; or merge but address the choice in a follow-up). The decision was logged; the PR body has the rationale you can challenge.
+2. **For future tasks in this project**: set the offending category to `ask` (or to a fixed option id you prefer) in `<project>/.atelier.json`. Either edit the file directly:
+
+   ```json
+   {
+     "decisionPolicy": {
+       "byCategory": {
+         "oversize-handling": "ask"
+       }
+     }
+   }
+   ```
+
+   Or run `/atelier:set-policy oversize-handling` from inside an atelier session and pick `[s]ask`.
+3. **For this category in every project**: if the catalog's `default` is wrong for your context across all projects, open an issue at https://github.com/AkaLab-Tech/atelier/issues. The catalog is atelier-managed and only the maintainer changes it.
+
+### `/atelier:abort-auto` did not stop atelier from deciding autonomously
+
+**Symptom:** you ran `/atelier:abort-auto` from inside an atelier session and a subsequent strategic decision was still made autonomously.
+
+**Cause (most likely):** you are running the chain in a different worktree than the one where you ran `abort-auto`. The panic flag is **per-worktree** at `<worktree>/.atelier-abort-auto.flag` — by design, so parallel chains in sibling worktrees don't accidentally panic each other.
+
+**Fix:** check which worktree you are actually in:
+
+```bash
+git rev-parse --show-toplevel
+ls -la .atelier-abort-auto.flag
+```
+
+If the flag is not in the worktree where the chain is running, re-run `/atelier:abort-auto` from there. If it IS there but the broker still decided autonomously, this is a real bug — capture the entry in `<worktree>/.task-log/decisions.jsonl` (look for `source` not equal to `"panic"`) and open an issue with that entry verbatim.
+
+### `task --policy=auto` didn't make atelier fully autonomous
+
+**Symptom:** ran `task --policy=auto` but atelier still asked the operator at some point during the chain.
+
+**Cause:** the wrapper flag overrides `decisionPolicy.default`, but it does **not** override per-category fixed values or `byCategory.<category>: "ask"` entries. **Specific beats global.** If you set `oversize-handling: "ask"` in `.atelier.json`, that category will continue to ask even when `--policy=auto` is in effect.
+
+**Fix:**
+
+1. Inspect the project policy: `cat <project>/.atelier.json | jq .decisionPolicy`.
+2. Use `--ask-for` for the categories you want asked, and let `--policy` cover the rest. The two are designed to combine: `task --policy=auto --ask-for=merge-conflict-substantive #42`.
+3. If you want a clean slate per-invocation, edit `.atelier.json` once and remove the offending per-category entries — those that `task --policy=auto` would override.
+
+### `## Autonomous decisions taken` section is missing from a PR I expected it on
+
+**Symptom:** a task ran under `auto` policy and the resulting PR has no audit section in its body.
+
+**Cause (most likely):** the broker resolved every situation via `mode: ask` or `mode: panic` — both are operator-resolved interactively and produce no autonomous decision to audit. `pr-author` skips the section when the JSONL only contains those modes; restating ask-resolved decisions in the PR body adds noise without adding signal.
+
+**Less likely**: the `<worktree>/.task-log/decisions.jsonl` file is missing or unreadable. Check inside the worktree.
+
+**Fix:** none usually. If you want a section regardless, set at least one category to `auto` or to a fixed option id in `.atelier.json` so a non-ask decision actually gets logged.
+
+### Catalog says my category is missing
+
+**Symptom:** atelier surfaced a strategic decision to you with the rationale *"Category 'X' is not in the atelier catalog yet. Falling back to operator decision."*
+
+**Cause:** the broker hit a situation that does not match any catalogued category. The fallback (asking the operator) is correct; the message is a **growth signal** — atelier's catalog should grow to cover this case.
+
+**Fix:**
+
+1. Resolve the immediate decision yourself, the same way you would pre-broker.
+2. Open an issue at https://github.com/AkaLab-Tech/atelier/issues describing the situation: what the agent was about to ask, what the legitimate options were, and what you ended up choosing. The maintainer adds the category in a future version.

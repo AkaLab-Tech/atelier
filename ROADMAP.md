@@ -87,23 +87,6 @@ Research spike to inform a future implementation (M4.23). Atelier today has no p
 
 **Trigger to revisit:** captured 2026-05-23. Operator wants a path to deploy atelier-managed projects to VPS-hosted Coolify. Spike runs immediately because the implementation cost depends heavily on whether existing tooling already covers the use cases — building from scratch when a maintained MCP already exists would be waste.
 
-### M4.26.e — Decision broker: PR-body audit section + docs
-
-`[security-design]` · Source: M4.26 design conversation · `blocked_by: M4.26.c`
-
-Closes the audit loop: every autonomous decision the broker takes during a task is surfaced in the resulting PR's body so the reviewer (and the operator reviewing the PR later) can see what was decided autonomously and challenge it.
-
-**Scope:**
-
-- [ ] **`agents/pr-author.md`** — read `<worktree>/.task-log/decisions.jsonl`; if non-empty, add a `## Autonomous decisions taken` section to the PR body. One row per decision: category, choice, rationale, confidence, model. High-risk decisions or `confidence: low` decisions are visually marked (e.g. emoji, bold) so the reviewer cannot miss them.
-- [ ] **`docs/operator-guide.md`** — section "How atelier makes decisions" linking the operator to the catalog, the policy surface, the panic switch, and the PR-body audit.
-- [ ] **`docs/troubleshooting.md`** — symptom entry: *"atelier made a decision I disagree with"* with the fix path (revise `.atelier.json` to `ask` for that category, or set a fixed option id).
-- [ ] **`docs/research/decision-broker-catalog.md`** — research artifact pinning the catalog format + a backlog of candidate categories the maintainer should add when dogfood surfaces them.
-
-**Acceptance:** every PR that exercised the broker carries an `Autonomous decisions taken` section the reviewer can scan in <30 seconds. The operator guide and troubleshooting have entries for the new surface.
-
-**Trigger to revisit:** after M4.26.c + M4.26.d. M4.26.e is the polish layer — without it the framework works but the operator has to dig into `.task-log/` to audit decisions; with it the audit is one click in GitHub.
-
 ---
 
 ## Low Priority / Ideas

@@ -213,6 +213,73 @@ Full design rationale + the empirical validation that drove the adoption: [docs/
 
 ---
 
+## How atelier makes decisions (decision broker)
+
+Beyond *permission prompts*, atelier sometimes hits **strategic decisions** during a task — situations where multiple legitimate options exist and one must be chosen. Classic examples:
+
+- A pre-existing lint error on `main` (not caused by your task) blocks the gate. Options: pause and fix the baseline first, override the gate, scope the gate narrower, abort.
+- The PR is about to be opened but `atelier-pr-size-check` reports it would trip the AND-gate. Options: slice the task, raise the budget, open as-is and accept human review, abort.
+- The implementer's diff touches files unrelated to the stated scope. Options: keep the wider change, narrow back to scope, split into two PRs, ask.
+
+None of these is forbidden (the permission matrix doesn't cover them) and none is unsafe (the M2.4 hooks don't cover them either). They are **ambiguous** by construction, and historically atelier asked you about every one.
+
+Since v0.9.0, atelier ships a **decision broker** as the configurable policy layer for this class. The broker:
+
+- Reads a **catalog** of known strategic-decision categories (atelier-managed; you do not edit the catalog).
+- Reads your **project policy** in `.atelier.json` under `decisionPolicy`: a global default (`auto` / `ask`) plus per-category overrides.
+- Either decides autonomously (via a Haiku / Sonnet / Opus evaluator agent depending on the category's risk level), returns a fixed option you pre-configured, or asks you — depending on the policy.
+- **Surfaces every autonomous decision in the PR body** so you and the reviewer can audit and challenge.
+
+### Configuring the policy
+
+The first time you run `/atelier:setup-project` on a project after v0.9.0, an interactive step walks you through each catalog category and asks how atelier should handle it. Pick one per category:
+
+- `[a]uto` — atelier decides per-case using an evaluator agent. Logged in the PR body.
+- `[f]ix` — always pick the catalog's recommended default (no LLM cost; cheapest option).
+- `[s]ask` — atelier asks you each time (conservative; current pre-broker behaviour).
+
+If you skipped the step with `--skip-policy`, every category falls back to `ask`. To configure later, run `/atelier:set-policy` from inside an atelier session on the project — same prompts, no need to re-run the full setup.
+
+### Per-task overrides (wrapper flags)
+
+Sometimes you want one task to behave differently than the project policy. The `task` shell wrapper accepts flags:
+
+```bash
+task --policy=auto                          # this task: every category auto
+task --policy=ask                           # this task: every category ask
+task --ask-for=oversize-handling,scope-creep-detected  # this task: ask only these
+```
+
+Wrapper flags **do not modify `.atelier.json`** — they are env-var overrides that die with the session. The project policy stays unchanged for future tasks.
+
+### Panic switch (mid-session)
+
+If you notice a task going sideways under `auto` and want every remaining decision routed back to you — without aborting the task — run inside the Claude session:
+
+```
+/atelier:abort-auto "explaining why if you want to"
+```
+
+The broker stops deciding autonomously for THIS worktree until you clear the flag:
+
+```
+/atelier:resume-auto
+```
+
+Parallel task chains in sibling worktrees are unaffected (the flag is per-worktree).
+
+### Auditing decisions
+
+Every PR atelier opens carries a `## Autonomous decisions taken` section in its body (when the broker fired at least once during the task). The section is a table — one row per decision — with category, choice, confidence, model, and a one-line rationale. Rows are flagged with ⚠️ when the broker's confidence was `low`, when an `auto` decision touched a high-risk category, or when the choice deviated from the catalog's default. Scan the ⚠️ rows before merging; challenge any decision that doesn't match your intent by commenting on the PR or by setting that category to `ask` in `.atelier.json` for future tasks.
+
+### What the broker is NOT
+
+- **Not a permission gate.** That is auto-mode. The broker handles strategic AMBIGUITY, not forbidden actions.
+- **Not a safety net.** That is the M2.4 hook suite. `safe-package-change rejected`, `block-env-commit`, etc. bypass to their own escalation.
+- **Not operator-extensible.** Categories are atelier-maintained. If atelier hits a strategic decision not in the catalog, it falls back to asking you — and surfaces the missing category as a signal the catalog should grow in a future version.
+
+---
+
 ## Keep atelier up to date
 
 atelier ships fixes and new helpers regularly. To pull the latest release without touching `install.sh`:

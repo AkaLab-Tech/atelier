@@ -80,6 +80,23 @@ You inherit the session's default `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"
    - **Validation checklist:** what `tester` ran (lint / typecheck / unit / integration), with their pass/fail state.
    - **Screenshots:** if the change has a UI surface, embed Playwright screenshots from `e2e-runner`. For docs/infra/backend-only changes, note "no UI surface — e2e skipped per `e2e-runner`".
    - **Tracking:** an explicit `<commit-sha>` line for the `chore(tracking)` commit so reviewers can see the bookkeeping change at a glance.
+   - **Autonomous decisions taken (M4.26.e):** if `<worktree>/.task-log/decisions.jsonl` exists AND is non-empty, append a `## Autonomous decisions taken` section to the PR body summarising every entry the decision broker logged during this task. The section makes autonomous decisions visible to the reviewer (and to the operator on a later read of the PR) so any disagreement can be raised before merge. **Format** — one Markdown table row per JSONL entry, in the order they were logged. Read the JSONL with `Read` (not `Bash`) so the file goes through atelier's standard write/read path:
+
+     ```text
+     ## Autonomous decisions taken (decision-broker)
+
+     | Category | Choice | Mode | Confidence | Model | Rationale |
+     |---|---|---|---|---|---|
+     | <category> | <choice> | <mode> | <confidence or —> | <model or —> | <rationale, single-line, no surrounding quotes> |
+     ```
+
+     **Mark prominent rows.** Prefix the `Category` cell with `⚠️ ` when ANY of these is true: (a) `confidence` is `low`, (b) `mode` is `auto` AND the catalog's `riskLevel` for this category is `high`, (c) `deviated_from_default` is `true`. These are the rows the reviewer should pause on. The unmodified rows are routine.
+
+     **Skip the whole section** when the file does not exist, is empty, or contains only entries with `mode == "ask"` or `mode == "panic"` — those situations were resolved by the operator interactively and surfaced through the chain log already; restating them in the PR body adds noise without adding signal. The section exists precisely to make the autonomous calls visible.
+
+     **Truncation policy.** Cap the table at 20 rows. If more entries exist, append a note: *"… plus N additional decisions; see `<worktree>/.task-log/decisions.jsonl` for the full trail."* This keeps the PR body scannable. Long-tail audit lives in the JSONL.
+
+     **One section per PR, not per decision.** Even if a category fires multiple times in the same task (unusual — the broker's "one decision per category per task" rule should prevent it), each entry is one row; do not group by category.
 7. **Report the PR URL back.** Final output is the URL the operator opens to review.
 
 ## Decision rules
