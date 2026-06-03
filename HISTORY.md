@@ -8,8 +8,71 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
-### M7.1.F47 — `step_decision_policy` crashed under non-TTY invocation + used undefined color vars — 2026-06-03
+### M7.1.F48 — `safe-commit` hook ran the push gate on docs-only commits and asked the operator to skip when the lint failed for missing deps — 2026-06-03
 **PR:** _pending_
+
+Discovered during the M7.1 dogfood Nivel 4 (task lifecycle end-to-end on storefront). The orchestrator opened a task whose change was a single edit to `ROADMAP.md` (docs-only). When `pr-author` ran `git commit`, the `safe-commit` PreToolUse hook fired the push gate (lint + typecheck + test). The worktree had been created with `--no-deps` (no `node_modules`), so `pnpm run lint` failed with `turbo: command not found`. The hook blocked the commit and the agent asked the operator:
+
+> *"El gate de lint no puede correr (faltan deps en el worktree) y el cambio es docs-only. ¿Cómo procedo con el commit? 1) Saltar el gate (docs-only)  2) Instalar deps y lintar"*
+
+Operator framing was exact: *"Esto no debería pasar con safe-commit si el PR es de docs only"*. The push gate exists to validate code; a markdown-only change has nothing for lint/typecheck/tests to inspect, so the gate should short-circuit.
+
+**Root cause:**
+
+[hooks/safe-commit.sh](hooks/safe-commit.sh) jumped from the `git commit` pattern match (line 79 in v0.9.2) straight to the `package.json` discovery (line 82) without considering what the commit actually touched. The gate ran unconditionally on every `git commit` against a project with `package.json` present. When the staged files were docs-only AND the worktree lacked deps, the gate blocked correctly per its rule but the rule was over-broad for the case at hand.
+
+**Delivered:**
+
+- **`hooks/safe-commit.sh` — new docs-only short-circuit** between the `git commit` match and the `package.json` discovery. Detection rule: every staged file (from `git diff --cached --name-only`, union'd with `git diff --name-only` when the command carries `-a`/`--all`) matches at least one of:
+  - **Extension**: `.md` / `.markdown` / `.txt` / `.rst` / `.adoc` / `.asciidoc`
+  - **Path prefix**: `docs/` / `documentation/`
+  - **Basename** (with or without extension): `LICENSE` / `NOTICE` / `CHANGELOG` / `AUTHORS` / `CONTRIBUTORS` / `README`
+
+  If every staged file matches, the hook emits `log_decision allow "all N staged file(s) are documentation — push gate N/A (F48)"` and exits 0. If even one file falls outside the patterns, the gate runs as before. Intentionally conservative — a mixed commit (`README.md` + `src/index.ts`) still validates.
+
+**Decisions captured:**
+
+- **`-a`/`--all` requires the union.** `git commit -a` stages modified-tracked files at commit time, not before the hook fires. `git diff --cached --name-only` would miss those files; the hook also reads `git diff --name-only` (modified-but-unstaged tracked files) when the command line includes `-a` or `--all`. Other commands (e.g. plain `git commit` after `git add foo.md`) only consult the index. The `grep -E '\\bcommit\\b[^|;&]*( -a\\b| --all\\b)'` guard scoping is per-command — chained commands like `git status; git commit` are not matched as having `-a`.
+- **Exhaustive vs minimal pattern set.** Considered narrowing the patterns to just `.md` + `docs/*` — would have covered the operator's case. Went wider on principle: `LICENSE`, `NOTICE`, `CHANGELOG`, etc. are docs-by-intent even when their extension varies; missing them would re-trigger the F48 friction on legal/CHANGELOG commits. The extra patterns add no risk because a mixed commit still falls through to the gate.
+- **Path matching is prefix, not pattern.** `docs/something.json` matches `docs/*` but is treated as docs because *the docs directory is documentation by convention*. If a project stuffs a real config under `docs/`, that's a project-level mis-organisation, not the hook's bug. The hook surfaces the call clearly via `log_decision allow "docs-only"` so a post-mortem reviewer can see what was skipped.
+- **Empty staging falls through, doesn't short-circuit.** If `git diff --cached --name-only` returns empty, the hook does NOT classify the commit as docs-only — it lets the gate run. The gate will then likely fail or no-op-pass; either outcome is the correct surface for an empty-commit operator confusion. Treating empty as "docs-only allow" would silently mask a possible operator bug.
+- **No counter-flag for the operator to opt out of the short-circuit.** If an operator legitimately wants the gate to run on a docs-only commit (e.g. they're validating a script-build that produces markdown), they can run `pnpm run lint` manually before the commit. Adding a flag for the inverse case adds surface; the existing `ATELIER_SKIP_SAFE_COMMIT=1` escape hatch covers all cases where the operator wants control over the gate.
+
+**Plugin scope:** plugin-layer (`hooks/safe-commit.sh`). No template / install.sh / agent / skill / command / catalog / docs change. Patch bump **0.9.2 → 0.9.3** per PLAN.md §14.2. Cut **release v0.9.3** post-merge — every operator running a docs-only task hits this on the first commit.
+
+**Verified locally:**
+
+- `bash -n hooks/safe-commit.sh` syntax-clean.
+- Extracted the docs-only detection logic into `/tmp/f48_test.sh` and exercised it against 6 representative file lists. Results:
+
+  | Case | Files | Decision |
+  |---|---|---|
+  | A | `ROADMAP.md` (operator's exact case) | docs-only: SKIP gate |
+  | B | `README.md` + `docs/operator-guide.md` | docs-only: SKIP gate |
+  | C | `HISTORY.md` + `.claude-plugin/plugin.json` (mixed) | mixed: gate runs |
+  | D | `src/index.ts` only | mixed: gate runs |
+  | E | `LICENSE` + `CHANGELOG.md` + `NOTICE.txt` + `docs/troubleshooting.md` | docs-only: SKIP gate |
+  | F | (empty) | empty staging — fall through (gate runs) |
+
+  Every case matches the intended behaviour. Operator's case A short-circuits; mixed cases C and D still validate; legitimate docs commit (E) covering multiple naming conventions short-circuits; empty F falls through to the gate's own handling.
+
+**Operator-visible:**
+
+After this PR merges and v0.9.3 ships, the next docs-only commit (e.g. a `ROADMAP.md` edit) flows through `safe-commit` without invoking the push gate. The operator sees no prompt, no `BLOCKED` message, no `turbo: command not found` failure. The decision log shows:
+
+```
+{"hook":"safe-commit","tool":"Bash","reason":"docs-only","decision":"allow","note":"all 1 staged file(s) are documentation — push gate N/A (F48)"}
+```
+
+For mixed commits the gate runs as before. For pure-code commits the gate runs as before. F48 changes only the docs-only fast path.
+
+**Follow-up paths:**
+
+- **`safe-commit` smoke-test harness.** The 6-case inline test that validated F48 should live in `tests/hooks/safe-commit.test.sh` so future patches don't regress. Defer until the test directory pattern exists for the rest of the plugin.
+- **`docs-only-build-validation` category for the broker.** Some operators have scripts that *generate* docs from code (e.g. Typedoc, Sphinx). For those projects, a docs-only commit DOES validate something (the docs build). Today the operator runs the build manually; a future broker category could route the call. Not in scope for v0.9.3.
+
+### M7.1.F47 — `step_decision_policy` crashed under non-TTY invocation + used undefined color vars — 2026-06-03
+**PR:** [#126](https://github.com/AkaLab-Tech/atelier/pull/126)
 
 Hot-fix to v0.9.1. Discovered immediately after F46 shipped and the operator tried the post-merge migration flow on storefront via `/atelier:setup-project` (the slash command). The Bash output:
 

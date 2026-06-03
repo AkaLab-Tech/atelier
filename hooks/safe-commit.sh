@@ -78,6 +78,77 @@ case "$command_str" in
     ;;
 esac
 
+# M7.1.F48 — docs-only short-circuit.
+#
+# If every file the commit will touch is documentation, the push gate
+# (lint + typecheck + tests) has nothing to validate. Running it under a
+# worktree with missing deps produces the F48 symptom: the gate fails
+# with `turbo: command not found` (or similar), the operator gets asked
+# whether to skip — but the gate would not have rejected anything even
+# if it could run.
+#
+# Detection rule: every staged file matches at least one of
+#   - extension in {.md, .markdown, .txt, .rst, .adoc, .asciidoc}
+#   - path prefix docs/ or documentation/
+#   - basename in {LICENSE, NOTICE, CHANGELOG, AUTHORS, CONTRIBUTORS, README}
+#     with or without an extension
+#
+# If even one staged file falls outside those patterns, the gate runs as
+# before. This is intentionally conservative: a commit that touches both
+# README.md and src/index.ts must validate.
+#
+# `git diff --cached --name-only` lists the staged files. For `git commit
+# -a` / `--all` the index is not updated yet at hook time, so we also
+# include `git diff --name-only` (modified-tracked files) when the
+# command carries `-a` or `--all`.
+staged_files="$(git diff --cached --name-only 2>/dev/null || true)"
+if printf '%s' "$command_str" | grep -qE '\bcommit\b[^|;&]*( -a\b| --all\b)'; then
+  modified_files="$(git diff --name-only 2>/dev/null || true)"
+  all_files="$(printf '%s\n%s\n' "$staged_files" "$modified_files" | sort -u | sed '/^$/d')"
+else
+  all_files="$staged_files"
+fi
+
+# When there's nothing staged, we have nothing to short-circuit; fall
+# through to the gate (it will surface the empty-commit case in its own
+# voice).
+if [ -n "$all_files" ]; then
+  is_docs_only=true
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    matched=false
+    # Extension match
+    case "$f" in
+      *.md|*.markdown|*.txt|*.rst|*.adoc|*.asciidoc) matched=true ;;
+    esac
+    # Path prefix match
+    if ! $matched; then
+      case "$f" in
+        docs/*|documentation/*) matched=true ;;
+      esac
+    fi
+    # Exact filename match (with or without trailing extension)
+    if ! $matched; then
+      base="$(basename "$f")"
+      case "$base" in
+        LICENSE|LICENSE.*|NOTICE|NOTICE.*|CHANGELOG|CHANGELOG.*|AUTHORS|AUTHORS.*|CONTRIBUTORS|CONTRIBUTORS.*|README|README.*) matched=true ;;
+      esac
+    fi
+    if ! $matched; then
+      is_docs_only=false
+      break
+    fi
+  done <<EOF
+$all_files
+EOF
+
+  if $is_docs_only; then
+    file_count="$(printf '%s\n' "$all_files" | wc -l | tr -d ' ')"
+    log_decision "$HOOK_NAME" "Bash" "docs-only" "allow" "all $file_count staged file(s) are documentation — push gate N/A (F48)"
+    exit 0
+  fi
+fi
+
 # Find the project root by walking up looking for package.json.
 # If we never find one, this is not a pnpm project — allow.
 project_root="$PWD"
