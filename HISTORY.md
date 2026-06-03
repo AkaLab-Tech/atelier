@@ -8,8 +8,65 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
-### M4.26.c — Decision broker: integrate into task-orchestrator + pr-author + operator-rules.md — 2026-06-02
+### M4.26.d — Decision broker: panic switch + task wrapper flags — 2026-06-02
 **PR:** _pending_
+
+Fourth slice of M4.26. With the framework (M4.26.a, [PR #120](https://github.com/AkaLab-Tech/atelier/pull/120)), the configuration surface (M4.26.b, [PR #121](https://github.com/AkaLab-Tech/atelier/pull/121)), and the specialist integration (M4.26.c, [PR #122](https://github.com/AkaLab-Tech/atelier/pull/122)) shipped, M4.26.d adds the **two complementary controls** layered on top of the per-project policy: a panic switch the operator can flip mid-session, and per-invocation wrapper flags that override `.atelier.json` for a single task.
+
+**Why:**
+
+- **Panic switch.** Operators need an in-session escape valve. A task running under `auto` may go sideways in a way the operator can predict but does not want to cancel — they want every remaining strategic decision routed through them WITHOUT aborting the task. Editing `.atelier.json` mid-flight would require closing the Claude session (env not picked up live), and even then would change the policy globally for the project rather than just this task.
+- **Wrapper flags.** Sometimes the operator knows in advance "this task is risky, I want maximum control" (`task --policy=ask`) or "this task is mechanical, run it full auto" (`task --policy=auto`), or wants surgical control over specific categories (`task --ask-for=scope-creep-detected,merge-conflict-substantive`). All three cases are per-invocation — the project policy stays unchanged.
+
+**Delivered:**
+
+- **`commands/abort-auto.md`** — slash command `/atelier:abort-auto [reason]`. Writes the panic flag at `<worktree>/.atelier-abort-auto.flag` with metadata: schema version, ISO 8601 UTC timestamp, optional operator-supplied reason (truncated at 200 chars). Uses `Write` (not `Bash(touch:*)`) so the change goes through atelier's standard write path. Idempotent — if the flag already exists, surfaces a "already active" message and returns. The broker (M4.26.a Step 1) checks this file FIRST in every resolution; presence → `mode: panic` → caller falls back to `AskUserQuestion` regardless of `.atelier.json` configuration.
+
+- **`commands/resume-auto.md`** — slash command `/atelier:resume-auto`. Complementary to abort-auto: removes the panic flag via `Bash(rm)` (no `-f` — the existence check in step 2 already covers the absent case). Optionally reads the flag for the audit-friendly report (reason, duration since panic was active).
+
+- **`install.sh` `task()` shell function** — extended to parse `--policy=<auto|ask>`, `--policy <auto|ask>` (separate-arg form), `--ask-for=<categories>`, and `--ask-for <categories>`. Parsing uses `if/elif/else` rather than `case` because the case-statement closing `)` would terminate the surrounding `$(cat <<'BLOCK' ...)` substitution that ships the function (same constraint as the existing PATH check). Validates `--policy` value (must be `auto` or `ask`), errors loudly otherwise. The parsed values become env vars `ATELIER_POLICY_OVERRIDE` and `ATELIER_ASK_FOR` passed to `claude` alongside the existing `CLAUDE_CONFIG_DIR` / `GH_CONFIG_DIR` / `GIT_CONFIG_GLOBAL` env chain. Args remaining after the flag pass are forwarded to `/atelier:next-task` verbatim (typical: a task id like `#42` or `#42a`).
+
+- **`install.sh` shellrc hooks-version bump** — `# atelier-hooks-version: 4` → `5` (the heredoc text) AND `local current_version=4` → `5` (the F7c comparator). Bumped together per the F36 invariant; failing to bump both would silently skip the re-inject on existing operators' shells and they would keep using the pre-M4.26.d `task()` function body.
+
+- **`skills/decision-broker/SKILL.md`** — new "Step 2.5 — Read per-invocation flag overrides (M4.26.d)" between Step 2 (catalog lookup) and Step 3 (project policy). Documents how `ATELIER_ASK_FOR` short-circuits to `mode: ask`, and how `ATELIER_POLICY_OVERRIDE` acts as a runtime override of `decisionPolicy.default` ONLY when the per-category `byCategory.<category>` entry is missing. The skill also gains an explicit precedence summary at the end of Step 3 (panic > ask-for > byCategory > policy-override > default > "ask").
+
+**Decisions captured:**
+
+- **Per-worktree, not per-project, not per-session.** The panic flag lives at `<worktree>/.atelier-abort-auto.flag` so a parallel task chain in a sibling worktree is unaffected. This matches the broker's existing per-worktree `decisions.jsonl` audit log — every decision and every panic toggle is keyed to a single worktree. The operator running two tasks in parallel can panic-switch one without affecting the other.
+- **Wrapper flag values are env vars, not files.** The `task` wrapper is a shell function that already passes env vars to `claude` (CLAUDE_CONFIG_DIR, GH_CONFIG_DIR, GIT_CONFIG_GLOBAL). Adding two more vars is the consistent shape; a flag file would require a separate cleanup step the operator might forget. Env vars die with the session — naturally per-invocation.
+- **Specific beats global.** A fixed `decisionPolicy.byCategory.<category>` value (e.g. `"fix-first"`) is NOT overridden by `ATELIER_POLICY_OVERRIDE`. The operator already configured a specific answer for this category; the wrapper flag is global; specific beats global. Conceptually consistent with how `--ask-for` is surgical (overrides only the listed categories).
+- **`if/elif/else` for arg parsing in the heredoc.** Same F44 lesson: case-statement `)` inside `$(cat <<'BLOCK' ...)` terminates the substitution early. The parser is verbose but works.
+- **No new `set -u`-safe array handling.** The `remaining` args are accumulated as a single space-separated string. Task ids in atelier (`#42`, `#42a`) never contain spaces, so the simpler form is acceptable. Operators passing complex args would break this, but they should not be passing complex args to `/atelier:next-task` — the slash command's contract is "optional task id".
+- **Both versions bump atomically.** F36 invariant. Heredoc literal + comparator must move together; if only the heredoc moves, F7c reads `existing == current` from the operator's old block and silently skips the refresh. Verified by inline test of the new parser; verified by `grep -nE "current_version=|atelier-hooks-version:" install.sh` showing both at `5`.
+- **`/atelier:abort-auto` and `/atelier:resume-auto` are configuration-only.** They write/remove ONE file and report. They do NOT invoke any specialist, do NOT read the catalog, do NOT touch task state. Single-purpose surface that the operator can reason about without thinking about side effects.
+- **No `atelier-doctor` check for the panic flag.** The flag is per-worktree and ephemeral by design. An operator-doctor check would be either always-empty (when run from outside a worktree) or always-positive (operator just set it and is running doctor to verify). Not a useful surface for the doctor.
+
+**Plugin scope:** plugin-layer (`commands/`) + plugin-layer (`skills/`) + host-OS-layer (`install.sh`). No template / hook / agent change. **Plugin version stays at 0.9.0** per the operator's directive — M4.26 ships as a single release after `.e` merges.
+
+**Verified locally:**
+
+- `bash -n install.sh` syntax-clean post all edits.
+- `grep -nE "current_version=|atelier-hooks-version:" install.sh` confirms both lines at `5` (F36 invariant).
+- The new `task()` parser was extracted and inline-tested with 6 scenarios: no-flags, `--policy=auto`, `--policy ask` (separate-arg form), `--ask-for=...`, combined `--policy=auto --ask-for=...`, and an invalid policy value. All produced the expected env-var setup and exit codes. The trailing exit 1 in the test output is the expected result of the invalid-value scenario.
+- The two slash command files (`abort-auto.md` / `resume-auto.md`) parse as valid markdown with the right frontmatter shape (description, allowed-tools).
+- The skill's new Step 2.5 sits between the existing Step 2 and Step 3 without disrupting the existing flow.
+
+**Operator-visible:**
+
+After this PR merges and the operator re-runs `install.sh` (the F7c re-inject path triggers because hooks-version 4 → 5), the new `task()` body lands in their `~/.zshrc`. From the next `task` invocation:
+
+- `task #42` — unchanged from M4.26.c. Env vars empty; broker reads `.atelier.json` exclusively.
+- `task --policy=auto #42` — runs in fully autonomous mode regardless of project policy (subject to fixed per-category settings winning over `--policy`).
+- `task --policy=ask #42` — every catalogued decision is asked; useful for the "I want to be in the loop on this task" case.
+- `task --ask-for=scope-creep-detected #42` — auto for everything else, but ask for scope creep specifically.
+- Inside a long task chain, `/atelier:abort-auto "I see this going wrong"` writes the panic flag; every remaining decision is routed back to the operator. Later `/atelier:resume-auto` removes the flag and broker resumes per `.atelier.json` policy.
+
+**Follow-up paths:**
+
+- **M4.26.e** (queued, last) — `pr-author` reads `<worktree>/.task-log/decisions.jsonl` and adds a `## Autonomous decisions taken` section to the PR body so the reviewer can audit. Plus `docs/operator-guide.md` and `docs/troubleshooting.md` entries. Closes the audit loop and triggers the v0.9.0 release.
+
+### M4.26.c — Decision broker: integrate into task-orchestrator + pr-author + operator-rules.md — 2026-06-02
+**PR:** [#122](https://github.com/AkaLab-Tech/atelier/pull/122)
 
 Third slice of M4.26. With the framework (M4.26.a, PR [#120](https://github.com/AkaLab-Tech/2/atelier/pull/120)) and the per-project configuration surface (M4.26.b, PR [#121](https://github.com/AkaLab-Tech/atelier/pull/121)) shipped, M4.26.c **wires the specialists** so the broker actually fires during task execution. The framework was dormant in v0.9.0 base; after this PR, an operator with `decisionPolicy.byCategory.oversize-handling = "auto"` in their `.atelier.json` will see the orchestrator carry out the broker's choice (slice-task / open-anyway / abort) without the operator being asked, with the autonomous rationale surfaced in the chain log.
 

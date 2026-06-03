@@ -87,25 +87,6 @@ Research spike to inform a future implementation (M4.23). Atelier today has no p
 
 **Trigger to revisit:** captured 2026-05-23. Operator wants a path to deploy atelier-managed projects to VPS-hosted Coolify. Spike runs immediately because the implementation cost depends heavily on whether existing tooling already covers the use cases — building from scratch when a maintained MCP already exists would be waste.
 
-### M4.26.d — Decision broker: panic switch + task wrapper flags
-
-`[security-design]` · Source: M4.26 design conversation · `blocked_by: M4.26.c`
-
-Two complementary controls layered on top of the per-project policy:
-
-- **Panic switch.** A slash command `/atelier:abort-auto` that writes `<worktree>/.atelier-abort-auto.flag`. The broker checks this file first on every resolution; if present, it returns `mode: panic` and the caller falls back to `AskUserQuestion`. Used when the operator notices a task going sideways and wants every remaining strategic decision routed through them, without aborting the task. Complementary `/atelier:resume-auto` removes the flag.
-- **Task wrapper flags.** `task --policy=auto` (override `.atelier.json` to all-auto for this invocation), `task --policy=ask` (override to all-ask), `task --ask-for=<categories>` (override only those categories to ask). Used for one-off invocations where the project's persistent policy doesn't match the operator's intent for this specific task.
-
-**Scope:**
-
-- [ ] **`commands/abort-auto.md`** + **`commands/resume-auto.md`** — the two slash commands.
-- [ ] **`install.sh` shellrc heredoc (`task()` body)** — parse `--policy` and `--ask-for` flags, translate to env vars the broker skill reads. Bump shellrc hooks-version `4 → 5` AND `current_version=4 → 5` atomically (F36 invariant).
-- [ ] **`skills/decision-broker/SKILL.md`** — read the env vars in addition to `.atelier.json`; flags override the file-level policy.
-
-**Acceptance:** `/atelier:abort-auto` from inside a Claude session causes every subsequent strategic decision in that worktree to go to the operator; `/atelier:resume-auto` restores the file-level policy. `task --policy=auto` from the shell runs an entire task in auto mode regardless of `.atelier.json`.
-
-**Trigger to revisit:** immediately after M4.26.c. The panic switch is the operator's safety valve; ship it before any operator runs a long task under auto-mode for the first time.
-
 ### M4.26.e — Decision broker: PR-body audit section + docs
 
 `[security-design]` · Source: M4.26 design conversation · `blocked_by: M4.26.c`
