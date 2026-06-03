@@ -8,8 +8,60 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
-### M4.26.d — Decision broker: panic switch + task wrapper flags — 2026-06-02
+### M4.26.e — Decision broker: PR-body audit section + operator-guide + troubleshooting — 2026-06-03
 **PR:** _pending_
+
+Final slice of M4.26. Closes the audit loop and triggers the v0.9.0 release.
+
+With the framework (M4.26.a, [#120](https://github.com/AkaLab-Tech/atelier/pull/120)), the policy surface (M4.26.b, [#121](https://github.com/AkaLab-Tech/atelier/pull/121)), the specialist integration (M4.26.c, [#122](https://github.com/AkaLab-Tech/atelier/pull/122)), and the panic switch + wrapper flags (M4.26.d, [#123](https://github.com/AkaLab-Tech/atelier/pull/123)) shipped, every autonomous decision is now logged to `<worktree>/.task-log/decisions.jsonl`. M4.26.e makes those decisions **operator-visible** at PR-review time and writes the operator-facing docs that complete the feature.
+
+**Delivered:**
+
+- **`agents/pr-author.md` step 6** — extends the PR body composition with a new section: `## Autonomous decisions taken (decision-broker)`. The agent reads `<worktree>/.task-log/decisions.jsonl` via the `Read` tool (not Bash — keeps the operation inside atelier's standard write/read path) and emits a Markdown table with one row per decision: Category, Choice, Mode, Confidence, Model, Rationale. Rows are prefixed with `⚠️ ` when ANY of these is true: (a) `confidence: low`, (b) `mode: auto` AND the catalog's `riskLevel` for the category is `high`, (c) `deviated_from_default: true`. The reviewer scans the ⚠️ rows; unmodified rows are routine. The whole section is skipped when the JSONL is missing, empty, or contains only `mode == "ask"` / `mode == "panic"` entries (those were operator-resolved interactively; restating in the PR body adds noise). Table is capped at 20 rows with a "... plus N additional, see decisions.jsonl" note if more exist.
+
+- **`docs/operator-guide.md`** — new "How atelier makes decisions (decision broker)" section between "About permission prompts (auto-mode)" and "Keep atelier up to date". Operator-facing prose covering: classic examples that trigger the broker; how to configure (`/atelier:setup-project` first-run prompt, `/atelier:set-policy` for revisions, manual `.atelier.json` edit); per-task wrapper flags (`--policy=auto|ask`, `--ask-for=...`); panic switch (`/atelier:abort-auto` + `/atelier:resume-auto`); how to audit decisions in the PR body; what the broker is NOT (permission gate, safety net, operator-extensible). One place the operator can read to understand the entire feature.
+
+- **`docs/troubleshooting.md`** — five new symptom-indexed entries under a "Decision broker (M4.26, v0.9.0+)" section:
+  - *"atelier made a strategic decision I disagree with"* — explains the path: revert this PR by hand, set the category to `ask` for future tasks via `/atelier:set-policy`, or open an issue if the catalog default is wrong across all projects.
+  - *"`/atelier:abort-auto` did not stop atelier from deciding autonomously"* — diagnoses the most likely cause (panic flag is per-worktree, operator ran abort-auto from a different worktree than the chain is in). Includes `git rev-parse --show-toplevel` check.
+  - *"`task --policy=auto` didn't make atelier fully autonomous"* — explains the "specific beats global" precedence rule; suggests combining `--policy=auto --ask-for=<cats>` for surgical control.
+  - *"`## Autonomous decisions taken` section is missing from a PR I expected it on"* — the broker resolved everything via `ask` / `panic`; `pr-author` skips the section when there's nothing autonomous to audit.
+  - *"Catalog says my category is missing"* — atelier hit a strategic decision not catalogued; the fallback (ask) is correct; surface to the maintainer via an issue.
+
+**Decisions captured:**
+
+- **Skip the section when no autonomous decisions occurred.** Restating ask-resolved decisions in the PR body adds noise without adding signal — those were resolved interactively by the operator, who already saw the question. The section exists precisely to make the AUTONOMOUS calls visible. Empty section would hide the signal.
+- **⚠️ marker on three specific conditions.** Tested mentally against the M7.1 dogfood Nivel 4 case (baseline-conflict): if a `baseline-conflict: fix-first` auto decision lands with `confidence: high`, the reviewer doesn't need to pause — that's the catalog's intended default. If the same decision lands with `confidence: low` OR with `deviated_from_default: true`, the reviewer should look. Three rules cover the cases that warrant manual review without flooding every row with ⚠️.
+- **Cap the table at 20 rows.** A long-running task in a project with `--policy=auto` and many catalogued categories could log dozens of decisions. 20 is generous for normal use and keeps the PR body scannable. The note + JSONL pointer covers the audit tail.
+- **`Read` tool, not `Bash(cat:*)`, for the JSONL.** Goes through atelier's standard write/read path (M2.4 hooks apply, settings allow/deny matrix applies). Same reasoning as M4.26.b's `commands/set-policy.md` using `Edit` over `Bash(jq | tee)`.
+- **Operator-guide ordering.** Placed the new section AFTER "About permission prompts (auto-mode)" because the broker is the natural follow-up to auto-mode: auto-mode handles unenumerated PERMISSIONS, the broker handles unenumerated STRATEGIC DECISIONS. Same shape, different layer.
+- **Five troubleshooting entries, not exhaustive.** Each one captures a real friction the operator might hit. More edge cases will surface in production; add them as they appear.
+
+**Plugin scope:** plugin-layer (`agents/pr-author.md`) + docs-layer (`docs/operator-guide.md`, `docs/troubleshooting.md`). No template / hook / install.sh / skill / command / catalog change. **Plugin version stays at 0.9.0** — already at head-of-main from M4.26.a; M4.26.b/c/d/e all preserved that version per the operator's "bundle release" directive. **Release v0.9.0** is cut after this PR merges.
+
+**Verified locally:**
+
+- `agents/pr-author.md` still parses; the new sub-bullet under step 6 sits in the body-must-include list at the right ordering position (after Tracking, before step 7's "Report").
+- `docs/operator-guide.md` table of contents preserved; the new section's anchor is between "About permission prompts" and "Keep atelier up to date".
+- `docs/troubleshooting.md` entries follow the same `### <symptom> / **Symptom:** / **Cause:** / **Fix:**` structure as every other entry. The five new entries sit at the end of the file under a dedicated `## Decision broker (M4.26, v0.9.0+)` heading.
+
+**Operator-visible:**
+
+After this PR merges and the operator picks up v0.9.0 via the release flow:
+
+1. Run `cd ~/atelier && git pull && ./install.sh` (the F7c re-inject path from M4.26.d's hooks-version bump 4→5 already landed; this run is idempotent).
+2. Run `atelier-update` (refreshes `$ATELIER_CONFIG_DIR/templates/`).
+3. For each registered project: `atelier /atelier:setup-project <path>` — F38's drift detector regenerates `.claude/settings.json`; the new `decisionPolicy` block in `templates/atelier.template.json` lands in `.atelier.json` (via M4.26.b's `step_decision_policy`). The first-run interactive prompt walks the operator through each category.
+4. Next `task` invocation under `auto` policy triggers the broker; the resulting PR carries the audit section.
+
+**Follow-up paths:**
+
+- **`docs/research/decision-broker-catalog.md`** — a research artifact pinning the catalog format + a maintainer-facing backlog of candidate categories to add as dogfood surfaces them. **Deferred to a separate PR**. The current operator-facing docs are sufficient for v0.9.0; the research artifact is a maintainer-facing document.
+- **`atelier-doctor` check for orphaned `.atelier-abort-auto.flag`** — when an operator forgets to `/atelier:resume-auto` and leaves the flag in a worktree, the broker keeps deferring. A doctor warning could surface this. Defer until the symptom is reported.
+- **More categories.** Dogfood under v0.9.0 will surface situations not in the catalog. Each gets added in a patch release (0.9.x).
+
+### M4.26.d — Decision broker: panic switch + task wrapper flags — 2026-06-02
+**PR:** [#123](https://github.com/AkaLab-Tech/atelier/pull/123)
 
 Fourth slice of M4.26. With the framework (M4.26.a, [PR #120](https://github.com/AkaLab-Tech/atelier/pull/120)), the configuration surface (M4.26.b, [PR #121](https://github.com/AkaLab-Tech/atelier/pull/121)), and the specialist integration (M4.26.c, [PR #122](https://github.com/AkaLab-Tech/atelier/pull/122)) shipped, M4.26.d adds the **two complementary controls** layered on top of the per-project policy: a panic switch the operator can flip mid-session, and per-invocation wrapper flags that override `.atelier.json` for a single task.
 
