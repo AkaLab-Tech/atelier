@@ -133,6 +133,154 @@ if [ -z "$matched_path" ] && [ "$is_git_commit" -eq 1 ]; then
   esac
 fi
 
+# Allowlist + secret-scan: .env.example / .env.sample / .env.template are
+# placeholder templates that are legitimately version-controlled — BUT only
+# when their content is genuinely placeholder. If the template carries what
+# looks like a real secret (named like one, prefixed like one, or high-entropy
+# enough to be one), block the commit and surface the offending lines so the
+# operator can scrub them. Three-layer detection:
+#   A — sensitive key name (key|secret|token|password|pass|pwd|api|credential|private|auth)
+#       paired with a non-empty, non-placeholder value.
+#   B — known secret prefix in the value (sk-..., pk_live_..., xoxb-..., ghp_...,
+#       AKIA..., JWT eyJ...).
+#   C — value > 20 chars with Shannon entropy > 4.5 bits/char (catches random
+#       hex/base64 secrets that miss layers A and B).
+# Placeholders (your_key, xxx, <...>, changeme, example, localhost, etc.) are
+# skipped from all three layers — that's the entire point of a template.
+scan_env_template() {
+  local file="$1"
+  awk '
+    function shannon(s,    i, c, n, p, entropy, counts) {
+      n = length(s)
+      if (n == 0) return 0
+      delete counts
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        counts[c]++
+      }
+      entropy = 0
+      for (c in counts) {
+        p = counts[c] / n
+        entropy -= p * log(p) / log(2)
+      }
+      return entropy
+    }
+    function is_placeholder(v,    vl) {
+      vl = tolower(v)
+      if (v ~ /^[[:space:]]*$/) return 1
+      if (vl ~ /^<[^>]*>$/) return 1
+      if (vl ~ /^-?[0-9]+(\.[0-9]+)?$/) return 1
+      if (vl ~ /^(true|false)$/) return 1
+      if (vl ~ /^(localhost|127\.0\.0\.1|0\.0\.0\.0)(:[0-9]+)?$/) return 1
+      if (vl ~ /^https?:\/\/(localhost|example\.[a-z]+|127\.0\.0\.1|0\.0\.0\.0)/) return 1
+      if (vl ~ /^(secret|password|token|key|api[_-]?key|apikey|none|null|todo)$/) return 1
+      # Substring placeholder markers — value contains operator-intent words
+      # like "xxx", "example", "here", "your_", "changeme". Two scope rules:
+      #   - "xxx" (3+ X-es): always a placeholder. The triple-X is vanishingly
+      #     uncommon in real secrets at any length.
+      #   - "example|placeholder|changeme|here|your|fixme|tbd|tba": only when
+      #     the value is short (<= 32 chars). Real secrets are typically
+      #     longer; AWSs canonical AKIAIOSFODNN7EXAMPLE (20 chars) and the
+      #     Stripe sk_test_xxx pattern fit comfortably. Long random tokens
+      #     that happen to embed "example" do NOT — they get scanned.
+      if (vl ~ /xxx/) return 1
+      if (length(v) <= 32 && vl ~ /(example|placeholder|changeme|change-me|change_me|fixme|tbd|tba|here|your)/) return 1
+      return 0
+    }
+    function known_prefix(v) {
+      if (v ~ /^sk-[A-Za-z0-9_-]{20,}/) return "OpenAI-style (sk-...)"
+      if (v ~ /^sk_(live|test)_[A-Za-z0-9]{20,}/) return "Stripe secret (sk_live_.../sk_test_...)"
+      if (v ~ /^pk_(live|test)_[A-Za-z0-9]{20,}/) return "Stripe publishable (pk_live_.../pk_test_...)"
+      if (v ~ /^xox[abpsroe]-[A-Za-z0-9-]{10,}/) return "Slack token (xox?-...)"
+      if (v ~ /^gh[ops]_[A-Za-z0-9]{30,}/) return "GitHub token (ghp_.../gho_.../ghs_...)"
+      if (v ~ /^github_pat_[A-Za-z0-9_]{20,}/) return "GitHub fine-grained PAT (github_pat_...)"
+      if (v ~ /^AKIA[0-9A-Z]{16}$/) return "AWS access key (AKIA...)"
+      if (v ~ /^ASIA[0-9A-Z]{16}$/) return "AWS temp key (ASIA...)"
+      if (v ~ /^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\./) return "JWT (eyJ...)"
+      return ""
+    }
+    function is_sensitive_key(k,    kl) {
+      kl = tolower(k)
+      if (kl ~ /(key|secret|token|password|pass|pwd|api|credential|private|auth)/) return 1
+      return 0
+    }
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    {
+      eq = index($0, "=")
+      if (eq == 0) next
+      key = substr($0, 1, eq - 1)
+      val = substr($0, eq + 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      gsub(/^[[:space:]]+/, "", val)
+      if (val ~ /^".*"$/) { val = substr(val, 2, length(val) - 2) }
+      else if (val ~ /^'\''.*'\''$/) { val = substr(val, 2, length(val) - 2) }
+      else { gsub(/[[:space:]]+$/, "", val) }
+      if (is_placeholder(val)) next
+      pfx = known_prefix(val)
+      if (pfx != "") {
+        printf "line %d: %s — matches known secret prefix: %s\n", NR, key, pfx
+        hits++
+        if (hits >= 5) exit
+        next
+      }
+      if (is_sensitive_key(key)) {
+        printf "line %d: %s — sensitive key with non-placeholder value (%d chars)\n", NR, key, length(val)
+        hits++
+        if (hits >= 5) exit
+        next
+      }
+      # Layer C: structural randomness checks
+      #   - pure hex 24+ chars (MD5/SHA/random hex tokens — too uniform for
+      #     Shannon at 4.5 threshold but unmistakably a secret)
+      #   - any value > 20 chars with Shannon entropy > 4.5 (base64-ish secrets)
+      if (length(val) >= 24 && val ~ /^[A-Fa-f0-9]+$/) {
+        printf "line %d: %s — looks like a hex token (%d chars, pure hex)\n", NR, key, length(val)
+        hits++
+        if (hits >= 5) exit
+        next
+      }
+      if (length(val) > 20) {
+        e = shannon(val)
+        if (e > 4.5) {
+          printf "line %d: %s — high-entropy value (%.2f bits/char, %d chars)\n", NR, key, e, length(val)
+          hits++
+          if (hits >= 5) exit
+        }
+      }
+    }
+  ' "$file" 2>/dev/null
+}
+
+if [ -n "$matched_path" ]; then
+  case "$(basename "$matched_path")" in
+    .env.example|.env.sample|.env.template)
+      template_path="$matched_path"
+      [ -f "$template_path" ] || template_path="$(git rev-parse --show-toplevel 2>/dev/null)/$matched_path"
+      if [ -f "$template_path" ]; then
+        findings="$(scan_env_template "$template_path")"
+        if [ -n "$findings" ]; then
+          cat >&2 <<MSG
+🚫 atelier:block-env-commit BLOCKED (template carries what looks like a real secret)
+   Tool:     Bash(git add/commit)
+   Template: $matched_path
+   Findings (first 5):
+$(printf '%s\n' "$findings" | sed 's/^/     - /')
+   Rule:     templates ($(basename "$matched_path")) must hold placeholders, not real secrets.
+   Action:   replace the offending values with placeholders (your_*, <key>, changeme, xxx, etc.)
+             and re-stage. Real secrets go in your local .env which is already gitignored.
+   Override: if a value is a genuine non-secret (e.g. a public anon key) and the heuristic is wrong,
+             commit manually with --no-verify after the operator confirms.
+MSG
+          log_decision "$HOOK_NAME" "Bash" ".env-template-secret" "block" "blocked template $matched_path with $(printf '%s\n' "$findings" | wc -l | tr -d ' ') finding(s)"
+          exit 2
+        fi
+      fi
+      matched_path=""
+      ;;
+  esac
+fi
+
 if [ -z "$matched_path" ]; then
   # Nothing matched — allow the tool call and log the allow decision
   # only at low verbosity (omit it entirely to keep the JSONL useful).
