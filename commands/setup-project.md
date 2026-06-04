@@ -28,10 +28,11 @@ That single command does **all** of the mechanical work:
 8. Creates or appends to `<path>/.gitignore` the four required entries (`.task-log/`, `.claude/settings.json`, `.claude/settings.local.json`, `.DS_Store`). `.claude/settings.json` is gitignored because the helper substitutes `<worktree>` with the operator's absolute path; committing it would propagate that path to every clone. Note `.atelier.json` is **not** gitignored — it's part of the project's source of truth (per-project size budget belongs in version control).
 9. Records the setup in `$ATELIER_CONFIG_DIR/projects.json` with `setupCompleted` and `setupVersion`.
 
-The helper also emits two `atelier-*=...` marker lines that Phase 2 parses:
+The helper also emits three `atelier-*=...` marker lines that Phase 2 and Phase 3 parse:
 
 - `atelier-detected-mode=new|existing` — the heuristic result (or `--mode=...` override).
 - `atelier-root-claude-md=present|missing` — whether `<path>/CLAUDE.md` already exists.
+- `atelier-tracking-layout=created|preserved-empty|preserved-nonempty` (M7.1.F50) — whether `IN_PROGRESS.md` was created fresh (canonical empty slot), pre-existed and is empty, or pre-existed with task-like content. `preserved-nonempty` triggers Phase 3.
 
 Relay the helper's stdout back to the operator verbatim. If the helper exits non-zero, surface the error and stop — do NOT run Phase 2.
 
@@ -50,7 +51,9 @@ After the bash helper completes, parse its stdout for the two marker lines (`ate
 | `missing` | `existing` | **Invoke `Task` with `subagent_type: "project-profiler"`.** Briefing payload: `{ mode: "existing", project_path: "<abs>" }`. The agent scans manifests / src layout / CI configs / README and **returns drafted content in its report**. After it returns, **extract the inner content of the agent's `## Drafted content` fenced block and Write it to `<abs>/CLAUDE.md`.** |
 | `missing` | `new` | **Ask the operator** via `AskUserQuestion`: *"What is this project about? Describe in your own words — purpose, intended stack if you know, anything else useful."* (free-form, no preset options). Then **invoke `Task` with `subagent_type: "project-profiler"`** and briefing `{ mode: "new", project_path: "<abs>", operator_answer: "<the answer>" }`. After it returns, same extract + Write as above. |
 
-After the Write completes, surface the agent's report **verbatim** to the operator (including the `## Drafted content` block) so they can see what was written. Then stop.
+After the Write completes, surface the agent's report **verbatim** to the operator (including the `## Drafted content` block) so they can see what was written. Then proceed to Phase 3.
+
+(When the decision table's `present` row applies and Phase 2 is skipped, go straight to Phase 3.)
 
 ### Non-interactive mode in Phase 2
 
@@ -78,11 +81,28 @@ If `Task` returns an error (agent not found, dispatch refused, etc.), surface it
 
 If the agent's report is missing the `## Drafted content` block (and status is not `kept-existing`), the agent malformed its output: surface the report verbatim and stop. The slash command should not try to "recover" by inventing content.
 
+## Phase 3 — legacy tracking adoption check (M7.1.F50)
+
+Parse the helper's stdout for `atelier-tracking-layout=...`. This phase only does something when the value is `preserved-nonempty`; for `created` and `preserved-empty` there is nothing to check — print nothing extra and stop.
+
+When `atelier-tracking-layout=preserved-nonempty`, `IN_PROGRESS.md` pre-existed and carries task-like content. That content is one of two things, and the bash signal cannot tell them apart — **you** decide by reading the file:
+
+1. **`Read` `<project>/IN_PROGRESS.md`.**
+2. **Classify it:**
+   - **A legit single active task** — one task block (one checkbox or one heading), no completed (`[x]`) items mixed in, no multiple phase/section headings. This is the normal occupied-slot state. **Do nothing** — print a one-line note that an active task is already in the slot and stop.
+   - **A legacy multi-phase tracker** — multiple `##`/`###` section headings (e.g. `RLS`, `ADMIN`, `WEB`, `i18n`), and/or several checkboxes including done (`[x]`) items. This is the layout that predates the single-active-task slot and blocks tools like `/next-task`. Continue.
+3. **For the legacy case, offer normalization — do not transform anything yourself.** The transformation logic is sovereign in `claude-roadmap-tools`'s `/adopt-roadmap`; `/setup-project` only detects and delegates. It must never rewrite tracking files directly.
+   - **Interactive mode:** use `AskUserQuestion` — *"`IN_PROGRESS.md` looks like a multi-phase tracker, not a single active-task slot. Tools like `/next-task` will treat it as permanently occupied. Normalize it now with `/adopt-roadmap` (done items → `HISTORY.md`, open items → `ROADMAP.md`, slot reset to empty; nothing is dropped)?"* — options: run `/adopt-roadmap` now / skip for now. If the operator agrees and the `claude-roadmap-tools` plugin is installed (the `/adopt-roadmap` command resolves), run it. If the plugin is not installed, point the operator at it (`claude plugin install claude-roadmap-tools@akalab-tech`) and stop — do not attempt the adoption manually.
+   - **Non-interactive mode** (`--yes` / `-y` / `$ATELIER_AUTO`): **do not** run the adoption automatically — it is a judgment-heavy content rewrite. Print the recommendation (*"Detected a legacy phase-tracker `IN_PROGRESS.md`; run `/adopt-roadmap` interactively to normalize it"*) and stop.
+
+This phase is read-only on the operator's tracking files. The only write that can happen is `/adopt-roadmap`'s own — invoked through its command, with its own confirmation — never an inline edit from `/setup-project`.
+
 ## Hard refusals
 
 These all live in the bash helper; documented here so the operator knows what to expect when reading the `/setup-project` contract:
 
 - **Never overwrite** `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` / `.claude/CLAUDE.md` / root `CLAUDE.md` if they already exist (the root file is `project-profiler`'s own refusal, but the rule is the same).
+- **Never normalize a legacy `IN_PROGRESS.md` inline** (M7.1.F50). Phase 3 detects and offers `/adopt-roadmap`; the rewrite is that command's job, not `/setup-project`'s.
 - **Never weaken** an existing `.npmrc` (no `audit-level` downgrade, no `minimum-release-age` reduction).
 - **Never reconfigure under `--yes` / `ATELIER_AUTO`**: re-running on a configured project in non-interactive mode exits with code 2.
 - **Never run `git init`** or any git write — `/setup-project` is for atelier scaffolding only.

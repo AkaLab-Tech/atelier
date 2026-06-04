@@ -300,6 +300,7 @@ SETUP_COMPLETED=""
 SETUP_VERSION=""
 DETECTED_MODE=""           # set by detect_project_mode (new|existing) — M4.19
 ROOT_CLAUDE_MD_STATUS=""   # set by step_root_claude_md_detect (missing|present) — M4.19
+TRACKING_LAYOUT_STATUS=""  # set by detect_tracking_layout (created|preserved-empty|preserved-nonempty) — M7.1.F50
 
 # ---------- M4.19: detect project mode (new vs existing) ----------
 # Bash side does detection ONLY. Drafting the root CLAUDE.md (AI work)
@@ -397,6 +398,37 @@ detect_root_claude_md() {
     printf 'present\n'
   else
     printf 'missing\n'
+  fi
+}
+
+# ---------- M7.1.F50: detect IN_PROGRESS.md tracking layout ----------
+# Bash side emits a signal ONLY. The /setup-project slash command reads
+# IN_PROGRESS.md when this returns `preserved-nonempty`, decides whether the
+# content is a legit single active task vs a legacy multi-phase tracker, and
+# offers /adopt-roadmap (claude-roadmap-tools) for the legacy case.
+#
+# Outcomes:
+#   created             — the file was created fresh this run (canonical empty
+#                         slot by construction). Nothing to adopt.
+#   preserved-empty     — pre-existed and carries no task-like content (header
+#                         / workflow prose only). Already canonical.
+#   preserved-nonempty  — pre-existed and carries task-like content: any
+#                         checkbox line (`- [ ]` / `- [x]`) or any `##` section
+#                         heading. Could be a legit single active task OR a
+#                         legacy phase tracker — the slash command disambiguates.
+detect_tracking_layout() {
+  local f="$PROJECT/IN_PROGRESS.md"
+
+  if [ "$INPROGRESS_STATUS" = "created" ]; then
+    printf 'created\n'
+    return
+  fi
+  [ -f "$f" ] || { printf 'created\n'; return; }
+
+  if grep -Eq '^[[:space:]]*-[[:space:]]+\[[ xX]\]' "$f" || grep -Eq '^##[[:space:]]' "$f"; then
+    printf 'preserved-nonempty\n'
+  else
+    printf 'preserved-empty\n'
   fi
 }
 
@@ -1054,6 +1086,7 @@ step_record_setup
 # this bash binary only emits the signals.
 DETECTED_MODE="$(detect_project_mode "$PROJECT")"
 ROOT_CLAUDE_MD_STATUS="$(detect_root_claude_md "$PROJECT")"
+TRACKING_LAYOUT_STATUS="$(detect_tracking_layout)"
 
 # ---------- output ----------
 echo ""
@@ -1063,6 +1096,7 @@ sublog ".atelier.json:                  $ATELIER_CONFIG_STATUS"
 sublog "decision policy:                $POLICY_STATUS"
 sublog "ROADMAP.md:                     $ROADMAP_STATUS"
 sublog "IN_PROGRESS.md:                 $INPROGRESS_STATUS"
+sublog "tracking layout:                $TRACKING_LAYOUT_STATUS"
 sublog "HISTORY.md:                     $HISTORY_STATUS"
 sublog ".claude/CLAUDE.md:              $CLAUDE_STATUS"
 sublog ".npmrc:                         $NPMRC_STATUS"
@@ -1076,12 +1110,19 @@ echo ""
 # Format is `key=value` so the slash command can do a simple grep.
 printf 'atelier-detected-mode=%s\n' "$DETECTED_MODE"
 printf 'atelier-root-claude-md=%s\n' "$ROOT_CLAUDE_MD_STATUS"
+printf 'atelier-tracking-layout=%s\n' "$TRACKING_LAYOUT_STATUS"
 echo ""
 if [ "$ROOT_CLAUDE_MD_STATUS" = "missing" ]; then
   sublog "Root CLAUDE.md is missing. The /setup-project slash command will dispatch"
   sublog "the project-profiler agent in '$DETECTED_MODE' mode to draft it."
 else
   sublog "Root CLAUDE.md already present — preserved."
+fi
+if [ "$TRACKING_LAYOUT_STATUS" = "preserved-nonempty" ]; then
+  echo ""
+  sublog "IN_PROGRESS.md pre-existed and carries task-like content. The /setup-project"
+  sublog "slash command will check whether it is a legacy multi-phase tracker and, if so,"
+  sublog "offer to normalize it with /adopt-roadmap (claude-roadmap-tools)."
 fi
 echo ""
 sublog "Next: cd $PROJECT && run /atelier:next-task to claim the first ROADMAP.md item."
