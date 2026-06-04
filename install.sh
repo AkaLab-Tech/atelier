@@ -1301,6 +1301,10 @@ phase_c_1_setup_project_helper() {
   # template changes, and by the /atelier:update slash command. Refuses
   # to apply permission changes without an interactive prompt.
   _phase_c_1_symlink_helper atelier-permission-diff
+  # M4.23: atelier-setup-coolify installs + configures the optional
+  # coolify-integration plugin (deploy/manage apps on a VPS-hosted Coolify).
+  # Invoked by the Phase C.2 opt-in prompt and by /atelier:setup-coolify.
+  _phase_c_1_symlink_helper atelier-setup-coolify
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it
@@ -1766,7 +1770,36 @@ phase_c_2() {
   for id in "${ATELIER_PLUGIN_IDS[@]}"; do
     phase_c_2_install_plugin "$id"
   done
+  phase_c_2_coolify
   ok "Phase C.2 complete"
+}
+
+# M4.23: optional Coolify integration. Off by default — most operators do not
+# deploy to a VPS-hosted Coolify, so this is opt-in (default No). Yes installs
+# the coolify-integration plugin and does the machine-wide setup (PATH +
+# user-level allowlist); per-project token/URL is set later from each project's
+# .env via /atelier:setup-coolify. Non-interactive (--yes / no TTY): skip with a
+# pointer. Never aborts Phase C.2.
+phase_c_2_coolify() {
+  sublog "Optional: coolify-integration lets atelier deploy projects to a VPS-hosted Coolify instance."
+  if [ "$NONINTERACTIVE" = true ] || [ ! -t 0 ]; then
+    sublog "non-interactive — skipped. Enable anytime with /atelier:setup-coolify (or atelier-setup-coolify)."
+    return
+  fi
+  local ans
+  read -r -p "    Set up Coolify deployments now (installs the coolify-integration plugin)? [y/N]: " ans
+  case "${ans:-N}" in
+    [Yy]|[Yy][Ee][Ss])
+      if "$ATELIER_REPO_ROOT/scripts/atelier-setup-coolify" --non-interactive; then
+        ok "coolify-integration installed — add COOLIFY_BASE_URL + COOLIFY_API_TOKEN to a project's .env, or run /atelier:setup-coolify from it"
+      else
+        warn "Coolify setup did not complete — run it later with /atelier:setup-coolify"
+      fi
+      ;;
+    *)
+      sublog "skipped — set up anytime with /atelier:setup-coolify"
+      ;;
+  esac
 }
 
 # ---------- final verification ----------

@@ -314,6 +314,37 @@ check_project_npmrc() {
   fi
 }
 
+check_coolify() {
+  # Optional integration (M4.23). Silent skip when not installed.
+  local config_dir="${ATELIER_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
+  local installed=false
+  if command -v claude >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    if CLAUDE_CONFIG_DIR="$config_dir" claude plugin list --json 2>/dev/null \
+         | jq -e '.[] | select(.id == "coolify-integration@akalab-tech")' >/dev/null; then
+      installed=true
+    fi
+  fi
+  if [ "$installed" != true ]; then
+    push_host "$SKIP coolify-integration not installed (optional — run /atelier:setup-coolify to enable)"
+    return
+  fi
+  local issues=()
+  command -v atelier-coolify >/dev/null 2>&1 || issues+=("CLI not on PATH")
+  local settings="$config_dir/settings.json"
+  if [ -f "$settings" ] && command -v jq >/dev/null 2>&1; then
+    jq -e '(.permissions.allow // []) | index("Skill(coolify-integration:*)")' "$settings" >/dev/null 2>&1 \
+      || issues+=("allowlist not merged into user settings.json")
+  else
+    issues+=("user settings.json missing")
+  fi
+  if [ ${#issues[@]} -eq 0 ]; then
+    push_host "$OK coolify-integration ready (per-project token/URL live in each project's .env)"
+  else
+    push_host "$FAIL coolify-integration: ${issues[*]}"
+    push_fix_auto "atelier-setup-coolify --non-interactive"
+  fi
+}
+
 check_chrome() {
   local os
   os="$(uname -s)"
@@ -558,6 +589,7 @@ check_shellrc_hooks
 check_project_npmrc
 check_chrome
 check_docker_compose
+check_coolify
 check_atelier_config_dir
 check_atelier_claude_auth
 check_git_identity

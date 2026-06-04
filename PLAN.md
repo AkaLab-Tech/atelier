@@ -468,7 +468,7 @@ Apply? [y/N]
 ### Out of scope (v1)
 
 - Multi-repo coordination in a single task.
-- Deployment / release management.
+- Deployment / release management **in atelier core**. (Coolify VPS deploy/manage is delivered as a *separate, optional* plugin — [`coolify-integration`](https://github.com/AkaLab-Tech/coolify-integration), M4.22/M4.23 — that atelier only offers to install and configure via an opt-in `install.sh` prompt + `/atelier:setup-coolify`. atelier core itself performs no deployment.)
 - Cost monitoring / per-task budget caps.
 - Visual regression (baseline diff) — v2. v1 uses raw screenshots.
 - Bidirectional ROADMAP ↔ GitHub Issues sync.

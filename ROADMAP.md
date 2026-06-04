@@ -63,30 +63,6 @@ Originally tracked as PLAN.md §11 v2.3. The M2.6 spike confirmed it complements
 
 **Trigger to revisit:** after M2.8 has been in production long enough to surface real residual cases (target: ≥ 10 merged tasks under auto-mode). Run only if there are observed FN incidents that motivate the additional layer.
 
-### M4.22 — Spike: Coolify VPS integration research
-
-Research spike to inform a future implementation (M4.23). Atelier today has no path to deploy or manage apps on a VPS-hosted Coolify instance. Before committing to an implementation, audit what already exists in the ecosystem and document Coolify's API surface so the impl task starts from concrete options rather than guesses.
-
-[PLAN.md §11](PLAN.md) lists *deployment/release management* as out-of-scope for v1. This spike does not contradict that — it produces a written artifact that informs whether and how to lift that scope later. The implementation task (M4.23) stays tagged `v2` until the spike completes and the team explicitly decides to promote it.
-
-**Investigation surface:**
-
-- [ ] **Ecosystem inventory.** Catalog existing tooling for Coolify integration: Claude Code MCP servers, plugins, skills, agents (search the official marketplace + community marketplaces); third-party CLIs (`coolify-cli`, Terraform providers); libraries / API wrappers in any language. For each entry record: source URL, license, last-update date, maintenance status, coverage vs gaps.
-- [ ] **API surface mapping.** For each use case below, document the relevant Coolify API endpoints, required auth, expected payloads/responses, rate-limit posture, and idempotency characteristics:
-  - Deploy from branch / commit.
-  - List apps, fetch status, tail logs.
-  - Manage env vars / secrets (CRUD).
-  - Provision new apps.
-  - Anything else the API exposes that fits atelier's workflow (cron jobs, databases, backups, etc.) — flag opportunistically.
-- [ ] **Auth flow design.** Document the per-project `.env` token approach: env var naming convention (e.g., `COOLIFY_API_TOKEN` + `COOLIFY_BASE_URL`), how the skill loads them, fallback behavior when missing, multi-instance support (one operator, multiple Coolify instances across projects).
-- [ ] **Recommendation — build-on / wrap / from-scratch.** Based on the inventory: (a) adopt an existing MCP/skill directly, (b) wrap an existing tool with a thin atelier layer, or (c) build a native skill calling Coolify's REST API. Justify the choice and call out the second-best option as a fallback.
-
-**Deliverable:** a markdown document at `docs/research/coolify-integration.md` covering all four sections above. Must be self-contained — whoever picks up M4.23 cold should be able to act on it without re-doing the research.
-
-**Acceptance:** `docs/research/coolify-integration.md` exists with all four sections populated. M4.23's description is updated with a `Based on: docs/research/coolify-integration.md` reference and any scope adjustments the research surfaced (e.g., dropping a use case the API does not support cleanly, or adding one the API exposes cheaply).
-
-**Trigger to revisit:** captured 2026-05-23. Operator wants a path to deploy atelier-managed projects to VPS-hosted Coolify. Spike runs immediately because the implementation cost depends heavily on whether existing tooling already covers the use cases — building from scratch when a maintained MCP already exists would be waste.
-
 ---
 
 ## Low Priority / Ideas
@@ -154,32 +130,6 @@ This is **not** the primary loop mechanism (M4.14 is). It is captured as an alte
 - When active, the hook composes with M4.14 cleanly (no double-incrementing the counter, no race between orchestrator-driven and hook-driven reprompts).
 
 **Trigger to revisit:** after M4.14 is in production and the operator observes that orchestrator dispatch latency dominates iteration time, **or** wants the loop to survive a session restart. Captured in conversation 2026-05-21 as an exceptional-case mechanism — the operator likes the idea but explicitly tagged it as "for later".
-
-### M4.23 — Coolify VPS deployment integration (`v2`, `blocked_by: M4.22`)
-
-`v2` · `blocked_by: M4.22`
-
-**Out-of-scope for v1 per [PLAN.md §11](PLAN.md).** Captured as a v2 task so the work is not lost; promotion to v1 requires an explicit decision after M4.22's research artifact lands.
-
-Implementation of Coolify VPS integration covering deploy, status/logs, env vars/secrets, and app provisioning. Full scope is whatever M4.22's research determines the API supports and what adds value to the atelier workflow. The exact shape (MCP adoption / skill wrapper / native API client) is set by M4.22's recommendation.
-
-**Constraints already settled (do not relitigate):**
-
-- **Auth:** per-project `.env`, gitignored by atelier's existing `.env*` guardrail. Token env var naming convention is finalized in M4.22's auth-flow section.
-- **Minimum use cases:** deploy from branch/commit, list apps + status + logs, CRUD env vars/secrets, provision new apps. Anything else the API exposes that fits the atelier workflow may be added opportunistically (per M4.22's mapping).
-- **Auto-merge guardrail:** any PR that touches deployment config (analogous rationale to PLAN.md §6 for `Dockerfile`/`docker-compose*`) must fall back to human review. The `auto-merge` skill's never-auto-merge list needs an additional entry for whatever paths the implementation introduces.
-
-**Sub-tasks (refine after M4.22):**
-
-- [ ] Adopt M4.22's recommendation (build-on / wrap / from-scratch).
-- [ ] Skill / agent / command surface area as decided by M4.22.
-- [ ] `settings.template.json` permissions delta: allowlist for Coolify-related Bash / MCP calls scoped to the worktree; deny anything that would touch other projects' deployments.
-- [ ] `/doctor` extension: verify the Coolify connection (token + base URL reachable) when the project has Coolify configured.
-- [ ] Operator-facing docs: a `docs/coolify.md` (or section in `commands/setup-project.md`) explaining how to wire a project to a Coolify instance.
-
-**Acceptance:** an atelier task can trigger a Coolify deploy of the current branch's HEAD, fetch the resulting app status + last N log lines, set/get an env var, and provision a fresh app — all from inside a Claude session, with the Coolify API token loaded from the project's `.env` only. PRs touching Coolify config fall back to human review per the extended guardrail list.
-
-**Trigger to revisit:** after M4.22 lands AND the team explicitly decides to promote deployment work into v1 (or accepts this stays v2 with the spike having unblocked the path).
 
 ### M6.3 — Product owner guide (ROADMAP.md format)
 

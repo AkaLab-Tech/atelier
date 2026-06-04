@@ -8,6 +8,33 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M4.23 — Coolify VPS deployment integration, delivered as an optional external plugin + opt-in atelier setup — 2026-06-04
+**PR:** _pending_ · **Based on:** [docs/research/coolify-integration.md](docs/research/coolify-integration.md) (M4.22)
+
+Promoted from `v2` to v1 by explicit operator decision (2026-06-04), per M4.23's own promotion gate. The operator wanted atelier agents to validate, fix, launch, and provision apps on a VPS-hosted Coolify instance, configurable at install time and reconfigurable anytime.
+
+**Shape — decoupled, optional.** The deployment capability lives in a **separate plugin**, [`coolify-integration`](https://github.com/AkaLab-Tech/coolify-integration), listed in the `akalab-tech` catalog — *not* in atelier core. This keeps PLAN.md §11 ("no deployment in atelier core") intact; §11 was annotated to record the exception. The plugin ships a `coolify` skill and an `atelier-coolify` CLI (`curl`/`jq` over Coolify's v1 REST API), with commands split by risk: read-only + `deploy`/`set-env` allowlisted, `create-app-public`/`delete-app` gated behind operator confirmation.
+
+**Auth — per-project `.env`** (settled constraint upheld). `COOLIFY_API_TOKEN` + `COOLIFY_BASE_URL` live in each project's gitignored `.env`, so one operator can deploy different projects to different instances. A global macOS-Keychain variant was prototyped first and rejected because it collapses to a single instance.
+
+**atelier touchpoints (this PR):**
+- `install.sh` Phase C.2 — opt-in prompt (default No; skipped under `--yes`/no-TTY) that installs the plugin and does machine-wide setup.
+- `scripts/atelier-setup-coolify` — orchestrator (install plugin if missing → link CLI → merge user-level allowlist); reused by install.sh and the command.
+- `commands/setup-coolify.md` — `/atelier:setup-coolify`, the anytime reconfigure path that also captures per-project `.env` conversationally.
+- `scripts/atelier-doctor` — `check_coolify`: silent skip when not installed; otherwise verifies CLI-on-PATH + allowlist, with `--fix`.
+- `templates/settings.template.json` — `Bash(atelier-setup-coolify:*)` allowlisted (the command is covered by the existing `SlashCommand(/atelier:*)`). Coolify's own allowlist is merged into the user-level settings by the plugin, never the per-task template.
+
+**Permissions decoupling.** The Coolify allowlist is merged into atelier's user-level `settings.json` (persists across tasks, composes over the regenerated per-task settings) by `atelier-coolify enable-permissions` — atelier's shipped template stays free of Coolify entries.
+
+**Auto-merge guardrail.** Coolify actions are CLI side effects, not in-repo changes, and auth is a gitignored `.env`; no new tracked deployment-config paths are introduced, so the never-auto-merge list needs no new entry. Documented in the research doc; revisit if a use case later commits Coolify config into a project repo.
+
+**Open item:** validate `GET /deploy` and the env bulk-PATCH endpoint against a live Coolify v4 instance on first real use.
+
+### M4.22 — Spike: Coolify VPS integration research — 2026-06-04
+**PR:** _pending_ · **Deliverable:** [docs/research/coolify-integration.md](docs/research/coolify-integration.md)
+
+Research artifact covering the four required sections: ecosystem inventory (first-party REST API is the only complete, maintained, trust-appropriate surface; community MCPs/CLIs add dependency + trust cost without better coverage), API surface mapping (deploy, apps, status, logs, env CRUD, provisioning, health), auth-flow design (per-project `.env`, multi-instance), and the recommendation (native thin client shipped as a separate optional plugin). Delivered together with M4.23's implementation rather than as a standalone gate, since the operator opted to promote and build in the same pass; the doc remains self-contained. Method caveat recorded in the doc: the inventory reflects known options as of the research date, not an exhaustive live crawl, and two endpoint shapes await live validation.
+
 ### M7.1.F51 — `block-env-commit` hook blocked `.env.example` template; needed allowlist + content-scan to prevent leaking real secrets via templates — 2026-06-03
 **PR:** _pending_
 
