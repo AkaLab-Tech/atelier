@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M7.1.F50 — `/setup-project` detects a legacy phase-tracker `IN_PROGRESS.md` and offers `/adopt-roadmap` — 2026-06-03
-**PR:** _pending_
+**PR:** [#129](https://github.com/AkaLab-Tech/atelier/pull/129)
 
 Discovered during M7.1 dogfood on a real (pre-atelier) project. The operator ran `/next-task`; it stopped at step 2 because `IN_PROGRESS.md` was a **multi-phase tracker** (sections `RLS`, `ADMIN`, `PROMO`, `WEB`, `i18n` with `[x]`/`[ ]` items) left over from a hand-rolled roadmap that predated the `claude-roadmap-tools` flow. `/next-task` correctly refuses to overwrite an occupied slot, but the slot was never a single-task slot — it was a phase board. There was no integrated path to normalize such a project; the operator would have had to hand-edit three files per project, across several legacy projects.
 
