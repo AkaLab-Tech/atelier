@@ -8,6 +8,94 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F51 — `block-env-commit` hook blocked `.env.example` template; needed allowlist + content-scan to prevent leaking real secrets via templates — 2026-06-03
+**PR:** _pending_
+
+Discovered during the M7.1 dogfood Nivel 4 next task on storefront, after the F49 (v0.9.4) fix shipped and concurrent with F50 (v0.10.0) landing on main. The orchestrator completed implementation of task RLS.1, validated cleanly (lint 5/5, builds OK, baseline-only test failure resolved via decision-broker), and tried to commit four files including a legitimate `.env.example` template (`DATABASE_URL_APP=...` placeholder). The `block-env-commit` hook caught `git add .env.example` and blocked it under the `env-file-added` pattern — which exists to keep real `.env` files out of version control.
+
+Operator framing was exact: *"esto es un bug. (...) hay que poner una validación extra que prevenga enviar secretos en el .env.example o .env.sample"*. Correct on both halves — the hook needs to (a) recognise `.env.example` / `.env.sample` / `.env.template` as legitimately version-controlled, AND (b) verify those templates don't smuggle a real secret through the allowlist.
+
+**Root cause:**
+
+[hooks/block-env-commit.sh](hooks/block-env-commit.sh) matched any path with `.env` basename prefix as forbidden. The pattern was correct for `.env`, `.env.local`, `.env.production`, etc. — files that hold real secrets and live only on the operator's filesystem — but did not distinguish those from `.env.example`, which is *by convention* the template that ships in version control. The convention exists across virtually every Node/Python/Go project; atelier was a singleton against the ecosystem.
+
+Allowlisting the three template basenames is the obvious fix, but obvious-fix opens the obvious hole: an operator who pastes their real `.env` content into `.env.example` (a real accident, not a malicious case) would bypass the hook entirely. The hook needs to be smarter than basename-allowlist.
+
+**Delivered:**
+
+- **`hooks/patterns/scan-git-add.json` — three new entries in `path_substrings` skips.** `.env.example`, `.env.sample`, `.env.template` join the existing `__snapshots__` and `.snap` exemptions. This covers the path-pattern hook (a separate hook from the bash one — `scan-git-add` is the pattern-based first pass).
+- **`hooks/block-env-commit.sh` — new in-line `scan_env_template` function.** Bash function wrapping a ~80-line awk script that reads the template file (via the resolved `$matched_path`, with fallback to `git rev-parse --show-toplevel` for relative-path edge cases) and parses each `KEY=VALUE` line through three secret-detection layers:
+  - **Layer A — sensitive key + non-placeholder value.** Key name matches `(key|secret|token|password|pass|pwd|api|credential|private|auth)` and the value is non-empty and not a placeholder. Catches `SESSION_SECRET=hunter2hunter2hunter2hunter2` (28 chars, plain-looking but still a real secret pattern by intent).
+  - **Layer B — known secret prefix.** Value matches a known-secret-prefix regex regardless of key name. Currently covers OpenAI (`sk-`), Stripe (`sk_live_` / `sk_test_` / `pk_live_` / `pk_test_`), Slack (`xox?-`), GitHub (`ghp_` / `gho_` / `ghs_` / `github_pat_`), AWS (`AKIA` / `ASIA`), JWT (`eyJ...eyJ.`). Catches the canonical case: an operator pastes their real `.env` and `OPENAI_API_KEY=sk-proj-abcdef…` lands in the template.
+  - **Layer C — structural randomness.** Two checks: (1) pure hex 24+ chars → blocked as "hex token" (covers MD5, SHA, random hex secrets that have entropy ~4.0 — below the Shannon threshold but unmistakably secret); (2) value > 20 chars with Shannon entropy > 4.5 bits/char → blocked as "high-entropy" (covers base64-ish random secrets that miss layers A and B).
+- **Placeholder allowlist (skip from all three layers).** Recognises operator-intent words: empty values, angle-bracket placeholders (`<key>`), numerics, booleans, `localhost`/`127.0.0.1`, `https://localhost/...` / `https://example.com/...`, literal-keyword values (`secret`, `password`, `token`, etc.), values containing `xxx` (3+ X-es — uncommon in real secrets at any length), and short values (≤ 32 chars) containing `example` / `placeholder` / `changeme` / `here` / `your` / `fixme` / `tbd`. The 32-char length cap on substring matching is the tradeoff that lets `sk_test_xxx` (10 chars, contains `xxx`) pass without letting a 47-char real secret that happens to embed `example` pass.
+- **Hook reports up to 5 findings per template.** The block message lists offending lines so the operator can scrub the template in one pass rather than re-running `git add` after each fix. Soft cap at 5 keeps the stderr message readable for the worst case.
+- **Override path** in the block message: `git commit --no-verify` after operator confirmation, for the rare case where a heuristic mis-flags a legitimately-public value (e.g. a Supabase anon JWT, an AWS canonical docs placeholder over 32 chars).
+
+**Decisions captured:**
+
+- **Operator's choice: three-layer detection (option C from the design discussion).** Discussed three options: A (sensitive key name + non-placeholder), B (A + known prefixes), C (A + B + Shannon entropy). Operator chose C — most paranoid, accepting some false positives in exchange for catching the long tail of random-looking secrets that don't match named patterns. This PR delivers C plus an extra pure-hex check that complements Shannon (hex random tops out at 4.0 bits/char, below the 4.5 threshold).
+- **`xxx` as universal placeholder marker.** Three or more consecutive X-es at any position in the value → placeholder. Honors the very common `sk_test_xxx`, `xxxAPIKEY`, `your_xxx_here` patterns that operators write when scaffolding templates. The triple-X is vanishingly rare in real secrets.
+- **32-char length cap on substring placeholder matching.** Words like `example` / `placeholder` / `changeme` count as placeholder markers ONLY when the value is ≤ 32 chars. Real secrets are typically longer (40+ chars for Stripe / AWS secrets, 60+ for JWTs); a real secret that happens to embed `example` somewhere in its 60+ chars does NOT escape as a "placeholder". The 32-char cap also accommodates AWS canonical `AKIAIOSFODNN7EXAMPLE` (20 chars).
+- **Known false positives accepted.** Two cases that block when they shouldn't:
+  1. **AWS canonical secret placeholder** `wJalrXUtnnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` (41 chars, contains `EXAMPLE`). Beyond the 32-char placeholder cap. Operator workaround: use a shorter placeholder like `your_aws_secret_access_key_here` or `--no-verify` with confirmation.
+  2. **Supabase public anon JWT** (`eyJ...` 100+ chars, public-by-design). Matches layer B JWT prefix; cannot be distinguished from a service-role JWT without parsing the JWT payload. Operator workaround: `--no-verify` with confirmation, or rename the key to bypass (e.g. document the anon URL inline).
+
+  Both have clear messages and an `--no-verify` escape. Accepting them avoids over-engineering — the alternatives (parsing JWT payloads, length-shifting placeholder words) introduce more failure surface than they remove.
+- **Awk for the scanner, not Python or jq.** The hook is bash-first by atelier convention (every other hook is pure bash). Awk handles regex + Shannon entropy + arithmetic natively, no extra runtime dependency. The function inlines into the hook so there's no script-discovery indirection during a PreToolUse callback (which has tight latency budget).
+- **No script extraction.** Considered moving `scan_env_template` to `hooks/lib/env-template-scan.awk` for cleanliness. Rejected — keeps the entire decision audit-able in one file, matches the existing pattern of `hooks/lib/log-decision.sh` being the only `lib/*` file.
+- **Reports findings cap at 5.** A template that mistakenly has 50 secrets pasted in is an operator error; surfacing 5 + "..." is enough signal to act on. The full count goes to the JSONL decision log for forensics.
+
+**Plugin scope:** plugin-layer (`hooks/block-env-commit.sh` + `hooks/patterns/scan-git-add.json`). No template / install.sh / agent / skill / command / catalog change. Patch bump **0.10.0 → 0.10.1** per PLAN.md §14.2. Cut **release v0.10.1** post-merge — every operator running a task that touches `.env.example` benefits.
+
+**Verified locally:**
+
+- `bash -n hooks/block-env-commit.sh` syntax-clean.
+- `python3 -m json.tool hooks/patterns/scan-git-add.json` clean.
+- Extracted `scan_env_template` via `sed -n '/^scan_env_template()/,/^}/p'` into `/tmp/f50_test/scan_extracted.sh` (true to the hook code, not a re-paste) and exercised against 11 fixture templates:
+
+  | Case | Template content | Decision | Layer |
+  |---|---|---|---|
+  | A_clean | All placeholders (`your_key`, `<token>`, `changeme`, `sk_test_xxx`) | ALLOW | — |
+  | B_real_openai | `OPENAI_API_KEY=sk-proj-abcdef…40c` | BLOCK | B (prefix) |
+  | C_real_stripe | `STRIPE_SECRET_KEY=sk_live_…` + `pk_live_…` | BLOCK ×2 | B (prefix) |
+  | D_real_github | `GH_TOKEN=ghp_AbCd…36c` | BLOCK | B (prefix) |
+  | E_real_aws | `AKIA12K9HG4M2L8PRX7N` (real) + `Vk3hd…40c` (real) | BLOCK ×2 | B + A |
+  | E2_aws_docs_placeholder | `AKIAIOSFODNN7EXAMPLE` + `wJalr…EXAMPLEKEY` | BLOCK | A (FP — 41c value) |
+  | F_layer_A_sensitive_key | `SESSION_SECRET=hunter2…28c` | BLOCK | A |
+  | G_layer_C_high_entropy | `RANDOM_HASH=a8f9d6…32c hex` | BLOCK | C (hex 24+) |
+  | H_jwt | `SIGNED_TOKEN=eyJ…eyJ….signature` | BLOCK | B (JWT prefix) |
+  | I_supabase_anon | `SUPABASE_ANON_KEY=eyJ…eyJ….example` (public) | BLOCK | B (FP — public JWT) |
+  | J_quoted | `SECRET="changeme"` + `TOKEN='your_token'` | ALLOW | — (placeholders unquoted correctly) |
+
+  9/11 match intended behaviour. E2 and I are known false positives documented above; both have `--no-verify` escape.
+
+**Operator-visible:**
+
+After v0.10.1 ships, the next task that needs to add a `.env.example` template flows through `block-env-commit` without the prior blanket block. If the template carries placeholders (the common case), the commit proceeds. If the template carries what looks like a real secret, the operator sees:
+
+```text
+🚫 atelier:block-env-commit BLOCKED (template carries what looks like a real secret)
+   Tool:     Bash(git add/commit)
+   Template: .env.example
+   Findings (first 5):
+     - line 3: OPENAI_API_KEY — matches known secret prefix: OpenAI-style (sk-...)
+     - line 7: SESSION_SECRET — sensitive key with non-placeholder value (28 chars)
+   Rule:     templates (.env.example) must hold placeholders, not real secrets.
+   Action:   replace the offending values with placeholders (your_*, <key>, changeme, xxx, etc.)
+             and re-stage. Real secrets go in your local .env which is already gitignored.
+   Override: if a value is a genuine non-secret (e.g. a public anon key) and the heuristic is wrong,
+             commit manually with --no-verify after the operator confirms.
+```
+
+The decision log records `block` / `.env-template-secret` so post-mortem reviewers can trace exactly what the hook caught.
+
+**Follow-up paths:**
+
+- **Test harness for hooks** (mentioned in F48 as well). The `/tmp/f50_test/` fixture matrix should live in `tests/hooks/block-env-commit.test.sh` so future patches don't regress. Defer until the test directory pattern exists for the rest of the plugin.
+- **Per-project allowlist for known-public values** (Supabase anon, AWS canonical docs placeholders). Could live in `<project>/.atelier.json` as `envTemplate.knownPublicPrefixes: ["eyJ...anon", "AKIAIOSFODNN7EXAMPLE"]`. Skip until two or more operators report the friction.
+- **`docs-only-build-validation` from F48 follow-up still pending.** No change in scope; capture continues there.
+
 ### M7.1.F50 — `/setup-project` detects a legacy phase-tracker `IN_PROGRESS.md` and offers `/adopt-roadmap` — 2026-06-03
 **PR:** [#129](https://github.com/AkaLab-Tech/atelier/pull/129)
 
@@ -31,7 +119,7 @@ atelier assumed projects are either freshly `/setup-project`-ed (canonical track
 **Follow-ups:** none. The single-active-task vs phase-tracker disambiguation is deliberately left to the slash command's read of the file rather than a brittle bash heuristic.
 
 ### M7.1.F49 — auto-merge skill asked the operator to confirm after the six guardrails resolved to `merged` — 2026-06-03
-**PR:** _pending_
+**PR:** [#128](https://github.com/AkaLab-Tech/atelier/pull/128)
 
 Discovered during M7.1 dogfood Nivel 4 immediately after F48 (v0.9.3) shipped. The operator ran a fresh task on storefront whose PR (#128) passed every guardrail cleanly — no draft, reviewer approved, claude-review CI green, only `.md` files, 3 files (under the AND-gate), no pending human comments. The auto-merge skill formatted the report:
 

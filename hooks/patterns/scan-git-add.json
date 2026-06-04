@@ -6,7 +6,10 @@
   "skips": {
     "path_substrings": [
       "/__snapshots__/",
-      ".snap"
+      ".snap",
+      ".env.example",
+      ".env.sample",
+      ".env.template"
     ],
     "lockfile_basenames": [
       "pnpm-lock.yaml",
