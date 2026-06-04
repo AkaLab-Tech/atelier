@@ -79,6 +79,14 @@ Issues that come up while running a task.
 
 **Fix:** Run `atelier-list-projects` to confirm the registry is empty. Then `cd` into each project that should be registered and run `atelier /atelier:setup-project .` — it's idempotent and only writes the registry entry if it doesn't exist.
 
+### `/next-task` stops at step 2 — "a task is already in progress" but you never started one
+
+**Symptom:** `/next-task` refuses to claim a task, reporting `IN_PROGRESS.md` as occupied, even though no atelier task is running. The file is full of sections like `RLS`, `ADMIN`, `WEB`, `i18n` with `[x]`/`[ ]` items.
+
+**Cause:** the project predates the atelier tracking flow. Its `IN_PROGRESS.md` is a hand-rolled **multi-phase progress tracker**, not the single active-task slot the flow expects. `/next-task` correctly refuses to overwrite a non-empty slot — but here the slot was never one task, it's a phase board.
+
+**Fix:** normalize the tracking in place with **`/adopt-roadmap`** (from the `claude-roadmap-tools` plugin): done items move to `HISTORY.md`, open items to `ROADMAP.md`, and `IN_PROGRESS.md` is reset to an empty slot — nothing is dropped. Re-running `/atelier:setup-project` in the project also detects this layout (M7.1.F50) and offers to run `/adopt-roadmap` for you. If the plugin is not installed: `claude plugin install claude-roadmap-tools@akalab-tech`. After adoption, `/next-task` picks the next item normally.
+
 ### `atelier --help` prints nothing / "atelier-help.txt: No such file"
 
 **Symptom:** Running `atelier --help` shows an empty output or a "file not found" error pointing at `$ATELIER_CONFIG_DIR/atelier-help.txt`.

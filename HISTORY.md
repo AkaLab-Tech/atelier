@@ -8,6 +8,28 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F50 — `/setup-project` detects a legacy phase-tracker `IN_PROGRESS.md` and offers `/adopt-roadmap` — 2026-06-03
+**PR:** _pending_
+
+Discovered during M7.1 dogfood on a real (pre-atelier) project. The operator ran `/next-task`; it stopped at step 2 because `IN_PROGRESS.md` was a **multi-phase tracker** (sections `RLS`, `ADMIN`, `PROMO`, `WEB`, `i18n` with `[x]`/`[ ]` items) left over from a hand-rolled roadmap that predated the `claude-roadmap-tools` flow. `/next-task` correctly refuses to overwrite an occupied slot, but the slot was never a single-task slot — it was a phase board. There was no integrated path to normalize such a project; the operator would have had to hand-edit three files per project, across several legacy projects.
+
+**Root cause:**
+
+atelier assumed projects are either freshly `/setup-project`-ed (canonical tracking) or already canonical. The third state — tracking files that *exist but are not canonical* — had no command. Tracking-format transformations are sovereign to `claude-roadmap-tools` (PLAN.md §12), so the fix is split across both repos: the transformation logic is a new `/adopt-roadmap` command in `claude-roadmap-tools`; atelier only detects the legacy layout and delegates.
+
+**Delivered (atelier side):**
+- `scripts/atelier-setup-project` — new `detect_tracking_layout()` emits `atelier-tracking-layout=created|preserved-empty|preserved-nonempty`. `preserved-nonempty` fires when a pre-existing `IN_PROGRESS.md` carries any checkbox or `##` section (task-like content). Added to the summary block and as a marker line.
+- `commands/setup-project.md` — new **Phase 3**: on `preserved-nonempty`, read `IN_PROGRESS.md`, distinguish a legit single active task from a legacy multi-phase tracker, and for the legacy case offer to run `/adopt-roadmap` (interactive) or recommend it (non-interactive). Never rewrites tracking files inline — a new hard refusal records that boundary.
+- `PLAN.md §12` — documents `/adopt-roadmap` and the detect-and-delegate split (atelier detects, `claude-roadmap-tools` transforms).
+- `docs/troubleshooting.md` — operator-facing entry for the "`/next-task` blocks because `IN_PROGRESS.md` is a phase tracker" symptom.
+- `.claude-plugin/plugin.json` bumped to **`0.10.0`** (minor — new operator-visible command behavior, additive; §14.2).
+
+**Companion PR (claude-roadmap-tools):** `/adopt-roadmap` command (the transformation logic), `README.md`, `plugin.json` → `0.3.0`.
+
+**Tests:** `bash -n` clean on the helper; detection heuristic smoke-tested against three samples — phase tracker → `preserved-nonempty`, canonical empty slot → `preserved-empty`, single active task → `preserved-nonempty` (the slash command's AI layer disambiguates the last two). `claude plugin validate` exit 0.
+
+**Follow-ups:** none. The single-active-task vs phase-tracker disambiguation is deliberately left to the slash command's read of the file rather than a brittle bash heuristic.
+
 ### M7.1.F49 — auto-merge skill asked the operator to confirm after the six guardrails resolved to `merged` — 2026-06-03
 **PR:** _pending_
 
