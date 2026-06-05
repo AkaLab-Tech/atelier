@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M8.2 — `/setup-workspace` command + member discovery — 2026-06-05
-**PR:** _pending_ · **Design:** [PLAN.md §15.3](PLAN.md) · **Builds on:** [M8.1](#m81--multi-repo-workspace-registry--atelier-setup-workspace-foundation--2026-06-05)
+**PR:** [#138](https://github.com/AkaLab-Tech/atelier/pull/138) · **Design:** [PLAN.md §15.3](PLAN.md) · **Builds on:** [M8.1](#m81--multi-repo-workspace-registry--atelier-setup-workspace-foundation--2026-06-05)
 
 Second Phase 8 milestone: the operator-facing front for workspace setup, plus the discovery modes on the helper.
 
