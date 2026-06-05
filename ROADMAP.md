@@ -56,23 +56,6 @@ During a chain the orchestrator asks the operator to confirm **commit + push + m
 
 > **Phases 2–5 — Single-project agent flow + robustness + multi-project foundation.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries — and when an operator can install / uninstall atelier without risking unrelated Claude state.
 
-### M2.9 — Custom `PreToolUse` Haiku hook as targeted second layer above auto-mode (formerly PLAN §11 v2.3)
-
-`[security-design]` · Source: [docs/research/permission-layer-3.md](docs/research/permission-layer-3.md) Recommendation · `blocked_by: M2.8`
-
-Originally tracked as PLAN.md §11 v2.3. The M2.6 spike confirmed it complements auto-mode rather than replaces it — useful for the narrow residual high-risk surface where the documented ~17% FN rate of auto-mode matters (e.g. anything touching `pnpm-lock.yaml`, deploy paths, never-auto-merge files). Deferred from "v2" to a tracked v1 follow-up *after* M2.8 ships and the residual surface is observable in production.
-
-**Scope:**
-
-- [ ] A `PreToolUse` Bash hook that calls Haiku 4.5 with a structured prompt: tool name, args, the M2.5 risk-class tag of the path being touched (if any), the task's `CLAUDE.md` excerpt about deploy/secrets.
-- [ ] Cache **disabled** — every invocation is a fresh judgment. The OMC reference design caches per command string; atelier does not, because the same command can be safe or unsafe depending on cwd and surrounding state.
-- [ ] Logs decisions to `<worktree>/.task-log/hook-decisions.jsonl` for post-mortem and operator review.
-- [ ] Scope: project-level only (not global). Operator opts in per project by adding a key to `.atelier.json`.
-
-**Acceptance:** see [PLAN.md §11 v2.3](PLAN.md) for the original surface area; refine once M2.8 has shipped and the residual FN cases are observable.
-
-**Trigger to revisit:** after M2.8 has been in production long enough to surface real residual cases (target: ≥ 10 merged tasks under auto-mode). Run only if there are observed FN incidents that motivate the additional layer.
-
 ### M7.1.F54 — Coolify skill assumes manual deploy; must detect GitHub App auto-deploy
 
 `[coolify-integration]` · Source: dogfood (2026-06-05) · **Change lands in the `coolify-integration` repo** ([skills/coolify/SKILL.md](../coolify-integration/skills/coolify/SKILL.md)), tracked here per the operator's decision.

@@ -302,6 +302,10 @@ Full design notes + the three open-questions that validated this adoption: [docs
 
 If you ever want to disable auto-mode for an atelier session and fall back to `acceptEdits`, edit `$ATELIER_CONFIG_DIR/settings.json` and change `.permissions.defaultMode` to `acceptEdits` (or remove the key). The deny list and allow list keep working unchanged.
 
+### Optional second layer: semantic risk judge
+
+An opt-in `PreToolUse` hook (`hooks/semantic-risk-judge.sh`) adds a Haiku judgement on top of auto-mode for a narrow high-risk Bash surface only (lockfile, container build, CI/CD, package manifest, deploy/infra — catalogued in `hooks/patterns/semantic-risk-judge.json`). Enable per project with `"semanticRiskJudge": { "enabled": true }` in `.atelier.json`; off by default. It escalates risky commands to `ask`, never hard-blocks (the deny list owns that), and is fail-open — an unavailable model allows the command and logs a degraded line to `<worktree>/.task-log/hook-decisions.jsonl`. A cheap local check runs first, so only high-risk commands reach the model.
+
 ## Decision policy (M4.26)
 
 Atelier sometimes faces **strategic decisions** during a task — situations where multiple legitimate options exist and one must be chosen. The classic example is the M7.1 dogfood Nivel 4 friction: a pre-existing lint error on `main` blocks the gate, the operator can fix-first, override, scope-package, or abort. The static permission matrix doesn't cover these (none is forbidden); the M2.4 PreToolUse hooks don't cover them either (none is unsafe). They are **ambiguous** by construction, and historically atelier surfaced every one to the operator.

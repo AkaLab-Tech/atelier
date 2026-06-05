@@ -211,6 +211,22 @@ The setting lives in `~/.claude-work/settings.json` (the atelier config dir, not
 
 Full design rationale + the empirical validation that drove the adoption: [docs/research/permission-layer-3.md](research/permission-layer-3.md).
 
+### Optional: a second opinion on high-risk commands (semantic risk judge)
+
+Auto-mode is good but not perfect — it lets a small fraction of "overeager" actions through. For projects where that residual matters, atelier ships an **opt-in** extra gate: a hook that, for a narrow high-risk surface only — your lockfile, `Dockerfile`/`docker-compose`, `.github/workflows/`, `package.json`, and deploy/infra paths — asks a fast Haiku model whether the command looks like a routine action or something you should confirm first. Risky ones become a normal permission prompt; everything else is untouched.
+
+It's **off by default**. To enable it for a project, set in that project's `.atelier.json`:
+
+```json
+"semanticRiskJudge": { "enabled": true }
+```
+
+What to expect when it's on:
+
+- Only commands that touch the high-risk surface above pause briefly (a short model call); all other Bash is unaffected — there's a cheap local check first, so most commands never reach the model.
+- If the model is unavailable (no network, etc.) the command is simply allowed and a note is written to the task log — the gate never blocks just because it couldn't reach the model.
+- It never hard-blocks: at worst it asks you to confirm. The categorical deny list is what blocks forbidden actions.
+
 ---
 
 ## How atelier makes decisions (decision broker)

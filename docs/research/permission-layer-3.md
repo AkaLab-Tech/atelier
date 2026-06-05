@@ -274,6 +274,8 @@ The literal annotation **"Allowed by auto mode classifier"** appears under the B
 
 **Adopt Option C** — Claude Code's native auto permission mode as the primary layer 3, **unconditionally** (the M2.6 conditional is now resolved). The custom `PreToolUse` Haiku hook in PLAN.md §11 v2.3 stays as a follow-up second layer above auto-mode for the narrow residual high-risk surface — tracked separately as M2.9 (no longer M2.8; M2.8 is now the adoption work itself).
 
+> **Shipped:** Option C (auto-mode) in M2.8 (PR [#114](https://github.com/AkaLab-Tech/atelier/pull/114), v0.8.0). The second-layer Haiku hook in M2.9 (PR #N, v0.14.0) as the opt-in `semantic-risk-judge` hook — scoped to the high-risk surface (lockfile, container build, CI/CD, manifest, deploy), escalates risky verdicts to `ask`, fail-open. M2.9 was built speculatively: the ≥10-tasks-under-auto-mode bar was met but no false-negative incident of the relevant class had been observed.
+
 ### Next: M2.8 — Implementation
 
 ROADMAP gains M2.8 (Phase 4 — Robustness, High Priority) for the adoption work:
