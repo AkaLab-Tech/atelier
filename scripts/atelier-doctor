@@ -368,8 +368,10 @@ check_vercel() {
   else
     issues+=("user settings.json missing")
   fi
+  local cli
+  if command -v vercel >/dev/null 2>&1; then cli="vercel CLI installed"; else cli="vercel CLI via pnpm dlx — /atelier:setup-vercel installs it"; fi
   if [ ${#issues[@]} -eq 0 ]; then
-    push_host "$OK vercel-integration ready (per-project VERCEL_TOKEN lives in each project's .env)"
+    push_host "$OK vercel-integration ready ($cli; per-project VERCEL_TOKEN in .env)"
   else
     push_host "$FAIL vercel-integration: ${issues[*]}"
     push_fix_auto "atelier-setup-vercel --non-interactive"
@@ -399,8 +401,10 @@ check_neon() {
   else
     issues+=("user settings.json missing")
   fi
+  local cli
+  if command -v neonctl >/dev/null 2>&1; then cli="neonctl installed"; else cli="neonctl via pnpm dlx — /atelier:setup-neon installs it"; fi
   if [ ${#issues[@]} -eq 0 ]; then
-    push_host "$OK neon-integration ready (per-project NEON_API_KEY lives in each project's .env)"
+    push_host "$OK neon-integration ready ($cli; per-project NEON_API_KEY in .env)"
   else
     push_host "$FAIL neon-integration: ${issues[*]}"
     push_fix_auto "atelier-setup-neon --non-interactive"
