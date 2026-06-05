@@ -1314,6 +1314,12 @@ phase_c_1_setup_project_helper() {
   _phase_c_1_symlink_helper atelier-setup-coolify
   _phase_c_1_symlink_helper atelier-setup-vercel
   _phase_c_1_symlink_helper atelier-setup-neon
+  # M8.1: atelier-setup-workspace groups already-registered projects into a
+  # workspace recorded in $ATELIER_CONFIG_DIR/workspaces.json, enabling
+  # multi-repo routing, aggregated status, and cross-repo blocked_by deps
+  # (PLAN.md §15). It never reconfigures members or changes the
+  # one-task / one-worktree / one-PR model.
+  _phase_c_1_symlink_helper atelier-setup-workspace
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it

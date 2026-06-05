@@ -287,6 +287,12 @@ Markdown with nested checkboxes + inline metadata. One file per project, written
 - Sub-bullets: context, repro, acceptance criteria.
 - `[x]` marks completed tasks (kept for history).
 
+**`blocked_by` — intra-repo and cross-repo (§15):**
+- Intra-repo (unchanged): `blocked_by:#<id>` references another task id in the *same* `ROADMAP.md`; resolved within that file.
+- Cross-repo (workspaces only): `blocked_by:<token>#<id>` references task `#<id>` in a **sibling member** of the same workspace, where `<token>` is that member's workspace token (§15.2). Resolved **offline** against the sibling's `HISTORY.md` (the task is "merged" when it appears there as a closed entry with a PR reference) via `atelier-resolve-dep`. A `<token>` that is not a workspace member, or an `<id>` that appears nowhere in the sibling's tracking, **refuses** the dependent task — it is never silently eligible.
+- Mixed/multiple allowed: `blocked_by:#23,backend#5`.
+- The cross-repo `<id>` must match the **task id convention** the sibling repo uses in its `HISTORY.md`, not a GitHub PR number (the two coincide only if the repo uses PR numbers as task ids).
+
 ### Epic + sub-tasks (M4.24.a)
 
 A single task that would produce a PR larger than the project's size budget (see §6) can be expressed as an **epic** with sub-tasks. The epic acts as a container; each sub-task is an independent unit the orchestrator can claim, implement, and PR separately.
@@ -467,7 +473,7 @@ Apply? [y/N]
 
 ### Out of scope (v1)
 
-- Multi-repo coordination in a single task.
+- **Atomic** multi-repo changes — a single task/PR that spans more than one repo. atelier never produces a cross-repo atomic PR; every task is one worktree of one repo and one PR. (Note: *grouping* several single-repo projects into a **workspace**, with *sequenced* cross-repo dependencies, is now **in scope** — see §15. An "epic across repos" is expressed as ordinary single-repo tasks chained by `blocked_by:<token>#id`, never as one atomic unit.)
 - Deployment / release management **in atelier core**. (Deploy/manage capabilities are delivered as *separate, optional* plugins that atelier only offers to install and configure via opt-in `install.sh` prompts + `/atelier:setup-*`; atelier core itself performs no deployment. Shipped: [`coolify-integration`](https://github.com/AkaLab-Tech/coolify-integration) (Coolify VPS, M4.22/M4.23), [`vercel-integration`](https://github.com/AkaLab-Tech/vercel-integration) (Vercel, M4.27), [`neon-integration`](https://github.com/AkaLab-Tech/neon-integration) (Neon Postgres, M4.28).)
 - Cost monitoring / per-task budget caps.
 - Visual regression (baseline diff) — v2. v1 uses raw screenshots.
@@ -622,3 +628,63 @@ The following are recognized as logical follow-ups to the policy in §14, but ar
 - **Automation (M5.0.5 — to be captured separately)**: GH Actions workflow on merge to `main` that (a) verifies `plugin.json:version` was bumped in the PR per §14.2's criteria, (b) creates the tag + release with notes from the PR body. Replaces the manual `gh release create` step.
 - **Pre-merge CI bump gate**: refuse merge of a PR that meets bump criteria in §14.2 but did not bump `plugin.json:version`. Defensive, prevents version drift between code state and release state.
 - **Pre-1.0 → 1.0 transition checklist**: criteria for cutting the first `1.0.0` (production-ready). Not a versioning rule — a release-management ritual.
+
+---
+
+## 15. Multi-repo workspaces 🟡
+
+Captured 2026-06-05. Lets an operator manage a "product" made of several repos (e.g. backend + frontend + CMS) without losing any single-repo guarantee. Delivered incrementally as **Phase 8** (ROADMAP M8.x).
+
+### 15.1 Concept + the atomicity invariant ✅
+
+A **workspace** is a thin grouping / routing / aggregation layer over N already-configured single-repo projects. It is **not** cross-repo atomicity (which stays out of scope, §11): every task still runs in exactly one git worktree of one member repo and produces exactly one PR. The only genuinely new behavioural primitive is the **sequenced cross-repo dependency** `blocked_by:<token>#id`, which *orders* single-repo tasks across members — it never merges them into one unit. An "epic across repos" is just ordinary single-repo tasks, one per member, chained by `blocked_by`.
+
+The invariant that keeps every existing command working: **each member stays an independent entry in `projects.json`**; the workspace registry only *references* member paths. From inside a member, every single-repo command (`/next-task`, `/status`, `task`) behaves exactly as before — workspace-awareness only activates from the workspace root or when a cross-repo `blocked_by` is present.
+
+### 15.2 Registry — `$ATELIER_CONFIG_DIR/workspaces.json` ✅
+
+A **separate** file from `projects.json` (different cardinality and lifecycle; keeping them apart leaves every existing `projects.json` reader byte-identical). Schema:
+
+```json
+{
+  "workspaces": {
+    "acme-platform": {
+      "name": "acme-platform",
+      "root": "/Users/me/Work/acme",
+      "createdAt": "2026-06-05T14:30:00Z",
+      "setupVersion": "0.13.0",
+      "members": [
+        { "path": "/Users/me/Work/acme/backend",  "token": "backend",  "role": "member" },
+        { "path": "/Users/me/Work/acme/frontend", "token": "frontend", "role": "member" }
+      ]
+    }
+  }
+}
+```
+
+- `members[].path` MUST be a key in `projects.json` (validated at setup; an unregistered member is refused with `atelier-needs-setup=<path>` markers so the command layer can configure it first).
+- `members[].token` is the short name used in `blocked_by:<token>#id`. Default = `basename(path)`, overridable per member; unique within the workspace.
+- **v1 constraint:** a project belongs to **at most one** workspace (so the reverse-lookup `member-path → workspace` is unambiguous). Enforced by `atelier-setup-workspace` (override with `--force`).
+- `root` is the parent dir used to route `task` from the workspace root (§15.5); may be the members' longest common path prefix, or empty when they have no common parent.
+
+### 15.3 Setup — `/setup-workspace` + `atelier-setup-workspace` 🟡
+
+Host-OS helper `scripts/atelier-setup-workspace` (mirrors the `atelier-setup-project` conventions: logging, `--help`, jq registry merge, idempotent, `createdAt` preserved on re-run) wrapped by the `/atelier:setup-workspace` slash command. Two member-selection modes: **explicit `--members <p1,p2,…>` (primary)** and **`--discover <parent-dir>` (secondary, scans one level for git repos)**. Per member, **reuse `atelier-setup-project`** rather than re-implementing registration: members already registered are recorded as-is; unregistered members are surfaced (exit 3 + markers) so the *command* drives `/atelier:setup-project` on each (the bash/AI split of M4.19), then re-invokes the script to register the group. Reverse-lookup is exposed as `atelier-setup-workspace --which-workspace <path>` (exit 0 + slug, or exit 4 on miss).
+
+### 15.4 Cross-repo dependencies — `atelier-resolve-dep` (offline) 🟡
+
+Resolution is **offline via the sibling member's `HISTORY.md`** — not `gh pr` (which would need the other repo's network + auth, and `#id` is a ROADMAP task id, not necessarily a PR number). `gh` is an opt-in fallback only. The helper `scripts/atelier-resolve-dep --workspace <slug> --from <member> --token <repo> --id <#id>` returns: `0` satisfied (id is a closed entry in `<token>/HISTORY.md` with a co-located PR reference), `3` open, `4` unknown-token, `5` unknown-id, `2` usage. The `task-discovery` skill detects the `<token>#` shape, calls the helper, and treats exit≠0 as "blocker open" (same code path as today's intra-repo open `blocked_by`); `/next-task` Step 3 refuses an explicitly-named blocked task with a clear message. **Risk — id matching:** HISTORY entries reference PR numbers while `blocked_by` references task ids; the resolver matches the id in a heading/item-introducing position with a co-located PR reference, and on `unknown-id` refuses loudly rather than blocking silently (§8 discipline).
+
+### 15.5 Routing `task` from the workspace root 🟡
+
+`atelier-task-resolve` gains a Step 1.5 between the longest-prefix member match and the global fzf picker: when `cwd` is a workspace `root`, present a **member picker** (reusing the existing fzf block) with a cheap per-member open-task hint; the chosen member path flows into the existing `task()` → `/next-task` path unchanged. When `cwd` is exactly a workspace root that *is itself* also a registered project, the member picker takes precedence. Workspace context for the cross-repo gate is recovered by reverse-lookup (member path → workspace), so the stdout contract of `atelier-task-resolve` does not change.
+
+### 15.6 Aggregated status — `/workspace-status` 🟡
+
+A **new** command (does not overload `/status`, whose single-project refusal is load-bearing). Reuses `atelier-list-projects` (extended with a `--workspace <slug>` filter) to render one row per member — on-disk status, in-progress task, open-task count, cross-repo-blocked count — plus a "cross-repo blocked" section computed via `atelier-resolve-dep`. Read-only, same discipline as `/list-projects`.
+
+### 15.7 Auxiliary commands 🟡
+
+- `/list-workspaces` + `atelier-list-workspaces` — enumerate workspaces with per-member health (mirrors `atelier-list-projects`).
+- `/remove-workspace <slug>` + `atelier-remove-workspace` — remove only the `workspaces.json` entry; members stay registered projects. `--with-members` (destructive, off by default) also runs `atelier-remove-project` per member.
+- `/doctor` extension — `check_workspaces`: `root` exists, every member path is still a directory AND still in `projects.json`, tokens unique; silent skip when `workspaces.json` is absent.
