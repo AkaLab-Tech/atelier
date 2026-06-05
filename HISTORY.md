@@ -8,6 +8,24 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M8.1 — Multi-repo workspace registry + `atelier-setup-workspace` foundation — 2026-06-05
+**PR:** [#137](https://github.com/AkaLab-Tech/atelier/pull/137) · **Design:** [PLAN.md §15](PLAN.md) · **Phase 8** (M8.2–M8.7 in [ROADMAP.md](ROADMAP.md))
+
+First milestone of multi-repo support. A **workspace** groups several already-configured single-repo projects (e.g. backend + frontend + CMS) so the operator can route, aggregate status, and express **sequenced** cross-repo `blocked_by:<token>#id` dependencies — **without** ever introducing cross-repo atomicity. Every task stays one worktree of one repo and one PR; an "epic across repos" is ordinary single-repo tasks chained by `blocked_by`. The atomicity invariant is what keeps every existing single-repo command working unchanged: each member stays an independent entry in `projects.json`, and the new registry only *references* member paths.
+
+**Delivered (the foundation — registry + setup helper):**
+- `scripts/atelier-setup-workspace` (new) — records a workspace into the new `$ATELIER_CONFIG_DIR/workspaces.json` registry (separate file from `projects.json`, different cardinality + lifecycle). Members must already be registered projects; an unregistered member surfaces `atelier-needs-setup=<path>` markers and exit 3 so the M8.2 command can configure it first. Token defaults to the member's basename, overridable with `--token-for <path>=<token>`, unique within the workspace. Idempotent re-run preserves `createdAt`. v1 constraint: a project belongs to at most one workspace (`--force` to move it). Reverse-lookup `member-path → workspace` exposed as `--which-workspace`. Exit codes `0/2/3/4` per the §15 contract. Mirrors the conventions of `atelier-setup-project` (logging, `--help`, jq registry merge).
+- `install.sh` — symlinks the helper onto `~/.local/bin`.
+- `templates/settings.template.json` — `Bash(atelier-setup-workspace:*)` allowlisted.
+- `PLAN.md` — §11 reframed (atomic cross-repo stays out of scope; *workspaces* with sequenced deps are in), §5 extended with the `blocked_by:<token>#id` grammar (offline resolution against the sibling's `HISTORY.md`), and a new **§15 Multi-repo workspaces** design section.
+- `ROADMAP.md` — Phase 8 block (M8.2–M8.7).
+
+**Plugin bump:** **0.12.0 → 0.13.0** (new helper + additive allowlist entry, per §14.2 minor). Stacked on M4.27/M4.28 (#136).
+
+**Verified:** 8/8 acceptance checks in a sandbox — register from two registered projects, 2 members recorded, idempotent re-run preserves `createdAt`, reverse-lookup hit (0) / miss (4), unregistered member (3) with markers, duplicate token (2), `--token-for` resolves it, member-in-another-workspace (2) and `--force` override (0). `jq empty` on the template + `bash -n` on the script and `install.sh` all clean.
+
+**Next:** M8.2 wires the `/setup-workspace` slash command (drives `/atelier:setup-project` for unregistered members, `--discover` scan); M8.3–M8.7 add the cross-repo dependency resolver, `/next-task` enforcement, root-level `task` routing, aggregated status, and the auxiliary commands.
+
 ### M4.27 + M4.28 — Vercel and Neon integrations, as optional external plugins + opt-in atelier setup — 2026-06-05
 **PR:** _pending_ · **Based on:** [docs/research/vercel-integration.md](docs/research/vercel-integration.md), [docs/research/neon-integration.md](docs/research/neon-integration.md)
 

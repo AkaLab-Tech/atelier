@@ -65,6 +65,62 @@ Originally tracked as PLAN.md §11 v2.3. The M2.6 spike confirmed it complements
 
 ---
 
+## Phase 8 — Multi-repo workspaces
+
+> **Group several single-repo projects into a "workspace"** (e.g. backend + frontend + CMS) with aggregated status, root-level routing, and *sequenced* cross-repo `blocked_by:<token>#id` dependencies — **without** ever introducing cross-repo atomicity (each task stays one worktree / one PR). Design: [PLAN.md §15](PLAN.md). Milestones are ~1 PR each; M8.1→M8.5 are ordered, M8.6/M8.7 depend on M8.1 only.
+
+> **M8.1 delivered** (registry + `atelier-setup-workspace` foundation) — see [HISTORY.md](HISTORY.md). The milestones below build on it.
+
+### M8.2 — `/setup-workspace` command + per-member setup reuse + `--discover`
+
+`[multi-repo]` · `blocked_by: M8.1` · Source: [PLAN.md §15.3](PLAN.md)
+
+Thin `/atelier:setup-workspace` slash command wrapping the helper. Explicit `--members` (primary) and `--discover <parent-dir>` (secondary, one-level git-repo scan, operator confirms/prunes). Drives `/atelier:setup-project` on members the helper reports as `atelier-needs-setup`, then re-invokes to register the group (the M4.19 bash/AI split).
+
+**Acceptance:** from a parent with two unconfigured git repos, `--discover .` registers both as projects and groups them; explicit `--members` is equivalent.
+
+### M8.3 — `atelier-resolve-dep` offline cross-repo resolver
+
+`[multi-repo]` · `blocked_by: M8.1` · Source: [PLAN.md §15.4](PLAN.md)
+
+Helper that answers "is `<token>#<id>` merged?" **offline** from the sibling member's `HISTORY.md`. Exit-code contract `0/3/4/5/2` (satisfied / open / unknown-token / unknown-id / usage). Id matched in a heading/item-introducing position with a co-located PR reference; `unknown-id` refuses loudly.
+
+**Acceptance:** member whose `HISTORY.md` closes `#23` → exit 0; open id → exit 3; unknown token → exit 4; unknown id → exit 5.
+
+### M8.4 — Cross-repo `blocked_by` enforcement in `task-discovery` + `/next-task`
+
+`[multi-repo]` · `blocked_by: M8.3` · Source: [PLAN.md §15.4](PLAN.md)
+
+`task-discovery` detects the `<token>#id` shape, resolves the workspace by reverse-lookup, calls `atelier-resolve-dep`, and skips blocked candidates on auto-pick. `/next-task` Step 3 refuses an explicitly-named blocked task with a clear message; `allowed-tools` gains `Bash(atelier-resolve-dep:*)`; the cross-repo rule is added to Hard refusals.
+
+**Acceptance:** a frontend task `blocked_by:backend#23` is auto-skipped while backend#23 is open, refused with a clear message on explicit `#id` pick, and becomes claimable once backend#23 lands in `backend/HISTORY.md`.
+
+### M8.5 — `task` routing from the workspace root
+
+`[multi-repo]` · `blocked_by: M8.1` · Source: [PLAN.md §15.5](PLAN.md)
+
+`atelier-task-resolve` Step 1.5: when `cwd` is a workspace `root`, present a member picker (reusing the fzf block) with per-member open-task hints, then route into the chosen member's `/next-task`. Root-is-also-a-project → member picker precedence. Inside a member → unchanged.
+
+**Acceptance:** `task` from the workspace root shows a member picker and routes correctly; `task` from inside a member is unchanged.
+
+### M8.6 — Aggregated `/workspace-status`
+
+`[multi-repo]` · `blocked_by: M8.1` · Source: [PLAN.md §15.6](PLAN.md)
+
+New command + `atelier-list-projects --workspace <slug>` filter. One row per member (status, in-progress, open count, cross-repo-blocked count) plus a cross-repo-blocked section. Does not overload `/status`.
+
+**Acceptance:** from the workspace root, `/workspace-status` renders one row per member and a coherent cross-repo-blocked section.
+
+### M8.7 — Auxiliary: `/list-workspaces`, `/remove-workspace`, `/doctor` extension
+
+`[multi-repo]` · `blocked_by: M8.1` · Source: [PLAN.md §15.7](PLAN.md)
+
+`/list-workspaces` (+ `atelier-list-workspaces`) enumerates workspaces with per-member health. `/remove-workspace <slug>` (+ `atelier-remove-workspace`) removes only the group entry; `--with-members` also removes the member projects. `atelier-doctor` gains `check_workspaces` (root exists, members are dirs still in `projects.json`, tokens unique; silent skip when `workspaces.json` absent).
+
+**Acceptance:** `/list-workspaces` enumerates workspaces; `/remove-workspace <slug>` drops the group and leaves members registered; `/doctor` flags a workspace with a missing/unregistered member.
+
+---
+
 ## Low Priority / Ideas
 
 > **Phases 5–7 + deferred v2 patterns.** Multi-project, docs, end-to-end validation, and the OMC-borrowed ideas from PLAN.md §11.
@@ -156,4 +212,4 @@ Per [PLAN.md §11](PLAN.md). Revisit only after v1 is stable.
 
 ### Out of scope for v1
 
-Per [PLAN.md §11](PLAN.md). Listed here so they are not picked up by accident: multi-repo coordination, deployment/release management, cost monitoring / per-task budgets, visual regression baselines, ROADMAP ↔ Issues bidirectional sync.
+Per [PLAN.md §11](PLAN.md). Listed here so they are not picked up by accident: **atomic** cross-repo changes (one task/PR spanning multiple repos — note that multi-repo *workspaces* with sequenced cross-repo dependencies are now in scope, see Phase 8 / [PLAN.md §15](PLAN.md)), deployment/release management, cost monitoring / per-task budgets, visual regression baselines, ROADMAP ↔ Issues bidirectional sync.

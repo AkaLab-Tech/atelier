@@ -1,0 +1,347 @@
+#!/usr/bin/env bash
+#
+# atelier-setup-workspace — group several already-registered atelier projects
+# into a "workspace" so the operator can route, aggregate status, and express
+# cross-repo `blocked_by:<token>#id` dependencies between them.
+#
+# A workspace is a thin grouping layer recorded in
+# $ATELIER_CONFIG_DIR/workspaces.json. It NEVER changes atelier's atomicity:
+# every task still runs in one worktree of one member repo and produces one PR.
+# Each member stays an independent entry in projects.json — workspaces.json
+# only references member paths, so every single-repo command keeps working
+# unchanged from inside a member. See PLAN.md §15.
+#
+# This is the M8.1 foundation: it registers a workspace whose members are
+# ALREADY configured projects. Driving /atelier:setup-project for not-yet-
+# configured members, and the `--discover` scan, land in M8.2 (the
+# /setup-workspace slash command). When this script meets an unregistered
+# member it emits `atelier-needs-setup=<path>` marker lines and exits 3 so the
+# command layer can configure them and re-invoke.
+#
+# Usage:
+#   atelier-setup-workspace --name <slug> --members <p1,p2,...> \
+#       [--root <dir>] [--token-for <path>=<token>]... [--force] [--yes|-y]
+#   atelier-setup-workspace --which-workspace <path>     # reverse lookup
+#   atelier-setup-workspace --help
+#
+# Exit codes:
+#   0  workspace registered / updated (or reverse-lookup hit)
+#   1  unrecoverable error (bad args, json corruption, jq missing)
+#   2  refusal (token collision, member already in another workspace, …)
+#   3  one or more members are not registered projects (markers emitted)
+#   4  reverse-lookup miss (path is in no workspace)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+# ---------- logging (mirrors atelier-setup-project / atelier-remove-project) ----------
+log()    { printf '==> %s\n' "$*"; }
+sublog() { printf '    %s\n' "$*"; }
+warn()   { printf '!!  %s\n' "$*" >&2; }
+die()    { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+refuse() { printf '!!  REFUSED: %s\n' "$*" >&2; exit 2; }
+ok()     { printf '    OK: %s\n' "$*"; }
+
+# ---------- usage ----------
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+Group already-registered atelier projects into a workspace. Idempotent.
+A workspace only references its members; it never reconfigures them and
+never changes the one-task / one-worktree / one-PR model. See PLAN.md §15.
+
+USAGE:
+  ${SCRIPT_NAME} --name <slug> --members <p1,p2,...> [OPTIONS]
+  ${SCRIPT_NAME} --which-workspace <path>
+  ${SCRIPT_NAME} --help
+
+OPTIONS:
+  --name <slug>          Workspace id (used as the map key and display name).
+  --members <p1,p2,...>  Comma-separated member project paths (absolute or
+                         relative). Each must already be a registered project
+                         (run /atelier:setup-project on it first). Resolved to
+                         absolute, symlink-canonical paths before recording.
+  --root <dir>           Parent directory used to route \`task\` from the
+                         workspace root (M8.5). Defaults to the longest common
+                         path prefix of the members.
+  --token-for <path>=<t> Override the short token for a member (default is the
+                         member's basename). The token is what the operator
+                         types in \`blocked_by:<token>#id\`. Repeatable.
+  --force                Proceed even if a member already belongs to a
+                         different workspace, or --name already exists with a
+                         different member set.
+  --yes, -y              Non-interactive mode (also honored via \$ATELIER_AUTO).
+  --which-workspace <p>  Reverse lookup: print the workspace slug that has <p>
+                         as a member (exit 0), or exit 4 if none.
+  --help, -h             Show this help and exit.
+
+EXIT CODES:
+  0  registered / updated (or reverse-lookup hit)
+  1  unrecoverable error
+  2  refusal (token collision, member already in another workspace, …)
+  3  one or more members are not registered projects (markers emitted)
+  4  reverse-lookup miss
+EOF
+}
+
+# ---------- arg parse ----------
+WS_NAME=""
+MEMBERS_RAW=""
+ROOT_ARG=""
+FORCE=false
+NONINTERACTIVE=false
+WHICH_PATH=""
+declare -a TOKEN_OVERRIDES=()
+[ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --name)             WS_NAME="${2:-}"; shift 2 ;;
+    --name=*)           WS_NAME="${1#--name=}"; shift ;;
+    --members)          MEMBERS_RAW="${2:-}"; shift 2 ;;
+    --members=*)        MEMBERS_RAW="${1#--members=}"; shift ;;
+    --root)             ROOT_ARG="${2:-}"; shift 2 ;;
+    --root=*)           ROOT_ARG="${1#--root=}"; shift ;;
+    --token-for)        TOKEN_OVERRIDES+=("${2:-}"); shift 2 ;;
+    --token-for=*)      TOKEN_OVERRIDES+=("${1#--token-for=}"); shift ;;
+    --which-workspace)  WHICH_PATH="${2:-}"; shift 2 ;;
+    --which-workspace=*) WHICH_PATH="${1#--which-workspace=}"; shift ;;
+    --force)            FORCE=true; shift ;;
+    --yes|-y)           NONINTERACTIVE=true; shift ;;
+    --help|-h)          usage; exit 0 ;;
+    --)                 shift; break ;;
+    -*)                 die "unknown flag: $1 (run --help for usage)" ;;
+    *)                  die "unexpected positional arg: $1 (run --help for usage)" ;;
+  esac
+done
+
+# ---------- resolve config ----------
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+PROJECTS_FILE="$ATELIER_CONFIG_DIR/projects.json"
+WORKSPACES_FILE="$ATELIER_CONFIG_DIR/workspaces.json"
+
+command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+
+# Canonicalise a path argument to an absolute, symlink-resolved form so it
+# matches what atelier-setup-project recorded as a projects.json key.
+canonicalise() {
+  local input="$1"
+  case "$input" in
+    /*) ;;
+    *)  input="$(pwd)/$input" ;;
+  esac
+  if [ -d "$input" ]; then
+    (cd -P "$input" && pwd)
+  else
+    printf '%s\n' "$input"
+  fi
+}
+
+# ---------- reverse lookup mode (M8.1; consumed by M8.4/M8.5) ----------
+if [ -n "$WHICH_PATH" ]; then
+  [ -f "$WORKSPACES_FILE" ] || exit 4
+  target="$(canonicalise "$WHICH_PATH")"
+  slug="$(jq -r --arg p "$target" '
+    .workspaces // {}
+    | to_entries[]
+    | select(any(.value.members[]?; .path == $p))
+    | .key
+  ' "$WORKSPACES_FILE" 2>/dev/null | head -n1)"
+  if [ -n "$slug" ]; then
+    printf '%s\n' "$slug"
+    exit 0
+  fi
+  exit 4
+fi
+
+# ---------- validate setup args ----------
+[ -n "$WS_NAME" ]     || die "--name is required (run --help for usage)"
+[ -n "$MEMBERS_RAW" ] || die "--members is required (run --help for usage)"
+case "$WS_NAME" in
+  *[!a-zA-Z0-9_-]*) die "--name '$WS_NAME' must be a slug (letters, digits, '-', '_')" ;;
+esac
+
+# Split --members on commas into canonical absolute paths.
+declare -a MEMBER_PATHS=()
+IFS=',' read -r -a _raw_members <<< "$MEMBERS_RAW"
+for m in "${_raw_members[@]}"; do
+  m="${m#"${m%%[![:space:]]*}"}"   # ltrim
+  m="${m%"${m##*[![:space:]]}"}"   # rtrim
+  [ -n "$m" ] || continue
+  MEMBER_PATHS+=("$(canonicalise "$m")")
+done
+IFS=$'\n\t'
+[ ${#MEMBER_PATHS[@]} -gt 0 ] || die "--members resolved to an empty set"
+
+log "atelier-setup-workspace ${VERSION}"
+sublog "workspace: $WS_NAME"
+sublog "members:   ${#MEMBER_PATHS[@]}"
+
+# ---------- build the token map (basename default + overrides) ----------
+# Token override lookup: path -> token.
+override_token_for() {
+  local path="$1" entry ov_path ov_token
+  for entry in ${TOKEN_OVERRIDES[@]+"${TOKEN_OVERRIDES[@]}"}; do
+    ov_path="${entry%%=*}"
+    ov_token="${entry#*=}"
+    [ "$ov_path" = "$entry" ] && die "--token-for must be <path>=<token>, got '$entry'"
+    if [ "$(canonicalise "$ov_path")" = "$path" ]; then
+      printf '%s\n' "$ov_token"
+      return 0
+    fi
+  done
+  basename "$path"
+}
+
+# ---------- guards: each member must be a registered project ----------
+[ -f "$PROJECTS_FILE" ] || die "$PROJECTS_FILE not found — atelier may not be installed (run install.sh)"
+
+declare -a NEEDS_SETUP=()
+for path in "${MEMBER_PATHS[@]}"; do
+  if ! jq -e --arg p "$path" '.projects[$p] // empty' "$PROJECTS_FILE" >/dev/null 2>&1; then
+    NEEDS_SETUP+=("$path")
+  fi
+done
+
+if [ ${#NEEDS_SETUP[@]} -gt 0 ]; then
+  warn "the following members are not registered atelier projects:"
+  for path in "${NEEDS_SETUP[@]}"; do
+    warn "  - $path"
+    # Marker line the /setup-workspace command (M8.2) parses to drive
+    # /atelier:setup-project on each, then re-invoke this script.
+    printf 'atelier-needs-setup=%s\n' "$path"
+  done
+  warn "run \`/atelier:setup-project <path>\` on each, then re-run this command"
+  exit 3
+fi
+
+# ---------- guards: worktree-shaped / non-git members ----------
+for path in "${MEMBER_PATHS[@]}"; do
+  case "$path" in
+    *-worktrees|*-worktrees/*)
+      die "member '$path' looks like a task worktree dir; pass the project root instead" ;;
+  esac
+  if [ -d "$path" ] && [ ! -e "$path/.git" ]; then
+    die "member '$path' is not a git repository (.git missing)"
+  fi
+done
+
+# ---------- guard: token uniqueness within the workspace ----------
+declare -a TOKENS=()
+for path in "${MEMBER_PATHS[@]}"; do
+  TOKENS+=("$(override_token_for "$path")")
+done
+# Detect duplicates.
+dup="$(printf '%s\n' "${TOKENS[@]}" | sort | uniq -d | head -n1)"
+if [ -n "$dup" ]; then
+  refuse "duplicate member token '$dup' — disambiguate with --token-for <path>=<token>"
+fi
+
+# ---------- guard: a project belongs to at most one workspace (v1 constraint) ----------
+if [ -f "$WORKSPACES_FILE" ]; then
+  for path in "${MEMBER_PATHS[@]}"; do
+    other="$(jq -r --arg p "$path" --arg self "$WS_NAME" '
+      .workspaces // {}
+      | to_entries[]
+      | select(.key != $self)
+      | select(any(.value.members[]?; .path == $p))
+      | .key
+    ' "$WORKSPACES_FILE" 2>/dev/null | head -n1)"
+    if [ -n "$other" ]; then
+      if $FORCE; then
+        warn "member '$path' already belongs to workspace '$other' — proceeding (--force)"
+      else
+        refuse "member '$path' already belongs to workspace '$other' (pass --force to move it; a project may be in at most one workspace)"
+      fi
+    fi
+  done
+fi
+
+# ---------- guard: --name collision with a different member set ----------
+PRESERVED_CREATED=""
+if [ -f "$WORKSPACES_FILE" ] && jq -e --arg n "$WS_NAME" '.workspaces[$n] // empty' "$WORKSPACES_FILE" >/dev/null 2>&1; then
+  PRESERVED_CREATED="$(jq -r --arg n "$WS_NAME" '.workspaces[$n].createdAt // empty' "$WORKSPACES_FILE")"
+  existing_members="$(jq -r --arg n "$WS_NAME" '[.workspaces[$n].members[]?.path] | sort | join("\n")' "$WORKSPACES_FILE")"
+  new_members="$(printf '%s\n' "${MEMBER_PATHS[@]}" | sort)"
+  if [ "$existing_members" != "$new_members" ] && ! $FORCE; then
+    refuse "workspace '$WS_NAME' already exists with a different member set (pass --force to redefine it)"
+  fi
+fi
+
+# ---------- resolve root ----------
+ROOT=""
+if [ -n "$ROOT_ARG" ]; then
+  ROOT="$(canonicalise "$ROOT_ARG")"
+else
+  # Longest common path prefix of the members, computed component-wise.
+  ROOT="${MEMBER_PATHS[0]}"
+  for path in "${MEMBER_PATHS[@]}"; do
+    while [ "${path#"$ROOT"}" = "$path" ] && [ "$ROOT" != "/" ]; do
+      ROOT="$(dirname "$ROOT")"
+    done
+  done
+  [ "$ROOT" = "/" ] && ROOT=""   # no meaningful common parent
+fi
+
+# ---------- build the members JSON array ----------
+members_json="$(
+  for path in "${MEMBER_PATHS[@]}"; do
+    printf '%s\t%s\t%s\n' "$path" "$(override_token_for "$path")" "member"
+  done | jq -R -s '
+    split("\n")
+    | map(select(length > 0) | split("\t") | {path: .[0], token: .[1], role: .[2]})
+  '
+)"
+
+# ---------- resolve plugin version for setupVersion ----------
+plugin_version="unknown"
+for cand in "${ATELIER_PLUGIN_ROOT:-}" "$(dirname "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)")"; do
+  [ -n "$cand" ] || continue
+  if [ -f "$cand/.claude-plugin/plugin.json" ]; then
+    plugin_version="$(jq -r '.version // "unknown"' "$cand/.claude-plugin/plugin.json")"
+    break
+  fi
+done
+
+now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+created="${PRESERVED_CREATED:-$now}"
+
+# ---------- write workspaces.json ----------
+mkdir -p "$ATELIER_CONFIG_DIR"
+tmp="$(mktemp)"
+if [ -f "$WORKSPACES_FILE" ]; then
+  jq \
+    --arg name "$WS_NAME" --arg root "$ROOT" --arg created "$created" \
+    --arg ver "$plugin_version" --argjson members "$members_json" \
+    '.workspaces[$name] = {name: $name, root: $root, createdAt: $created, setupVersion: $ver, members: $members}' \
+    "$WORKSPACES_FILE" > "$tmp" \
+    || { rm -f "$tmp"; die "failed to merge $WORKSPACES_FILE — refusing to overwrite"; }
+  STATUS="updated"
+else
+  jq -n \
+    --arg name "$WS_NAME" --arg root "$ROOT" --arg created "$created" \
+    --arg ver "$plugin_version" --argjson members "$members_json" \
+    '{workspaces: {($name): {name: $name, root: $root, createdAt: $created, setupVersion: $ver, members: $members}}}' \
+    > "$tmp" \
+    || { rm -f "$tmp"; die "failed to create $WORKSPACES_FILE"; }
+  STATUS="created"
+fi
+mv "$tmp" "$WORKSPACES_FILE"
+
+# ---------- report ----------
+echo ""
+ok "workspace '$WS_NAME' $STATUS in $WORKSPACES_FILE"
+[ -n "$ROOT" ] && sublog "root:    $ROOT" || sublog "root:    (none — members have no common parent)"
+sublog "members:"
+i=0
+for path in "${MEMBER_PATHS[@]}"; do
+  sublog "  - ${TOKENS[$i]}  ->  $path"
+  i=$((i + 1))
+done
+echo ""
+sublog "next: \`task\` from the root routes to a member; cross-repo deps use blocked_by:<token>#id"
+exit 0
