@@ -50,9 +50,12 @@ ATELIER_CONFIG_DIR_FLAG=""
 # target directory has unrelated content.
 NONINTERACTIVE=false
 
-# M4.23: set true by phase_c_2_coolify when the operator opts into Coolify, so
-# print_first_steps can surface the per-project follow-up.
+# M4.23 / M4.27 / M4.28: set true by the phase_c_2_* opt-in steps when the
+# operator enables an optional integration, so print_first_steps can surface the
+# per-project follow-up.
 COOLIFY_SET_UP=false
+VERCEL_SET_UP=false
+NEON_SET_UP=false
 
 # M7.1.F11b: $ATELIER_CONFIG_DIR is intentionally NOT clobbered here.
 # Previous versions had `ATELIER_CONFIG_DIR=""` at this point, which
@@ -1305,10 +1308,12 @@ phase_c_1_setup_project_helper() {
   # template changes, and by the /atelier:update slash command. Refuses
   # to apply permission changes without an interactive prompt.
   _phase_c_1_symlink_helper atelier-permission-diff
-  # M4.23: atelier-setup-coolify installs + configures the optional
-  # coolify-integration plugin (deploy/manage apps on a VPS-hosted Coolify).
-  # Invoked by the Phase C.2 opt-in prompt and by /atelier:setup-coolify.
+  # M4.23 / M4.27 / M4.28: atelier-setup-{coolify,vercel,neon} install +
+  # configure the optional integration plugins. Invoked by the Phase C.2 opt-in
+  # prompts and by /atelier:setup-{coolify,vercel,neon}.
   _phase_c_1_symlink_helper atelier-setup-coolify
+  _phase_c_1_symlink_helper atelier-setup-vercel
+  _phase_c_1_symlink_helper atelier-setup-neon
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it
@@ -1775,6 +1780,8 @@ phase_c_2() {
     phase_c_2_install_plugin "$id"
   done
   phase_c_2_coolify
+  phase_c_2_vercel
+  phase_c_2_neon
   ok "Phase C.2 complete"
 }
 
@@ -1803,6 +1810,58 @@ phase_c_2_coolify() {
       ;;
     *)
       sublog "skipped — set up anytime with /atelier:setup-coolify"
+      ;;
+  esac
+}
+
+# M4.27: optional Vercel integration. Off by default (opt-in). Same shape as
+# phase_c_2_coolify. Per-project VERCEL_TOKEN is set later from each project's
+# .env via /atelier:setup-vercel.
+phase_c_2_vercel() {
+  sublog "Optional: vercel-integration lets atelier deploy projects to Vercel (official Vercel CLI)."
+  if [ "$NONINTERACTIVE" = true ] || [ ! -t 0 ]; then
+    sublog "non-interactive — skipped. Enable anytime with /atelier:setup-vercel (or atelier-setup-vercel)."
+    return
+  fi
+  local ans
+  read -r -p "    Set up Vercel deployments now (installs the vercel-integration plugin)? [y/N]: " ans
+  case "${ans:-N}" in
+    [Yy]|[Yy][Ee][Ss])
+      if "$ATELIER_REPO_ROOT/scripts/atelier-setup-vercel" --non-interactive; then
+        VERCEL_SET_UP=true
+        ok "vercel-integration installed — add VERCEL_TOKEN to a project's .env, or run /atelier:setup-vercel from it"
+      else
+        warn "Vercel setup did not complete — run it later with /atelier:setup-vercel"
+      fi
+      ;;
+    *)
+      sublog "skipped — set up anytime with /atelier:setup-vercel"
+      ;;
+  esac
+}
+
+# M4.28: optional Neon Postgres integration. Off by default (opt-in). Same shape
+# as phase_c_2_coolify. Per-project NEON_API_KEY is set later from each project's
+# .env via /atelier:setup-neon.
+phase_c_2_neon() {
+  sublog "Optional: neon-integration lets atelier manage Neon Postgres (branches, connection strings)."
+  if [ "$NONINTERACTIVE" = true ] || [ ! -t 0 ]; then
+    sublog "non-interactive — skipped. Enable anytime with /atelier:setup-neon (or atelier-setup-neon)."
+    return
+  fi
+  local ans
+  read -r -p "    Set up Neon Postgres now (installs the neon-integration plugin)? [y/N]: " ans
+  case "${ans:-N}" in
+    [Yy]|[Yy][Ee][Ss])
+      if "$ATELIER_REPO_ROOT/scripts/atelier-setup-neon" --non-interactive; then
+        NEON_SET_UP=true
+        ok "neon-integration installed — add NEON_API_KEY to a project's .env, or run /atelier:setup-neon from it"
+      else
+        warn "Neon setup did not complete — run it later with /atelier:setup-neon"
+      fi
+      ;;
+    *)
+      sublog "skipped — set up anytime with /atelier:setup-neon"
       ;;
   esac
 }
@@ -1888,6 +1947,18 @@ print_first_steps() {
     printf '       %sCoolify%s — you enabled coolify-integration. For each project you deploy, wire its\n' "$_C_BOLD" "$_C_RESET"
     printf '       Coolify instance (writes COOLIFY_BASE_URL + COOLIFY_API_TOKEN to the project`s .env):\n'
     printf '         %scd <path-to-project> && atelier /atelier:setup-coolify%s\n\n' "$_C_CYAN" "$_C_RESET"
+  fi
+
+  if [ "$VERCEL_SET_UP" = true ]; then
+    printf '       %sVercel%s — you enabled vercel-integration. For each project you deploy, wire its\n' "$_C_BOLD" "$_C_RESET"
+    printf '       VERCEL_TOKEN into the project`s .env:\n'
+    printf '         %scd <path-to-project> && atelier /atelier:setup-vercel%s\n\n' "$_C_CYAN" "$_C_RESET"
+  fi
+
+  if [ "$NEON_SET_UP" = true ]; then
+    printf '       %sNeon%s — you enabled neon-integration. For each project that uses Neon, wire its\n' "$_C_BOLD" "$_C_RESET"
+    printf '       NEON_API_KEY into the project`s .env:\n'
+    printf '         %scd <path-to-project> && atelier /atelier:setup-neon%s\n\n' "$_C_CYAN" "$_C_RESET"
   fi
 
   printf '    4. %sStart your first task%s — `task` reads the next ROADMAP entry from the current project and runs the full task cycle:\n' "$_C_BOLD" "$_C_RESET"
