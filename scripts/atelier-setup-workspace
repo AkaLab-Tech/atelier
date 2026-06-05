@@ -56,6 +56,8 @@ never changes the one-task / one-worktree / one-PR model. See PLAN.md §15.
 
 USAGE:
   ${SCRIPT_NAME} --name <slug> --members <p1,p2,...> [OPTIONS]
+  ${SCRIPT_NAME} --name <slug> --discover <parent-dir> [OPTIONS]
+  ${SCRIPT_NAME} --list-discoverable <parent-dir>
   ${SCRIPT_NAME} --which-workspace <path>
   ${SCRIPT_NAME} --help
 
@@ -65,9 +67,20 @@ OPTIONS:
                          relative). Each must already be a registered project
                          (run /atelier:setup-project on it first). Resolved to
                          absolute, symlink-canonical paths before recording.
+                         This is the PRIMARY selection mode.
+  --discover <parent>    SECONDARY mode: scan <parent> one level deep for git
+                         repositories (skipping \`*-worktrees\` dirs) and use
+                         them as the member set, exactly as if passed to
+                         --members. Mutually exclusive with --members.
+  --list-discoverable <parent>
+                         Print the git repos discoverable one level under
+                         <parent>, one per line as \`<path>\\t<registered|
+                         unregistered>\`, then exit 0. Used by the
+                         /setup-workspace command to confirm/prune before
+                         registering. Read-only.
   --root <dir>           Parent directory used to route \`task\` from the
                          workspace root (M8.5). Defaults to the longest common
-                         path prefix of the members.
+                         path prefix of the members (or the --discover parent).
   --token-for <path>=<t> Override the short token for a member (default is the
                          member's basename). The token is what the operator
                          types in \`blocked_by:<token>#id\`. Repeatable.
@@ -95,6 +108,8 @@ ROOT_ARG=""
 FORCE=false
 NONINTERACTIVE=false
 WHICH_PATH=""
+DISCOVER_DIR=""
+LIST_DISCOVER_DIR=""
 declare -a TOKEN_OVERRIDES=()
 [ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
 
@@ -104,6 +119,10 @@ while [ $# -gt 0 ]; do
     --name=*)           WS_NAME="${1#--name=}"; shift ;;
     --members)          MEMBERS_RAW="${2:-}"; shift 2 ;;
     --members=*)        MEMBERS_RAW="${1#--members=}"; shift ;;
+    --discover)         DISCOVER_DIR="${2:-}"; shift 2 ;;
+    --discover=*)       DISCOVER_DIR="${1#--discover=}"; shift ;;
+    --list-discoverable) LIST_DISCOVER_DIR="${2:-}"; shift 2 ;;
+    --list-discoverable=*) LIST_DISCOVER_DIR="${1#--list-discoverable=}"; shift ;;
     --root)             ROOT_ARG="${2:-}"; shift 2 ;;
     --root=*)           ROOT_ARG="${1#--root=}"; shift ;;
     --token-for)        TOKEN_OVERRIDES+=("${2:-}"); shift 2 ;;
@@ -141,6 +160,44 @@ canonicalise() {
   fi
 }
 
+# Is a canonical path a registered atelier project?
+is_registered() {
+  [ -f "$PROJECTS_FILE" ] || return 1
+  jq -e --arg p "$1" '.projects[$p] // empty' "$PROJECTS_FILE" >/dev/null 2>&1
+}
+
+# Discover git repos one level under <parent>: every immediate subdirectory
+# that contains a `.git` entry, skipping `*-worktrees` sibling dirs (those
+# hold per-task worktrees, not project roots). Prints canonical paths, sorted.
+discover_git_repos() {
+  local parent canon d
+  parent="$(canonicalise "$1")"
+  [ -d "$parent" ] || die "--discover/--list-discoverable: '$1' is not a directory"
+  for d in "$parent"/*/; do
+    d="${d%/}"
+    [ -d "$d" ] || continue
+    case "$d" in
+      *-worktrees) continue ;;
+    esac
+    [ -e "$d/.git" ] || continue
+    canon="$(cd -P "$d" && pwd)"
+    printf '%s\n' "$canon"
+  done | sort
+}
+
+# ---------- list-discoverable mode (M8.2; consumed by /setup-workspace) ----------
+if [ -n "$LIST_DISCOVER_DIR" ]; then
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    if is_registered "$repo"; then
+      printf '%s\tregistered\n' "$repo"
+    else
+      printf '%s\tunregistered\n' "$repo"
+    fi
+  done < <(discover_git_repos "$LIST_DISCOVER_DIR")
+  exit 0
+fi
+
 # ---------- reverse lookup mode (M8.1; consumed by M8.4/M8.5) ----------
 if [ -n "$WHICH_PATH" ]; then
   [ -f "$WORKSPACES_FILE" ] || exit 4
@@ -159,11 +216,24 @@ if [ -n "$WHICH_PATH" ]; then
 fi
 
 # ---------- validate setup args ----------
-[ -n "$WS_NAME" ]     || die "--name is required (run --help for usage)"
-[ -n "$MEMBERS_RAW" ] || die "--members is required (run --help for usage)"
+[ -n "$WS_NAME" ] || die "--name is required (run --help for usage)"
 case "$WS_NAME" in
   *[!a-zA-Z0-9_-]*) die "--name '$WS_NAME' must be a slug (letters, digits, '-', '_')" ;;
 esac
+
+# --members and --discover are mutually exclusive; exactly one is required.
+if [ -n "$DISCOVER_DIR" ] && [ -n "$MEMBERS_RAW" ]; then
+  die "--members and --discover are mutually exclusive (run --help for usage)"
+fi
+if [ -n "$DISCOVER_DIR" ]; then
+  # Expand discovered git repos into the same comma-separated form --members uses.
+  _discovered="$(discover_git_repos "$DISCOVER_DIR" | paste -sd, -)"
+  [ -n "$_discovered" ] || die "--discover: no git repositories found one level under '$DISCOVER_DIR'"
+  MEMBERS_RAW="$_discovered"
+  # Default the routing root to the discovery parent unless overridden.
+  [ -n "$ROOT_ARG" ] || ROOT_ARG="$DISCOVER_DIR"
+fi
+[ -n "$MEMBERS_RAW" ] || die "--members or --discover is required (run --help for usage)"
 
 # Split --members on commas into canonical absolute paths.
 declare -a MEMBER_PATHS=()

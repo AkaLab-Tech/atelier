@@ -69,15 +69,7 @@ Originally tracked as PLAN.md §11 v2.3. The M2.6 spike confirmed it complements
 
 > **Group several single-repo projects into a "workspace"** (e.g. backend + frontend + CMS) with aggregated status, root-level routing, and *sequenced* cross-repo `blocked_by:<token>#id` dependencies — **without** ever introducing cross-repo atomicity (each task stays one worktree / one PR). Design: [PLAN.md §15](PLAN.md). Milestones are ~1 PR each; M8.1→M8.5 are ordered, M8.6/M8.7 depend on M8.1 only.
 
-> **M8.1 delivered** (registry + `atelier-setup-workspace` foundation) — see [HISTORY.md](HISTORY.md). The milestones below build on it.
-
-### M8.2 — `/setup-workspace` command + per-member setup reuse + `--discover`
-
-`[multi-repo]` · `blocked_by: M8.1` · Source: [PLAN.md §15.3](PLAN.md)
-
-Thin `/atelier:setup-workspace` slash command wrapping the helper. Explicit `--members` (primary) and `--discover <parent-dir>` (secondary, one-level git-repo scan, operator confirms/prunes). Drives `/atelier:setup-project` on members the helper reports as `atelier-needs-setup`, then re-invokes to register the group (the M4.19 bash/AI split).
-
-**Acceptance:** from a parent with two unconfigured git repos, `--discover .` registers both as projects and groups them; explicit `--members` is equivalent.
+> **M8.1, M8.2 delivered** (registry + `atelier-setup-workspace` foundation; `/setup-workspace` command + `--discover`) — see [HISTORY.md](HISTORY.md). The milestones below build on them.
 
 ### M8.3 — `atelier-resolve-dep` offline cross-repo resolver
 

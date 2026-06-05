@@ -8,6 +8,21 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M8.2 — `/setup-workspace` command + member discovery — 2026-06-05
+**PR:** _pending_ · **Design:** [PLAN.md §15.3](PLAN.md) · **Builds on:** [M8.1](#m81--multi-repo-workspace-registry--atelier-setup-workspace-foundation--2026-06-05)
+
+Second Phase 8 milestone: the operator-facing front for workspace setup, plus the discovery modes on the helper.
+
+**Delivered:**
+- `commands/setup-workspace.md` (new) — `/atelier:setup-workspace <name> (--members <p1,p2,…> | --discover <parent>)`. Explicit `--members` is the primary path; `--discover` is offered as a secondary option. The command confirms/prunes the discovered set interactively, drives `/atelier:setup-project` for any member the helper flags as `atelier-needs-setup` (exit 3), then re-invokes the helper to register the group. Non-interactive mode (`--yes`/`$ATELIER_AUTO`) takes the full discovered set and stops cleanly if a member needs the new-project interview.
+- `scripts/atelier-setup-workspace` — two new modes: `--discover <parent>` (scan one level for git repos, skip `*-worktrees`, treat as `--members`, default the routing `root` to the parent) and `--list-discoverable <parent>` (read-only; prints `<path>\t<registered|unregistered>` for the command's confirmation step). `--members` and `--discover` are mutually exclusive.
+
+No `install.sh` or `settings.template.json` change needed — the helper symlink (M8.1) and `SlashCommand(/atelier:*)` already cover the new surface.
+
+**Plugin bump:** **0.13.0 → 0.14.0** (new slash command + new operator-facing helper modes, additive).
+
+**Verified:** 7/7 — M8.1 regression (register, 2 members, reverse-lookup, member-in-another-workspace exit 2) plus M8.2 discovery (`--list-discoverable` skips non-repos and `*-worktrees` and annotates registered/unregistered; `--discover` with an unregistered member → exit 3 + marker; with all registered → groups them and defaults `root`; `--members`+`--discover` together → exit 1). `bash -n` clean, `--help` exits 0.
+
 ### M8.1 — Multi-repo workspace registry + `atelier-setup-workspace` foundation — 2026-06-05
 **PR:** [#137](https://github.com/AkaLab-Tech/atelier/pull/137) · **Design:** [PLAN.md §15](PLAN.md) · **Phase 8** (M8.2–M8.7 in [ROADMAP.md](ROADMAP.md))
 
