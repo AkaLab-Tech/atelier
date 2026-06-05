@@ -41,7 +41,7 @@ Promoted from `v2` to v1 by explicit operator decision (2026-06-04), per M4.23's
 Research artifact covering the four required sections: ecosystem inventory (first-party REST API is the only complete, maintained, trust-appropriate surface; community MCPs/CLIs add dependency + trust cost without better coverage), API surface mapping (deploy, apps, status, logs, env CRUD, provisioning, health), auth-flow design (per-project `.env`, multi-instance), and the recommendation (native thin client shipped as a separate optional plugin). Delivered together with M4.23's implementation rather than as a standalone gate, since the operator opted to promote and build in the same pass; the doc remains self-contained. Method caveat recorded in the doc: the inventory reflects known options as of the research date, not an exhaustive live crawl, and two endpoint shapes await live validation.
 
 ### M7.1.F51 — `block-env-commit` hook blocked `.env.example` template; needed allowlist + content-scan to prevent leaking real secrets via templates — 2026-06-03
-**PR:** _pending_
+**PR:** [#131](https://github.com/AkaLab-Tech/atelier/pull/131)
 
 Discovered during the M7.1 dogfood Nivel 4 next task on storefront, after the F49 (v0.9.4) fix shipped and concurrent with F50 (v0.10.0) landing on main. The orchestrator completed implementation of task RLS.1, validated cleanly (lint 5/5, builds OK, baseline-only test failure resolved via decision-broker), and tried to commit four files including a legitimate `.env.example` template (`DATABASE_URL_APP=...` placeholder). The `block-env-commit` hook caught `git add .env.example` and blocked it under the `env-file-added` pattern — which exists to keep real `.env` files out of version control.
 
@@ -218,7 +218,7 @@ If the operator wants a confirmation pass for a specific case, they use:
 - **Strengthen the behavioural-drift counter-measure.** The agent self-reported *"como en cada merge anterior me diste el OK explícito"* — i.e., it noticed and internalised that the operator confirmed previous merges in this session. The fix in this PR makes that internalisation policy-wrong, but the pattern (LLM generalises operator behaviour into policy) is worth a broader audit of every place where "the operator did X N times before" could leak into "I should keep asking". Out of scope for v0.9.4.
 
 ### M7.1.F48 — `safe-commit` hook ran the push gate on docs-only commits and asked the operator to skip when the lint failed for missing deps — 2026-06-03
-**PR:** _pending_
+**PR:** [#127](https://github.com/AkaLab-Tech/atelier/pull/127)
 
 Discovered during the M7.1 dogfood Nivel 4 (task lifecycle end-to-end on storefront). The orchestrator opened a task whose change was a single edit to `ROADMAP.md` (docs-only). When `pr-author` ran `git commit`, the `safe-commit` PreToolUse hook fired the push gate (lint + typecheck + test). The worktree had been created with `--no-deps` (no `node_modules`), so `pnpm run lint` failed with `turbo: command not found`. The hook blocked the commit and the agent asked the operator:
 
@@ -2031,7 +2031,7 @@ Captured during the design conversation that converged on a three-layer defense-
 - Shell-redirection forms and context-dependent destinations remain layer-3 territory by design (not closed by this work).
 
 ### M7.1.F25 — `/atelier:doctor` adds explicit Stop rule to defeat conversational language inertia — 2026-05-25
-**PR:** _pending_
+**PR:** [#85](https://github.com/AkaLab-Tech/atelier/pull/85)
 
 Surfaced during M7.1 dogfood-3 verification of v0.5.7, immediately after F24 cleaned up the stale check. The operator ran `/atelier:doctor` and got the correct binary output, but the LLM appended a Spanish commentary block AFTER the binary's final line:
 
@@ -2080,7 +2080,7 @@ That leaves **the LLM's intrinsic conversational-language inertia** — when pri
 - [ ] **(post-merge)** Operator runs the v0.5.8 update sequence (`git pull` on dotfiles + `/plugin update` inside atelier + restart) and re-runs `/atelier:doctor` from a session with Spanish-language prior turns. Expected: the binary's output is the LAST text emitted; no Spanish commentary follows.
 
 ### M7.1.F24 — `/atelier:doctor` removes stale `check_atelier_config_json` (legacy path + wrong schema) — 2026-05-25
-**PR:** _pending_
+**PR:** [#84](https://github.com/AkaLab-Tech/atelier/pull/84)
 
 Surfaced immediately after v0.5.6's F23 refactor stabilized the doctor permission-gate loop. During M7.1 dogfood-3 verification, the operator ran the new binary on a clean install (post-uninstall `--purge`) and got one persistent `✗`:
 
@@ -2120,7 +2120,7 @@ The operator's environment had a legacy `~/.claude/.atelier-config.json` file (2
 - [ ] **(post-merge)** Operator runs `claude plugin update atelier@akalab-tech` to v0.5.7 + `git pull` on dotfiles + restart Claude + retries `atelier /atelier:doctor`. Expect: same 9 checks as v0.5.6 (minus the removed one) = 9 total host-check lines, exit code 0, "All checks passed. atelier is up to date."
 
 ### M7.1.F23 — `/atelier:doctor` architectural refactor: move all check logic into a bash binary — 2026-05-25
-**PR:** _pending_
+**PR:** [#83](https://github.com/AkaLab-Tech/atelier/pull/83)
 
 Operator pushback during M7.1 dogfood-3 v0.5.5 doctor retry made the architectural problem explicit: each narrative patch (F16 → F16b → F20 → F21 → F22) closed a different Claude Code permission gate, but each fix was at the LLM-instruction layer — a behavior steering, not a mechanical constraint. The LLM could ignore the guidance and re-introduce compound shell expressions, file-read interception, env-prefix mismatches, etc. **Five patches in, the operator asked: "does this DEFINITIVELY fix F22?"** The honest answer was no — narrative-level fixes don't ENFORCE anything; they nudge.
 
@@ -2179,7 +2179,7 @@ Operator pushback during M7.1 dogfood-3 v0.5.5 doctor retry made the architectur
 - [ ] **(post-merge)** Operator runs `claude plugin update atelier@akalab-tech` to v0.5.6 + `git pull` on dotfiles + restart Claude + retries `atelier /atelier:doctor`. Expect: ONE `Bash(atelier-doctor)` invocation, zero prompts, identical report content to v0.5.5.
 
 ### M7.1.F20 + F21 — `/atelier:doctor` echo/env prompts + git-identity false-positive drift — 2026-05-25
-**PR:** _pending_
+**PR:** [#81](https://github.com/AkaLab-Tech/atelier/pull/81)
 
 Two findings batched in one PR-K, both surfaced during the M7.1 dogfood-3 full fresh-install validation (post-v0.5.4 doctor run on the freshly-installed environment).
 
@@ -2231,7 +2231,7 @@ Both representations refer to the **same** GitHub account (`Miguelslo27`, id `78
 - The operator authenticated `gh/author` with their personal account (`Miguelslo27`) rather than a dedicated atelier-author bot. This collapses the F7b dual-identity benefit (commits via `task` author as `Miguelslo27` same as their personal global git config). Functionally fine — reviewer is still distinct (`AtelierReviewer`), so dogfood-1 Finding #11 doesn't trigger. Not a bug; design choice.
 
 ### M7.1.F19 — `/atelier:setup-project` argument-hint suggested `<project-path>` was required — 2026-05-25
-**PR:** _pending_
+**PR:** [#80](https://github.com/AkaLab-Tech/atelier/pull/80)
 
 Discovered during M7.1 dogfood-3 setup-project resumption (post-F18 fix). Operator asked: "¿Por qué `/setup-project` lleva el punto al final? No se supone que ya estoy dentro de un proyecto?". The argument-hint `[project-path] [--yes|-y] [--mode=new|existing]` leads with the positional → operators (including the agent writing the handoff) reflexively interpret it as "I have to pass a path". In reality the helper has defaulted to `pwd` since M4.19 (`PROJECT_PATH_ARG=""` then `resolve_project_path` does `local input="${PROJECT_PATH_ARG:-.}"`). Pure documentation gap.
 
@@ -2251,7 +2251,7 @@ Discovered during M7.1 dogfood-3 setup-project resumption (post-F18 fix). Operat
 - **No change to the helper.** Both the default-to-`pwd` resolution and the operator-visible `project:` sublog line already work as intended. Only the slash command's narrative was misleading.
 
 ### M7.1.F18 — `/atelier:setup-project` failed on empty `--plugin-root` from unset `$CLAUDE_PLUGIN_ROOT` — 2026-05-25
-**PR:** _pending_
+**PR:** [#79](https://github.com/AkaLab-Tech/atelier/pull/79)
 
 Discovered during M7.1 **dogfood-3** first `/atelier:setup-project .` run on `~/Work/atelier-dogfood-4`. The slash command died with `!! ERROR: --plugin-root requires a path`, then the LLM cascaded into recovery (`echo "${CLAUDE_PLUGIN_ROOT:-UNSET}"`, `claude plugin list --json | python3 ...`) that triggered three more permission prompts.
 
@@ -2290,7 +2290,7 @@ The plugin-side fix is what makes the slash command stop passing the empty `--pl
 **Cascading prompt cleanup** — F18 also resolves the secondary prompts the operator saw during recovery (`echo "${CLAUDE_PLUGIN_ROOT:-UNSET}"`, `claude plugin list --json | python3 ...`). Those only fired because the initial `--plugin-root` failure put the LLM into a discovery dance. With F18 the slash command succeeds on the first call → no recovery → no extra prompts.
 
 ### M7.1.F16b — Doctor narrative must use `Read` tool, not `cat`, for file reads — 2026-05-25
-**PR:** _pending_
+**PR:** [#78](https://github.com/AkaLab-Tech/atelier/pull/78)
 
 Follow-up fix to **F16** ([PR #77](https://github.com/AkaLab-Tech/atelier/pull/77), v0.5.1). The original F16 added `Bash(cat:*)` to doctor.md's `allowed-tools` along with other read-only patterns, expecting it would suppress all permission prompts. But during the dogfood-3 v0.5.1 doctor run, two prompts STILL appeared — both for `cat <path> 2>/dev/null || echo "MISSING"` patterns reading `~/.local/state/atelier/git-wt.sha` and `~/.claude/settings.json`.
 
@@ -2319,7 +2319,7 @@ Follow-up fix to **F16** ([PR #77](https://github.com/AkaLab-Tech/atelier/pull/7
 - [ ] **(post-merge)** Operator runs `claude plugin update atelier@akalab-tech` to v0.5.2, opens fresh `atelier /atelier:doctor` session, verifies NO permission prompts for any check — including the previously-prompting SHA + settings.json reads.
 
 ### M7.1.F16 — `commands/doctor.md` missing `allowed-tools` frontmatter — 2026-05-25
-**PR:** _pending_
+**PR:** [#77](https://github.com/AkaLab-Tech/atelier/pull/77)
 
 Discovered during M7.1 **dogfood-3** first `/atelier:doctor` run on `~/Work/atelier-dogfood-4`. Every other slash command in the plugin (`/next-task`, `/finish-task`, `/resume-task`, `/setup-project`, `/status`, `/validate`) had a populated `allowed-tools:` field in its frontmatter — listing the specific `Bash(…)` patterns the command needs pre-approved so the operator isn't prompted for every tool invocation. **`/atelier:doctor` was the only one missing this field** (an oversight from the original M1.6 / doctor.md implementation). Result: each `gh api`, `claude plugin list`, `cat`, `jq`, `docker compose version` etc. that doctor runs triggers an interactive permission prompt for the operator.
 
@@ -2349,7 +2349,7 @@ For a slash command that's strictly read-only and explicitly documents "**Never*
 - **F15** — doctor's parallel checks cascade-cancel when any one fails (Claude Code default behavior). Fix: run sequentially or wrap each in `|| true`.
 
 ### M7.1.F13 — `atelier()` shell function for general-purpose atelier-managed Claude sessions — 2026-05-25
-**PR:** _pending_
+**PR:** [#76](https://github.com/AkaLab-Tech/atelier/pull/76)
 
 Discovered during M7.1 **dogfood-3** setup (the first real-project task cycle, run on `AtelierAuthor/atelier-dogfood-4`). The operator needed to run `/atelier:setup-project` on the new project, but the existing shellrc hook block only defined `task()` — which hardcodes `claude "/next-task $*"`. There was **no shortcut** to open a Claude session under `$ATELIER_CONFIG_DIR` for any other slash command (`/atelier:doctor`, `/atelier:setup-project`, or bare interactive exploration). Plain `claude` defaulted to `~/.claude-personal` so the atelier plugin wasn't loaded — and the operator only saw their personal skills, not `/atelier:*` commands.
 
@@ -2424,7 +2424,7 @@ F7a (closed in PR-A [#70](https://github.com/AkaLab-Tech/atelier/pull/70) / v0.4
 **Acceptance met:** the canonical F7 acceptance — "commits made by atelier inside a managed worktree show Author: <atelier-author identity> while commits made by the operator outside that worktree retain the operator's personal identity, verified via `git log --format='%an <%ae>' -1` from both contexts" — is satisfied by T2 + T3 + T4 in combination.
 
 ### M7.1.F11b — Fix env-var clobber that broke F11 lookup chain — 2026-05-23
-**PR:** _pending_
+**PR:** [#74](https://github.com/AkaLab-Tech/atelier/pull/74)
 
 Discovered during PR-C ([#73](https://github.com/AkaLab-Tech/atelier/pull/73)) live validation: `install.sh` line ~55 unconditionally set `ATELIER_CONFIG_DIR=""` at script load, which silently broke the F11 lookup chain documented in F11's HISTORY entry. The operator's exported env var (typically planted by the shellrc hook block from a previous install — F11's whole persistence mechanism) got overwritten with empty string before `resolve_config_dir` could read it. The env-var branch of the priority chain (`--config-dir flag > $ATELIER_CONFIG_DIR env > default`) was therefore unreachable; install.sh always defaulted to `~/.claude-work` unless `--config-dir` was passed explicitly.
 
@@ -2451,7 +2451,7 @@ Discovered during PR-C ([#73](https://github.com/AkaLab-Tech/atelier/pull/73)) l
 | T5 | `set -u` + env unset | no nounset error, falls back cleanly | ✓ |
 
 ### M7.1.F8 — Trailing-slash normalization + path-format validation in Phase 0 prompt — 2026-05-23
-**PR:** _pending_
+**PR:** [#73](https://github.com/AkaLab-Tech/atelier/pull/73)
 
 The Phase 0 alternative-path prompt's sample text showed paths with trailing `/` (`pick an alternative path (e.g. ~/.claude-atelier/, ~/.atelier/):`). Operators copied the pattern, so `$ATELIER_CONFIG_DIR` ended up stored with a `/` suffix, and every concatenation `${ATELIER_CONFIG_DIR}/sub` produced `//sub` throughout the install output. F8 reworks the prompt + adds input validation.
 
@@ -2467,7 +2467,7 @@ The Phase 0 alternative-path prompt's sample text showed paths with trailing `/`
 - **Non-existent paths allowed.** Phase C.1 creates the directory if missing — operators can pick a brand-new path freely; only explicit "file exists here" is rejected.
 
 ### M7.1.F4 — Offer account switch when Claude / gh already authenticated — 2026-05-23
-**PR:** _pending_
+**PR:** [#73](https://github.com/AkaLab-Tech/atelier/pull/73)
 
 Before F4, Phase B silently kept whatever Claude / `atelier-author` / `atelier-reviewer` accounts were already authenticated. Operators reinstalling on a machine that hosted a different identity (shared mac, identity rotation, account compromise) had no in-flow path to swap accounts — they'd have to manually `claude logout` / `GH_CONFIG_DIR=… gh auth logout` before re-running install.sh.
 
@@ -2483,7 +2483,7 @@ Before F4, Phase B silently kept whatever Claude / `atelier-author` / `atelier-r
 - **No 3-way `claude` / `author` / `reviewer` prompt.** Each credential has its own prompt at its own call site; less to read at once, and operators can decide per identity rather than batch.
 
 ### M7.1.F3 — Detect outdated base deps + offer update opt-in — 2026-05-23
-**PR:** _pending_
+**PR:** [#73](https://github.com/AkaLab-Tech/atelier/pull/73)
 
 Phase A used to only check that base deps were *present*; freshness was opaque to the operator. Long-running atelier installs could silently drift to stale `gh` / `fnm` versions with no in-flow warning. F3 surfaces outdatedness in Phase A and lets the operator opt in to an update right there.
 
@@ -2503,7 +2503,7 @@ Phase A used to only check that base deps were *present*; freshness was opaque t
 - **Helper uses `eval` on the update_cmd string** so callers can pass multi-command sequences (`sudo apt-get update && sudo apt-get install -y gh`). Trusted input — callers in `install.sh` only, not operator-provided.
 
 ### M7.1.F1 — Strip M5.0.2 PREFLIGHT BEHAVIOUR design block from `--help` output — 2026-05-23
-**PR:** _pending_
+**PR:** [#73](https://github.com/AkaLab-Tech/atelier/pull/73)
 
 `install.sh --help` used to print a 9-line `PREFLIGHT BEHAVIOUR (M5.0.2):` block documenting atelier's internal config-dir collision state machine. That text was design documentation aimed at future maintainers — it didn't help an operator running `--help` to learn the available CLI flags, and dilutes operator-facing output with milestone IDs / internal contract framing.
 
@@ -2518,7 +2518,7 @@ Phase A used to only check that base deps were *present*; freshness was opaque t
 - **No `--help` audit beyond this block.** The rest of `usage()` (USAGE, OPTIONS) is straightforward operator-facing reference — no other leakage detected.
 
 ### M7.1.F12 — End-of-install "first steps" guide for the operator — 2026-05-23
-**PR:** _pending_
+**PR:** [#72](https://github.com/AkaLab-Tech/atelier/pull/72)
 
 Before F12, a successful install ended with a single line — `==> install.sh done. Open a new terminal (or run source ~/.zshrc) to use task and task-status.` — that left a non-technical operator with no idea what to do next (set up a project? run doctor? start a task? uninstall?). F12 replaces it with a structured, copy-pasteable next-steps block.
 
@@ -2533,7 +2533,7 @@ Before F12, a successful install ended with a single line — `==> install.sh do
 - **Hard-coded numbered steps.** No conditional logic (e.g. "only show step 2 if Phase B succeeded"). Trade-off: simpler + predictable for the operator; warnings from earlier phases already surface in-place.
 
 ### M7.1.F10 — Suppress git-wt sub-installer's "installation complete" epilogue — 2026-05-23
-**PR:** _pending_
+**PR:** [#72](https://github.com/AkaLab-Tech/atelier/pull/72)
 
 Phase C.1 delegates to `/tmp/git-wt/install.sh --skill-for=claude`. The upstream installer prints its own `==> installation complete / next steps: Restart your shell…` epilogue, which non-technical operators read as "atelier is done" — while in reality Phase C.1 still has git-identity prompts + helper symlinks + Phase C.2 to go. F10 drops the misleading epilogue without losing the useful per-action confirmations above it.
 
@@ -2547,7 +2547,7 @@ Phase C.1 delegates to `/tmp/git-wt/install.sh --skill-for=claude`. The upstream
 - **`set -o pipefail` preserved.** The pipe to awk inherits `set -o pipefail`; a failed git-wt installer still aborts `install.sh` (awk doesn't mask exit codes).
 
 ### M7.1.F5 — Phase B: explain GitHub permission requirements before each `gh auth login` — 2026-05-23
-**PR:** _pending_
+**PR:** [#72](https://github.com/AkaLab-Tech/atelier/pull/72)
 
 Before F5, each `gh auth login` invocation printed a one-line role description (`atelier gh login: author — the GitHub account…`) and went straight into the device-code OAuth flow. Operators frequently authenticated with whatever account was convenient — sometimes one without push access to the target repo, or not a member of the project's GitHub org — causing silent failures later when pushes / PRs / approvals were rejected.
 
@@ -2565,7 +2565,7 @@ Before F5, each `gh auth login` invocation printed a one-line role description (
 - **Per-role differentiation in a single helper.** A `case "$role" in author|reviewer)` keeps both copies of the block close together so future changes (additional scopes, new role) stay aligned.
 
 ### M7.1.F2 — `install.sh` output legibility (colors, section headers, progress markers) — 2026-05-23
-**PR:** _pending_
+**PR:** [#72](https://github.com/AkaLab-Tech/atelier/pull/72)
 
 The pre-F2 output was monochrome and flat: Phases A / B / C.1 / C.2 blurred together; sub-steps had no visual hierarchy; success / skip / fail looked identical. For a non-technical operator following a multi-minute install, it was hard to tell where they were or whether something quietly broke. F2 introduces ANSI color + Unicode markers with automatic degradation when stdout is not a TTY or `NO_COLOR` is set.
 
@@ -2667,7 +2667,7 @@ Before F6, `install.sh` planted the `.atelier-managed` marker mid-Phase C.1. Any
 - **Resume refreshes the marker.** On Y, `mark_install_started` runs again with a new `pid` and `startedAt`. This avoids stale-pid confusion if the operator inspects the marker between attempts.
 
 ### M4.19 — `/setup-project` auto-generates root `CLAUDE.md` (interview or codebase scan) — 2026-05-23
-**PR:** _pending_
+**PR:** [#67](https://github.com/AkaLab-Tech/atelier/pull/67)
 
 Before this milestone, `/atelier:setup-project` wrote the atelier-specific `.claude/CLAUDE.md` from a generic template but left the **root** `CLAUDE.md` entirely up to the operator. Every new task started with effectively zero project context. M4.19 drafts root `CLAUDE.md` automatically, branching on whether the project is **new** (interview operator + draft) or **existing** (read-only scan + draft).
 
@@ -2767,7 +2767,7 @@ No `lib/` or `app/` directories present.
 The drafted file is operator-readable, accurate, and ready for the operator's first `/next-task` to use as project context. Any follow-up refinement (e.g., adding more architectural detail when the codebase grows) can happen via the operator's `Edit` to the file directly.
 
 ### M4.17 — `docker-env` skill + `docker-runner` agent (on-demand local containers) — 2026-05-23
-**PR:** _pending_
+**PR:** [#66](https://github.com/AkaLab-Tech/atelier/pull/66)
 
 On-demand Docker Compose stack scoped to the task worktree, without contaminating the operator's host. Lets a task that needs Postgres / Redis / MySQL / MinIO / etc. for integration tests provision a service for the duration of the task and tear it down cleanly at session end — no orphan containers, no manual host installs.
 
@@ -2826,7 +2826,7 @@ Only when all three guards pass does the hook issue `docker compose -p <project>
 - **End-to-end run on a Python-with-Postgres dogfood project** — when a real task surfaces.
 
 ### M4.14 — Implement↔validate inner loop with iteration budget — 2026-05-23
-**PR:** _pending_
+**PR:** [#65](https://github.com/AkaLab-Tech/atelier/pull/65)
 
 Before this milestone, the `/next-task` chain ran implementation + validation as a single forward pass: any failure (lint, typecheck, unit test) fell straight through to `retry-with-logs`, which reset the entire worktree and restarted the task from scratch. The cost of a typo / missing import / trivial lint error was the same as a fundamental design failure — both triggered a full reset of attempts 1-3 before the slower attempts 4-6.
 
@@ -2874,7 +2874,7 @@ Runtime behavioural validation against `atelier-dogfood-4` (or equivalent) is de
 - **Empirical signal on inner-loop hit rate.** Once dogfood-4 (or a real project) accumulates several runs, measure how often the inner loop actually catches a failure vs. how often the first implementer attempt passes `/validate` cleanly. High hit rate (many catches) justifies M4.14's existence; very low hit rate suggests the inner loop is overhead without value. The data lives in `.task-log/` filenames (attempts 02–03 in any task = inner-loop saves).
 
 ### M5.0.4 — Release policy + versioning convention for atelier plugins — 2026-05-23
-**PR:** _pending_
+**PR:** [#64](https://github.com/AkaLab-Tech/atelier/pull/64)
 
 Captures atelier's first written release policy. The `v0.1.0` releases cut ad-hoc on 2026-05-22 to recover `/atelier:doctor`'s drift detection exposed a missing convention; this milestone closes that gap with seven decisions materialized as authoritative `PLAN.md` §14, marked `✅ agreed`.
 
@@ -2919,7 +2919,7 @@ Captures atelier's first written release policy. The `v0.1.0` releases cut ad-ho
 - **Pre-1.0 → 1.0 transition checklist** — criteria for cutting the first `1.0.0`. Not a versioning rule; a release-management ritual for "production-ready".
 
 ### M5.0.3 — `atelier-uninstall` with chat-session preservation — 2026-05-22
-**PR:** _pending_
+**PR:** [#63](https://github.com/AkaLab-Tech/atelier/pull/63)
 
 Before this milestone, decommissioning atelier required the operator to manually (a) edit `~/.zshrc` to strip the atelier hooks block, (b) remove `~/.local/bin/atelier-setup-project`, (c) run `claude plugin uninstall` for both atelier plugins, and (d) decide what to do with `$ATELIER_CONFIG_DIR` (where chat history, sessions, plans, and backups live) — without a documented convention. M5.0.3 ships `scripts/atelier-uninstall`, an operator-facing helper that automates steps a-c with a chat-session-preserving default, and offers an explicit `--purge` opt-in for step d.
 
@@ -2968,7 +2968,7 @@ Before this milestone, decommissioning atelier required the operator to manually
 - The plugin uninstall step would benefit from a more diagnostic message when `claude plugin uninstall` fails — currently lumped as `:not-installed-or-error`. If operators start hitting failure modes that are not "not installed", split the status into more granular reporting.
 
 ### M4.18 — Rename `git-wt` source `Miguelslo27/git-wt` → `AkaLab-Tech/git-wt` — 2026-05-22
-**PR:** _pending_
+**PR:** [#61](https://github.com/AkaLab-Tech/atelier/pull/61)
 
 `git-wt` moved from the maintainer's personal namespace (`Miguelslo27`) to the AkaLab-Tech organization. GitHub's redirect covers `git clone` transparently, but `gh api repos/...` calls do not follow the redirect — which meant `/doctor`'s drift check was hitting the wrong repo, and the per-project `settings.json` allowlist entry was pinned to the old path (risking a permission prompt on the new URL the first time the operator's session resolved drift against it). Pure URL-rewrite chore — no behavior changes, no version pinning.
 
