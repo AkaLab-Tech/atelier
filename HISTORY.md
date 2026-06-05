@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M8.1 — Multi-repo workspace registry + `atelier-setup-workspace` foundation — 2026-06-05
-**PR:** _pending_ · **Design:** [PLAN.md §15](PLAN.md) · **Phase 8** (M8.2–M8.7 in [ROADMAP.md](ROADMAP.md))
+**PR:** [#137](https://github.com/AkaLab-Tech/atelier/pull/137) · **Design:** [PLAN.md §15](PLAN.md) · **Phase 8** (M8.2–M8.7 in [ROADMAP.md](ROADMAP.md))
 
 First milestone of multi-repo support. A **workspace** groups several already-configured single-repo projects (e.g. backend + frontend + CMS) so the operator can route, aggregate status, and express **sequenced** cross-repo `blocked_by:<token>#id` dependencies — **without** ever introducing cross-repo atomicity. Every task stays one worktree of one repo and one PR; an "epic across repos" is ordinary single-repo tasks chained by `blocked_by`. The atomicity invariant is what keeps every existing single-repo command working unchanged: each member stays an independent entry in `projects.json`, and the new registry only *references* member paths.
 
