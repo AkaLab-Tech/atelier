@@ -9,12 +9,12 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M4.23.a — install.sh next-steps surfaces the Coolify per-project follow-up — 2026-06-05
-**PR:** _pending_
+**PR:** [#133](https://github.com/AkaLab-Tech/atelier/pull/133)
 
 Follow-up to M4.23 from dogfood: when the operator opts into Coolify during `install.sh`, the integration installed cleanly but the closing "Next steps" block (`print_first_steps`, M7.1.F12) said nothing about Coolify — leaving the per-project `.env` step undiscovered. `phase_c_2_coolify` now sets a `COOLIFY_SET_UP` flag, and `print_first_steps` prints a conditional pointer (`cd <project> && atelier /atelier:setup-coolify`) right after the project-setup step. Shown only when Coolify was actually enabled, so non-Coolify installs stay uncluttered. Patch bump 0.11.0 → 0.11.1.
 
 ### M4.23 — Coolify VPS deployment integration, delivered as an optional external plugin + opt-in atelier setup — 2026-06-04
-**PR:** _pending_ · **Based on:** [docs/research/coolify-integration.md](docs/research/coolify-integration.md) (M4.22)
+**PR:** [#132](https://github.com/AkaLab-Tech/atelier/pull/132) · **Based on:** [docs/research/coolify-integration.md](docs/research/coolify-integration.md) (M4.22)
 
 Promoted from `v2` to v1 by explicit operator decision (2026-06-04), per M4.23's own promotion gate. The operator wanted atelier agents to validate, fix, launch, and provision apps on a VPS-hosted Coolify instance, configurable at install time and reconfigurable anytime.
 
@@ -36,7 +36,7 @@ Promoted from `v2` to v1 by explicit operator decision (2026-06-04), per M4.23's
 **Open item:** validate `GET /deploy` and the env bulk-PATCH endpoint against a live Coolify v4 instance on first real use.
 
 ### M4.22 — Spike: Coolify VPS integration research — 2026-06-04
-**PR:** _pending_ · **Deliverable:** [docs/research/coolify-integration.md](docs/research/coolify-integration.md)
+**PR:** [#132](https://github.com/AkaLab-Tech/atelier/pull/132) · **Deliverable:** [docs/research/coolify-integration.md](docs/research/coolify-integration.md)
 
 Research artifact covering the four required sections: ecosystem inventory (first-party REST API is the only complete, maintained, trust-appropriate surface; community MCPs/CLIs add dependency + trust cost without better coverage), API surface mapping (deploy, apps, status, logs, env CRUD, provisioning, health), auth-flow design (per-project `.env`, multi-instance), and the recommendation (native thin client shipped as a separate optional plugin). Delivered together with M4.23's implementation rather than as a standalone gate, since the operator opted to promote and build in the same pass; the doc remains self-contained. Method caveat recorded in the doc: the inventory reflects known options as of the research date, not an exhaustive live crawl, and two endpoint shapes await live validation.
 
