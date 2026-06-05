@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M4.23.a — install.sh next-steps surfaces the Coolify per-project follow-up — 2026-06-05
+**PR:** _pending_
+
+Follow-up to M4.23 from dogfood: when the operator opts into Coolify during `install.sh`, the integration installed cleanly but the closing "Next steps" block (`print_first_steps`, M7.1.F12) said nothing about Coolify — leaving the per-project `.env` step undiscovered. `phase_c_2_coolify` now sets a `COOLIFY_SET_UP` flag, and `print_first_steps` prints a conditional pointer (`cd <project> && atelier /atelier:setup-coolify`) right after the project-setup step. Shown only when Coolify was actually enabled, so non-Coolify installs stay uncluttered. Patch bump 0.11.0 → 0.11.1.
+
 ### M4.23 — Coolify VPS deployment integration, delivered as an optional external plugin + opt-in atelier setup — 2026-06-04
 **PR:** _pending_ · **Based on:** [docs/research/coolify-integration.md](docs/research/coolify-integration.md) (M4.22)
 
