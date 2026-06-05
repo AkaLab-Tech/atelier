@@ -50,6 +50,10 @@ ATELIER_CONFIG_DIR_FLAG=""
 # target directory has unrelated content.
 NONINTERACTIVE=false
 
+# M4.23: set true by phase_c_2_coolify when the operator opts into Coolify, so
+# print_first_steps can surface the per-project follow-up.
+COOLIFY_SET_UP=false
+
 # M7.1.F11b: $ATELIER_CONFIG_DIR is intentionally NOT clobbered here.
 # Previous versions had `ATELIER_CONFIG_DIR=""` at this point, which
 # silently broke the F11 lookup chain — the operator's exported env var
@@ -1791,6 +1795,7 @@ phase_c_2_coolify() {
   case "${ans:-N}" in
     [Yy]|[Yy][Ee][Ss])
       if "$ATELIER_REPO_ROOT/scripts/atelier-setup-coolify" --non-interactive; then
+        COOLIFY_SET_UP=true
         ok "coolify-integration installed — add COOLIFY_BASE_URL + COOLIFY_API_TOKEN to a project's .env, or run /atelier:setup-coolify from it"
       else
         warn "Coolify setup did not complete — run it later with /atelier:setup-coolify"
@@ -1878,6 +1883,12 @@ print_first_steps() {
   printf '    3. %sSet up your first project%s — `cd` into the project then run setup-project:\n' "$_C_BOLD" "$_C_RESET"
   printf '         %scd <path-to-project>%s\n' "$_C_CYAN" "$_C_RESET"
   printf '         %satelier /atelier:setup-project .%s\n\n' "$_C_CYAN" "$_C_RESET"
+
+  if [ "$COOLIFY_SET_UP" = true ]; then
+    printf '       %sCoolify%s — you enabled coolify-integration. For each project you deploy, wire its\n' "$_C_BOLD" "$_C_RESET"
+    printf '       Coolify instance (writes COOLIFY_BASE_URL + COOLIFY_API_TOKEN to the project`s .env):\n'
+    printf '         %scd <path-to-project> && atelier /atelier:setup-coolify%s\n\n' "$_C_CYAN" "$_C_RESET"
+  fi
 
   printf '    4. %sStart your first task%s — `task` reads the next ROADMAP entry from the current project and runs the full task cycle:\n' "$_C_BOLD" "$_C_RESET"
   printf '         %stask%s\n\n' "$_C_CYAN" "$_C_RESET"
