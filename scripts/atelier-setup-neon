@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+#
+# atelier-setup-neon — install and configure the optional neon-integration
+# plugin (M4.28). Two parts:
+#   - machine-wide: ensure the plugin is installed from the akalab-tech catalog,
+#     link its CLI onto PATH, merge the Neon allowlist into atelier's
+#     user-level settings.json.
+#   - per-project (interactive, from inside a project): write NEON_API_KEY into that project's gitignored .env.
+#
+# Usage:
+#   atelier-setup-neon                  full setup (interactive when on a TTY)
+#   atelier-setup-neon --non-interactive  machine-wide only (install.sh / CI)
+#
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+MARKETPLACE_SOURCE="https://github.com/AkaLab-Tech/claude-plugins.git"
+PLUGIN_ID="neon-integration@akalab-tech"
+PLUGIN_NAME="neon-integration"
+
+log()  { printf '==> %s\n' "$*"; }
+warn() { printf '..  %s\n' "$*" >&2; }
+die()  { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+require() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+Install and configure the optional neon-integration plugin (M4.28).
+
+USAGE
+  ${SCRIPT_NAME}                    full setup (interactive when on a TTY)
+  ${SCRIPT_NAME} --non-interactive  machine-wide only (install.sh / CI)
+
+Machine-wide: install the plugin, link the atelier-neon CLI onto PATH, merge
+the Neon allowlist into atelier's user settings.json. Per-project (from
+inside a project): write NEON_API_KEY to its .env.
+EOF
+}
+
+NONINTERACTIVE=false
+case "${1:-}" in
+  --help|-h)         usage; exit 0 ;;
+  --non-interactive) NONINTERACTIVE=true ;;
+  "")                ;;
+  *)                 die "unknown arg: $1 (try --help)" ;;
+esac
+
+CONFIG_DIR="${ATELIER_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
+
+ensure_plugin() {
+  require claude
+  require jq
+  if CLAUDE_CONFIG_DIR="$CONFIG_DIR" claude plugin list --json 2>/dev/null \
+       | jq -e --arg id "$PLUGIN_ID" '.[] | select(.id == $id)' >/dev/null; then
+    log "${PLUGIN_NAME} already installed"
+    return 0
+  fi
+  log "installing ${PLUGIN_ID}"
+  CLAUDE_CONFIG_DIR="$CONFIG_DIR" claude plugin marketplace add "$MARKETPLACE_SOURCE" >/dev/null 2>&1 || true
+  CLAUDE_CONFIG_DIR="$CONFIG_DIR" claude plugin install "$PLUGIN_ID" \
+    || die "claude plugin install ${PLUGIN_ID} failed"
+}
+
+locate_cli() {
+  local hit
+  hit="$(find "$CONFIG_DIR" -type f -name atelier-neon -path '*neon-integration*' 2>/dev/null | head -1 || true)"
+  [ -n "$hit" ] || hit="$(command -v atelier-neon 2>/dev/null || true)"
+  printf '%s' "$hit"
+}
+
+main() {
+  ensure_plugin
+  local cli; cli="$(locate_cli)"
+  [ -n "$cli" ] || die "could not locate the atelier-neon CLI after install"
+
+  if [ "$NONINTERACTIVE" = true ]; then
+    "$cli" configure --non-interactive
+    log "machine-wide Neon setup done."
+    log "per project: add NEON_API_KEY to its .env,"
+    log "or run /atelier:setup-neon from the project directory."
+  else
+    "$cli" configure
+  fi
+}
+
+main "$@"

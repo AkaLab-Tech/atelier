@@ -8,6 +8,34 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M4.27 + M4.28 — Vercel and Neon integrations, as optional external plugins + opt-in atelier setup — 2026-06-05
+**PR:** _pending_ · **Based on:** [docs/research/vercel-integration.md](docs/research/vercel-integration.md), [docs/research/neon-integration.md](docs/research/neon-integration.md)
+
+Second and third optional integrations after Coolify (M4.22/M4.23), same architecture: each capability lives in a **separate external plugin** ([`vercel-integration`](https://github.com/AkaLab-Tech/vercel-integration), [`neon-integration`](https://github.com/AkaLab-Tech/neon-integration)) in the `akalab-tech` catalog — atelier core does no deployment (PLAN.md §11 annotated). The operator asked for both "the same way Coolify was integrated."
+
+**Build difference from Coolify.** Coolify's community MCPs were young, so that plugin hand-rolls a REST client. Vercel and Neon ship **mature first-party CLIs** (`vercel`, `neonctl`), so per atelier's dependency discipline these plugins **wrap the official CLI** instead — `atelier-vercel` / `atelier-neon` use an installed CLI or fall back to `pnpm dlx`. Command surfaces were verified against the live `--help` of each CLI before wiring.
+
+**Packaging — separate, not bundled.** Vercel (deploy/logs/env) and Neon (DB branches/connection strings) have distinct services, credentials, and command shapes; many operators use one without the other. So two independent plugins, each opt-in, though the `install.sh` prompts offer them together.
+
+**Auth — per-project `.env`** (as Coolify): `VERCEL_TOKEN` (+ optional `VERCEL_ORG_ID`/`VERCEL_PROJECT_ID`) and `NEON_API_KEY` (+ optional `NEON_PROJECT_ID`, auto-injected as `--project-id`). Gitignored; multi-instance.
+
+**atelier touchpoints (this PR):**
+- `install.sh` Phase C.2 — two more opt-in prompts (default No; skipped under `--yes`/no-TTY); `print_first_steps` surfaces a per-project follow-up for each enabled one (`VERCEL_SET_UP` / `NEON_SET_UP` flags, mirroring `COOLIFY_SET_UP`).
+- `scripts/atelier-setup-vercel`, `scripts/atelier-setup-neon` — orchestrators (install plugin if missing → link CLI → merge user-level allowlist), reused by install.sh and the commands.
+- `commands/setup-vercel.md`, `commands/setup-neon.md` — `/atelier:setup-vercel`, `/atelier:setup-neon` anytime paths that capture per-project `.env` conversationally.
+- `scripts/atelier-doctor` — `check_vercel`, `check_neon` (silent skip when not installed; when installed, report whether the underlying `vercel`/`neonctl` CLI is installed or will fall back to `pnpm dlx`).
+- `templates/settings.template.json` — `Bash(atelier-setup-vercel:*)`, `Bash(atelier-setup-neon:*)` allowlisted (commands covered by existing `SlashCommand(/atelier:*)`).
+
+**Permissions decoupling.** Each plugin merges its allowlist into atelier's user-level `settings.json`; the shipped template gains only the two `atelier-setup-*` host helpers.
+
+**Gated ops:** Vercel `remove`/`env-rm`/`project-rm`; Neon `branch-delete`/`project-create`/`project-delete` — left out of the allowlist so they require operator confirmation.
+
+**Plugin bump:** atelier **0.11.1 → 0.12.0** (new operator-facing surface: 2 helpers + 2 slash commands + 2 doctor checks + 2 install prompts).
+
+**Missing CLI handling:** if `vercel`/`neonctl` is not installed, the wrapper falls back to `pnpm dlx <cli>@latest` (pnpm is guaranteed by atelier's install), so nothing breaks — only the first call per package is slow. To avoid that, the plugins' `configure` installs the CLI globally (`pnpm add -g`) when missing (vercel-integration / neon-integration v0.1.1), and `atelier-doctor` reports which path is in effect.
+
+**Open item:** the wrappers were validated with CLI stubs (arg passthrough, `.env` load, `--project-id` injection, missing-credential errors); validate against live Vercel/Neon accounts on first real use.
+
 ### M4.23.a — install.sh next-steps surfaces the Coolify per-project follow-up — 2026-06-05
 **PR:** [#133](https://github.com/AkaLab-Tech/atelier/pull/133)
 

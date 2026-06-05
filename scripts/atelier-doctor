@@ -345,6 +345,72 @@ check_coolify() {
   fi
 }
 
+check_vercel() {
+  # Optional integration (M4.27). Silent skip when not installed.
+  local config_dir="${ATELIER_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
+  local installed=false
+  if command -v claude >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    if CLAUDE_CONFIG_DIR="$config_dir" claude plugin list --json 2>/dev/null \
+         | jq -e '.[] | select(.id == "vercel-integration@akalab-tech")' >/dev/null; then
+      installed=true
+    fi
+  fi
+  if [ "$installed" != true ]; then
+    push_host "$SKIP vercel-integration not installed (optional — run /atelier:setup-vercel to enable)"
+    return
+  fi
+  local issues=()
+  command -v atelier-vercel >/dev/null 2>&1 || issues+=("CLI not on PATH")
+  local settings="$config_dir/settings.json"
+  if [ -f "$settings" ] && command -v jq >/dev/null 2>&1; then
+    jq -e '(.permissions.allow // []) | index("Skill(vercel-integration:*)")' "$settings" >/dev/null 2>&1 \
+      || issues+=("allowlist not merged into user settings.json")
+  else
+    issues+=("user settings.json missing")
+  fi
+  local cli
+  if command -v vercel >/dev/null 2>&1; then cli="vercel CLI installed"; else cli="vercel CLI via pnpm dlx — /atelier:setup-vercel installs it"; fi
+  if [ ${#issues[@]} -eq 0 ]; then
+    push_host "$OK vercel-integration ready ($cli; per-project VERCEL_TOKEN in .env)"
+  else
+    push_host "$FAIL vercel-integration: ${issues[*]}"
+    push_fix_auto "atelier-setup-vercel --non-interactive"
+  fi
+}
+
+check_neon() {
+  # Optional integration (M4.28). Silent skip when not installed.
+  local config_dir="${ATELIER_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
+  local installed=false
+  if command -v claude >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    if CLAUDE_CONFIG_DIR="$config_dir" claude plugin list --json 2>/dev/null \
+         | jq -e '.[] | select(.id == "neon-integration@akalab-tech")' >/dev/null; then
+      installed=true
+    fi
+  fi
+  if [ "$installed" != true ]; then
+    push_host "$SKIP neon-integration not installed (optional — run /atelier:setup-neon to enable)"
+    return
+  fi
+  local issues=()
+  command -v atelier-neon >/dev/null 2>&1 || issues+=("CLI not on PATH")
+  local settings="$config_dir/settings.json"
+  if [ -f "$settings" ] && command -v jq >/dev/null 2>&1; then
+    jq -e '(.permissions.allow // []) | index("Skill(neon-integration:*)")' "$settings" >/dev/null 2>&1 \
+      || issues+=("allowlist not merged into user settings.json")
+  else
+    issues+=("user settings.json missing")
+  fi
+  local cli
+  if command -v neonctl >/dev/null 2>&1; then cli="neonctl installed"; else cli="neonctl via pnpm dlx — /atelier:setup-neon installs it"; fi
+  if [ ${#issues[@]} -eq 0 ]; then
+    push_host "$OK neon-integration ready ($cli; per-project NEON_API_KEY in .env)"
+  else
+    push_host "$FAIL neon-integration: ${issues[*]}"
+    push_fix_auto "atelier-setup-neon --non-interactive"
+  fi
+}
+
 check_chrome() {
   local os
   os="$(uname -s)"
@@ -590,6 +656,8 @@ check_project_npmrc
 check_chrome
 check_docker_compose
 check_coolify
+check_vercel
+check_neon
 check_atelier_config_dir
 check_atelier_claude_auth
 check_git_identity

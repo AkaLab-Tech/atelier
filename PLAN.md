@@ -468,7 +468,7 @@ Apply? [y/N]
 ### Out of scope (v1)
 
 - Multi-repo coordination in a single task.
-- Deployment / release management **in atelier core**. (Coolify VPS deploy/manage is delivered as a *separate, optional* plugin — [`coolify-integration`](https://github.com/AkaLab-Tech/coolify-integration), M4.22/M4.23 — that atelier only offers to install and configure via an opt-in `install.sh` prompt + `/atelier:setup-coolify`. atelier core itself performs no deployment.)
+- Deployment / release management **in atelier core**. (Deploy/manage capabilities are delivered as *separate, optional* plugins that atelier only offers to install and configure via opt-in `install.sh` prompts + `/atelier:setup-*`; atelier core itself performs no deployment. Shipped: [`coolify-integration`](https://github.com/AkaLab-Tech/coolify-integration) (Coolify VPS, M4.22/M4.23), [`vercel-integration`](https://github.com/AkaLab-Tech/vercel-integration) (Vercel, M4.27), [`neon-integration`](https://github.com/AkaLab-Tech/neon-integration) (Neon Postgres, M4.28).)
 - Cost monitoring / per-task budget caps.
 - Visual regression (baseline diff) — v2. v1 uses raw screenshots.
 - Bidirectional ROADMAP ↔ GitHub Issues sync.
