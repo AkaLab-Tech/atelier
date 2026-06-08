@@ -14,6 +14,42 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Install hardening from M7.1 dogfood-2 + dogfood-3 (2026-05-23 / 2026-05-25).** Findings F1–F12 surfaced during dogfood-2 full-wipe reinstall. F11b discovered during PR-C validation. F13 + F7c discovered during dogfood-3 setup. F14 + F15 + F16 discovered during the dogfood-3 first `/atelier:doctor` run. Closed: PR-A [#70](https://github.com/AkaLab-Tech/atelier/pull/70) (F6+F7a+F9+F11, v0.4.2), PR-B [#72](https://github.com/AkaLab-Tech/atelier/pull/72) (F2+F5+F10+F12), PR-C [#73](https://github.com/AkaLab-Tech/atelier/pull/73) (F1+F3+F4+F8), PR-D [#74](https://github.com/AkaLab-Tech/atelier/pull/74) (F11b), PR-E [#75](https://github.com/AkaLab-Tech/atelier/pull/75) (F7b, v0.5.0), PR-F [#76](https://github.com/AkaLab-Tech/atelier/pull/76) (F13 atelier() shortcut). PR-G (PR _pending_) closes F16 (doctor.md allowed-tools, v0.5.1). F7c + F14 + F15 remain as follow-ups (see entries below).
 
+> **Dogfood bugs — orchestrator behavior (2026-06-05).** Two correctness bugs found while running real atelier task chains: the orchestrator doing specialist work inline instead of delegating (F52), and the operator's personal `CLAUDE.md` leaking confirmation gates into the autonomous flow (F53).
+
+### M7.1.F52 — Orchestrator performs specialist work inline instead of delegating
+
+`[orchestrator]` · Source: dogfood (2026-06-05)
+
+The `task-orchestrator` ([agents/task-orchestrator.md](agents/task-orchestrator.md)) is specified as a planner/router that "does not write feature code, tests, or PR descriptions itself" and delegates to `implementer` → `tester` → `pr-author`. In real chains it sometimes does the work itself and ends up asking the operator implementation-level questions, bypassing the specialist boundary entirely. This collapses the per-agent safety scoping and the auditable chain checkpoints the design relies on.
+
+**Scope:**
+
+- [ ] Reproduce: capture a chain where the orchestrator skips a `Task` dispatch and acts inline (which step, what triggered it).
+- [ ] Reinforce the delegation contract in the orchestrator prompt — make "never implement/test/author inline; always dispatch the specialist via `Task`" a hard refusal, not just a prose description.
+- [ ] Close the gap that lets implementation-level questions reach the operator: genuine ambiguity routes through `decision-broker` or surfaces as a terminal state, never as an inline operator question.
+- [ ] Consider a guard: if the orchestrator is about to edit source files or write tests directly, treat it as a bug and stop.
+
+**Acceptance:** on a representative ROADMAP task, the orchestrator dispatches `implementer` / `tester` / `pr-author` via `Task` for all code/test/PR work and never edits source or asks implementation-level questions itself; any genuine ambiguity goes through `decision-broker` or a terminal hand-off.
+
+**Trigger to revisit:** captured 2026-06-05 from live dogfooding. Fix before further orchestrator-flow work so the delegation boundary is trustworthy.
+
+### M7.1.F53 — Operator's personal `CLAUDE.md` blocks the autonomous commit/push/merge flow
+
+`[orchestrator]` `[config-isolation]` · Source: dogfood (2026-06-05) · Related: [operator-rules.md:166](operator-rules.md#L166) (`CLAUDE_CONFIG_DIR` separation)
+
+During a chain the orchestrator asks the operator to confirm **commit + push + merge**, citing the operator's *personal* `CLAUDE.md` directives (e.g. "never push without explicit confirmation", "never commit on protected branches", "ask before destructive commands"). Those directives live in the operator's personal Claude config — **not** atelier's — and must not govern atelier's autonomous flow, whose gates are defined by atelier itself (push gate, PR gate, `auto-merge` skill, [PLAN.md §6](PLAN.md)). This is a config-isolation bug: the `$ATELIER_CONFIG_DIR` (`~/.claude-work/`) separation documented in [operator-rules.md:166](operator-rules.md#L166) is meant to prevent exactly this, yet the personal `CLAUDE.md` is still in the session's context.
+
+**Scope:**
+
+- [ ] Determine how the personal `CLAUDE.md` (`~/.claude/CLAUDE.md` and/or `~/.claude-personal/CLAUDE.md`) reaches an `atelier()`-launched session despite `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR`.
+- [ ] Ensure atelier sessions do not inherit personal global/project `CLAUDE.md` confirmation rules that conflict with the autonomous flow (config root, working dir, or memory-loading path — whichever is the actual leak).
+- [ ] Make atelier's own rules authoritative for commit/push/merge: the orchestrator must not re-prompt for confirmation on actions the static matrix + gates already authorize (mirrors the existing "do not re-prompt after `auto-merge`'s positive verdict" rule).
+- [ ] Document the precedence in `operator-rules.md` so future drift is caught.
+
+**Acceptance:** an `atelier()` task chain commits to `task/<id>-<slug>`, pushes, and reaches the `auto-merge` gate without surfacing a confirmation prompt sourced from the operator's personal `CLAUDE.md`; atelier's gates remain the only authority on those actions.
+
+**Trigger to revisit:** captured 2026-06-05 from live dogfooding. Marked a bug by the operator.
+
 ---
 
 ## Medium Priority
@@ -62,6 +98,64 @@ Originally tracked as PLAN.md §11 v2.3. The M2.6 spike confirmed it complements
 **Acceptance:** see [PLAN.md §11 v2.3](PLAN.md) for the original surface area; refine once M2.8 has shipped and the residual FN cases are observable.
 
 **Trigger to revisit:** after M2.8 has been in production long enough to surface real residual cases (target: ≥ 10 merged tasks under auto-mode). Run only if there are observed FN incidents that motivate the additional layer.
+
+### M7.1.F54 — Coolify skill assumes manual deploy; must detect GitHub App auto-deploy
+
+`[coolify-integration]` · Source: dogfood (2026-06-05) · **Change lands in the `coolify-integration` repo** ([skills/coolify/SKILL.md](../coolify-integration/skills/coolify/SKILL.md)), tracked here per the operator's decision.
+
+The coolify skill's validate-and-fix flow assumes a deploy is always triggered manually via `atelier-coolify deploy <uuid>`. In practice the apps are wired through Coolify's GitHub App so that a push to `main` (or the per-env branch) **auto-deploys** — assuming a manual deploy is wrong, can double-trigger, and misleads diagnosis. The skill should read the app's deployment configuration (connected git source, auto-deploy flag, watched branch) and remember that a push already deploys, instead of assuming.
+
+**Scope:**
+
+- [ ] Add a way to read an app's git/auto-deploy config via `atelier-coolify` (git source connected, auto-deploy enabled, watched branch) — new subcommand or extend `status` / `validate` output.
+- [ ] Update the skill flow: before suggesting a manual `deploy`, check whether the app auto-deploys on push; if so, a `git push` to the watched branch *is* the deploy — say so rather than calling `deploy`.
+- [ ] Persist / record the per-app deploy mode so the skill does not re-assume on every run (skill guidance + where the fact is stored).
+- [ ] Keep the manual `deploy <uuid>` path for apps that genuinely lack auto-deploy.
+
+**Acceptance:** on an app configured with the GitHub App + auto-deploy on a branch, the skill reports that pushing the watched branch deploys (and does not propose a redundant manual `deploy`); on an app without auto-deploy, the manual flow is unchanged.
+
+**Trigger to revisit:** captured 2026-06-05 from live dogfooding. The fix is in `coolify-integration` but tracked here per the operator's decision.
+
+### M4.29 — Import an existing operator's Claude conversations on first atelier use
+
+`[onboarding]` · Source: operator request (2026-06-05) · Related: [operator-rules.md:166](operator-rules.md#L166) (`CLAUDE_CONFIG_DIR` separation), M7.1.F53
+
+Atelier runs under a config root (`$ATELIER_CONFIG_DIR`, default `~/.claude-work/`) **separate** from the operator's personal `~/.claude/`. A side effect for someone who already uses Claude Code: their existing conversation history lives under the personal root (`~/.claude/projects/<cwd-hash>/*.jsonl`) and does **not** appear in atelier sessions — `claude --resume` / `--continue` inside an `atelier()` session sees an empty history. This makes adopting atelier feel like starting from scratch. Give the operator a way to bring their prior conversations across so they are not lost.
+
+**Scope:**
+
+- [ ] Decide the import mechanism: copy vs symlink the per-project transcript dirs (`projects/<cwd-hash>/`) from `~/.claude/` into `$ATELIER_CONFIG_DIR/`. Weigh that `<cwd-hash>` is path-derived — same working dir hashes the same under both roots, so transcripts map 1:1.
+- [ ] Make it opt-in and selectable: import all projects, or pick specific project dirs (the operator may not want every personal conversation inside atelier).
+- [ ] Decide the entry point: a step in `install.sh` onboarding and/or a dedicated `atelier-import-conversations` helper + `/atelier:import-conversations` command for later runs.
+- [ ] Be non-destructive: never move or delete from the personal root; never overwrite an atelier transcript that already exists.
+- [ ] Scope to conversation transcripts only — do **not** import personal `CLAUDE.md`, memory, or settings (those must stay isolated; importing them would re-introduce the leak M7.1.F53 fixes).
+- [ ] Document in the operator guide what is and isn't imported, and that it is a one-time/opt-in convenience.
+
+**Acceptance:** an operator with prior `~/.claude/` conversations runs the import (at install or via the command) and, inside an `atelier()` session for the same project, `claude --resume` lists those prior conversations; the personal root is untouched and no personal `CLAUDE.md` / settings cross over.
+
+**Trigger to revisit:** requested by the operator 2026-06-05 while reasoning about the personal-vs-atelier config split. Natural companion to M7.1.F53 — same separation boundary, opposite direction (F53 keeps personal *rules* out; this lets personal *history* in, deliberately and scoped).
+
+### M5.4 — Daily housekeeping of worktrees + local/remote branches (operator-authorized)
+
+`[maintenance]` · Source: operator request (2026-06-05) · Related: [skills/auto-merge/SKILL.md](skills/auto-merge/SKILL.md) (post-merge cleanup), [agents/task-orchestrator.md](agents/task-orchestrator.md) (worktree-as-evidence on blocked/oversize)
+
+Today cleanup is per-task: `auto-merge` removes the worktree and deletes the remote branch right after a successful squash-merge. Anything that falls outside that happy path accumulates — abandoned task worktrees, local `task/*` branches whose PR merged elsewhere, stale `origin/task/*` remotes. Atelier should run a **daily** housekeeping sweep that proposes what to clean, shows the operator a full summary, and acts **only** after explicit authorization.
+
+**Scope:**
+
+- [ ] An `atelier-housekeeping` helper that enumerates removable items in the registered projects/worktrees:
+  - **Worktrees** with no active/blocked/oversize task (cross-checked against `IN_PROGRESS.md` markers — never a worktree that is task evidence).
+  - **Local branches** that are fully merged into `main` (or whose PR is merged/closed) and are not checked out.
+  - **Remote branches** (`origin/task/*`) whose PR is merged/closed.
+- [ ] **Daily cadence, not per-session spam:** gate on a last-run timestamp (e.g. a `SessionStart` check that fires the sweep at most once per calendar day; record the stamp under `$ATELIER_CONFIG_DIR`). Decide whether a scheduled job is in scope or the session-gated check suffices.
+- [ ] **Always ask first:** present a summary grouped by category — the exact list of worktrees, local branches, and remote branches that would be deleted, with why each is removable — then require explicit authorization (single confirm; ideally per-category or per-item opt-out) before touching anything.
+- [ ] **Hard safety rails:** never delete protected branches (`main`/`master`/`develop`/`staging`), never delete a branch/worktree with an open PR, never remove a worktree backing an `[BLOCKED]` or `[OVERSIZE]` entry, never force-delete unmerged work without an explicit operator override.
+- [ ] A manual entry point too (`/atelier:housekeeping` or similar) so the operator can run the sweep on demand, not only on the daily trigger.
+- [ ] Document the cadence, what counts as removable, and the safety rails in the operator guide.
+
+**Acceptance:** with a stale merged `task/*` branch, its merged `origin/task/*` remote, and an orphan worktree present, the daily sweep (or manual command) lists all three in a categorized summary, deletes them only after the operator authorizes, and leaves untouched any protected branch, open-PR branch, or worktree backing a blocked/oversize task; re-running the same day does not re-prompt.
+
+**Trigger to revisit:** requested by the operator 2026-06-05 — wants worktrees and local/remote branches kept tidy automatically, but always behind an authorized summary rather than silent deletion.
 
 ---
 
