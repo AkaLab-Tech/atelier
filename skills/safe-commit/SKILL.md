@@ -77,7 +77,7 @@ Result:      GREEN — commit allowed.
 Next step:   the gate is a precondition, not the deliverable — the caller must now proceed to commit → push → PR. A green gate is never a stopping point.
 ```
 
-The `✓ / ✗` symbols and the `Result: GREEN | RED` line are the parser's anchor. Keep them stable. The `Next step:` line on a green report is mandatory: it exists to stop callers — `pr-author` especially — from reading `GREEN` as "done" and ending their turn at the gate (M7.1.F52).
+The `✓ / ✗` symbols and the `Result: GREEN | RED` line are the parser's anchor. Keep them stable. The `Next step:` line on a green report is mandatory: it exists to stop callers — `pr-author` especially — from reading `GREEN` as "done" and ending their turn at the gate (M7.1.F55).
 
 ## Decision rules
 
@@ -85,5 +85,5 @@ The `✓ / ✗` symbols and the `Result: GREEN | RED` line are the parser's anch
 - **Never** quarantine or skip a test to make a red go green. That belongs in `tester` after the operator confirms the test is genuinely flaky.
 - **Never** add a `--passWithNoTests` flag, `--bail=false`, or any other shape-changing flag to the test command. Use what `package.json` defines.
 - When a step is N/A (no script defined), **say so explicitly**. The push gate cannot be "green" if a project has no test script — it has to be "yellow" / "partial" so the operator can decide.
-- **Never** let a caller read `GREEN` as "task done". This skill *authorises* the commit; it does not perform the commit, the push, or the PR. The `Next step:` line on a green report is the guard against that misread (M7.1.F52) — keep it on every green report.
+- **Never** let a caller read `GREEN` as "task done". This skill *authorises* the commit; it does not perform the commit, the push, or the PR. The `Next step:` line on a green report is the guard against that misread (M7.1.F55) — keep it on every green report.
 
