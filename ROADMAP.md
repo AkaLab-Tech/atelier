@@ -141,15 +141,7 @@ Today the `task-orchestrator` picks the highest-priority unchecked ROADMAP item 
 
 > **Group several single-repo projects into a "workspace"** (e.g. backend + frontend + CMS) with aggregated status, root-level routing, and *sequenced* cross-repo `blocked_by:<token>#id` dependencies — **without** ever introducing cross-repo atomicity (each task stays one worktree / one PR). Design: [PLAN.md §15](PLAN.md). Milestones are ~1 PR each; M8.1→M8.5 are ordered, M8.6/M8.7 depend on M8.1 only.
 
-> **M8.1–M8.5 delivered** (registry + setup foundation; `/setup-workspace` + `--discover`; `atelier-resolve-dep` resolver; cross-repo `blocked_by` enforcement; `task` routing from the workspace root) — see [HISTORY.md](HISTORY.md). The milestones below build on them.
-
-### M8.6 — Aggregated `/workspace-status`
-
-`[multi-repo]` · `blocked_by: M8.1` · Source: [PLAN.md §15.6](PLAN.md)
-
-New command + `atelier-list-projects --workspace <slug>` filter. One row per member (status, in-progress, open count, cross-repo-blocked count) plus a cross-repo-blocked section. Does not overload `/status`.
-
-**Acceptance:** from the workspace root, `/workspace-status` renders one row per member and a coherent cross-repo-blocked section.
+> **M8.1–M8.6 delivered** (registry + setup foundation; `/setup-workspace` + `--discover`; `atelier-resolve-dep` resolver; cross-repo `blocked_by` enforcement; `task` routing from the workspace root; aggregated `/workspace-status`) — see [HISTORY.md](HISTORY.md). The milestone below closes Phase 8.
 
 ### M8.7 — Auxiliary: `/list-workspaces`, `/remove-workspace`, `/doctor` extension
 

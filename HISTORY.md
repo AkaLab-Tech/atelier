@@ -8,6 +8,22 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M8.6 — Aggregated `/workspace-status` — 2026-06-08
+**PR:** _pending_ · **Design:** [PLAN.md §15.6](PLAN.md) · **Builds on:** M8.1, M8.3
+
+Sixth Phase 8 milestone: a single roll-up view across a workspace's members, so the operator can see the whole product's state at a glance instead of running `/status` in each repo.
+
+**Delivered:**
+- `scripts/atelier-workspace-status` (new) — `[<slug>] [--from <path>] [--json]`. Resolves the workspace from the slug or from cwd/`--from` (a workspace root or a registered member), then renders a dashboard: one row per member (on-disk status — reusing `atelier-list-projects`'s `compute_status` rule; in-progress task parsed from `IN_PROGRESS.md`; open-task count; cross-repo-blocked count) plus a **cross-repo blocked** section listing every member task whose `blocked_by:<token>#id` is unsatisfied (resolved via `atelier-resolve-dep`; intra-repo `#id` blockers are ignored here). `--json` emits the same data machine-readably. Read-only; exit 2 when no workspace resolves.
+- `commands/workspace-status.md` (new) — `/atelier:workspace-status [<slug>]` thin wrapper; relays the binary verbatim with the same stop-rule as `/list-projects`. A note distinguishes it from single-project `/status`.
+- `install.sh` — symlink the helper onto `~/.local/bin`. `templates/settings.template.json` — allowlist `Bash(atelier-workspace-status:*)`.
+
+**Decision:** a dedicated script rather than overloading `atelier-list-projects --workspace` — the workspace dashboard is a different artifact (member rows + cross-repo section + resolver calls), so a separate read-only binary keeps `list-projects` unchanged and the output cohesive.
+
+**Plugin bump:** **0.18.0 → 0.19.0** (new helper + new slash command, per §14.2 minor).
+
+**Verified:** sandbox with 3 members (backend/frontend configured, cms missing-files), `frontend #10 blocked_by:backend#23` (open) + an intra-repo `blocked_by:#10` — the dashboard shows correct per-member status / in-progress (skipping the IN_PROGRESS placeholder comment) / open counts, `x-repo-blocked: 1` only on frontend, and a cross-repo section listing `frontend #10 … blocked_by backend#23 (open)`; the intra-repo blocker is correctly excluded. Resolution by slug, from cwd=root, and from a member path all work; `--json` shape correct; bad slug → exit 2. `bash -n` + `jq empty` clean.
+
 ### M8.5 — `task` routing from the workspace root — 2026-06-08
 **PR:** [#145](https://github.com/AkaLab-Tech/atelier/pull/145) · **Design:** [PLAN.md §15.5](PLAN.md) · **Builds on:** M8.1
 

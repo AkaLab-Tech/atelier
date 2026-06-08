@@ -1325,6 +1325,10 @@ phase_c_1_setup_project_helper() {
   # 0/3/4/5). Called by the task-discovery skill and /next-task to gate a
   # task whose cross-repo blocker is not yet merged (PLAN.md §15.4).
   _phase_c_1_symlink_helper atelier-resolve-dep
+  # M8.6: atelier-workspace-status renders an aggregated, read-only dashboard
+  # for a workspace — one row per member plus a cross-repo-blocked section
+  # (PLAN.md §15.6). Backs the /atelier:workspace-status command.
+  _phase_c_1_symlink_helper atelier-workspace-status
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it

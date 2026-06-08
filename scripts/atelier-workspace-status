@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+#
+# atelier-workspace-status — aggregated, read-only status for one workspace:
+# one row per member (on-disk status · in-progress task · open-task count ·
+# cross-repo-blocked count) plus a "cross-repo blocked" section listing every
+# member task whose `blocked_by:<token>#id` is not yet satisfied. See PLAN.md
+# §15.6. Does not overload `/status` (which is single-project by contract).
+#
+# The workspace is resolved from the positional <slug>, else from --from
+# <path> / cwd: if that path is a workspace root or a registered member, its
+# workspace is used.
+#
+# Usage:
+#   atelier-workspace-status [<slug>] [--from <path>] [--json]
+#   atelier-workspace-status --help
+#
+# Exit codes:
+#   0  rendered successfully
+#   1  unrecoverable error (no workspaces.json, jq missing, malformed JSON)
+#   2  could not resolve a workspace (bad slug, or path not in any workspace)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+die()    { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+resolve_fail() { printf '!!  %s\n' "$*" >&2; exit 2; }
+
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+Aggregated read-only status for one atelier workspace. See PLAN.md §15.6.
+
+USAGE:
+  ${SCRIPT_NAME} [<slug>] [--from <path>] [--json]
+  ${SCRIPT_NAME} --help
+
+OPTIONS:
+  <slug>        Workspace id. If omitted, resolved from --from / cwd (a
+                workspace root or a registered member of one).
+  --from <path> Path to resolve the workspace from (default: cwd).
+  --json        Emit machine-readable JSON instead of the dashboard.
+  --help, -h    Show this help and exit.
+
+EXIT CODES:
+  0  rendered · 1  unrecoverable error · 2  could not resolve a workspace
+EOF
+}
+
+# ---------- arg parse ----------
+SLUG=""
+FROM_PATH=""
+MODE="default"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --from)    FROM_PATH="${2:-}"; shift 2 ;;
+    --from=*)  FROM_PATH="${1#--from=}"; shift ;;
+    --json)    MODE="json"; shift ;;
+    --help|-h) usage; exit 0 ;;
+    --)        shift; break ;;
+    -*)        die "unknown flag: $1 (run --help for usage)" ;;
+    *)         [ -n "$SLUG" ] && die "unexpected arg: $1"; SLUG="$1"; shift ;;
+  esac
+done
+
+# ---------- config + deps ----------
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+WORKSPACES_FILE="$ATELIER_CONFIG_DIR/workspaces.json"
+
+command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+[ -f "$WORKSPACES_FILE" ] || die "$WORKSPACES_FILE not found — no workspaces configured (run /atelier:setup-workspace)"
+jq empty "$WORKSPACES_FILE" >/dev/null 2>&1 || die "$WORKSPACES_FILE is not valid JSON"
+
+canonicalise() {
+  local input="$1"
+  case "$input" in /*) ;; *) input="$(pwd)/$input" ;; esac
+  if [ -d "$input" ]; then (cd -P "$input" && pwd); else printf '%s\n' "$input"; fi
+}
+
+# ---------- resolve the workspace ----------
+if [ -z "$SLUG" ]; then
+  probe="$(canonicalise "${FROM_PATH:-$(pwd)}")"
+  # First try an exact workspace-root match, then member membership.
+  SLUG="$(jq -r --arg p "$probe" '
+    .workspaces // {} | to_entries[]
+    | select(.value.root == $p or any(.value.members[]?; .path == $p))
+    | .key
+  ' "$WORKSPACES_FILE" 2>/dev/null | head -n1)"
+  [ -n "$SLUG" ] || resolve_fail "no workspace at '$probe' — pass a <slug> or run from a workspace root/member. Known: $(jq -r '.workspaces // {} | keys | join(", ")' "$WORKSPACES_FILE")"
+fi
+
+jq -e --arg w "$SLUG" '.workspaces[$w] // empty' "$WORKSPACES_FILE" >/dev/null 2>&1 \
+  || resolve_fail "workspace '$SLUG' not found. Known: $(jq -r '.workspaces // {} | keys | join(", ")' "$WORKSPACES_FILE")"
+
+ROOT="$(jq -r --arg w "$SLUG" '.workspaces[$w].root // ""' "$WORKSPACES_FILE")"
+
+# ---------- per-member computations ----------
+# On-disk status (mirrors atelier-list-projects compute_status).
+compute_status() {
+  local path="$1"
+  [ -d "$path" ] || { printf 'missing-directory'; return; }
+  if [ -f "$path/.claude/settings.json" ] && [ -f "$path/.atelier.json" ]; then
+    printf 'configured'
+  elif [ -f "$path/.claude/settings.json" ] || [ -f "$path/.atelier.json" ]; then
+    printf 'partial'
+  else
+    printf 'missing-files'
+  fi
+}
+
+# Count unchecked `- [ ]` items in a ROADMAP.md (0 if absent).
+open_count() {
+  [ -f "$1/ROADMAP.md" ] || { printf '0'; return; }
+  grep -cE '^[[:space:]]*- \[ \]' "$1/ROADMAP.md" 2>/dev/null || printf '0'
+}
+
+# First active task in IN_PROGRESS.md (a `- [ ]`/`- [x]` line that is not an
+# HTML comment), trimmed; "—" when none.
+in_progress_task() {
+  local f="$1/IN_PROGRESS.md" line
+  [ -f "$f" ] || { printf '—'; return; }
+  line="$(grep -nE '^[[:space:]]*- \[[ xX]\]' "$f" 2>/dev/null | grep -v '<!--' | head -n1 | sed 's/^[0-9]*://')"
+  if [ -z "$line" ]; then printf '—'; return; fi
+  # Trim leading "- [ ] " and surrounding whitespace; cap length.
+  line="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*- \[[ xX]\][[:space:]]*//')"
+  printf '%.60s' "$line"
+}
+
+# Emit cross-repo blockers for a member that are NOT satisfied, one per line:
+#   "<member-token>\t<task-id>\t<title>\t<blocker-token>#<id>\t<verdict>"
+# Parses unchecked ROADMAP lines carrying a `blocked_by:` with a token#id.
+member_xrepo_blocked() {
+  local mpath="$1" mtoken="$2" line bb task_id title blk btok bid verdict rc
+  [ -f "$mpath/ROADMAP.md" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in *blocked_by:*) ;; *) continue ;; esac
+    bb="$(printf '%s' "$line" | sed -nE 's/.*blocked_by:([^ `]*).*/\1/p')"
+    [ -n "$bb" ] || continue
+    task_id="$(printf '%s' "$line" | grep -oE '#[A-Za-z0-9._-]+' | head -n1)"
+    title="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*- \[ \][[:space:]]*//; s/`[^`]*`//g; s/blocked_by:[^ ]*//; s/#[A-Za-z0-9._-]+//g; s/~[0-9A-Za-z]+//g; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
+    IFS=',' read -r -a blks <<< "$bb"
+    for blk in "${blks[@]}"; do
+      case "$blk" in
+        *#*) ;; *) continue ;;
+      esac
+      btok="${blk%%#*}"; bid="${blk#*#}"
+      [ -n "$btok" ] || continue          # intra-repo (#id) — handled in-file, skip here
+      set +e
+      verdict="$(atelier-resolve-dep --from "$mpath" --token "$btok" --id "#$bid" 2>/dev/null)"; rc=$?
+      set -e
+      [ "$rc" -eq 0 ] && continue          # satisfied — not blocked
+      printf '%s\t%s\t%s\t%s#%s\t%s\n' "$mtoken" "${task_id:-?}" "${title:-?}" "$btok" "$bid" "${verdict:-error}"
+    done
+  done < <(grep -E '^[[:space:]]*- \[ \].*blocked_by:' "$mpath/ROADMAP.md" 2>/dev/null)
+}
+
+# ---------- gather members ----------
+declare -a M_TOKENS=() M_PATHS=()
+while IFS=$'\t' read -r tok path; do
+  [ -n "$path" ] || continue
+  M_TOKENS+=("$tok"); M_PATHS+=("$path")
+done < <(jq -r --arg w "$SLUG" '.workspaces[$w].members[]? | "\(.token)\t\(.path)"' "$WORKSPACES_FILE")
+
+# Collect cross-repo-blocked rows once (used by both render modes).
+XREPO_ROWS=""
+for i in "${!M_PATHS[@]}"; do
+  rows="$(member_xrepo_blocked "${M_PATHS[$i]}" "${M_TOKENS[$i]}")"
+  [ -n "$rows" ] && XREPO_ROWS+="$rows"$'\n'
+done
+
+# ---------- render ----------
+if [ "$MODE" = "json" ]; then
+  members_json="$(
+    for i in "${!M_PATHS[@]}"; do
+      p="${M_PATHS[$i]}"; t="${M_TOKENS[$i]}"
+      st="$(compute_status "$p")"; oc="$(open_count "$p")"
+      xb="$(printf '%s' "$XREPO_ROWS" | { grep -cE "^${t}	" || true; })"
+      ip="$(in_progress_task "$p")"
+      jq -n --arg token "$t" --arg path "$p" --arg status "$st" \
+            --arg inprogress "$ip" --argjson open "${oc:-0}" --argjson xblocked "${xb:-0}" \
+            '{token:$token, path:$path, status:$status, inProgress:$inprogress, openTasks:$open, crossRepoBlocked:$xblocked}'
+    done | jq -s '.'
+  )"
+  blocked_json="$(printf '%s' "$XREPO_ROWS" | jq -R 'select(length>0) | split("\t") | {member:.[0], task:.[1], title:.[2], blocker:.[3], verdict:.[4]}' | jq -s '.')"
+  jq -n --arg ws "$SLUG" --arg root "$ROOT" --argjson members "$members_json" --argjson blocked "$blocked_json" \
+    '{workspace:$ws, root:$root, members:$members, crossRepoBlocked:$blocked}'
+  exit 0
+fi
+
+# Default human dashboard.
+printf 'Workspace: %s' "$SLUG"
+[ -n "$ROOT" ] && printf '  (root: %s)' "$ROOT"
+printf '\n\n'
+
+if [ "${#M_PATHS[@]}" -eq 0 ]; then
+  printf '  (no members)\n'
+  exit 0
+fi
+
+printf 'Members (%d):\n' "${#M_PATHS[@]}"
+for i in "${!M_PATHS[@]}"; do
+  p="${M_PATHS[$i]}"; t="${M_TOKENS[$i]}"
+  st="$(compute_status "$p")"; oc="$(open_count "$p")"; ip="$(in_progress_task "$p")"
+  xb="$(printf '%s' "$XREPO_ROWS" | { grep -cE "^${t}	" || true; })"
+  case "$st" in
+    configured)        glyph='✓' ;;
+    partial|missing-files) glyph='⚠' ;;
+    missing-directory) glyph='✗' ;;
+    *)                 glyph='?' ;;
+  esac
+  printf '  %-14s %s %-17s  in-progress: %-28s  open: %-3s  x-repo-blocked: %s\n' \
+    "$t" "$glyph" "$st" "$ip" "${oc:-0}" "${xb:-0}"
+done
+
+blocked_n="$(printf '%s' "$XREPO_ROWS" | grep -cE '.' || true)"
+printf '\nCross-repo blocked (%s):\n' "${blocked_n:-0}"
+if [ "${blocked_n:-0}" -eq 0 ]; then
+  printf '  (none — every cross-repo blocked_by is satisfied)\n'
+else
+  while IFS=$'\t' read -r mtok task title blk verdict; do
+    [ -n "$mtok" ] || continue
+    printf '  %s %s  %s  — blocked_by %s (%s)\n' "$mtok" "$task" "$title" "$blk" "$verdict"
+  done < <(printf '%s' "$XREPO_ROWS")
+fi
