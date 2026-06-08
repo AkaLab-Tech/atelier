@@ -8,6 +8,23 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M8.3 — `atelier-resolve-dep` offline cross-repo dependency resolver — 2026-06-08
+**PR:** [#139](https://github.com/AkaLab-Tech/atelier/pull/139) · **Design:** [PLAN.md §15.4](PLAN.md) · **Builds on:** M8.1
+
+Third Phase 8 milestone: the offline resolver that the M8.4 enforcement will call. Answers "is `<token>#<id>` merged?" for a cross-repo `blocked_by:<token>#id` dependency **without any network** — by reading the sibling member's `HISTORY.md` (the roadmap-tracking-flow completed log).
+
+**Delivered:**
+- `scripts/atelier-resolve-dep` (new) — `--token <repo> --id <#id> (--workspace <slug> | --from <member-path>)`. Resolves the workspace (explicitly or by reverse-lookup of `--from`), maps the token to its member path via `workspaces.json`, then classifies the id against that member's tracking: closed in `HISTORY.md` → exit 0 `satisfied`; open in `ROADMAP.md`/`IN_PROGRESS.md` → exit 3 `open`; token not a member → exit 4 `unknown-token`; id nowhere → exit 5 `unknown-id`; usage/workspace-not-found → exit 2. Prints a one-word verdict on stdout.
+- `install.sh` — symlink the helper onto `~/.local/bin`.
+- `templates/settings.template.json` — allowlist `Bash(atelier-resolve-dep:*)` (M8.4 invokes it from the task gate).
+
+**Design decisions:**
+- **Offline, not `gh`.** `HISTORY.md` is the atelier-native "done" signal, works offline, and the cross-repo `<id>` is a ROADMAP task id — not necessarily a PR number — so a `gh pr` lookup would be both networked and id-mismatched.
+- **No PR-number requirement.** Presence as an entry in `HISTORY.md` means merged; a merged-but-not-backfilled entry legitimately reads `**PR:** _pending_`, so requiring a co-located PR *number* would false-negative.
+- **Loud `unknown-id`.** An id that appears nowhere is treated as a likely typo (exit 5) and refuses, rather than silently passing.
+
+**Verified:** 12/12 — closed via heading and via `[x]` list item (0); open in ROADMAP and in IN_PROGRESS (3); unknown id (5); unknown token (4); id-boundary (`#2`≠`#23`, `#4`≠`#42`); atelier-style id `M2.3` (0); `--from` reverse-lookup; orphan `--from` and bad `--workspace` (2). `bash -n` clean.
+
 ### M8.2 — `/setup-workspace` command + member discovery — 2026-06-05
 **PR:** [#138](https://github.com/AkaLab-Tech/atelier/pull/138) · **Design:** [PLAN.md §15.3](PLAN.md) · **Builds on:** [M8.1](#m81--multi-repo-workspace-registry--atelier-setup-workspace-foundation--2026-06-05)
 

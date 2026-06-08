@@ -1320,6 +1320,11 @@ phase_c_1_setup_project_helper() {
   # (PLAN.md §15). It never reconfigures members or changes the
   # one-task / one-worktree / one-PR model.
   _phase_c_1_symlink_helper atelier-setup-workspace
+  # M8.3: atelier-resolve-dep resolves a cross-repo blocked_by:<token>#id
+  # dependency OFFLINE against the sibling member's HISTORY.md (exit
+  # 0/3/4/5). Called by the task-discovery skill and /next-task to gate a
+  # task whose cross-repo blocker is not yet merged (PLAN.md §15.4).
+  _phase_c_1_symlink_helper atelier-resolve-dep
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it
