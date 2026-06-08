@@ -6,6 +6,12 @@
 # Algorithm:
 #   1. If cwd is inside any registered project (longest-prefix path match),
 #      print that project path on stdout and exit 0.
+#   1.5. If cwd is exactly the root of a workspace (PLAN.md §15.5), launch an
+#      fzf picker of that workspace's MEMBERS (each annotated with a cheap
+#      open-task hint) and print the chosen member path. This takes precedence
+#      over a Step 1 match, so a workspace root that is also a registered
+#      project still offers the member picker. cwd inside a member resolves at
+#      Step 1 and never reaches here.
 #   2. Else, if there are registered projects, launch an fzf picker
 #      sorted by setupCompleted desc (most recent first); print the
 #      chosen path on stdout and exit 0. Operator cancel (Esc / Ctrl-C)
@@ -80,6 +86,61 @@ while IFS= read -r p; do
       ;;
   esac
 done <<< "$paths"
+
+# Step 1.5: workspace-root routing. If cwd is exactly a workspace root, offer a
+# picker of that workspace's members. Checked BEFORE returning a Step 1 match so
+# that a workspace root which is itself a registered project still gets the
+# member picker (precedence). When cwd is inside a member, Step 1 matched a
+# deeper path and this block does not fire.
+WORKSPACES_FILE="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}/workspaces.json"
+if [ -f "$WORKSPACES_FILE" ]; then
+  ws_slug=$(jq -r --arg c "$cwd" '
+    .workspaces // {} | to_entries[]
+    | select(.value.root == $c) | .key
+  ' "$WORKSPACES_FILE" 2>/dev/null | head -n1)
+
+  if [ -n "$ws_slug" ]; then
+    if ! command -v fzf >/dev/null 2>&1; then
+      printf 'atelier: cwd is the root of workspace "%s", but fzf is not on PATH.\n' "$ws_slug" >&2
+      printf '         members:\n' >&2
+      jq -r --arg w "$ws_slug" '.workspaces[$w].members[]? | "           \(.token)  \(.path)"' "$WORKSPACES_FILE" 2>/dev/null >&2
+      printf '         cd into one member and re-run, or install fzf for a picker.\n' >&2
+      exit 1
+    fi
+
+    # Member listing with a cheap open-task hint: count of unchecked `- [ ]`
+    # items in each member's ROADMAP.md. Advisory only — /next-task computes
+    # real eligibility (epics, intra- and cross-repo blocked_by) at claim time.
+    ws_listing=""
+    while IFS=$'\t' read -r token path; do
+      [ -n "$path" ] || continue
+      open=0
+      [ -f "$path/ROADMAP.md" ] && open=$(grep -cE '^[[:space:]]*- \[ \]' "$path/ROADMAP.md" 2>/dev/null)
+      ws_listing+="${token}"$'\t'"(${open:-0} open)"$'\t'"${path}"$'\n'
+    done < <(jq -r --arg w "$ws_slug" '.workspaces[$w].members[]? | "\(.token)\t\(.path)"' "$WORKSPACES_FILE" 2>/dev/null)
+
+    if [ -z "$ws_listing" ]; then
+      printf 'atelier: workspace "%s" has no members.\n' "$ws_slug" >&2
+      exit 1
+    fi
+
+    choice=$(printf '%s' "$ws_listing" | fzf \
+      --prompt="Member of ${ws_slug}: " \
+      --height=40% \
+      --reverse \
+      --header="Pick a member of workspace '${ws_slug}' to run /next-task against (Esc to cancel)" \
+      --delimiter=$'\t' \
+      --with-nth=1,2)
+
+    # Operator cancelled: exit 1 with no output.
+    [ -n "$choice" ] || exit 1
+    # Extract the path (last tab-delimited column).
+    selected_member="${choice##*$'\t'}"
+    [ -n "$selected_member" ] || exit 1
+    printf '%s\n' "$selected_member"
+    exit 0
+  fi
+fi
 
 if [ -n "$matched" ]; then
   printf '%s\n' "$matched"

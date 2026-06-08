@@ -141,15 +141,7 @@ Today the `task-orchestrator` picks the highest-priority unchecked ROADMAP item 
 
 > **Group several single-repo projects into a "workspace"** (e.g. backend + frontend + CMS) with aggregated status, root-level routing, and *sequenced* cross-repo `blocked_by:<token>#id` dependencies — **without** ever introducing cross-repo atomicity (each task stays one worktree / one PR). Design: [PLAN.md §15](PLAN.md). Milestones are ~1 PR each; M8.1→M8.5 are ordered, M8.6/M8.7 depend on M8.1 only.
 
-> **M8.1–M8.4 delivered** (registry + setup foundation; `/setup-workspace` + `--discover`; `atelier-resolve-dep` resolver; cross-repo `blocked_by` enforcement) — see [HISTORY.md](HISTORY.md). The milestones below build on them.
-
-### M8.5 — `task` routing from the workspace root
-
-`[multi-repo]` · `blocked_by: M8.1` · Source: [PLAN.md §15.5](PLAN.md)
-
-`atelier-task-resolve` Step 1.5: when `cwd` is a workspace `root`, present a member picker (reusing the fzf block) with per-member open-task hints, then route into the chosen member's `/next-task`. Root-is-also-a-project → member picker precedence. Inside a member → unchanged.
-
-**Acceptance:** `task` from the workspace root shows a member picker and routes correctly; `task` from inside a member is unchanged.
+> **M8.1–M8.5 delivered** (registry + setup foundation; `/setup-workspace` + `--discover`; `atelier-resolve-dep` resolver; cross-repo `blocked_by` enforcement; `task` routing from the workspace root) — see [HISTORY.md](HISTORY.md). The milestones below build on them.
 
 ### M8.6 — Aggregated `/workspace-status`
 

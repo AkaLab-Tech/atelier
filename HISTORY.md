@@ -8,6 +8,20 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M8.5 — `task` routing from the workspace root — 2026-06-08
+**PR:** [#145](https://github.com/AkaLab-Tech/atelier/pull/145) · **Design:** [PLAN.md §15.5](PLAN.md) · **Builds on:** M8.1
+
+Fifth Phase 8 milestone: running `task` from a workspace's parent folder now offers a member picker instead of falling through to the global project picker, so the operator can drive a product made of several repos from one place.
+
+**Delivered:**
+- `scripts/atelier-task-resolve` — new **Step 1.5** between the longest-prefix member match and the global picker: when `cwd` is exactly a workspace `root` (from `workspaces.json`), present an fzf picker of that workspace's members, each annotated with a cheap open-task hint (count of unchecked `- [ ]` items in the member's `ROADMAP.md` — advisory; `/next-task` computes real eligibility incl. cross-repo `blocked_by` at claim time). The chosen member path flows through the existing `task()` → `/next-task` path unchanged. **Precedence:** the workspace-root check runs *before* returning a Step 1 match, so a root that is itself a registered project still gets the member picker. cwd *inside* a member resolves at Step 1 as before (unchanged). fzf-missing lists members on stderr and exits 1.
+
+No `install.sh` change: `atelier-task-resolve` is already symlinked, and the `task()` alias is untouched — the workspace context the cross-repo gate needs is recovered by reverse-lookup (`atelier-resolve-dep --from`), so no new env wiring.
+
+**Plugin bump:** **0.17.0 → 0.18.0** (new operator-facing routing capability in a host helper, per §14.2 minor).
+
+**Verified:** 7/7 with an fzf stub — root → member picker (selects the member, not the root); inside a member (shallow and deep) → Step 1 returns that member, no picker; open-task hint correct (backend 2 / frontend 1); fzf-missing → exit 1 with the members listed; precedence — a root also registered as a project still routes to the member picker. `bash -n` clean.
+
 ### M8.4 — Cross-repo `blocked_by` enforcement in `task-discovery` + `/next-task` — 2026-06-08
 **PR:** [#143](https://github.com/AkaLab-Tech/atelier/pull/143) · **Design:** [PLAN.md §15.4](PLAN.md) · **Builds on:** M8.3
 
