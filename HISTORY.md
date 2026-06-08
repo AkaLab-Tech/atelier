@@ -8,6 +8,25 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F55 — `pr-author` ended its turn at the green push gate without committing/pushing/opening the PR — 2026-06-08
+**PR:** [#142](https://github.com/AkaLab-Tech/atelier/pull/142)
+
+Discovered during M7.1 dogfood Nivel 4 on `storefront` (task BUG-RESILIENCE.1, 2026-06-02). The orchestrator chain reached `pr-author`, which ran the push gate, fixed three lint errors in the new test file, and got lint + typecheck + tests all green — then **stopped**. Its return reported only the gate result; the orchestrator finished the commit/push/PR inline and asked the operator to confirm the push.
+
+**Evidence (transcript `agent-a5128c32f3e1e5d3b.jsonl`):** the `pr-author` subagent's final record is `stop_reason: end_turn`, `output_tokens: 245`, whose text is the `safe-commit` report ending in `Result: GREEN — commit allowed.` There is no `git commit`, no SHA, no PR object. Not a crash, hook block, or budget exhaustion (27 tool-uses / 47.9k tokens) — a clean, voluntary `end_turn`.
+
+**Root cause:** `pr-author` confused the gate verdict (a *precondition*) with its deliverable (the *PR URL*). `safe-commit`'s green report closing on `commit allowed` reads like a finish line, so the model summarised it and ended the turn the way it would pause to report to a user — but as an autonomous subagent, `end_turn` is the return.
+
+**Relationship to F52/F53 (added on `main` by [#140](https://github.com/AkaLab-Tech/atelier/pull/140) while this was in flight):** this finding is the **root cause** of the symptom tracked as **M7.1.F52** (*orchestrator performs specialist work inline*) — `pr-author` stalling at the gate is what drove the orchestrator to absorb the work. This PR **partially addresses F52**: the new orchestrator decision-rule covers the `pr-author`-authoring slice (re-dispatch instead of absorb), but F52's broader delegation-contract hardening (never edit source / write tests inline; the reproduce + guard bullets) stays **open**. It does **not** touch **F53** (personal `CLAUDE.md` leak) — a separate config-isolation bug.
+
+**Fix (three files, all in this repo per "fix atelier, not the target"):**
+
+1. [agents/pr-author.md](agents/pr-author.md) — new "The push gate is a precondition, not your deliverable" section enumerating the only valid terminal states (PR URL / `oversized` / gate-red→`tester`); step 1 now says a green gate is never terminal; a Decision rule + an Output guard forbid ending the turn after a green gate.
+2. [skills/safe-commit/SKILL.md](skills/safe-commit/SKILL.md) — the green report gains a mandatory `Next step:` line telling the caller to proceed to commit → push → PR (the anchor line `Result: GREEN — commit allowed.` is kept byte-stable for the parser); a Decision rule states `GREEN` authorises the commit but does not perform it.
+3. [agents/task-orchestrator.md](agents/task-orchestrator.md) — `pr-author` may now return INCOMPLETE (gate green, no PR URL/SHA); step 8 routes that through `retry-with-logs` and re-dispatches with a correction; a Decision rule (parallel to the `unblocker` one) forbids finishing the commit/push/PR inline.
+
+**Plugin bump:** **0.16.0 → 0.16.1** (behavioral fix to agent/skill specs, PLAN.md §14.2 patch). Cut release `v0.16.1`.
+
 ### M2.9 — Semantic risk judge: opt-in `PreToolUse` Haiku hook as layer 3 over auto-mode — 2026-06-08
 **PR:** [#141](https://github.com/AkaLab-Tech/atelier/pull/141) · **Source:** [docs/research/permission-layer-3.md](docs/research/permission-layer-3.md) (PLAN.md §11 v2.3)
 
