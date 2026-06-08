@@ -60,7 +60,7 @@ Line conventions:
 - An imperative **title** (free text, until the next backtick group).
 - A backtick-quoted **id**: `` `#NN` ``.
 - Optional **estimate**: `` `~Nh` `` or `` `~Nd` ``.
-- Optional **blocked_by**: `` `blocked_by:#NN` `` (single id) or `` `blocked_by:#NN,#MM` `` (multiple).
+- Optional **blocked_by**: `` `blocked_by:#NN` `` (single id) or `` `blocked_by:#NN,#MM` `` (multiple). An id may carry a **member token** for a cross-repo dependency: `` `blocked_by:backend#23` `` means task `#23` in the workspace sibling `backend` (see "Cross-repo `blocked_by`" below). Intra- and cross-repo ids may be mixed: `` `blocked_by:#5,backend#23` ``.
 - Sub-bullets below the line are context: `Repro:`, `Acceptance:`, free-form notes.
 
 Sections are headed `## 🔥 P0 — …`, `## 🎯 P1 — …`, `## 💭 P2 — …` (the emoji is not load-bearing — match on the `P0`/`P1`/`P2` token, which is what determines priority).
@@ -69,7 +69,13 @@ Sections are headed `## 🔥 P0 — …`, `## 🎯 P1 — …`, `## 💭 P2 — 
 
 1. **Parse top-to-bottom.** Walk sections in declared order; the order of `P0 → P1 → P2` is the priority order.
 2. **Within each section**, walk items top-to-bottom. The first unchecked (`- [ ]`) item is the candidate. **If the item is an epic** (title starts with the literal `Epic:` token — see PLAN.md §5), descend into its sub-tasks before considering the epic itself; the candidate becomes the first unchecked sub-task. The epic line is never claimed directly — it is a container, not a unit of work.
-3. **Filter `blocked_by`.** A candidate is eligible only if every id in its `blocked_by:` is already `[x]` somewhere in the same `ROADMAP.md`. If any blocker is still `[ ]`, skip the candidate and look at the next item in the same section. For sub-tasks, `blocked_by` is resolved against **sibling sub-tasks first** (`#42b blocked_by:#42a` looks within the same epic), then falls back to the global scope.
+3. **Filter `blocked_by`.** A candidate is eligible only if **every** blocker — intra-repo and cross-repo — is satisfied. If any blocker is unsatisfied, skip the candidate and look at the next item in the same section.
+   - **Intra-repo** (`#NN`, no token): satisfied only if that id is already `[x]` somewhere in the same `ROADMAP.md`. For sub-tasks, resolve against **sibling sub-tasks first** (`#42b blocked_by:#42a` looks within the same epic), then fall back to the global scope.
+   - **Cross-repo** (`<token>#NN`): resolve **offline** with the `atelier-resolve-dep` helper instead of reading the local file. Run, with `<project-root>` being the directory that contains this `ROADMAP.md`:
+     ```bash
+     atelier-resolve-dep --from <project-root> --token <token> --id <#NN>
+     ```
+     Exit `0` → blocker merged in the sibling member → satisfied. Any non-zero exit → **not** satisfied, skip the candidate. The verdict word on stdout (`open` / `unknown-token` / `unknown-id`) explains why; carry it into the "no eligible task" report so the operator can act (a typo'd id or a token that is not a workspace member is a roadmap bug, not just an open dependency). If the helper is unavailable or `<project-root>` is not part of any workspace, a `<token>#id` blocker is unresolvable — treat the candidate as blocked and surface that the project is not in a workspace.
 4. **Filter `[OVERSIZE]` and `[BLOCKED]` markers.** A candidate whose heading line contains either marker is **silently skipped** (the operator owns the resolution — see M7.1.F26 and M7.1.F27.1). Same rule applies to sub-tasks.
 5. **Move on to the next section** only when the current one has no eligible candidates left.
 6. **No eligible task anywhere** → return "no work to pick up — every unchecked item is blocked by another open item, or everything is done". Do not pick a blocked item just to keep busy.
@@ -88,11 +94,20 @@ When parsing:
 - **Marker on the epic line vs sub-task**: a marker on the epic line (`[OVERSIZE]` / `[BLOCKED]`) applies to the whole epic (skip all sub-tasks). A marker on a single sub-task applies only to that sub-task.
 - **Indentation tolerance**: accept 2 or 4 spaces of indentation for sub-tasks. Tabs are tolerated but normalised to 2 spaces. More than one level of nesting (sub-sub-tasks) is **not** part of v1 — surface as a warning and treat the line as a flat sibling of its parent.
 
+## Cross-repo `blocked_by` (workspaces)
+
+When the current project is a member of a workspace (see PLAN.md §15), a task may depend on a task in a **sibling** member via `blocked_by:<token>#id`. This never makes the task itself cross-repo — it is still one task in this repo, one worktree, one PR. The token only **orders** it after the sibling's task is merged.
+
+- Resolution is **offline** via `atelier-resolve-dep` (selection step 3), which reads the sibling member's `HISTORY.md`; the `<id>` matches the sibling repo's own task-id convention, not a GitHub PR number.
+- A cross-repo blocker is **satisfied** only when the helper exits `0` (the id is closed in the sibling's `HISTORY.md`). `open` (exit 3) keeps the candidate blocked; `unknown-token` (exit 4) and `unknown-id` (exit 5) are roadmap bugs — surface them rather than silently skipping forever.
+- The skill never reaches into another repo's files directly; the helper is the only bridge, so this stays within the single-repo permission scope.
+
 ## Edge cases
 
 - **Two repos worth of layout.** This repo (atelier itself) uses the simpler `## High / Medium / Low Priority` layout from the `roadmap-tracking-flow` skill, **not** the operator-facing P0/P1/P2 format. If the `ROADMAP.md` heading style is `## High Priority` etc., treat `High → P0`, `Medium → P1`, `Low → P2` for selection purposes but record the priority as written in the output. Both layouts use the same `- [ ]` / `- [x]` semantics.
 - **No id on a line.** If a line lacks `` `#NN` ``, fall back to a slug-derived synthetic id (e.g. `#auto-csv-export`) and flag it in the output as `id-synthesized: true`. The product owner should add a real id.
-- **`blocked_by:` references an id not present in the file.** Treat the referenced id as `unknown` and refuse the candidate. Surface the missing id so the operator can fix the roadmap.
+- **`blocked_by:` references an id not present in the file.** Treat the referenced id as `unknown` and refuse the candidate. Surface the missing id so the operator can fix the roadmap. (For a cross-repo `<token>#id`, the equivalent signal is `atelier-resolve-dep` exiting `5 unknown-id` — same treatment: refuse and surface.)
+- **Cross-repo `<token>` is not a workspace member** (`atelier-resolve-dep` exits `4 unknown-token`) or **the project is in no workspace.** Refuse the candidate and surface the misconfiguration — never treat an unresolvable cross-repo blocker as satisfied.
 - **Multiple type tags on one line.** Keep the first one; warn about the extra.
 - **Tabs vs spaces, em-dash vs hyphen.** Be tolerant. Use a permissive parser, not a strict regex from hell.
 

@@ -120,15 +120,7 @@ Today cleanup is per-task: `auto-merge` removes the worktree and deletes the rem
 
 > **Group several single-repo projects into a "workspace"** (e.g. backend + frontend + CMS) with aggregated status, root-level routing, and *sequenced* cross-repo `blocked_by:<token>#id` dependencies — **without** ever introducing cross-repo atomicity (each task stays one worktree / one PR). Design: [PLAN.md §15](PLAN.md). Milestones are ~1 PR each; M8.1→M8.5 are ordered, M8.6/M8.7 depend on M8.1 only.
 
-> **M8.1, M8.2, M8.3 delivered** (registry + setup foundation; `/setup-workspace` + `--discover`; `atelier-resolve-dep` offline resolver) — see [HISTORY.md](HISTORY.md). The milestones below build on them.
-
-### M8.4 — Cross-repo `blocked_by` enforcement in `task-discovery` + `/next-task`
-
-`[multi-repo]` · `blocked_by: M8.3` · Source: [PLAN.md §15.4](PLAN.md)
-
-`task-discovery` detects the `<token>#id` shape, resolves the workspace by reverse-lookup, calls `atelier-resolve-dep`, and skips blocked candidates on auto-pick. `/next-task` Step 3 refuses an explicitly-named blocked task with a clear message; `allowed-tools` gains `Bash(atelier-resolve-dep:*)`; the cross-repo rule is added to Hard refusals.
-
-**Acceptance:** a frontend task `blocked_by:backend#23` is auto-skipped while backend#23 is open, refused with a clear message on explicit `#id` pick, and becomes claimable once backend#23 lands in `backend/HISTORY.md`.
+> **M8.1–M8.4 delivered** (registry + setup foundation; `/setup-workspace` + `--discover`; `atelier-resolve-dep` resolver; cross-repo `blocked_by` enforcement) — see [HISTORY.md](HISTORY.md). The milestones below build on them.
 
 ### M8.5 — `task` routing from the workspace root
 

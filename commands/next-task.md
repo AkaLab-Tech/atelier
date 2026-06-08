@@ -1,7 +1,7 @@
 ---
 description: Pick the next task from `ROADMAP.md`, set up its worktree, and hand it to the `task-orchestrator` agent end-to-end.
 argument-hint: "[task-id] [--yes|-y]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git wt:*), Bash(atelier-setup-project:*), Bash(env:*), Skill, Task
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git wt:*), Bash(atelier-setup-project:*), Bash(atelier-resolve-dep:*), Bash(env:*), Skill, Task
 ---
 
 You are running the `/next-task` slash command. Drive the full pickup-to-PR flow for one task from the project's `ROADMAP.md`, exactly as [PLAN.md §7](PLAN.md) prescribes.
@@ -53,7 +53,20 @@ Strip the `--yes` / `-y` flag from `$ARGUMENTS` before parsing the task id (so `
 
 If the remaining `$ARGUMENTS` is empty: invoke the `atelier:task-discovery` skill on the project's `ROADMAP.md`. It returns the structured record (`id`, `title`, `type`, `priority`, `estimate`, `blocked_by`, `worktree`, `acceptance`, `context`) per PLAN.md §5.
 
-If `$ARGUMENTS` names a specific id: find that block in `ROADMAP.md` directly, parse it into the same shape, and **validate** it is unchecked and has no open `blocked_by` — surface the violation and stop if either fails.
+If `$ARGUMENTS` names a specific id: find that block in `ROADMAP.md` directly, parse it into the same shape, and **validate** it is unchecked and has no open `blocked_by` — surface the violation and stop if either fails. The `blocked_by` validation covers both forms:
+
+- **Intra-repo** (`#NN`): the referenced id must be `[x]` in this `ROADMAP.md`.
+- **Cross-repo** (`<token>#NN`): resolve it offline with the helper, where `<project-root>` is the directory containing this `ROADMAP.md`:
+  ```bash
+  atelier-resolve-dep --from <project-root> --token <token> --id <#NN>
+  ```
+  Exit `0` → satisfied, continue. Any non-zero exit → **stop and refuse** with a precise message, e.g.:
+  ```text
+  ✗ /next-task: task #42 is blocked by backend#23, which is not yet merged.
+     workspace: <slug>   blocker: backend#23 — <open|unknown-token|unknown-id>
+     resolve:   merge backend#23 (run `task` in the backend member), then re-run.
+  ```
+  Use the verdict word from the helper's stdout to fill the message. Do **not** claim the task.
 
 ### 4. Confirm with the operator
 
@@ -118,6 +131,6 @@ Or, if any step aborted, report exactly which step and why — the operator deci
 ## Hard refusals
 
 - **Never** create a worktree if `IN_PROGRESS.md` already has a task — see step 2.
-- **Never** claim a task whose `blocked_by:` references an open item.
+- **Never** claim a task whose `blocked_by:` references an open item — including a cross-repo `<token>#id` whose target is not closed in that member's `HISTORY.md` (`atelier-resolve-dep` exits non-zero), or whose token/project is not a resolvable workspace member.
 - **Never** edit `settings.template.json` itself from this command — that file is the template, not the output. The helper writes the instantiated copy to `<worktree>/.claude/settings.json`; this command never touches either file directly.
 - **Never** push or open a PR from this command — that is `pr-author`'s job at the end of the chain.
