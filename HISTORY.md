@@ -8,6 +8,19 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M8.4 — Cross-repo `blocked_by` enforcement in `task-discovery` + `/next-task` — 2026-06-08
+**PR:** [#143](https://github.com/AkaLab-Tech/atelier/pull/143) · **Design:** [PLAN.md §15.4](PLAN.md) · **Builds on:** M8.3
+
+Fourth Phase 8 milestone: wires the M8.3 resolver into the task-selection path so a task with an unmet cross-repo `blocked_by:<token>#id` cannot be started. Spec-only (no new script); the resolver and its allowlist entry shipped in M8.3.
+
+**Delivered:**
+- `skills/task-discovery/SKILL.md` — the `blocked_by` line convention now documents the `<token>#id` cross-repo form; selection step 3 splits into intra-repo (resolved in-file, unchanged) vs cross-repo (resolved offline via `atelier-resolve-dep --from <project-root> --token <token> --id <#id>`; exit 0 → satisfied, non-zero → skip). A new "Cross-repo `blocked_by` (workspaces)" section and two edge cases (`unknown-token`, project-not-in-a-workspace) make the misconfiguration-vs-open distinction explicit — unresolvable blockers are never treated as satisfied.
+- `commands/next-task.md` — Step 3's explicit-id path validates cross-repo blockers with the same helper and **refuses** with a precise message (workspace, blocker, verdict word, how to resolve) on any non-zero exit; `allowed-tools` gains `Bash(atelier-resolve-dep:*)`; the Hard-refusals list now names the cross-repo case.
+
+**Plugin bump:** **0.16.1 → 0.17.0** (material change to an existing skill + command behaviour, per §14.2 minor).
+
+**Verified:** end-to-end simulation of the documented gate — a frontend task `blocked_by:backend#23` resolves `open` (exit 3) while `backend#23` is unfinished (so `/next-task` refuses), and flips to `satisfied` (exit 0) the moment `backend#23` lands in `backend/HISTORY.md` (so the task becomes claimable). The resolver contract itself was covered 12/12 in M8.3.
+
 ### M7.1.F55 — `pr-author` ended its turn at the green push gate without committing/pushing/opening the PR — 2026-06-08
 **PR:** [#142](https://github.com/AkaLab-Tech/atelier/pull/142)
 
