@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M8.5 — `task` routing from the workspace root — 2026-06-08
-**PR:** _pending_ · **Design:** [PLAN.md §15.5](PLAN.md) · **Builds on:** M8.1
+**PR:** [#145](https://github.com/AkaLab-Tech/atelier/pull/145) · **Design:** [PLAN.md §15.5](PLAN.md) · **Builds on:** M8.1
 
 Fifth Phase 8 milestone: running `task` from a workspace's parent folder now offers a member picker instead of falling through to the global project picker, so the operator can drive a product made of several repos from one place.
 
