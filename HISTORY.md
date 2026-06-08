@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M8.3 — `atelier-resolve-dep` offline cross-repo dependency resolver — 2026-06-08
-**PR:** _pending_ · **Design:** [PLAN.md §15.4](PLAN.md) · **Builds on:** M8.1
+**PR:** [#139](https://github.com/AkaLab-Tech/atelier/pull/139) · **Design:** [PLAN.md §15.4](PLAN.md) · **Builds on:** M8.1
 
 Third Phase 8 milestone: the offline resolver that the M8.4 enforcement will call. Answers "is `<token>#<id>` merged?" for a cross-repo `blocked_by:<token>#id` dependency **without any network** — by reading the sibling member's `HISTORY.md` (the roadmap-tracking-flow completed log).
 
