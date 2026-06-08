@@ -18,7 +18,7 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 ### M7.1.F52 — Orchestrator performs specialist work inline instead of delegating
 
-`[orchestrator]` · Source: dogfood (2026-06-05)
+`[orchestrator]` · Source: dogfood (2026-06-05) · **Partially addressed** by [M7.1.F55](HISTORY.md) ([#142](https://github.com/AkaLab-Tech/atelier/pull/142)) — the `pr-author`-authoring slice (re-dispatch instead of absorb) is covered; the broader hardening below stays open.
 
 The `task-orchestrator` ([agents/task-orchestrator.md](agents/task-orchestrator.md)) is specified as a planner/router that "does not write feature code, tests, or PR descriptions itself" and delegates to `implementer` → `tester` → `pr-author`. In real chains it sometimes does the work itself and ends up asking the operator implementation-level questions, bypassing the specialist boundary entirely. This collapses the per-agent safety scoping and the auditable chain checkpoints the design relies on.
 
