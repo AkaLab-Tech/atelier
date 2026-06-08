@@ -139,6 +139,18 @@ CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin marketplace add AkaLab-Tec
 
 To check whether auto-mode is currently active, inside any atelier session: `/status` → Config tab → `Default permission mode`. Should show `Auto mode`.
 
+### A high-risk command pauses, or asks when you didn't expect it (semantic risk judge)
+
+**Symptom:** On a project where you enabled the optional semantic risk judge (M2.9), a Bash command touching your lockfile, `Dockerfile`/`docker-compose`, `.github/workflows/`, `package.json`, or a deploy/infra path takes a beat longer than usual, or surfaces a permission prompt with a reason like *"Haiku flagged a deploy action: …"*.
+
+**Cause:** This is the opt-in layer-3 gate working as designed. When `semanticRiskJudge.enabled` is `true` in the project's `.atelier.json`, the `semantic-risk-judge` hook runs a quick Haiku judgement on commands that touch the high-risk surface (catalogued in `hooks/patterns/semantic-risk-judge.json`) and escalates the ones it judges overeager to an `ask`. The short pause is that single model call; only high-risk commands reach it (a cheap local check filters everything else first).
+
+**It is fail-open.** If the judge can't reach the model (no network, missing `claude` CLI, timeout), it **allows** the command and records a degraded line in `<worktree>/.task-log/hook-decisions.jsonl` — it never blocks just because the model was unavailable. It also never hard-blocks: the worst it does is ask.
+
+**Fix (per-call):** If the flagged command is fine, accept the prompt with **Yes**.
+
+**Fix (per-project):** To turn the layer off entirely, set `"semanticRiskJudge": { "enabled": false }` in the project's `.atelier.json` (or remove the block — it defaults to off). Review past decisions in `<worktree>/.task-log/hook-decisions.jsonl` (look for `"hook":"semantic-risk-judge"`).
+
 ### `pnpm install` rejected because of `minimum-release-age`
 
 **Symptom:** A dependency install fails with a `minimum-release-age` error mentioning a 10080-minute (7-day) threshold.

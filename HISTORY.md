@@ -8,6 +8,31 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M2.9 — Semantic risk judge: opt-in `PreToolUse` Haiku hook as layer 3 over auto-mode — 2026-06-08
+**PR:** [#141](https://github.com/AkaLab-Tech/atelier/pull/141) · **Source:** [docs/research/permission-layer-3.md](docs/research/permission-layer-3.md) (PLAN.md §11 v2.3)
+
+Closes M2.9. Adds the second-layer Haiku hook left as a follow-up by the M2.6/M2.7 spike: an **opt-in** `PreToolUse` Bash hook that asks Haiku 4.5 to judge commands touching a narrow high-risk surface, on top of auto-mode (M2.8). Auto-mode lets ~17% of overeager actions through (concentrated in ambiguous-consent Bash); this covers that residual, scoped to the surface where a miss is expensive.
+
+**Delivered:**
+
+- **`hooks/semantic-risk-judge.sh`** — opt-in gate (`.atelier.json` `semanticRiskJudge.enabled`), a cheap local risk-gate that runs before any model call (only high-risk commands reach Haiku), a bounded `claude -p --model claude-haiku-4-5-20251001` call with a re-entrancy guard (`ATELIER_SEMANTIC_RISK_JUDGE_ACTIVE`) + `timeout`/`gtimeout`, and fail-open parsing. Emits `{"permissionDecision":"ask",...}` on a risky verdict; otherwise exits 0.
+- **`hooks/patterns/semantic-risk-judge.json`** — high-risk surface catalogue with a `riskClass` tag per entry (lockfile → `dependency-lock`, Dockerfile/compose → `container-build`, `.github/workflows/` → `ci-cd`, `package.json` → `manifest`, deploy/infra/terraform/kubectl/helm → `deploy`). This is the concrete form of the "M2.5 risk-class tag" the scope referenced — no such catalogue existed before.
+- **`hooks/hooks.json`** — registers the hook on `PreToolUse` / `Bash` after `safe-package-change`.
+- **`templates/atelier.template.json`** — `semanticRiskJudge.enabled` flag, default `false`.
+- **`docs/operator-guide.md` + `docs/troubleshooting.md` + `operator-rules.md`** — opt-in usage, the fail-open behavior, the latency note (only high-risk commands pause), and the disable path. **`docs/research/permission-layer-3.md`** — Shipped note.
+- **`.claude-plugin/plugin.json`** — `0.15.0 → 0.16.0` (new hook = minor bump, PLAN.md §14.2). Cut release `v0.16.0`.
+- Bundled a housekeeping commit removing the **stale M2.8 block** from ROADMAP (M2.8 shipped in PR #114; its block was never removed when it moved to HISTORY).
+
+**Decisions captured:**
+
+- **Fail-open on Haiku unavailability** (timeout / no network / auth) — allow + log a degraded line to `.task-log/hook-decisions.jsonl`. It is a secondary layer above auto-mode + the static matrix, so it must never block on its own unavailability. Matches the fail-soft posture of every M2.4 hook.
+- **Risky verdict escalates to `ask`, never hard `deny`** — a Haiku false positive costs one operator prompt, not a stuck task. The static `deny` list owns categorical blocking.
+- **Local risk-gate before any model call** — latency and cost are bounded to the high-risk surface; benign Bash never reaches the model.
+- **No cache** — the same command can be safe or unsafe depending on cwd + surrounding state.
+- **Built speculatively** — M2.9's trigger asked for an observed false-negative incident; the ≥10-tasks-under-auto-mode bar was met but no FN incident of the relevant class had been recorded. The operator chose to build it now.
+
+**Verified locally:** `bash -n` clean; `jq empty` on all touched JSON; dry-runs of all four decision paths with a `claude` shim (inert without opt-in, risk-gate skips benign commands, risky → `ask`, claude-failure → fail-open allow + degraded log); catalogue coverage spot-checked across all five risk classes.
+
 ### M8.3 — `atelier-resolve-dep` offline cross-repo dependency resolver — 2026-06-08
 **PR:** [#139](https://github.com/AkaLab-Tech/atelier/pull/139) · **Design:** [PLAN.md §15.4](PLAN.md) · **Builds on:** M8.1
 

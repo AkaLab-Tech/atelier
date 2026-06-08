@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "hook": "semantic-risk-judge",
+  "description": "High-risk surface catalogue for the semantic-risk-judge PreToolUse hook (M2.9). This is layer 3's targeted second gate above Claude Code's native auto-mode: only Bash commands that touch one of these surfaces are escalated to a Haiku 4.5 intent judgement; everything else passes through untouched. Each entry carries a `riskClass` tag — the machine-readable risk-class label the M2.9 scope references (no such catalogue existed before; M2.9 defines it here as filename/command heuristics). The catalogue intentionally mirrors the surfaces atelier already treats as never-auto-merge or supply-chain sensitive (PLAN.md §6 + §4): lockfile, container build, CI/CD, package manifest, deploy/infra. The hook is opt-in per project via `.atelier.json` `semanticRiskJudge.enabled` — this file only defines WHAT counts as high-risk, not WHETHER the layer runs.",
+  "patterns": [
+    {
+      "name": "lockfile-touch",
+      "riskClass": "dependency-lock",
+      "description": "Command references pnpm-lock.yaml (or other lockfiles) outside the normal `pnpm install` path",
+      "match_type": "command_regex",
+      "pattern": "pnpm-lock\\.ya?ml|package-lock\\.json|yarn\\.lock",
+      "case_insensitive": false,
+      "rationale": "The lockfile is the reproducibility + audit anchor. safe-package-change already blocks literal `rm pnpm-lock.yaml`; this surfaces subtler manipulations (sed/mv/cp/redirect into the lockfile) for a semantic judgement."
+    },
+    {
+      "name": "container-build",
+      "riskClass": "container-build",
+      "description": "Command references a Dockerfile or docker-compose file",
+      "match_type": "command_regex",
+      "pattern": "Dockerfile|docker-compose|compose\\.ya?ml|docker[[:space:]]+build|docker[[:space:]]+compose",
+      "case_insensitive": false,
+      "rationale": "Container build/compose changes are on atelier's never-auto-merge surface (PLAN.md §6). A command that writes or rebuilds them deserves an intent check."
+    },
+    {
+      "name": "ci-cd-workflow",
+      "riskClass": "ci-cd",
+      "description": "Command references a GitHub Actions workflow path",
+      "match_type": "command_regex",
+      "pattern": "\\.github/workflows/|\\.github/actions/",
+      "case_insensitive": false,
+      "rationale": "Workflows under .github/workflows/** are agent-no-edit (PLAN.md §6). A Bash command reaching into that tree (e.g. writing a workflow via a heredoc to dodge the Edit gate) is exactly the ambiguous-consent case auto-mode can miss."
+    },
+    {
+      "name": "package-manifest",
+      "riskClass": "manifest",
+      "description": "Command references package.json outside the normal pnpm add/remove/update path",
+      "match_type": "command_regex",
+      "pattern": "package\\.json",
+      "case_insensitive": false,
+      "rationale": "package.json is never-auto-merge (PLAN.md §6) and must only change via pnpm. A raw command editing it (sed/jq/redirect) bypasses that rule; judge intent."
+    },
+    {
+      "name": "deploy-infra",
+      "riskClass": "deploy",
+      "description": "Command references deploy / infrastructure-as-code paths or tools",
+      "match_type": "command_regex",
+      "pattern": "(^|[[:space:]/])(deploy|infra|terraform)([[:space:]/]|$)|\\.tf\\b|\\bterraform[[:space:]]|\\bkubectl[[:space:]]|\\bhelm[[:space:]]",
+      "case_insensitive": false,
+      "rationale": "Deployment is out of scope for atelier v1 (PLAN.md §11) and any command reaching into deploy/infra paths or invoking deploy tooling is high-consequence and context-dependent — the canonical surface for a per-project semantic judgement."
+    }
+  ]
+}
