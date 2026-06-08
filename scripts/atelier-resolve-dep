@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+#
+# atelier-resolve-dep — answer "is <token>#<id> merged?" for a cross-repo
+# `blocked_by:<token>#<id>` dependency inside a workspace, entirely OFFLINE.
+#
+# A workspace member's completed work lives in its HISTORY.md (the
+# roadmap-tracking-flow completed log; every entry references the PR that
+# delivered it). So "is sibling task #<id> merged?" is answerable by reading
+# the sibling member's HISTORY.md — no network, no `gh`, no auth. This matters
+# because the cross-repo `<id>` is a ROADMAP task id, not necessarily a GitHub
+# PR number, and the resolver must run inside the otherwise-offline
+# task-discovery / next-task gate. See PLAN.md §15.4.
+#
+# Resolution:
+#   1. Locate the workspace (via --workspace, or reverse-lookup from --from).
+#   2. Find the member whose token == --token.            (else exit 4)
+#   3. Read that member's HISTORY.md and classify --id:
+#        - appears as a CLOSED entry (heading / [x] item)  -> exit 0 satisfied
+#        - appears only as OPEN work (ROADMAP / IN_PROGRESS) -> exit 3 open
+#        - appears NOWHERE in the member's tracking         -> exit 5 unknown-id
+#
+# Usage:
+#   atelier-resolve-dep --token <repo> --id <#id> (--workspace <slug> | --from <member-path>)
+#   atelier-resolve-dep --help
+#
+# Exit codes:
+#   0  satisfied      (<id> is closed in <token>'s HISTORY.md)
+#   2  usage error / workspace not found
+#   3  open           (<token> resolves; <id> exists but is not closed)
+#   4  unknown-token  (<token> is not a member of the workspace)
+#   5  unknown-id     (<id> appears nowhere in <token>'s tracking — likely a typo)
+#
+# stdout: a single machine-readable verdict word —
+#   satisfied | open | unknown-token | unknown-id | error
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+warn() { printf '!!  %s\n' "$*" >&2; }
+die()  { printf '!!  ERROR: %s\n' "$*" >&2; printf 'error\n'; exit 2; }
+
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+Resolve a cross-repo blocked_by:<token>#<id> dependency offline, against the
+target member's HISTORY.md. See PLAN.md §15.4.
+
+USAGE:
+  ${SCRIPT_NAME} --token <repo> --id <#id> (--workspace <slug> | --from <member-path>)
+  ${SCRIPT_NAME} --help
+
+OPTIONS:
+  --token <repo>        The workspace token of the sibling member that owns the
+                        blocking task (the <token> in blocked_by:<token>#id).
+  --id <#id>            The blocking task id (leading '#' optional).
+  --workspace <slug>    The workspace to resolve within.
+  --from <member-path>  Alternative to --workspace: derive the workspace by
+                        reverse-lookup of the member that declares the
+                        dependency. Ignored when --workspace is given.
+  --help, -h            Show this help and exit.
+
+EXIT CODES:
+  0 satisfied · 2 usage/workspace-not-found · 3 open · 4 unknown-token · 5 unknown-id
+EOF
+}
+
+# ---------- arg parse ----------
+TOKEN=""
+ID_RAW=""
+WS_SLUG=""
+FROM_PATH=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --token)       TOKEN="${2:-}"; shift 2 ;;
+    --token=*)     TOKEN="${1#--token=}"; shift ;;
+    --id)          ID_RAW="${2:-}"; shift 2 ;;
+    --id=*)        ID_RAW="${1#--id=}"; shift ;;
+    --workspace)   WS_SLUG="${2:-}"; shift 2 ;;
+    --workspace=*) WS_SLUG="${1#--workspace=}"; shift ;;
+    --from)        FROM_PATH="${2:-}"; shift 2 ;;
+    --from=*)      FROM_PATH="${1#--from=}"; shift ;;
+    --help|-h)     usage; exit 0 ;;
+    --)            shift; break ;;
+    -*)            die "unknown flag: $1 (run --help for usage)" ;;
+    *)             die "unexpected positional arg: $1 (run --help for usage)" ;;
+  esac
+done
+
+[ -n "$TOKEN" ]  || die "--token is required"
+[ -n "$ID_RAW" ] || die "--id is required"
+
+# Normalise the id: strip a single leading '#'.
+ID="${ID_RAW#\#}"
+[ -n "$ID" ] || die "--id is empty after stripping '#'"
+
+# ---------- config ----------
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+WORKSPACES_FILE="$ATELIER_CONFIG_DIR/workspaces.json"
+
+command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+[ -f "$WORKSPACES_FILE" ] || die "$WORKSPACES_FILE not found — no workspaces configured"
+
+canonicalise() {
+  local input="$1"
+  case "$input" in /*) ;; *) input="$(pwd)/$input" ;; esac
+  if [ -d "$input" ]; then (cd -P "$input" && pwd); else printf '%s\n' "$input"; fi
+}
+
+# ---------- resolve the workspace ----------
+if [ -z "$WS_SLUG" ]; then
+  [ -n "$FROM_PATH" ] || die "one of --workspace or --from is required"
+  from_canon="$(canonicalise "$FROM_PATH")"
+  WS_SLUG="$(jq -r --arg p "$from_canon" '
+    .workspaces // {} | to_entries[]
+    | select(any(.value.members[]?; .path == $p)) | .key
+  ' "$WORKSPACES_FILE" 2>/dev/null | head -n1)"
+  [ -n "$WS_SLUG" ] || die "member '$from_canon' is not part of any workspace — cross-repo blocked_by cannot be resolved"
+fi
+
+jq -e --arg w "$WS_SLUG" '.workspaces[$w] // empty' "$WORKSPACES_FILE" >/dev/null 2>&1 \
+  || die "workspace '$WS_SLUG' not found in $WORKSPACES_FILE"
+
+# ---------- resolve the token -> member path ----------
+MEMBER_PATH="$(jq -r --arg w "$WS_SLUG" --arg t "$TOKEN" '
+  .workspaces[$w].members[]? | select(.token == $t) | .path
+' "$WORKSPACES_FILE" 2>/dev/null | head -n1)"
+
+if [ -z "$MEMBER_PATH" ]; then
+  warn "token '$TOKEN' is not a member of workspace '$WS_SLUG'"
+  printf 'unknown-token\n'
+  exit 4
+fi
+
+# ---------- classify the id against the member's tracking ----------
+# Build a bounded regex for the id. Escape regex metacharacters (notably the
+# '.' in atelier-style ids like M2.8), allow an optional leading '#' or 'M',
+# and require a non-alphanumeric boundary on both sides so '#2' never matches
+# '#23' and 'M2.8' never matches 'M2.80'.
+esc_id="$(printf '%s' "$ID" | sed 's/[][\.^$*+?(){}|/]/\\&/g')"
+ID_RX="(^|[^0-9A-Za-z._])#?M?${esc_id}([^0-9A-Za-z.]|\$)"
+
+HISTORY_FILE="$MEMBER_PATH/HISTORY.md"
+ROADMAP_FILE="$MEMBER_PATH/ROADMAP.md"
+INPROGRESS_FILE="$MEMBER_PATH/IN_PROGRESS.md"
+
+# A "closing position" line: a markdown heading, or a checked/unchecked list
+# item, or a bold PR line — i.e. a line that introduces or anchors an entry,
+# not a passing prose mention.
+ENTRY_LINE_RX='(^#{1,6} )|(^[[:space:]]*[-*] \[)|(\*\*PR:\*\*)'
+
+# Closed iff the id appears on an entry-anchoring line within HISTORY.md.
+# HISTORY.md is the completed-work log, so presence there as an entry means
+# merged — we do NOT additionally require a PR *number*, because a merged but
+# not-yet-backfilled entry legitimately reads "**PR:** _pending_".
+if [ -f "$HISTORY_FILE" ] \
+   && grep -E "$ENTRY_LINE_RX" "$HISTORY_FILE" 2>/dev/null | grep -qE "$ID_RX"; then
+  printf 'satisfied\n'
+  exit 0
+fi
+
+# Open iff the id appears as active work in ROADMAP.md or IN_PROGRESS.md.
+for f in "$ROADMAP_FILE" "$INPROGRESS_FILE"; do
+  if [ -f "$f" ] && grep -qE "$ID_RX" "$f" 2>/dev/null; then
+    warn "blocker ${TOKEN}#${ID} is not yet merged in $MEMBER_PATH (found open in $(basename "$f"))"
+    printf 'open\n'
+    exit 3
+  fi
+done
+
+# Nowhere in the member's tracking — almost certainly a typo in the blocked_by.
+warn "blocker ${TOKEN}#${ID} appears nowhere in ${MEMBER_PATH}'s tracking (HISTORY/ROADMAP/IN_PROGRESS) — check the id"
+printf 'unknown-id\n'
+exit 5

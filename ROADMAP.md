@@ -69,15 +69,7 @@ Originally tracked as PLAN.md §11 v2.3. The M2.6 spike confirmed it complements
 
 > **Group several single-repo projects into a "workspace"** (e.g. backend + frontend + CMS) with aggregated status, root-level routing, and *sequenced* cross-repo `blocked_by:<token>#id` dependencies — **without** ever introducing cross-repo atomicity (each task stays one worktree / one PR). Design: [PLAN.md §15](PLAN.md). Milestones are ~1 PR each; M8.1→M8.5 are ordered, M8.6/M8.7 depend on M8.1 only.
 
-> **M8.1, M8.2 delivered** (registry + `atelier-setup-workspace` foundation; `/setup-workspace` command + `--discover`) — see [HISTORY.md](HISTORY.md). The milestones below build on them.
-
-### M8.3 — `atelier-resolve-dep` offline cross-repo resolver
-
-`[multi-repo]` · `blocked_by: M8.1` · Source: [PLAN.md §15.4](PLAN.md)
-
-Helper that answers "is `<token>#<id>` merged?" **offline** from the sibling member's `HISTORY.md`. Exit-code contract `0/3/4/5/2` (satisfied / open / unknown-token / unknown-id / usage). Id matched in a heading/item-introducing position with a co-located PR reference; `unknown-id` refuses loudly.
-
-**Acceptance:** member whose `HISTORY.md` closes `#23` → exit 0; open id → exit 3; unknown token → exit 4; unknown id → exit 5.
+> **M8.1, M8.2, M8.3 delivered** (registry + setup foundation; `/setup-workspace` + `--discover`; `atelier-resolve-dep` offline resolver) — see [HISTORY.md](HISTORY.md). The milestones below build on them.
 
 ### M8.4 — Cross-repo `blocked_by` enforcement in `task-discovery` + `/next-task`
 

@@ -214,6 +214,7 @@
       "Bash(atelier-setup-vercel:*)",
       "Bash(atelier-setup-neon:*)",
       "Bash(atelier-setup-workspace:*)",
+      "Bash(atelier-resolve-dep:*)",
 
       "Bash(claude plugin list --json)",
       "Bash(gh api repos/AkaLab-Tech/atelier/releases/latest*)",
