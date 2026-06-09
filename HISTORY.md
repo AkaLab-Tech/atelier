@@ -8,6 +8,21 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F52 — Orchestrator delegation boundary as a hard refusal — 2026-06-09
+**PR:** [#151](https://github.com/AkaLab-Tech/atelier/pull/151) · **Completes:** the broader hardening left open after [M7.1.F55](https://github.com/AkaLab-Tech/atelier/pull/142) (which covered only the `pr-author` slice)
+
+Dogfood bug: the `task-orchestrator` was specified as a planner/router only in prose, so it sometimes did specialist work inline (edited source, authored tests, surfaced implementation-level questions to the operator), collapsing the per-agent safety scoping and the auditable chain checkpoints.
+
+**Delivered** — single file, [`agents/task-orchestrator.md`](agents/task-orchestrator.md):
+- New prominent section **"The delegation boundary — never do specialist work yourself"**: enumerated hard refusals (never edit/create source, author tests, write a PR description / run `gh pr create`, or create the `blocked` issue / `[BLOCKED]` marker inline).
+- **Self-check guard**: the only direct edits allowed are the tracking files (`ROADMAP.md`/`IN_PROGRESS.md`/`HISTORY.md`) for assigned moves; before any `Edit`/`Write` or code-mutating `Bash`, the orchestrator must confirm the target is a tracking file or else stop and dispatch the specialist via `Task`.
+- **No inline implementation-level questions to the operator** — they route through `decision-broker` or surface as a terminal hand-off.
+- Generalized the `Decision rules` "never absorb … inline" bullets to cover `implementer`/`tester` (previously only `pr-author`/`unblocker`), and carved out the `/validate` gate as sanctioned routing (running the suite is the orchestrator's job; authoring test code is not).
+
+**Plugin bump:** **0.20.1 → 0.20.2** (behavioral tightening of an agent prompt, per §14.2 patch — same class as F55's v0.16.1).
+
+**Verified:** `structural.yml`'s YAML-frontmatter check passes locally (frontmatter untouched); no JSON/shell files changed.
+
 ### docs — operator guide: multi-repo workspaces (Phase 8) — 2026-06-09
 **PR:** [#148](https://github.com/AkaLab-Tech/atelier/pull/148)
 
