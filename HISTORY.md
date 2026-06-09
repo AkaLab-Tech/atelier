@@ -8,6 +8,25 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F53 — Personal `CLAUDE.md` no longer blocks the autonomous commit/push/merge flow — 2026-06-09
+**PR:** _pending_ · **Plugin bump:** 0.20.2 → 0.20.3
+
+Dogfood bug (reproduced 2026-06-09): a headless `claude -p "/atelier:next-task #9 --yes"` (`CLAUDE_CONFIG_DIR=~/.claude-work`) ran the full chain, committed all three commits, then the auto-mode classifier **denied** `git push -u origin task/...`, citing the operator's personal `CLAUDE.md` rule *"NUNCA ejecutes git push sin confirmación"*. No push → no PR → the chain could not finish.
+
+**Root cause (two combined defects), confirmed empirically:**
+1. **Permission gap.** The `allow` rule was `Bash(git push origin task/*)`, but the push atelier actually issues is `git push -u origin task/<id>-<slug>`. The `-u` breaks the prefix match, so the push fell through the static matrix to the model classifier.
+2. **Context leak.** `CLAUDE_CONFIG_DIR` relocates only *user-level* memory (to `$ATELIER_CONFIG_DIR/CLAUDE.md`). Claude Code *also* walks the directories **above** the worktree and loads any `CLAUDE.md` / `.claude/CLAUDE.md` as *project* memory — independent of `CLAUDE_CONFIG_DIR`. Because worktrees live under `$HOME`, the walk reaches `~/.claude/CLAUDE.md`, so the personal "never push" rule entered the classifier's context. Defect 1 routed the push to that polluted classifier; defect 2 made it deny.
+
+**Delivered:**
+- [`templates/settings.template.json`](templates/settings.template.json): added `Bash(git push -u origin task/*)` + `Bash(git push --set-upstream origin task/*)` to `allow`. The push is now auto-approved by the static matrix **before** the classifier consults any context memory — the leaked personal rule can no longer deny it.
+- [`operator-rules.md`](operator-rules.md): new § **"Atelier's gates are the only authority on commit / push / merge"** — documents that personal-memory confirmation directives do not govern the autonomous flow, explains the ancestor-walk leak despite `CLAUDE_CONFIG_DIR`, and records that the static allow short-circuits the classifier.
+- [`agents/task-orchestrator.md`](agents/task-orchestrator.md): new Decision rule — never re-prompt for commit/push/merge confirmation sourced from personal config (mirrors the auto-merge "do not re-prompt after a positive verdict" rule).
+- [`scripts/atelier-doctor`](scripts/atelier-doctor) + [`commands/doctor.md`](commands/doctor.md): new host check `check_personal_claudemd_leak` — detects a personal `~/.claude/CLAUDE.md` carrying commit/push confirmation gates (EN+ES) when atelier is isolated to a separate config dir, and explains the fix (relocate personal rules to the personal config root's CLAUDE.md).
+
+**Note:** the fix does not touch the operator's personal files — atelier neutralizes the symptom deterministically at the permission layer and warns about the leak via `/doctor`, so it works for any operator regardless of their personal `~/.claude/CLAUDE.md`.
+
+**Verified:** `bash -n scripts/atelier-doctor` clean; running the doctor on this machine surfaces the new `✗` leak check (the operator's `~/.claude/CLAUDE.md` carries the Spanish push rule).
+
 ### M7.1.F52 — Orchestrator delegation boundary as a hard refusal — 2026-06-09
 **PR:** [#151](https://github.com/AkaLab-Tech/atelier/pull/151) · **Completes:** the broader hardening left open after [M7.1.F55](https://github.com/AkaLab-Tech/atelier/pull/142) (which covered only the `pr-author` slice)
 
