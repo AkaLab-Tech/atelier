@@ -8,6 +8,24 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F57 — `safe-commit` gate validates the task worktree (not `$PWD`) and detects the package manager — 2026-06-09
+**PR:** _pending_ · **Plugin bump:** 0.20.3 → 0.20.4
+
+Dogfood bug (workspace sandbox, 2026-06-09): the `safe-commit` `PreToolUse` hook ran the push gate against the **wrong tree** and assumed `pnpm`. Three combined defects, all confirmed against [`hooks/safe-commit.sh`](hooks/safe-commit.sh):
+
+1. **Commit matcher missed the real pattern.** The interceptor only matched the literal substring `git commit`, but atelier's per-task convention is `git -C <worktree> commit` — the `-C <path>` token sits between `git` and `commit`, so the hook **never fired** on the actual worktree commit. (Surfaced while writing the regression test; the worktree-targeting fix below would have been dead code without it.)
+2. **Project root resolved from `$PWD`.** The hook inherited the agent's cwd (the main repo / home, per atelier's cwd-vs-worktree rule), so the gate `cd`-walked up from there and validated whatever `package.json` it found — not the worktree's change. The docs-only short-circuit's `git diff --cached` had the same `$PWD` bug.
+3. **`pnpm` hardcoded.** `run_pnpm_step()` always ran `pnpm run <script>`; an npm/yarn/bun member mis-ran or failed.
+
+**Delivered** — [`hooks/safe-commit.sh`](hooks/safe-commit.sh):
+- Broadened the commit matcher to also intercept `git -C <path> commit`.
+- Derive a `target_dir` from the commit command (`git -C <path>`, a `cd <path> &&` prefix, else `$PWD`), canonicalised and existence-checked. All git operations — the docs-only `diff --cached`/`diff` and the project-root walk — now run against `target_dir`, so the gate validates the worktree's actual files.
+- `detect_pm()` picks the package manager by lockfile (`pnpm-lock.yaml`→pnpm, `yarn.lock`→yarn, `bun.lock(b)`→bun, `package-lock.json`→npm), defaulting to pnpm per [PLAN.md §2](PLAN.md). The runner, block message, and decision logs use the detected `<pm> run <script>`.
+
+**Regression test** — [`hooks/tests/safe-commit-worktree.test.sh`](hooks/tests/safe-commit-worktree.test.sh): hermetic (temp repo + linked worktree, package-manager shims — no real pnpm/npm). Asserts (1) a worktree with a broken `typecheck` is **blocked** even when `$PWD`/main is clean, (2) a clean worktree is **allowed** even when main is broken (proving main is never consulted), (3) an npm-lockfile project is gated with `npm run`, not `pnpm`. Wired into CI ([`.github/workflows/structural.yml`](.github/workflows/structural.yml)), which now also `bash -n`-checks `hooks/**`.
+
+**Verified:** `bash -n hooks/safe-commit.sh` clean; `bash hooks/tests/safe-commit-worktree.test.sh` → all 3 checks pass.
+
 ### M7.1.F53 — Personal `CLAUDE.md` no longer blocks the autonomous commit/push/merge flow — 2026-06-09
 **PR:** [#152](https://github.com/AkaLab-Tech/atelier/pull/152) · **Plugin bump:** 0.20.2 → 0.20.3
 
