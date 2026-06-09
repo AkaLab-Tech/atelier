@@ -26,12 +26,17 @@ jobs:
       - name: bash -n on shell scripts
         run: |
           fail=0
-          for f in install.sh scripts/*; do
+          for f in install.sh scripts/* hooks/*.sh hooks/lib/*.sh hooks/tests/*.sh; do
             [ -f "$f" ] || continue
             echo "checking $f"
             bash -n "$f" || { echo "::error file=$f::shell syntax error"; fail=1; }
           done
           exit $fail
+
+      - name: safe-commit worktree/PM regression (M7.1.F57)
+        run: |
+          bash hooks/tests/safe-commit-worktree.test.sh \
+            || { echo "::error::safe-commit F57 regression failed"; exit 1; }
 
       - name: python3 -m json.tool on JSON files
         run: |

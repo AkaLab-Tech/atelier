@@ -70,13 +70,47 @@ fi
 # inside an unrelated quoted string (e.g. a `git log --grep="git commit"`)
 # — the pattern `git commit ` (with the trailing space) avoids most of
 # those edge cases, and the rest are not security-relevant.
+#
+# M7.1.F57 — also match `git -C <path> commit`, the atelier convention
+# for committing inside a task worktree. Without this the gate never
+# fired on the real per-task commit pattern (the `-C <path>` token sits
+# between `git` and `commit`, so the plain substring above misses it).
 case "$command_str" in
   *"git commit "*|*"git commit"|*"git commit;"*|*"git commit&"*)
+    ;;
+  *"git -C "*"commit "*|*"git -C "*"commit"|*"git -C "*"commit;"*|*"git -C "*"commit&"*)
     ;;
   *)
     exit 0
     ;;
 esac
+
+# M7.1.F57 — resolve the directory the commit actually targets.
+#
+# Atelier's cwd-vs-worktree rule (operator-rules.md) means an agent keeps
+# its cwd at the main repo / home and addresses the task worktree through
+# `git -C <worktree>` (or, less often, a `cd <worktree> &&` prefix). The
+# hook inherits that cwd, so `$PWD` is the WRONG tree: validating it runs
+# the gate against the main repo, not the change being committed. Derive
+# the target directory from the command itself, falling back to `$PWD`
+# only for a plain `git commit` with no `-C` / `cd`.
+target_dir="$PWD"
+if printf '%s' "$command_str" | grep -qE 'git[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-C[[:space:]]'; then
+  # `git -C <path> ... commit` — the atelier convention.
+  c_path="$(printf '%s' "$command_str" | sed -nE "s/.*git[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-C[[:space:]]+(\"([^\"]+)\"|'([^']+)'|([^[:space:]]+)).*/\3\4\5/p")"
+  [ -n "$c_path" ] && target_dir="$c_path"
+elif printf '%s' "$command_str" | grep -qE '^[[:space:]]*cd[[:space:]]'; then
+  # `cd <path> && git commit …` prefix.
+  cd_path="$(printf '%s' "$command_str" | sed -nE "s/^[[:space:]]*cd[[:space:]]+(\"([^\"]+)\"|'([^']+)'|([^[:space:]&;|]+)).*/\2\3\4/p")"
+  [ -n "$cd_path" ] && target_dir="$cd_path"
+fi
+# Canonicalise relative paths against $PWD and validate the directory
+# exists; fall back to $PWD if it doesn't.
+if [ -d "$target_dir" ]; then
+  target_dir="$(cd "$target_dir" 2>/dev/null && pwd)" || target_dir="$PWD"
+else
+  target_dir="$PWD"
+fi
 
 # M7.1.F48 — docs-only short-circuit.
 #
@@ -101,9 +135,9 @@ esac
 # -a` / `--all` the index is not updated yet at hook time, so we also
 # include `git diff --name-only` (modified-tracked files) when the
 # command carries `-a` or `--all`.
-staged_files="$(git diff --cached --name-only 2>/dev/null || true)"
+staged_files="$(git -C "$target_dir" diff --cached --name-only 2>/dev/null || true)"
 if printf '%s' "$command_str" | grep -qE '\bcommit\b[^|;&]*( -a\b| --all\b)'; then
-  modified_files="$(git diff --name-only 2>/dev/null || true)"
+  modified_files="$(git -C "$target_dir" diff --name-only 2>/dev/null || true)"
   all_files="$(printf '%s\n%s\n' "$staged_files" "$modified_files" | sort -u | sed '/^$/d')"
 else
   all_files="$staged_files"
@@ -149,17 +183,32 @@ EOF
   fi
 fi
 
-# Find the project root by walking up looking for package.json.
-# If we never find one, this is not a pnpm project — allow.
-project_root="$PWD"
+# Find the project root by walking up from the commit's target worktree
+# (NOT $PWD — see F57 above) looking for package.json. If we never find
+# one, this is not a JS/TS project — allow.
+project_root="$target_dir"
 while [ "$project_root" != "/" ] && [ ! -f "$project_root/package.json" ]; do
   project_root="$(dirname "$project_root")"
 done
 
 if [ ! -f "$project_root/package.json" ]; then
-  log_decision "$HOOK_NAME" "Bash" "no-package-json" "allow" "no package.json in cwd tree — push gate N/A"
+  log_decision "$HOOK_NAME" "Bash" "no-package-json" "allow" "no package.json in target worktree tree — push gate N/A"
   exit 0
 fi
+
+# M7.1.F57 — detect the package manager by lockfile instead of assuming
+# pnpm. pnpm is the atelier default (PLAN.md §2) when no lockfile is
+# present, but a workspace member on npm/yarn/bun must be gated with its
+# own tool or the scripts mis-run / fail.
+detect_pm() {
+  if   [ -f "$project_root/pnpm-lock.yaml" ];   then echo pnpm
+  elif [ -f "$project_root/yarn.lock" ];        then echo yarn
+  elif [ -f "$project_root/bun.lockb" ] || [ -f "$project_root/bun.lock" ]; then echo bun
+  elif [ -f "$project_root/package-lock.json" ]; then echo npm
+  else echo pnpm
+  fi
+}
+pm="$(detect_pm)"
 
 # Helper: returns 0 if `scripts.<name>` exists in package.json.
 has_script() {
@@ -169,9 +218,9 @@ has_script() {
 # Helper: run a script, return 0 on success, non-zero on failure.
 # Captures combined stdout/stderr into a variable so we can show the
 # tail to Claude. The caller decides what to do with the exit code.
-run_pnpm_step() {
+run_pm_step() {
   local script="$1"
-  ( cd "$project_root" && pnpm run "$script" 2>&1 )
+  ( cd "$project_root" && "$pm" run "$script" 2>&1 )
 }
 
 # Walk the three steps in order, stopping (blocking) on the first red.
@@ -183,7 +232,7 @@ for step in lint typecheck test; do
     continue
   fi
 
-  output="$(run_pnpm_step "$step" || printf '__EXIT_%d__' "$?")"
+  output="$(run_pm_step "$step" || printf '__EXIT_%d__' "$?")"
   # Detect our sentinel for failure. We can't capture $? cleanly through
   # a subshell + assignment without losing the output, so we encode it.
   if printf '%s' "$output" | tail -c 80 | grep -qE '__EXIT_[0-9]+__$'; then
@@ -193,7 +242,7 @@ for step in lint typecheck test; do
     cat >&2 <<MSG
 🚫 atelier:safe-commit BLOCKED
    Tool:   Bash(git commit)
-   Reason: \`pnpm run $step\` failed with exit $exit_code
+   Reason: \`$pm run $step\` failed with exit $exit_code
    Output (last 30 lines):
 $(printf '%s' "$output" | tail -n 30)
    Rule:   PLAN.md §6 push gate — lint + typecheck + tests must pass before commit.
@@ -201,11 +250,11 @@ $(printf '%s' "$output" | tail -n 30)
    Override: set ATELIER_SKIP_SAFE_COMMIT=1 only when the operator confirms the gate has been validated another way.
 MSG
 
-    log_decision "$HOOK_NAME" "Bash" "${step}-red" "block" "pnpm run $step failed (exit $exit_code)"
+    log_decision "$HOOK_NAME" "Bash" "${step}-red" "block" "$pm run $step failed (exit $exit_code)"
     exit 2
   fi
 
-  log_decision "$HOOK_NAME" "Bash" "${step}-green" "allow" "pnpm run $step passed"
+  log_decision "$HOOK_NAME" "Bash" "${step}-green" "allow" "$pm run $step passed"
 done
 
 log_decision "$HOOK_NAME" "Bash" "push-gate-green" "allow" "push gate green — commit allowed"
