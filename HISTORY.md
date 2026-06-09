@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M8.7 — Workspace auxiliaries: `/list-workspaces`, `/remove-workspace`, `/doctor` check — 2026-06-09
-**PR:** _pending_ · **Design:** [PLAN.md §15.7](PLAN.md) · **Closes Phase 8**
+**PR:** [#147](https://github.com/AkaLab-Tech/atelier/pull/147) · **Design:** [PLAN.md §15.7](PLAN.md) · **Closes Phase 8**
 
 Final Phase 8 milestone — the lifecycle/health tooling that rounds out multi-repo workspaces.
 
