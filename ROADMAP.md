@@ -35,7 +35,9 @@ The `task-orchestrator` ([agents/task-orchestrator.md](agents/task-orchestrator.
 
 ### M7.1.F53 — Operator's personal `CLAUDE.md` blocks the autonomous commit/push/merge flow
 
-`[orchestrator]` `[config-isolation]` · Source: dogfood (2026-06-05) · Related: [operator-rules.md:166](operator-rules.md#L166) (`CLAUDE_CONFIG_DIR` separation)
+`[orchestrator]` `[config-isolation]` · Source: dogfood (2026-06-05) · **Reproduced 2026-06-09** (workspace sandbox, see below) · Related: [operator-rules.md:166](operator-rules.md#L166) (`CLAUDE_CONFIG_DIR` separation)
+
+**Repro (2026-06-09).** A headless `claude -p "/atelier:next-task #9 --yes"` (`CLAUDE_CONFIG_DIR=~/.claude-work`, atelier plugin 0.20.1) on a real repo ran the full chain cleanly — claimed the task, created the worktree, implemented the fix, committed all three commits (tracking → fix → tracking) — then **the auto-mode classifier denied `git push -u origin task/...`, explicitly citing the operator's personal `CLAUDE.md` rule "NUNCA ejecutes git push sin confirmación"**. So the leak manifests not (only) as an orchestrator re-prompt but as the **permission layer denying the push**: the personal `CLAUDE.md` is in the session context and the `--yes`/`ATELIER_AUTO` consent does not override a personal-rule-driven denial. Net effect: fix is complete and committed locally, but no push → no PR → the autonomous chain cannot finish. Confirms the root cause and adds a concrete, deterministic repro.
 
 During a chain the orchestrator asks the operator to confirm **commit + push + merge**, citing the operator's *personal* `CLAUDE.md` directives (e.g. "never push without explicit confirmation", "never commit on protected branches", "ask before destructive commands"). Those directives live in the operator's personal Claude config — **not** atelier's — and must not govern atelier's autonomous flow, whose gates are defined by atelier itself (push gate, PR gate, `auto-merge` skill, [PLAN.md §6](PLAN.md)). This is a config-isolation bug: the `$ATELIER_CONFIG_DIR` (`~/.claude-work/`) separation documented in [operator-rules.md:166](operator-rules.md#L166) is meant to prevent exactly this, yet the personal `CLAUDE.md` is still in the session's context.
 
@@ -49,6 +51,23 @@ During a chain the orchestrator asks the operator to confirm **commit + push + m
 **Acceptance:** an `atelier()` task chain commits to `task/<id>-<slug>`, pushes, and reaches the `auto-merge` gate without surfacing a confirmation prompt sourced from the operator's personal `CLAUDE.md`; atelier's gates remain the only authority on those actions.
 
 **Trigger to revisit:** captured 2026-06-05 from live dogfooding. Marked a bug by the operator.
+
+### M7.1.F56 — `reviewer` identity has no access to freshly-created private repos → review/auto-merge silently unavailable
+
+`[reviewer]` `[auto-merge]` `[onboarding]` · Source: dogfood (2026-06-09, workspace sandbox)
+
+The auto-merge gate ([PLAN.md §6](PLAN.md)) requires the independent `reviewer` agent — running under the `$ATELIER_CONFIG_DIR/gh/reviewer` identity (M5.0.1) — to approve the PR. That identity is a **different GitHub user** than the author (correct, per Finding #11). But on a **newly-created private repo**, the reviewer user is not a collaborator / org member, so `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/reviewer gh pr review <n> --approve` fails with `GraphQL: Could not resolve to a Repository` — the reviewer literally cannot see the repo. The author's flow proceeds (push, PR), but the review step dies, so the auto-merge gate can never be satisfied; on a repo *with* branch protection requiring an approval, the PR would be permanently stuck. Observed live: PR #1 on a private `AkaLab-Tech/todo-web` merged only because the operator (admin) merged it manually; the reviewer approval had errored out.
+
+**Scope:**
+
+- [ ] Detect the gap early: a `/doctor` or `/setup-project` check that, for the current repo, verifies the `reviewer` identity (`GH_CONFIG_DIR=…/gh/reviewer gh repo view <owner/name>`) can actually see it — warn with the exact fix if not.
+- [ ] Document in the operator guide + `operator-rules.md`: when a new repo is created (especially private), the `reviewer` GitHub user must be granted read access (org membership, or per-repo collaborator) or the auto-merge review step will fail.
+- [ ] Consider an opt-in helper that adds the reviewer as a collaborator at `/setup-project` time when the operator is a repo admin (and the repo is private), so onboarding a new repo wires the review path automatically.
+- [ ] Make the failure loud, not silent: if `reviewer` cannot resolve the repo, the chain should surface a clear "reviewer has no access — auto-merge unavailable" terminal state rather than appearing to stall.
+
+**Acceptance:** on a new private repo, atelier either (a) ensures/asks to grant the `reviewer` user access at setup, or (b) surfaces an explicit, actionable error when the reviewer cannot see the repo — never a silent failure of the review/auto-merge gate.
+
+**Trigger to revisit:** captured 2026-06-09 from the workspace-sandbox dogfood (3 fresh private repos under `AkaLab-Tech`). The cross-repo workspace features (Phase 8) worked end-to-end; this is an onboarding/access gap orthogonal to them, surfaced by the same run.
 
 ---
 
