@@ -178,6 +178,66 @@ If atelier gets stuck (e.g. a test keeps failing), it stops and creates an issue
 
 ---
 
+## Working with multi-repo projects (workspaces)
+
+Some products are **several repositories that ship together** — for example a `backend`, a `frontend`, and a `strapi` (CMS). atelier calls a group like this a **workspace**.
+
+> **The golden rule stays the same:** every task is still *one* task in *one* repo, producing *one* pull request. A workspace doesn't merge repos or make a single change span several of them — it just lets you **manage the group from one place** and **say "this task waits for that other repo's task"**. A change that needs both backend and frontend is simply two tasks, done in order.
+
+You only need this if your product is made of multiple repos. A single-repo project never needs a workspace — keep using `/atelier:setup-project` and `task` as in Steps 4–6.
+
+### Set it up once
+
+Put the repos under a common parent folder, then from that parent folder run:
+
+```bash
+/atelier:setup-workspace my-product --discover .
+```
+
+- `--discover .` scans the parent folder for git repos and shows you the list to confirm. Any repo that isn't an atelier project yet gets set up for you (Step 4) before being added.
+- Prefer to be explicit? List them instead: `/atelier:setup-workspace my-product --members ./backend,./frontend,./strapi`.
+
+Each repo keeps its **own** `ROADMAP.md` and runs tasks exactly as before. The workspace just remembers they belong together. Inside any one repo, nothing changes — `task`, `/status`, etc. all behave as usual.
+
+### Run a task from the product folder
+
+From the **parent folder** (not inside a single repo), run:
+
+```bash
+task
+```
+
+atelier shows a **picker of the member repos** (with how many open tasks each has) and routes you into the one you choose — from there it's the normal Step 6 flow. Running `task` from *inside* a repo still goes straight to that repo, as always.
+
+### See the whole product at a glance
+
+```bash
+/atelier:workspace-status
+```
+
+One row per repo — its setup status, what's in progress, how many tasks are open, and how many are waiting on another repo — plus a list of anything currently blocked across repos. (This is the multi-repo cousin of `/status`, which only ever looks at one repo.)
+
+### "Do this only after that other repo is done" (cross-repo dependencies)
+
+In a repo's `ROADMAP.md`, you can make a task wait for a task in a **sibling repo** by writing `blocked_by:<repo>#<id>`. For example, in `frontend/ROADMAP.md`:
+
+```markdown
+- [ ] `feat` Use the new orders API `#10` `blocked_by:backend#23`
+```
+
+atelier won't start `frontend #10` until `backend #23` has been finished (merged) — it checks the backend repo's `HISTORY.md` to know. When you try to start it too early, atelier tells you exactly what it's waiting for. The moment `backend #23` is done, `frontend #10` becomes available. This is how you do a "change that spans repos": as ordered, single-repo tasks chained with `blocked_by`.
+
+The `<repo>` part (e.g. `backend`) is the short name atelier assigned each member when you set up the workspace — `/atelier:list-workspaces` shows them.
+
+### Managing workspaces
+
+- `/atelier:list-workspaces` — list your workspaces and each repo's health.
+- `/atelier:remove-workspace my-product` — un-group the repos. **Your repos and their setup are left untouched** — this only forgets that they were grouped. (Add `--with-members` only if you also want to remove atelier's setup from each repo.)
+
+If a repo gets moved or removed, `/atelier:doctor` will flag the workspace so you can fix it (re-run `/atelier:setup-workspace`, or remove the grouping).
+
+---
+
 ## What atelier will and won't do
 
 **Will:**
@@ -369,6 +429,10 @@ Quick lookup once you've used atelier a few times.
 | `atelier /atelier:setup-project .` | Set up the current folder as an atelier project |
 | `atelier-list-projects` | List every project registered with atelier (`--json` for machine-readable) |
 | `atelier-remove-project <path>` | Deregister a project (`--purge` also strips atelier's `.gitignore` / `.npmrc` additions) |
+| `/atelier:setup-workspace <name> --discover .` | Group the repos under the current folder into a multi-repo workspace (or `--members a,b,c`) |
+| `/atelier:workspace-status` | Aggregated status across a workspace's repos (run from the parent folder) |
+| `atelier-list-workspaces` | List your workspaces and each repo's health |
+| `/atelier:remove-workspace <name>` | Un-group a workspace (repos stay set up; `--with-members` also removes their setup) |
 | `atelier-doctor` | Run a health check |
 | `atelier-doctor --fix` | Apply the auto-fixable repairs (missing symlinks, stale shellrc block, marketplace not registered) |
 | `atelier-update` | Pull latest atelier release, refresh templates, update the Claude plugin |
@@ -389,5 +453,6 @@ Each `atelier-*` helper also has a Claude-session equivalent under `/atelier:*` 
 **Files atelier stores outside your projects**:
 
 - `~/.claude-work/` — atelier's own configuration, separate from your personal Claude config. (This path is `$ATELIER_CONFIG_DIR`; helpers and slash commands always read/write here, never your personal `~/.claude/`.)
+- `~/.claude-work/projects.json` — the registry of your atelier projects. `~/.claude-work/workspaces.json` — your multi-repo workspaces (only present once you create one).
 - `~/.claude-work/atelier-help.txt` — the cheatsheet shown by `atelier --help` (written at install time, refreshed by `atelier-update`).
-- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, `atelier-list-projects`, `atelier-remove-project`, `atelier-update`, `atelier-permission-diff`, `atelier-pr-size-check`, and `atelier-measure-merge-rate` commands.
+- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, `atelier-list-projects`, `atelier-remove-project`, `atelier-setup-workspace`, `atelier-resolve-dep`, `atelier-workspace-status`, `atelier-list-workspaces`, `atelier-remove-workspace`, `atelier-update`, `atelier-permission-diff`, `atelier-pr-size-check`, and `atelier-measure-merge-rate` commands.
