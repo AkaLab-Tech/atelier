@@ -8,6 +8,15 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### docs — operator guide: multi-repo workspaces (Phase 8) — 2026-06-09
+**PR:** [#148](https://github.com/AkaLab-Tech/atelier/pull/148)
+
+Operator-facing documentation for the Phase 8 workspaces feature (no code change).
+
+- `docs/operator-guide.md` — new "Working with multi-repo projects (workspaces)" section in the guide's plain-language register: what a workspace is and the golden rule (still one task / one repo / one PR), one-time setup (`/atelier:setup-workspace --discover .` or `--members`), running `task` from the parent folder (member picker), `/atelier:workspace-status`, cross-repo `blocked_by:<repo>#id` dependencies, and the `/atelier:list-workspaces` / `/atelier:remove-workspace` lifecycle. The Reference table and the "files atelier stores" list gained the workspace commands, helpers, and `workspaces.json`.
+
+**Plugin bump:** **0.20.0 → 0.20.1** (docs-only, per §14.2 patch).
+
 ### M8.7 — Workspace auxiliaries: `/list-workspaces`, `/remove-workspace`, `/doctor` check — 2026-06-09
 **PR:** [#147](https://github.com/AkaLab-Tech/atelier/pull/147) · **Design:** [PLAN.md §15.7](PLAN.md) · **Closes Phase 8**
 
