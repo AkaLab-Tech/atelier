@@ -1329,6 +1329,12 @@ phase_c_1_setup_project_helper() {
   # for a workspace — one row per member plus a cross-repo-blocked section
   # (PLAN.md §15.6). Backs the /atelier:workspace-status command.
   _phase_c_1_symlink_helper atelier-workspace-status
+  # M8.7: atelier-list-workspaces (read-only enumeration of workspaces with
+  # per-member health) and atelier-remove-workspace (drop a grouping; members
+  # stay registered unless --with-members). Back /atelier:list-workspaces and
+  # /atelier:remove-workspace (PLAN.md §15.7).
+  _phase_c_1_symlink_helper atelier-list-workspaces
+  _phase_c_1_symlink_helper atelier-remove-workspace
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it

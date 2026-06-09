@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+#
+# atelier-list-workspaces — show every workspace registered in
+# $ATELIER_CONFIG_DIR/workspaces.json, with each member's on-disk health.
+# Read-only. The workspace-level companion to atelier-list-projects. See
+# PLAN.md §15.7.
+#
+# Default mode (human-facing):
+#   Atelier workspaces (2):
+#
+#     acme-platform   (root: /Users/me/Work/acme)
+#       backend   ✓ configured       /Users/me/Work/acme/backend
+#       frontend  ⚠ partial          /Users/me/Work/acme/frontend
+#
+# --json mode:  the raw workspaces.json with a per-member `status` field added.
+# --quiet mode: one workspace slug per line.
+#
+# Usage:
+#   atelier-list-workspaces [--json|--quiet]
+#   atelier-list-workspaces --help
+#
+# Exit codes:
+#   0  zero or more workspaces listed successfully
+#   1  unrecoverable error (missing config dir / malformed JSON / jq missing)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+die() { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+List atelier workspaces from \$ATELIER_CONFIG_DIR/workspaces.json, with each
+member's on-disk status. Read-only. See PLAN.md §15.7.
+
+USAGE:
+  ${SCRIPT_NAME} [--json|--quiet]
+  ${SCRIPT_NAME} --help
+
+OPTIONS:
+  --json     Emit machine-readable JSON; each member gains a \`status\` field
+             ("configured" | "partial" | "missing-files" | "missing-directory").
+  --quiet    Emit one workspace slug per line. Suitable for piping.
+  --help, -h Show this help and exit.
+
+EXIT CODES:
+  0  listed successfully (even when zero workspaces are registered)
+  1  unrecoverable error (no config dir / malformed JSON / jq missing)
+EOF
+}
+
+# ---------- arg parse ----------
+MODE="default"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json)    MODE="json"; shift ;;
+    --quiet)   MODE="quiet"; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "unknown arg: $1 (run --help for usage)" ;;
+  esac
+done
+
+# ---------- config + deps ----------
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+WORKSPACES_FILE="$ATELIER_CONFIG_DIR/workspaces.json"
+
+command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+[ -f "$WORKSPACES_FILE" ] || die "$WORKSPACES_FILE not found — no workspaces configured (run /atelier:setup-workspace)"
+jq empty "$WORKSPACES_FILE" >/dev/null 2>&1 || die "$WORKSPACES_FILE is not valid JSON"
+
+# Per-member on-disk status (mirrors atelier-list-projects compute_status).
+compute_status() {
+  local path="$1"
+  [ -d "$path" ] || { printf 'missing-directory'; return; }
+  if [ -f "$path/.claude/settings.json" ] && [ -f "$path/.atelier.json" ]; then
+    printf 'configured'
+  elif [ -f "$path/.claude/settings.json" ] || [ -f "$path/.atelier.json" ]; then
+    printf 'partial'
+  else
+    printf 'missing-files'
+  fi
+}
+
+SLUGS=()
+while IFS= read -r s; do [ -n "$s" ] && SLUGS+=("$s"); done < <(jq -r '.workspaces | keys[]?' "$WORKSPACES_FILE")
+WS_COUNT="${#SLUGS[@]}"
+
+case "$MODE" in
+  quiet)
+    for s in ${SLUGS[@]+"${SLUGS[@]}"}; do printf '%s\n' "$s"; done
+    ;;
+
+  json)
+    # Re-emit workspaces.json with a status field on each member.
+    out="$(cat "$WORKSPACES_FILE")"
+    for s in ${SLUGS[@]+"${SLUGS[@]}"}; do
+      idx=0
+      while IFS= read -r mpath; do
+        [ -n "$mpath" ] || continue
+        st="$(compute_status "$mpath")"
+        out="$(printf '%s' "$out" | jq --arg w "$s" --argjson i "$idx" --arg st "$st" \
+          '.workspaces[$w].members[$i].status = $st')"
+        idx=$((idx + 1))
+      done < <(jq -r --arg w "$s" '.workspaces[$w].members[]?.path' "$WORKSPACES_FILE")
+    done
+    printf '%s\n' "$out"
+    ;;
+
+  default|*)
+    if [ "$WS_COUNT" -eq 0 ]; then
+      printf 'No atelier workspaces registered.\n'
+      # shellcheck disable=SC2016
+      printf 'Use `/atelier:setup-workspace` to group several projects into one.\n'
+      exit 0
+    fi
+
+    printf 'Atelier workspaces (%d):\n\n' "$WS_COUNT"
+    for s in ${SLUGS[@]+"${SLUGS[@]}"}; do
+      root="$(jq -r --arg w "$s" '.workspaces[$w].root // ""' "$WORKSPACES_FILE")"
+      printf '  %s' "$s"
+      [ -n "$root" ] && printf '   (root: %s)' "$root"
+      printf '\n'
+      while IFS=$'\t' read -r token mpath; do
+        [ -n "$mpath" ] || continue
+        st="$(compute_status "$mpath")"
+        case "$st" in
+          configured)        glyph='✓' ;;
+          partial|missing-files) glyph='⚠' ;;
+          missing-directory) glyph='✗' ;;
+          *)                 glyph='?' ;;
+        esac
+        printf '    %-14s %s %-17s %s\n' "$token" "$glyph" "$st" "$mpath"
+      done < <(jq -r --arg w "$s" '.workspaces[$w].members[]? | "\(.token)\t\(.path)"' "$WORKSPACES_FILE")
+      printf '\n'
+    done
+    ;;
+esac

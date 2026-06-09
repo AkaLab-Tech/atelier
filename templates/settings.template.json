@@ -216,6 +216,8 @@
       "Bash(atelier-setup-workspace:*)",
       "Bash(atelier-resolve-dep:*)",
       "Bash(atelier-workspace-status:*)",
+      "Bash(atelier-list-workspaces:*)",
+      "Bash(atelier-remove-workspace:*)",
 
       "Bash(claude plugin list --json)",
       "Bash(gh api repos/AkaLab-Tech/atelier/releases/latest*)",
