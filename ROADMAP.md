@@ -69,6 +69,26 @@ The auto-merge gate ([PLAN.md §6](PLAN.md)) requires the independent `reviewer`
 
 **Trigger to revisit:** captured 2026-06-09 from the workspace-sandbox dogfood (3 fresh private repos under `AkaLab-Tech`). The cross-repo workspace features (Phase 8) worked end-to-end; this is an onboarding/access gap orthogonal to them, surfaced by the same run.
 
+### M7.1.F57 — `safe-commit` hook resolves the project root from cwd (the main repo, not the worktree) and hardcodes `pnpm`
+
+`[hooks]` `[push-gate]` `[config-isolation]` · Source: dogfood (2026-06-09, workspace sandbox) · Related: M7.1.F48 (worktree deps), [operator-rules.md](operator-rules.md) cwd-vs-worktree rule
+
+The `safe-commit` `PreToolUse` hook ([hooks/safe-commit.sh](hooks/safe-commit.sh)) runs the push gate (`typecheck`/`test`/etc.) before a commit, but two assumptions break in the real per-task flow:
+
+1. **Project root is resolved from `$PWD`** ([safe-commit.sh:154](hooks/safe-commit.sh#L154)): `project_root="$PWD"` then walks up looking for `package.json`. But the hook inherits the **agent's cwd**, which — by atelier's own cwd-vs-worktree rule (the agent uses `git -C <worktree>`, its cwd stays at the main repo / home) — is **not the task worktree**. So the gate validates the **wrong tree**: it `cd`s into whatever `package.json` is found walking up from the main repo and runs the scripts there, not against the worktree's changes. Observed live: the tracking commit was blocked, and the orchestrator worked around it by installing deps in the **main** repo (only `node_modules/`, gitignored — no tracked files touched).
+
+2. **`pnpm` is hardcoded** ([safe-commit.sh:172-174](hooks/safe-commit.sh#L172)): `run_pnpm_step()` always runs `pnpm run "$script"`. A project on npm/yarn/bun is either mis-run or fails. Observed live: an npm-only member ran its checks via `npm run typecheck`, but the gate would have used `pnpm`.
+
+**Scope:**
+
+- [ ] Resolve the project root from the **worktree path the task is scoped to**, not `$PWD`. The hook receives the tool input (the `git -C <path>` / `cd <path>` target) — derive the root from the commit's target worktree (e.g. parse the `-C <path>` argument, or `git rev-parse --show-toplevel` evaluated in the command's target dir), never from the hook's inherited cwd.
+- [ ] **Detect the package manager** instead of hardcoding `pnpm`: pick by lockfile (`pnpm-lock.yaml` → pnpm, `package-lock.json` → npm, `yarn.lock` → yarn, `bun.lockb` → bun), defaulting to pnpm per [PLAN.md §2](PLAN.md) when none is present. Run `<pm> run <script>` accordingly.
+- [ ] Add a regression check: the gate must run against the worktree's files (a deliberately-broken file in the worktree fails the gate; the same file clean in the main repo does not mask it).
+
+**Acceptance:** with the agent's cwd at the main repo, `safe-commit` runs the push-gate scripts **inside the task worktree** (validating the actual change) and uses the worktree project's package manager; a broken typecheck in the worktree is caught, and an npm-only project is gated with `npm`, not `pnpm`.
+
+**Trigger to revisit:** captured 2026-06-09 from the workspace-sandbox dogfood; the gate fired against the wrong tree during the `shared#1` task cycle. Both facets verified against `hooks/safe-commit.sh` source.
+
 ---
 
 ## Medium Priority
