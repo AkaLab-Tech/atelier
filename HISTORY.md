@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M7.1.F57 — `safe-commit` gate validates the task worktree (not `$PWD`) and detects the package manager — 2026-06-09
-**PR:** _pending_ · **Plugin bump:** 0.20.3 → 0.20.4
+**PR:** [#154](https://github.com/AkaLab-Tech/atelier/pull/154) · **Plugin bump:** 0.20.3 → 0.20.4
 
 Dogfood bug (workspace sandbox, 2026-06-09): the `safe-commit` `PreToolUse` hook ran the push gate against the **wrong tree** and assumed `pnpm`. Three combined defects, all confirmed against [`hooks/safe-commit.sh`](hooks/safe-commit.sh):
 
