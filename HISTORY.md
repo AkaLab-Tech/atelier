@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### docs — operator guide: multi-repo workspaces (Phase 8) — 2026-06-09
-**PR:** _pending_
+**PR:** [#148](https://github.com/AkaLab-Tech/atelier/pull/148)
 
 Operator-facing documentation for the Phase 8 workspaces feature (no code change).
 
