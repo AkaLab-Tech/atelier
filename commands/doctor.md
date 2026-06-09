@@ -1,5 +1,5 @@
 ---
-description: Health check for atelier — detects drift against upstream for `atelier`, `claude-roadmap-tools`, and `git-wt`, plus auxiliary host checks (legacy hooks, shellrc, .npmrc, Chrome, docker compose, `$ATELIER_CONFIG_DIR`, git-identity.conf). Reports findings. With `--fix`, auto-applies the runnable fixes (M7.1.F30); manual fixes still print as instructions.
+description: Health check for atelier — detects drift against upstream for `atelier`, `claude-roadmap-tools`, and `git-wt`, plus auxiliary host checks (legacy hooks, personal CLAUDE.md leak, shellrc, .npmrc, Chrome, docker compose, `$ATELIER_CONFIG_DIR`, git-identity.conf). Reports findings. With `--fix`, auto-applies the runnable fixes (M7.1.F30); manual fixes still print as instructions.
 argument-hint: "[--fix]"
 allowed-tools: Bash(atelier-doctor:*)
 ---
@@ -62,6 +62,7 @@ External tooling
 
 Host checks
     ✓ no legacy atelier hooks in ~/.claude/settings.json
+    ✓ no personal ~/.claude/CLAUDE.md that could leak into atelier sessions
     ✓ git-wt on PATH (<path>)
     ✓ atelier shellrc hooks active (~/.zshrc)
     – project .npmrc guardrails (no .npmrc in project directory)

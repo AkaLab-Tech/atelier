@@ -14,26 +14,7 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Install hardening from M7.1 dogfood-2 + dogfood-3 (2026-05-23 / 2026-05-25).** Findings F1–F12 surfaced during dogfood-2 full-wipe reinstall. F11b discovered during PR-C validation. F13 + F7c discovered during dogfood-3 setup. F14 + F15 + F16 discovered during the dogfood-3 first `/atelier:doctor` run. Closed: PR-A [#70](https://github.com/AkaLab-Tech/atelier/pull/70) (F6+F7a+F9+F11, v0.4.2), PR-B [#72](https://github.com/AkaLab-Tech/atelier/pull/72) (F2+F5+F10+F12), PR-C [#73](https://github.com/AkaLab-Tech/atelier/pull/73) (F1+F3+F4+F8), PR-D [#74](https://github.com/AkaLab-Tech/atelier/pull/74) (F11b), PR-E [#75](https://github.com/AkaLab-Tech/atelier/pull/75) (F7b, v0.5.0), PR-F [#76](https://github.com/AkaLab-Tech/atelier/pull/76) (F13 atelier() shortcut). PR-G (PR _pending_) closes F16 (doctor.md allowed-tools, v0.5.1). F7c + F14 + F15 remain as follow-ups (see entries below).
 
-> **Dogfood bugs — orchestrator behavior (2026-06-05).** Two correctness bugs found while running real atelier task chains: the orchestrator doing specialist work inline instead of delegating (F52), and the operator's personal `CLAUDE.md` leaking confirmation gates into the autonomous flow (F53).
-
-### M7.1.F53 — Operator's personal `CLAUDE.md` blocks the autonomous commit/push/merge flow
-
-`[orchestrator]` `[config-isolation]` · Source: dogfood (2026-06-05) · **Reproduced 2026-06-09** (workspace sandbox, see below) · Related: [operator-rules.md:166](operator-rules.md#L166) (`CLAUDE_CONFIG_DIR` separation)
-
-**Repro (2026-06-09).** A headless `claude -p "/atelier:next-task #9 --yes"` (`CLAUDE_CONFIG_DIR=~/.claude-work`, atelier plugin 0.20.1) on a real repo ran the full chain cleanly — claimed the task, created the worktree, implemented the fix, committed all three commits (tracking → fix → tracking) — then **the auto-mode classifier denied `git push -u origin task/...`, explicitly citing the operator's personal `CLAUDE.md` rule "NUNCA ejecutes git push sin confirmación"**. So the leak manifests not (only) as an orchestrator re-prompt but as the **permission layer denying the push**: the personal `CLAUDE.md` is in the session context and the `--yes`/`ATELIER_AUTO` consent does not override a personal-rule-driven denial. Net effect: fix is complete and committed locally, but no push → no PR → the autonomous chain cannot finish. Confirms the root cause and adds a concrete, deterministic repro.
-
-During a chain the orchestrator asks the operator to confirm **commit + push + merge**, citing the operator's *personal* `CLAUDE.md` directives (e.g. "never push without explicit confirmation", "never commit on protected branches", "ask before destructive commands"). Those directives live in the operator's personal Claude config — **not** atelier's — and must not govern atelier's autonomous flow, whose gates are defined by atelier itself (push gate, PR gate, `auto-merge` skill, [PLAN.md §6](PLAN.md)). This is a config-isolation bug: the `$ATELIER_CONFIG_DIR` (`~/.claude-work/`) separation documented in [operator-rules.md:166](operator-rules.md#L166) is meant to prevent exactly this, yet the personal `CLAUDE.md` is still in the session's context.
-
-**Scope:**
-
-- [ ] Determine how the personal `CLAUDE.md` (`~/.claude/CLAUDE.md` and/or `~/.claude-personal/CLAUDE.md`) reaches an `atelier()`-launched session despite `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR`.
-- [ ] Ensure atelier sessions do not inherit personal global/project `CLAUDE.md` confirmation rules that conflict with the autonomous flow (config root, working dir, or memory-loading path — whichever is the actual leak).
-- [ ] Make atelier's own rules authoritative for commit/push/merge: the orchestrator must not re-prompt for confirmation on actions the static matrix + gates already authorize (mirrors the existing "do not re-prompt after `auto-merge`'s positive verdict" rule).
-- [ ] Document the precedence in `operator-rules.md` so future drift is caught.
-
-**Acceptance:** an `atelier()` task chain commits to `task/<id>-<slug>`, pushes, and reaches the `auto-merge` gate without surfacing a confirmation prompt sourced from the operator's personal `CLAUDE.md`; atelier's gates remain the only authority on those actions.
-
-**Trigger to revisit:** captured 2026-06-05 from live dogfooding. Marked a bug by the operator.
+> **Dogfood bugs — orchestrator behavior (2026-06-05).** Two correctness bugs found while running real atelier task chains: the orchestrator doing specialist work inline instead of delegating (F52), and the operator's personal `CLAUDE.md` leaking confirmation gates into the autonomous flow (F53). Both resolved — see [HISTORY.md](HISTORY.md).
 
 ### M7.1.F56 — `reviewer` identity has no access to freshly-created private repos → review/auto-merge silently unavailable
 

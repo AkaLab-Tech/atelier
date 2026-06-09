@@ -264,6 +264,45 @@ check_legacy_hooks() {
   fi
 }
 
+check_personal_claudemd_leak() {
+  # M7.1.F53 — the operator's personal ~/.claude/CLAUDE.md is loaded into
+  # atelier sessions as *project* memory via Claude Code's ancestor-directory
+  # walk: worktrees live under $HOME, and the walk reaches ~/.claude/CLAUDE.md.
+  # This is independent of CLAUDE_CONFIG_DIR, which only relocates *user-level*
+  # memory (to $ATELIER_CONFIG_DIR/CLAUDE.md). If that personal file carries
+  # commit/push/merge confirmation gates, they can deny the autonomous flow's
+  # push at the auto-mode classifier. Only a concern when atelier is isolated
+  # to a config dir OTHER than ~/.claude (the default ~/.claude-work).
+  local personal="$HOME/.claude/CLAUDE.md"
+  if [ "$ATELIER_CONFIG_DIR" = "$HOME/.claude" ]; then
+    push_host "$SKIP personal CLAUDE.md leak check (atelier shares ~/.claude as its config dir)"
+    return
+  fi
+  if [ ! -f "$personal" ]; then
+    push_host "$OK no personal ~/.claude/CLAUDE.md that could leak into atelier sessions"
+    return
+  fi
+  # Flag only when a confirmation/permission concept co-occurs with a git
+  # action — those are the directives that break the autonomous flow (EN+ES).
+  if grep -qiE 'confirm|confirmaci|ask (before|first|me)|sin .*confirmaci|pregunt|permis|explicit' "$personal" 2>/dev/null \
+     && grep -qiE 'git push|git commit|\bpush\b|\bcommit\b|\bmerge\b' "$personal" 2>/dev/null; then
+    push_host "$FAIL personal ~/.claude/CLAUDE.md has commit/push confirmation rules that leak into atelier sessions"
+    push_fix_manual "# Your personal ~/.claude/CLAUDE.md is loaded into EVERY atelier session as
+# project memory: Claude Code walks the directories above the worktree, and
+# worktrees live under \$HOME, so the walk reaches ~/.claude/CLAUDE.md.
+# CLAUDE_CONFIG_DIR does NOT prevent this — it only relocates user-level memory.
+# Its commit/push/merge confirmation rules can block atelier's autonomous flow.
+#
+# Fix: move your personal global rules out of ~/.claude/CLAUDE.md into the
+# CLAUDE.md of your *personal* config root (the dir your personal Claude
+# sessions use via CLAUDE_CONFIG_DIR, e.g. ~/.claude-personal/CLAUDE.md), then
+# leave ~/.claude/CLAUDE.md empty or removed. Atelier's own permission matrix
+# + gates stay authoritative; your personal sessions keep their rules."
+  else
+    push_host "$OK personal ~/.claude/CLAUDE.md present but no commit/push confirmation gates detected"
+  fi
+}
+
 check_git_wt_path() {
   if command -v git-wt >/dev/null 2>&1; then
     local bin
@@ -694,6 +733,7 @@ check_plugin_drift "atelier@akalab-tech"               "AkaLab-Tech/atelier"
 check_plugin_drift "claude-roadmap-tools@akalab-tech"  "AkaLab-Tech/claude-roadmap-tools"
 check_git_wt_drift
 check_legacy_hooks
+check_personal_claudemd_leak
 check_git_wt_path
 check_shellrc_hooks
 check_project_npmrc
