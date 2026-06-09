@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M8.6 — Aggregated `/workspace-status` — 2026-06-08
-**PR:** _pending_ · **Design:** [PLAN.md §15.6](PLAN.md) · **Builds on:** M8.1, M8.3
+**PR:** [#146](https://github.com/AkaLab-Tech/atelier/pull/146) · **Design:** [PLAN.md §15.6](PLAN.md) · **Builds on:** M8.1, M8.3
 
 Sixth Phase 8 milestone: a single roll-up view across a workspace's members, so the operator can see the whole product's state at a glance instead of running `/status` in each repo.
 
