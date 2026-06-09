@@ -137,19 +137,9 @@ Today the `task-orchestrator` picks the highest-priority unchecked ROADMAP item 
 
 ---
 
-## Phase 8 — Multi-repo workspaces
+## Phase 8 — Multi-repo workspaces ✅
 
-> **Group several single-repo projects into a "workspace"** (e.g. backend + frontend + CMS) with aggregated status, root-level routing, and *sequenced* cross-repo `blocked_by:<token>#id` dependencies — **without** ever introducing cross-repo atomicity (each task stays one worktree / one PR). Design: [PLAN.md §15](PLAN.md). Milestones are ~1 PR each; M8.1→M8.5 are ordered, M8.6/M8.7 depend on M8.1 only.
-
-> **M8.1–M8.6 delivered** (registry + setup foundation; `/setup-workspace` + `--discover`; `atelier-resolve-dep` resolver; cross-repo `blocked_by` enforcement; `task` routing from the workspace root; aggregated `/workspace-status`) — see [HISTORY.md](HISTORY.md). The milestone below closes Phase 8.
-
-### M8.7 — Auxiliary: `/list-workspaces`, `/remove-workspace`, `/doctor` extension
-
-`[multi-repo]` · `blocked_by: M8.1` · Source: [PLAN.md §15.7](PLAN.md)
-
-`/list-workspaces` (+ `atelier-list-workspaces`) enumerates workspaces with per-member health. `/remove-workspace <slug>` (+ `atelier-remove-workspace`) removes only the group entry; `--with-members` also removes the member projects. `atelier-doctor` gains `check_workspaces` (root exists, members are dirs still in `projects.json`, tokens unique; silent skip when `workspaces.json` absent).
-
-**Acceptance:** `/list-workspaces` enumerates workspaces; `/remove-workspace <slug>` drops the group and leaves members registered; `/doctor` flags a workspace with a missing/unregistered member.
+> **Complete (M8.1–M8.7).** Group several single-repo projects into a "workspace" (e.g. backend + frontend + CMS): the `/setup-workspace` → `/list-workspaces` → `/remove-workspace` lifecycle, aggregated `/workspace-status`, root-level `task` routing, and *sequenced* cross-repo `blocked_by:<token>#id` dependencies enforced offline — **without** ever introducing cross-repo atomicity (each task stays one worktree / one PR). Design: [PLAN.md §15](PLAN.md); delivery log (M8.1–M8.7) in [HISTORY.md](HISTORY.md).
 
 ---
 

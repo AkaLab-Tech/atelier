@@ -411,6 +411,50 @@ check_neon() {
   fi
 }
 
+check_workspaces() {
+  # Optional (M8.x). Silent skip when no workspaces are configured.
+  local ws_file="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}/workspaces.json"
+  local projects_file="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}/projects.json"
+  command -v jq >/dev/null 2>&1 || { push_host "$SKIP workspaces: jq not available"; return; }
+  [ -f "$ws_file" ] || { push_host "$SKIP no workspaces configured (optional — /atelier:setup-workspace groups repos)"; return; }
+  if ! jq empty "$ws_file" >/dev/null 2>&1; then
+    push_host "$FAIL workspaces.json is not valid JSON"
+    push_fix_manual "inspect ${ws_file} — it is malformed"
+    return
+  fi
+  local slugs
+  slugs="$(jq -r '.workspaces // {} | keys[]?' "$ws_file")"
+  if [ -z "$slugs" ]; then
+    push_host "$SKIP workspaces.json present but empty"
+    return
+  fi
+  local slug
+  while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    local issues=() seen_tokens="" root token mpath
+    root="$(jq -r --arg w "$slug" '.workspaces[$w].root // ""' "$ws_file")"
+    [ -n "$root" ] && [ ! -d "$root" ] && issues+=("root missing ($root)")
+    while IFS=$'\t' read -r token mpath; do
+      [ -n "$mpath" ] || continue
+      [ -d "$mpath" ] || issues+=("member '$token' path missing ($mpath)")
+      if [ -f "$projects_file" ]; then
+        jq -e --arg p "$mpath" '.projects[$p] // empty' "$projects_file" >/dev/null 2>&1 \
+          || issues+=("member '$token' not a registered project")
+      fi
+      case ",$seen_tokens," in *",$token,"*) issues+=("duplicate token '$token'") ;; esac
+      seen_tokens="${seen_tokens}${token},"
+    done < <(jq -r --arg w "$slug" '.workspaces[$w].members[]? | "\(.token)\t\(.path)"' "$ws_file")
+    if [ ${#issues[@]} -eq 0 ]; then
+      local n
+      n="$(jq -r --arg w "$slug" '.workspaces[$w].members | length' "$ws_file")"
+      push_host "$OK workspace '$slug' — $n member(s), all registered & present"
+    else
+      push_host "$FAIL workspace '$slug': ${issues[*]}"
+      push_fix_manual "fix workspace '$slug' — re-run /atelier:setup-workspace, or /atelier:remove-workspace ${slug} to drop the grouping"
+    fi
+  done <<< "$slugs"
+}
+
 check_chrome() {
   local os
   os="$(uname -s)"
@@ -658,6 +702,7 @@ check_docker_compose
 check_coolify
 check_vercel
 check_neon
+check_workspaces
 check_atelier_config_dir
 check_atelier_claude_auth
 check_git_identity

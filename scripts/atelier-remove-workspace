@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+#
+# atelier-remove-workspace — unregister a workspace. By default this removes
+# ONLY the workspace grouping from $ATELIER_CONFIG_DIR/workspaces.json; the
+# member projects stay registered and fully configured (they are independent
+# atelier projects — the workspace only referenced them). See PLAN.md §15.7.
+#
+# --with-members additionally runs `atelier-remove-project` on each member
+# (its default, content-preserving mode). This is destructive to per-project
+# atelier config and is off by default.
+#
+# Usage:
+#   atelier-remove-workspace <slug> [--with-members] [--yes|-y]
+#   atelier-remove-workspace --help
+#
+# Exit codes:
+#   0  removal applied (or the slug was not registered — nothing to do)
+#   1  unrecoverable error (no workspaces.json, jq missing, can't write)
+#   2  refusal (operator declined the confirmation in interactive mode)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+log()    { printf '==> %s\n' "$*"; }
+sublog() { printf '    %s\n' "$*"; }
+warn()   { printf '!!  %s\n' "$*" >&2; }
+die()    { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+ok()     { printf '    OK: %s\n' "$*"; }
+
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+Unregister a workspace. By default removes ONLY the grouping; member projects
+stay registered. --with-members also runs atelier-remove-project on each
+member (destructive, off by default). See PLAN.md §15.7.
+
+USAGE:
+  ${SCRIPT_NAME} <slug> [OPTIONS]
+  ${SCRIPT_NAME} --help
+
+OPTIONS:
+  --with-members   Also run \`atelier-remove-project\` (default, content-
+                   preserving mode) on each member. Destructive to per-project
+                   atelier config. Requires --yes in non-interactive mode.
+  --yes, -y        Non-interactive mode. Skip the confirmation prompt.
+  --help, -h       Show this help and exit.
+
+EXIT CODES:
+  0  removal applied (or slug not registered)
+  1  unrecoverable error
+  2  refusal (operator declined)
+EOF
+}
+
+# ---------- arg parse ----------
+SLUG=""
+WITH_MEMBERS=false
+NONINTERACTIVE=false
+[ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --with-members) WITH_MEMBERS=true; shift ;;
+    --yes|-y)       NONINTERACTIVE=true; shift ;;
+    --help|-h)      usage; exit 0 ;;
+    --)             shift; break ;;
+    -*)             die "unknown flag: $1 (run --help for usage)" ;;
+    *)              [ -n "$SLUG" ] && die "unexpected arg: $1 (only one <slug> allowed)"; SLUG="$1"; shift ;;
+  esac
+done
+
+[ -n "$SLUG" ] || die "<slug> is required (run --help for usage)"
+
+# ---------- config + deps ----------
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+WORKSPACES_FILE="$ATELIER_CONFIG_DIR/workspaces.json"
+
+command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+[ -f "$WORKSPACES_FILE" ] || die "$WORKSPACES_FILE not found — no workspaces configured"
+jq empty "$WORKSPACES_FILE" >/dev/null 2>&1 || die "$WORKSPACES_FILE is not valid JSON"
+
+if ! jq -e --arg w "$SLUG" '.workspaces[$w] // empty' "$WORKSPACES_FILE" >/dev/null 2>&1; then
+  warn "workspace '$SLUG' is not registered in $WORKSPACES_FILE"
+  warn "nothing to do — exiting cleanly"
+  exit 0
+fi
+
+# ---------- gather members ----------
+declare -a MEMBER_PATHS=()
+while IFS= read -r p; do [ -n "$p" ] && MEMBER_PATHS+=("$p"); done \
+  < <(jq -r --arg w "$SLUG" '.workspaces[$w].members[]?.path' "$WORKSPACES_FILE")
+
+log "atelier-remove-workspace ${VERSION}"
+sublog "workspace: $SLUG"
+sublog "members:   ${#MEMBER_PATHS[@]}"
+sublog "mode:      $($WITH_MEMBERS && echo 'remove grouping + deconfigure each member (atelier-remove-project)' || echo 'remove grouping only (members stay registered)')"
+echo ""
+
+if $WITH_MEMBERS; then
+  warn "--with-members will run atelier-remove-project on:"
+  for p in ${MEMBER_PATHS[@]+"${MEMBER_PATHS[@]}"}; do warn "  - $p"; done
+else
+  log "members are preserved (still registered projects):"
+  for p in ${MEMBER_PATHS[@]+"${MEMBER_PATHS[@]}"}; do sublog "$p"; done
+fi
+echo ""
+
+# ---------- confirm ----------
+if ! $NONINTERACTIVE; then
+  if [ ! -t 0 ]; then
+    die "non-interactive context (no TTY) but --yes was not given; pass --yes to proceed"
+  fi
+  printf 'Remove workspace "%s"%s? [y/N]: ' "$SLUG" "$($WITH_MEMBERS && echo ' and deconfigure its members' || echo '')" >&2
+  read -r ans
+  case "$ans" in
+    y|Y|yes|Yes) sublog "operator confirmed" ;;
+    *) warn "operator declined — exiting"; exit 2 ;;
+  esac
+fi
+
+# ---------- execute ----------
+echo ""
+log "applying removal"
+
+if $WITH_MEMBERS; then
+  if ! command -v atelier-remove-project >/dev/null 2>&1; then
+    warn "atelier-remove-project not on PATH — skipping member deconfiguration"
+  else
+    for p in ${MEMBER_PATHS[@]+"${MEMBER_PATHS[@]}"}; do
+      sublog "atelier-remove-project $p"
+      atelier-remove-project "$p" --yes || warn "failed to remove project $p (continuing)"
+    done
+  fi
+fi
+
+# Remove the workspace entry.
+tmp="$(mktemp)"
+jq --arg w "$SLUG" 'del(.workspaces[$w])' "$WORKSPACES_FILE" > "$tmp" \
+  || { rm -f "$tmp"; die "failed to update $WORKSPACES_FILE"; }
+mv "$tmp" "$WORKSPACES_FILE"
+sublog "unregistered workspace '$SLUG' from $WORKSPACES_FILE"
+
+echo ""
+ok "workspace '$SLUG' removed"
+$WITH_MEMBERS || sublog "its ${#MEMBER_PATHS[@]} member project(s) remain registered — list with atelier-list-projects"
+exit 0

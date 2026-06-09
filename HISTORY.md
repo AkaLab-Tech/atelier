@@ -8,6 +8,23 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M8.7 — Workspace auxiliaries: `/list-workspaces`, `/remove-workspace`, `/doctor` check — 2026-06-09
+**PR:** _pending_ · **Design:** [PLAN.md §15.7](PLAN.md) · **Closes Phase 8**
+
+Final Phase 8 milestone — the lifecycle/health tooling that rounds out multi-repo workspaces.
+
+**Delivered:**
+- `scripts/atelier-list-workspaces` + `commands/list-workspaces.md` — read-only enumeration of workspaces with each member's on-disk status (mirrors `atelier-list-projects`: default / `--json` / `--quiet`).
+- `scripts/atelier-remove-workspace` + `commands/remove-workspace.md` — `atelier-remove-workspace <slug> [--with-members] [--yes]`. Default removes **only** the grouping from `workspaces.json`; member projects stay registered (they are independent). `--with-members` additionally runs `atelier-remove-project` on each (destructive, off by default). Interactive confirmation unless `--yes`/`$ATELIER_AUTO`; unregistered slug → clean exit 0.
+- `scripts/atelier-doctor` — new `check_workspaces`: per workspace, verifies `root` exists, every member path is a directory **and** still a key in `projects.json`, and tokens are unique; silent skip when `workspaces.json` is absent (same pattern as `check_coolify`/`check_vercel`). Issues are flagged with a manual-fix hint and make `/doctor` exit non-zero.
+- `install.sh` — symlink both new helpers. `templates/settings.template.json` — allowlist `Bash(atelier-list-workspaces:*)` + `Bash(atelier-remove-workspace:*)`.
+
+**Plugin bump:** **0.19.0 → 0.20.0** (two new helpers + two slash commands + a doctor check, per §14.2 minor).
+
+**Verified:** sandbox — `list-workspaces` default/`--quiet`/`--json` (per-member `status` field) correct; `remove-workspace --yes` drops the grouping while the member project stays registered; removing an unregistered slug exits 0 cleanly; `check_workspaces` reports `✓` for a healthy workspace and `✗` (with `/doctor` exit 1) for one with an unregistered member, a missing path, and a duplicate token. `bash -n` on all scripts + `jq empty` on the template clean.
+
+**Phase 8 complete (M8.1–M8.7).** Multi-repo support is end-to-end: group projects into a workspace, drive `task` from the parent folder, see an aggregated dashboard, sequence work across repos with offline cross-repo `blocked_by:<token>#id`, and manage the workspace lifecycle — all without ever breaking the one-task / one-worktree / one-PR invariant ([PLAN.md §15](PLAN.md)).
+
 ### M8.6 — Aggregated `/workspace-status` — 2026-06-08
 **PR:** [#146](https://github.com/AkaLab-Tech/atelier/pull/146) · **Design:** [PLAN.md §15.6](PLAN.md) · **Builds on:** M8.1, M8.3
 
