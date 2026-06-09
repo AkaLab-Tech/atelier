@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M7.1.F53 — Personal `CLAUDE.md` no longer blocks the autonomous commit/push/merge flow — 2026-06-09
-**PR:** _pending_ · **Plugin bump:** 0.20.2 → 0.20.3
+**PR:** [#152](https://github.com/AkaLab-Tech/atelier/pull/152) · **Plugin bump:** 0.20.2 → 0.20.3
 
 Dogfood bug (reproduced 2026-06-09): a headless `claude -p "/atelier:next-task #9 --yes"` (`CLAUDE_CONFIG_DIR=~/.claude-work`) ran the full chain, committed all three commits, then the auto-mode classifier **denied** `git push -u origin task/...`, citing the operator's personal `CLAUDE.md` rule *"NUNCA ejecutes git push sin confirmación"*. No push → no PR → the chain could not finish.
 
