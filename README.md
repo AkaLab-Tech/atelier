@@ -44,7 +44,19 @@ Add a line under `## 🎯 P1 — Next`:
 
 Format: `[ ]` + type (`feat` / `bug` / `chore`) + short description. Optional fields per [PLAN.md §5](PLAN.md): `[~estimate]`, `[#issue-id]`, `[blocked_by:<other-task>]`.
 
-### 3. Run it
+### 3. Plan it
+
+A task can't run until it has an approved plan. Inside a Claude session for the project:
+
+```text
+/atelier:plan-task <id>
+```
+
+atelier reads the task, looks through the codebase, and drafts a plan — the approach, which areas it touches, the acceptance criteria, and any risks. You review it and approve (or ask for changes). On approval, the plan is saved to `.plan/<id>.md` and the task is marked `[ready]`. Large tasks are split into smaller sub-tasks here, and you approve the split too.
+
+You approve the plan **once, up front**. The task itself never stops mid-run to ask you to approve an approach — that decision is made here.
+
+### 4. Run it
 
 From anywhere on your machine:
 
@@ -56,7 +68,7 @@ Resolves the project from your cwd (longest-prefix match against the registry). 
 
 The task runs end-to-end inside the Claude session you can watch live:
 
-1. Picks the first item from `ROADMAP.md`, moves it to `IN_PROGRESS.md`.
+1. Picks the first `[ready]` item from `ROADMAP.md`, moves it to `IN_PROGRESS.md`.
 2. **implementer** writes the code in a fresh worktree.
 3. **tester** runs the project's tests.
 4. **pr-author** opens a pull request on GitHub.
@@ -66,7 +78,7 @@ The task runs end-to-end inside the Claude session you can watch live:
 
 Wall time varies: a typo fix ~5 min, a small feature ~30–60 min. Leave it running and come back.
 
-### 4. Inspect what landed
+### 5. Inspect what landed
 
 ```bash
 gh pr list --state merged --limit 5   # recent PRs
@@ -76,7 +88,7 @@ gh issue list --label blocked         # tasks atelier gave up on (if any)
 
 If atelier hit the retry budget (3 attempts → reset → 3 more) and gave up, it opens a GitHub issue labeled `blocked` containing every `.task-log/*.md` entry from the attempts. Read those to decide whether to retry (refine the task) or abandon (close `wontfix`).
 
-### 5. Measure the autonomous merge rate
+### 6. Measure the autonomous merge rate
 
 After ≥10 atelier-driven PRs have merged on a project:
 

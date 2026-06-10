@@ -1,16 +1,16 @@
 ---
-description: Decompose a single ROADMAP.md task into an epic with sub-tasks, in place, before the orchestrator claims it. Manual override of the auto-decomposition heuristic in `task-orchestrator` step 3.5.
+description: Decompose a single ROADMAP.md task into an epic with sub-tasks, in place, before it is planned. Standalone pre-split — the operator can run it ahead of `/atelier:plan-task`, which also decomposes oversize tasks on its own.
 argument-hint: "<task-id>"
 allowed-tools: Read, Bash(jq:*), Bash(git -C * status:*), Bash(git -C * diff:*), Bash(git -C * add:*), Bash(git -C * commit:*), Task
 ---
 
-You are running the `/atelier:slice-task` slash command. The operator invokes this when they want to pre-empt the orchestrator's auto-decomposition heuristic — typically because they already know a flat task is going to be too large, or because the heuristic missed it.
+You are running the `/atelier:slice-task` slash command. The operator invokes this when they already know a flat task is going to be too large and want it pre-split into an epic before planning — independent of the planner's own oversize check during `/atelier:plan-task`.
 
 ## What this command does
 
 Dispatches the `task-decomposer` agent on a single task in the current project's `ROADMAP.md`, rewrites that task block as an epic with sub-tasks (PLAN.md §5 format), and commits the rewrite as a dedicated `chore(roadmap)` commit on the current branch.
 
-This command does **not** start the implement chain. The next `/atelier:next-task` (or the next orchestrator pass) will see the decomposed entry and pick the first eligible sub-task.
+This command does **not** start the implement chain and does **not** mark anything `[ready]`. It only reshapes the ROADMAP entry. After slicing, each sub-task still has to be planned with `/atelier:plan-task <sub-id>` (which writes `.plan/<sub-id>.md` and flips `[ready]`) before `/atelier:next-task` can claim it.
 
 ## Argument parsing
 
@@ -37,7 +37,7 @@ Invoke the `task-decomposer` agent via the `Task` tool. The briefing must includ
 - `project_root`: the absolute path resolved in Phase 1.
 - `entry_point`: `manual`.
 
-Do **not** pass `trigger_signals` — the orchestrator passes those when invoking auto; in manual mode, the operator's invocation is the trigger.
+Do **not** pass `trigger_signals` — the planner passes those when it invokes the decomposer during `/plan-task`; in manual mode, the operator's invocation is the trigger.
 
 ## Phase 3 — Commit the rewrite
 
@@ -75,7 +75,7 @@ Sub-tasks:
   - <#id>b — <title> (~<est>) blocked_by:<#id>a
   ...
 Commit:       <sha>
-Next:         run /atelier:next-task to claim <next_to_implement>
+Next:         run /atelier:plan-task on each sub-task (<#id>a, <#id>b, ...) to plan + mark it [ready], then /atelier:next-task to claim it
 ```
 
 On refusal / error, the summary is the agent's reason plus the suggested next action from Phase 3.

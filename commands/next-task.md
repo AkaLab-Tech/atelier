@@ -53,7 +53,16 @@ Strip the `--yes` / `-y` flag from `$ARGUMENTS` before parsing the task id (so `
 
 If the remaining `$ARGUMENTS` is empty: invoke the `atelier:task-discovery` skill on the project's `ROADMAP.md`. It returns the structured record (`id`, `title`, `type`, `priority`, `estimate`, `blocked_by`, `worktree`, `acceptance`, `context`) per PLAN.md §5.
 
-If `$ARGUMENTS` names a specific id: find that block in `ROADMAP.md` directly, parse it into the same shape, and **validate** it is unchecked and has no open `blocked_by` — surface the violation and stop if either fails. The `blocked_by` validation covers both forms:
+If `$ARGUMENTS` names a specific id: find that block in `ROADMAP.md` directly, parse it into the same shape, and **validate** it is unchecked, carries the `[ready]` marker (with a committed `.plan/<id>.md`), and has no open `blocked_by` — surface the violation and stop if any fails.
+
+The **`[ready]` validation** is absolute: a named-but-unplanned task is refused exactly like an auto-picked one. If the task lacks `[ready]` (or `.plan/<id>.md` is missing), **stop and refuse** in both interactive and non-interactive mode — never improvise a plan, never offer to plan it inline:
+
+```text
+✗ /next-task: task #<id> is not planned — run `/atelier:plan-task #<id>` first.
+   A task is only claimable once a product lead has approved a plan and it carries [ready].
+```
+
+The `blocked_by` validation covers both forms:
 
 - **Intra-repo** (`#NN`): the referenced id must be `[x]` in this `ROADMAP.md`.
 - **Cross-repo** (`<token>#NN`): resolve it offline with the helper, where `<project-root>` is the directory containing this `ROADMAP.md`:
@@ -130,6 +139,7 @@ Or, if any step aborted, report exactly which step and why — the operator deci
 
 ## Hard refusals
 
+- **Never** claim a task that is not `[ready]` with a committed `.plan/<id>.md` — auto-picked or explicitly named. Refuse with a pointer to `/atelier:plan-task <id>`; never improvise or approve a plan from this command.
 - **Never** create a worktree if `IN_PROGRESS.md` already has a task — see step 2.
 - **Never** claim a task whose `blocked_by:` references an open item — including a cross-repo `<token>#id` whose target is not closed in that member's `HISTORY.md` (`atelier-resolve-dep` exits non-zero), or whose token/project is not a resolvable workspace member.
 - **Never** edit `settings.template.json` itself from this command — that file is the template, not the output. The helper writes the instantiated copy to `<worktree>/.claude/settings.json`; this command never touches either file directly.

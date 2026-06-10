@@ -275,6 +275,33 @@ After any successful update, **restart open Claude Code sessions** —
 the plugin cache is refreshed but each session loads its agents /
 skills / commands at start.
 
+## Planning gate — tasks must be `[ready]` before they run
+
+A task is only claimable once a **product lead** has approved a plan for
+it. Planning is a separate step that happens *before* the orchestrator:
+
+- The product lead runs **`/atelier:plan-task <id>`**. This dispatches
+  the `planner` agent, which reads the task, scans the codebase, and
+  drafts a plan (approach, affected areas, acceptance criteria, risks).
+  The product lead reviews the draft and, on **explicit approval**, the
+  command commits it to `.plan/<id>.md` and flips the task to `[ready]`
+  in `ROADMAP.md`. No approval → nothing committed, nothing `[ready]`.
+- The orchestrator (`/atelier:next-task`) only ever claims `[ready]`
+  tasks. An unplanned task — auto-picked or explicitly named — is
+  refused with a pointer to `/atelier:plan-task <id>`.
+- **The orchestrator never improvises a plan and never asks you to
+  approve one.** If you are ever asked to approve an implementation plan
+  mid-chain, that is a bug — plan approval happens up front, in
+  `/plan-task`, never inside a running task. (This is the same boundary
+  as M7.1.F52/F53: planning is owned by the product lead, not invented
+  by the orchestrator.)
+- `.plan/` is committed — the approved plan is the implementer's spec
+  and a record of what was agreed.
+
+If a task is oversize, the planner decomposes it (into an epic with
+sub-tasks) during `/plan-task` and plans each sub-task; you approve the
+split as part of approving the plan.
+
 ## Epic + sub-tasks
 
 Large tasks that would produce an oversize PR can be expressed as an
@@ -304,21 +331,24 @@ Rules to remember:
 - `[OVERSIZE]` and `[BLOCKED]` markers on a sub-task apply only to that
   sub-task. The same markers on the epic line apply to the whole epic.
 
-When does the orchestrator auto-decompose? The `task-decomposer` agent is
-wired into the orchestrator's plan step: tasks that trip oversize-likely
-heuristics (`~estimate > 4h`,
-acceptance criteria with > 5 distinct bullets, title containing
+When does decomposition happen? During **planning**, not orchestration.
+The `planner` (invoked by `/atelier:plan-task`) evaluates the
+oversize-likely heuristics (`~estimate > 4h`, acceptance criteria with
+> 5 distinct bullets, title containing
 `epic`/`system`/`framework`/`platform`, or mention of ≥ 3 top-level
-dirs) are decomposed automatically before `implementer` runs. The
-operator can:
+dirs) and, when they trip, runs `task-decomposer` to rewrite the task as
+an epic with sub-tasks, then plans each sub-task. The orchestrator itself
+never decomposes. The operator can:
 
 - **Pre-empt**: write the epic structure manually in `ROADMAP.md`.
-  The orchestrator sees it is already shaped as an epic and skips the
-  decomposer step entirely.
-- **Override**: invoke `/atelier:slice-task <id>` to ask the decomposer
-  to act on a task the heuristics did not detect.
+  The planner sees it is already shaped as an epic and plans the
+  sub-tasks directly.
+- **Override**: invoke `/atelier:slice-task <id>` to pre-split a task
+  before planning it. Each resulting sub-task still has to be planned
+  via `/atelier:plan-task <sub-id>` before it becomes `[ready]`.
 - **Disable**: set `taskDecomposer.enabled: false` in
-  `<project>/.atelier.json` to turn off the automatic pass project-wide.
+  `<project>/.atelier.json` to turn off the automatic split during
+  planning project-wide.
 
 ## Permission model: layer 3 is auto-mode
 
