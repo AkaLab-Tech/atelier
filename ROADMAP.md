@@ -41,25 +41,6 @@ The coolify skill's validate-and-fix flow assumes a deploy is always triggered m
 
 **Trigger to revisit:** captured 2026-06-05 from live dogfooding. The fix is in `coolify-integration` but tracked here per the operator's decision.
 
-### M4.29 — Import an existing operator's Claude conversations on first atelier use
-
-`[onboarding]` · Source: operator request (2026-06-05) · Related: [operator-rules.md:166](operator-rules.md#L166) (`CLAUDE_CONFIG_DIR` separation), M7.1.F53
-
-Atelier runs under a config root (`$ATELIER_CONFIG_DIR`, default `~/.claude-work/`) **separate** from the operator's personal `~/.claude/`. A side effect for someone who already uses Claude Code: their existing conversation history lives under the personal root (`~/.claude/projects/<cwd-hash>/*.jsonl`) and does **not** appear in atelier sessions — `claude --resume` / `--continue` inside an `atelier()` session sees an empty history. This makes adopting atelier feel like starting from scratch. Give the operator a way to bring their prior conversations across so they are not lost.
-
-**Scope:**
-
-- [ ] Decide the import mechanism: copy vs symlink the per-project transcript dirs (`projects/<cwd-hash>/`) from `~/.claude/` into `$ATELIER_CONFIG_DIR/`. Weigh that `<cwd-hash>` is path-derived — same working dir hashes the same under both roots, so transcripts map 1:1.
-- [ ] Make it opt-in and selectable: import all projects, or pick specific project dirs (the operator may not want every personal conversation inside atelier).
-- [ ] Decide the entry point: a step in `install.sh` onboarding and/or a dedicated `atelier-import-conversations` helper + `/atelier:import-conversations` command for later runs.
-- [ ] Be non-destructive: never move or delete from the personal root; never overwrite an atelier transcript that already exists.
-- [ ] Scope to conversation transcripts only — do **not** import personal `CLAUDE.md`, memory, or settings (those must stay isolated; importing them would re-introduce the leak M7.1.F53 fixes).
-- [ ] Document in the operator guide what is and isn't imported, and that it is a one-time/opt-in convenience.
-
-**Acceptance:** an operator with prior `~/.claude/` conversations runs the import (at install or via the command) and, inside an `atelier()` session for the same project, `claude --resume` lists those prior conversations; the personal root is untouched and no personal `CLAUDE.md` / settings cross over.
-
-**Trigger to revisit:** requested by the operator 2026-06-05 while reasoning about the personal-vs-atelier config split. Natural companion to M7.1.F53 — same separation boundary, opposite direction (F53 keeps personal *rules* out; this lets personal *history* in, deliberately and scoped).
-
 ### M5.4 — Daily housekeeping of worktrees + local/remote branches (operator-authorized)
 
 `[maintenance]` · Source: operator request (2026-06-05) · Related: [skills/auto-merge/SKILL.md](skills/auto-merge/SKILL.md) (post-merge cleanup), [agents/task-orchestrator.md](agents/task-orchestrator.md) (worktree-as-evidence on blocked/oversize)
