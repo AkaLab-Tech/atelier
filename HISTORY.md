@@ -8,6 +8,17 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F58 — `atelier-update` refreshes the plugin cache even when the clone is already synced — 2026-06-10
+**PR:** [#TBD] · **Plugin bump:** 0.23.0 → 0.23.1
+
+Found during M7.1 dogfood on a real project (storefront): the active plugin cache was at **0.20.1** while the clone (`origin/main`) was already at **0.23.0**, and `atelier-update` could not close the gap. The script gated its entire delta-application — including the `claude plugin update` step that refreshes Claude Code's plugin cache — on the `git pull` advancing the clone SHA. When `OLD_SHA == NEW_SHA` it printed `already up to date — nothing to do` and `exit 2` **before** ever reaching the plugin-update step. So a clone advanced out-of-band (a direct `git pull`, or a prior run whose `claude plugin update` failed / a session that never restarted) left the cache permanently stale — uncorrectable by the very tool meant to fix it. The "clone advanced ⟺ plugin needs update" assumption is false.
+
+**Delivered:**
+- **`scripts/atelier-update`** — the `OLD_SHA == NEW_SHA` branch now reads the cached plugin version (new `read_cached_plugin_version`, from `$ATELIER_CONFIG_DIR/plugins/installed_plugins.json`) and only declares "nothing to do" when the cache matches the clone manifest. On drift it refreshes the cache and reports `cache → clone`; `--dry-run` reports the would-be refresh and exits 0 without touching anything.
+- Extracted the `claude plugin update` step into a `refresh_plugin_cache()` helper (preserving the M7.1.F29 `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR` prefix) so the normal delta path and the new cache-only path share one implementation.
+
+**Verified:** `bash -n` clean; `read_cached_plugin_version` returns the installed version (0.20.1) against the real manifest; drift detected (cache 0.20.1 ≠ clone 0.23.1) routes to the refresh branch. End-to-end cache refresh exercised by Phase 1 of the dogfood run after merge.
+
 ### M5.4 — Daily, operator-authorized housekeeping of worktrees + task branches — 2026-06-10
 **PR:** [#161](https://github.com/AkaLab-Tech/atelier/pull/161) · **Plugin bump:** 0.22.0 → 0.23.0
 
