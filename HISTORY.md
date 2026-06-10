@@ -8,6 +8,19 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F56 — `reviewer` identity verified/granted access to the repo so auto-merge never stalls silently — 2026-06-10
+**PR:** _pending_ · **Plugin bump:** 0.20.4 → 0.20.5
+
+Dogfood bug (workspace sandbox, 2026-06-09): the independent `reviewer` agent runs under a separate GitHub identity (`$ATELIER_CONFIG_DIR/gh/reviewer`). On a freshly-created **private** repo that user is not a collaborator, so `gh pr review --approve` failed with `GraphQL: Could not resolve to a Repository`. The author's flow proceeded (push, PR) but the review step died, so the auto-merge gate could never be satisfied — and on a repo with branch protection the PR would be permanently stuck. Observed live on a private `AkaLab-Tech/todo-web` (merged only because the operator, as admin, did it manually).
+
+**Delivered:**
+- **`scripts/atelier-doctor`** — new `check_reviewer_repo_access`: for the current repo, resolves `owner/name` via the author identity and verifies the `reviewer` identity can resolve it too (`GH_CONFIG_DIR=…/gh/reviewer gh repo view`). Emits `✓` when visible, `✗` with an exact manual fix (add the reviewer as a read collaborator + accept the invitation) when not, and `–` (skip) outside a git repo / when the reviewer identity isn't configured. The fix is `push_fix_manual` (granting is an outward action — never auto-run under `--fix`).
+- **`scripts/atelier-setup-project`** — new `step_reviewer_access`: at onboarding, detects whether the reviewer can see the repo; if not and the operator is the repo **admin**, asks for confirmation and then adds the reviewer as a read collaborator (`gh api -X PUT …/collaborators/<login> -f permission=pull`) **and** accepts the resulting invitation under the reviewer identity (private repos require the invitee to accept), then re-verifies. Non-admin / non-interactive / declined paths warn with the manual command and never fail setup. New `reviewer repo access:` line in the summary.
+- **`agents/reviewer.md`** + **`skills/auto-merge/SKILL.md`** — the "Could not resolve to a Repository" failure is now an explicit **terminal** state (*"reviewer cannot access this repo — auto-merge unavailable; grant read access"*), not a transient "waiting for review" hold the chain stalls on.
+- **`operator-rules.md`** (auto-merge gate) + **`docs/operator-guide.md`** (Step 4) — document that a new private repo needs the reviewer granted read access before the first task, and that doctor/setup-project detect and offer to fix it.
+
+**Verified:** `bash -n` clean on both scripts; `atelier-setup-project --help` smoke ok; reviewer.md frontmatter parses; live `/doctor` on this repo emits `✓ reviewer can access AkaLab-Tech/atelier (auto-merge review path available)` (author resolves the repo + ADMIN, reviewer resolves it). The admin grant+accept path is exercised by the live setup-project flow on a fresh private repo (not unit-testable here without making outward GitHub changes).
+
 ### M7.1.F57 — `safe-commit` gate validates the task worktree (not `$PWD`) and detects the package manager — 2026-06-09
 **PR:** [#154](https://github.com/AkaLab-Tech/atelier/pull/154) · **Plugin bump:** 0.20.3 → 0.20.4
 

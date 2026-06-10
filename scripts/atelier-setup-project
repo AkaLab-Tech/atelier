@@ -973,6 +973,99 @@ step_record_setup() {
   SETUP_VERSION="$plugin_version"
 }
 
+# ---------- M7.1.F56: reviewer access to this repo ----------
+# The independent reviewer agent runs under a SEPARATE GitHub identity
+# ($ATELIER_CONFIG_DIR/gh/reviewer). On a freshly-created PRIVATE repo it
+# is not a collaborator, so the auto-merge review step fails with "Could
+# not resolve to a Repository" and the gate stalls silently. Detect this
+# at onboarding and, when the operator is the repo admin, offer to grant
+# the reviewer read access (and accept the invitation) so the review path
+# works from the first task. Read-only / advisory otherwise — never fails
+# the setup.
+step_reviewer_access() {
+  REVIEWER_ACCESS_STATUS="skipped"
+  local reviewer_dir="$ATELIER_CONFIG_DIR/gh/reviewer"
+  local author_dir="$ATELIER_CONFIG_DIR/gh/author"
+
+  command -v gh >/dev/null 2>&1 \
+    || { REVIEWER_ACCESS_STATUS="skipped (gh not on PATH)"; return 0; }
+  git -C "$PROJECT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || { REVIEWER_ACCESS_STATUS="skipped (not a git repo)"; return 0; }
+  [ -d "$reviewer_dir" ] \
+    || { REVIEWER_ACCESS_STATUS="skipped (reviewer identity not configured)"; return 0; }
+
+  local owner_repo
+  owner_repo="$( (cd "$PROJECT" && env GH_CONFIG_DIR="$author_dir" gh repo view --json nameWithOwner --jq .nameWithOwner) 2>/dev/null || true)"
+  [ -n "$owner_repo" ] \
+    || { REVIEWER_ACCESS_STATUS="skipped (no GitHub remote)"; return 0; }
+
+  # Already accessible? Nothing to do.
+  if ( cd "$PROJECT" && env GH_CONFIG_DIR="$reviewer_dir" gh repo view "$owner_repo" --json nameWithOwner ) >/dev/null 2>&1; then
+    REVIEWER_ACCESS_STATUS="ok ($owner_repo visible to reviewer)"
+    return 0
+  fi
+
+  local reviewer_login
+  reviewer_login="$(env GH_CONFIG_DIR="$reviewer_dir" gh api user --jq .login 2>/dev/null || true)"
+
+  # Granting access requires the author to be an admin on the repo.
+  local perm
+  perm="$( (cd "$PROJECT" && env GH_CONFIG_DIR="$author_dir" gh repo view --json viewerPermission --jq .viewerPermission) 2>/dev/null || true)"
+
+  if [ "$perm" != "ADMIN" ]; then
+    warn "Reviewer ${reviewer_login:-<reviewer>} cannot access $owner_repo and you are not its admin (permission: ${perm:-unknown})."
+    warn "Auto-merge review will fail until the reviewer is granted read access — ask the repo admin to add it as a collaborator."
+    REVIEWER_ACCESS_STATUS="needs access (not admin — cannot grant)"
+    return 0
+  fi
+
+  if $NONINTERACTIVE; then
+    warn "Reviewer ${reviewer_login:-<reviewer>} cannot access $owner_repo; not granting in non-interactive mode."
+    warn "Grant manually: env GH_CONFIG_DIR=\"$author_dir\" gh api -X PUT repos/$owner_repo/collaborators/${reviewer_login:-<login>} -f permission=pull"
+    REVIEWER_ACCESS_STATUS="needs access (non-interactive — not granted)"
+    return 0
+  fi
+
+  printf "Reviewer '%s' cannot access %s. Add it as a read collaborator now? [y/N]: " "${reviewer_login:-<reviewer>}" "$owner_repo" >&2
+  local ans; read -r ans
+  case "$ans" in
+    y|Y|yes|Yes) ;;
+    *) REVIEWER_ACCESS_STATUS="declined (reviewer still lacks access)"; return 0 ;;
+  esac
+
+  if [ -z "$reviewer_login" ]; then
+    warn "Could not resolve the reviewer GitHub login; cannot grant access."
+    REVIEWER_ACCESS_STATUS="failed (reviewer login unknown)"
+    return 0
+  fi
+
+  if ! ( cd "$PROJECT" && env GH_CONFIG_DIR="$author_dir" gh api -X PUT "repos/$owner_repo/collaborators/$reviewer_login" -f permission=pull ) >/dev/null 2>&1; then
+    warn "Failed to add $reviewer_login as a collaborator on $owner_repo (admin rights required)."
+    REVIEWER_ACCESS_STATUS="failed (could not add collaborator)"
+    return 0
+  fi
+  sublog "invited $reviewer_login to $owner_repo (read)"
+
+  # Private repos require the invitee to ACCEPT before access is effective.
+  local inv_id
+  inv_id="$(env GH_CONFIG_DIR="$reviewer_dir" gh api user/repository_invitations --jq ".[] | select(.repository.full_name==\"$owner_repo\") | .id" 2>/dev/null | head -1 || true)"
+  if [ -n "$inv_id" ]; then
+    if env GH_CONFIG_DIR="$reviewer_dir" gh api -X PATCH "user/repository_invitations/$inv_id" >/dev/null 2>&1; then
+      sublog "reviewer accepted the invitation"
+    else
+      warn "Reviewer could not auto-accept invitation $inv_id — accept it manually under the reviewer identity."
+    fi
+  fi
+
+  # Re-verify so the summary reflects the real end state.
+  if ( cd "$PROJECT" && env GH_CONFIG_DIR="$reviewer_dir" gh repo view "$owner_repo" --json nameWithOwner ) >/dev/null 2>&1; then
+    REVIEWER_ACCESS_STATUS="granted ($reviewer_login now has read access)"
+  else
+    REVIEWER_ACCESS_STATUS="invited (reviewer must accept the invitation)"
+  fi
+  return 0
+}
+
 # ---------- per-task mode: only write <worktree>/.claude/settings.json ----------
 # Invoked by /next-task step 7. Runs outside the harness's permission scope
 # (the harness only gates the `Bash(atelier-setup-project ...)` invocation
@@ -1079,6 +1172,7 @@ step_project_claude_md
 step_npmrc
 step_gitignore
 step_record_setup
+step_reviewer_access
 
 # ---------- M4.19: detect project mode + root CLAUDE.md presence ----------
 # Detection runs after the mechanical scaffolding. Drafting the root
@@ -1101,6 +1195,7 @@ sublog "HISTORY.md:                     $HISTORY_STATUS"
 sublog ".claude/CLAUDE.md:              $CLAUDE_STATUS"
 sublog ".npmrc:                         $NPMRC_STATUS"
 sublog ".gitignore:                     $GITIGNORE_STATUS"
+sublog "reviewer repo access:           $REVIEWER_ACCESS_STATUS"
 sublog "$(printf '%s' "$CONFIG_FILE" | sed "s|^$HOME|~|"): $CONFIG_STATUS"
 sublog "setupCompleted:                 $SETUP_COMPLETED"
 sublog "setupVersion:                   $SETUP_VERSION"

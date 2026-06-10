@@ -112,6 +112,7 @@ This is a one-time configuration step per project. atelier will:
 - Create three files at the project root: `ROADMAP.md` (what work needs doing), `IN_PROGRESS.md` (what's being worked on right now), `HISTORY.md` (what's done).
 - Add a few entries to `.gitignore` so atelier's working files don't get saved to your project.
 - If the project uses Node.js, add an `.npmrc` file with safety settings for installing packages.
+- Check that your **reviewer** account can see the repo. This matters for **private** repos: the reviewer is a second GitHub account (see Step 1), and a brand-new private repo doesn't share access with it automatically — so the reviewer can't approve pull requests and atelier can't auto-merge. If you're the repo's admin, setup will offer to add the reviewer as a read-only collaborator for you (it asks first). If you skip it, grant the reviewer access on GitHub before running your first task, or auto-merge won't work.
 
 You can run `atelier /atelier:setup-project .` on as many projects as you like — atelier will remember each one. Run `atelier-list-projects` from any shell to see them all.
 

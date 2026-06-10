@@ -110,6 +110,20 @@ regardless of phrasing.
 **Post-merge:** delete the remote branch, remove the local worktree, mark
 the roadmap item `[x]`.
 
+**Reviewer access requirement (M7.1.F56).** The independent `reviewer`
+agent runs under a separate GitHub identity (`$ATELIER_CONFIG_DIR/gh/reviewer`),
+distinct from the author (`$ATELIER_CONFIG_DIR/gh/author`). On a
+**freshly-created private repo** that reviewer user is not a collaborator,
+so its `gh pr review --approve` fails with `Could not resolve to a
+Repository` — the review never lands and the auto-merge gate can never be
+satisfied (on a repo with branch protection requiring an approval, the PR
+is permanently stuck). This is a **terminal** state, not a transient wait:
+`/atelier:doctor` flags it for the current repo, and `/atelier:setup-project`
+offers to add the reviewer as a read collaborator (and accept the invite)
+when you are the repo admin. For a new private repo, grant the reviewer
+read access — via org membership or per-repo collaborator — before the
+first task, or auto-merge silently will not work.
+
 ### Atelier's gates are the only authority on commit / push / merge
 
 In autonomous mode (`ATELIER_AUTO` set, `interactive: false`, or a `--yes`
