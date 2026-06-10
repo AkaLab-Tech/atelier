@@ -1274,6 +1274,14 @@ phase_c_1_setup_project_helper() {
   # $ATELIER_CONFIG_DIR/projects.json, with a per-project on-disk
   # status (configured / partial / missing-directory). Read-only.
   _phase_c_1_symlink_helper atelier-list-projects
+  # M4.29: atelier-import-conversations copies the operator's prior Claude Code
+  # conversation transcripts (~/.claude/projects/<dir>/*.jsonl) into atelier's
+  # separate $ATELIER_CONFIG_DIR so `claude --resume` inside an atelier session
+  # can see them. Transcripts only — never personal CLAUDE.md / memory /
+  # settings — non-destructive, never overwrites an existing atelier transcript.
+  # Backs the /atelier:import-conversations command and the opt-in onboarding
+  # step below.
+  _phase_c_1_symlink_helper atelier-import-conversations
   # M7.1.F23: atelier-doctor bash binary — replaces the 10 inline Bash
   # checks the /atelier:doctor slash command used to run, each of which
   # surfaced a different Claude Code permission gate. With this binary
@@ -1710,6 +1718,56 @@ phase_c_1_atelier_auto_mode() {
   sublog "enabled auto-mode in $target (permissions.defaultMode = \"auto\")"
 }
 
+# M4.29: offer to bring the operator's prior Claude Code conversation
+# transcripts across from their personal ~/.claude into atelier's separate
+# $ATELIER_CONFIG_DIR, so `claude --resume` inside an atelier session is not
+# empty for someone who already used Claude Code. STRICTLY OPT-IN and
+# FAIL-OPEN: only prompts when a TTY is present AND there is something to
+# import; defaults to "no"; any failure warns and continues (never blocks the
+# install). The heavy lifting (enumeration, picker, non-destructive copy of
+# *.jsonl only) lives in scripts/atelier-import-conversations.
+phase_c_1_import_conversations() {
+  local bin="$ATELIER_REPO_ROOT/scripts/atelier-import-conversations"
+
+  # Non-interactive install (CI / piped): never prompt. The operator can run
+  # `/atelier:import-conversations` or the helper later.
+  if [ ! -t 0 ]; then
+    step_skip "skipping conversation import (no TTY) — run atelier-import-conversations later"
+    return 0
+  fi
+  if [ ! -x "$bin" ]; then
+    step_skip "skipping conversation import (helper not found at $bin)"
+    return 0
+  fi
+
+  # Only prompt when there is at least one importable project, so a fresh
+  # machine with no prior history is never asked a pointless question.
+  if ! "$bin" --list >/dev/null 2>&1 \
+     || ! "$bin" --list 2>/dev/null | grep -q 'Importable projects'; then
+    step_skip "no prior Claude Code conversations to import"
+    return 0
+  fi
+
+  log "You already have Claude Code conversation history under ~/.claude."
+  sublog "atelier keeps its own config root, so that history is invisible to atelier sessions."
+  sublog "You can copy prior transcripts across (transcripts only — never your personal"
+  sublog "CLAUDE.md, memory, or settings; your personal folder is left untouched)."
+  printf '    Import prior conversations now? [y/N] '
+  local reply=""
+  IFS= read -r reply || reply=""
+  case "$reply" in
+    y|Y|yes|YES)
+      # Interactive picker so the operator chooses which projects to bring
+      # over. Fail-open: a non-zero exit here must not abort the install.
+      "$bin" || warn "conversation import did not complete — run atelier-import-conversations later"
+      ;;
+    *)
+      step_skip "skipped conversation import — run /atelier:import-conversations anytime to do it later"
+      ;;
+  esac
+  return 0
+}
+
 phase_c_1() {
   phase "Phase C.1 — host-OS configuration"
   phase_c_1_claude_config_dir
@@ -1720,6 +1778,7 @@ phase_c_1() {
   phase_c_1_setup_project_helper
   phase_c_1_atelier_help_file
   phase_c_1_atelier_auto_mode
+  phase_c_1_import_conversations
   phase_c_1_shellrc_hooks
   ok "Phase C.1 complete"
 }

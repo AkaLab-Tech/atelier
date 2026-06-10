@@ -1,0 +1,362 @@
+#!/usr/bin/env bash
+#
+# atelier-import-conversations — bring an operator's prior Claude Code
+# conversation transcripts from their PERSONAL config root (~/.claude) into
+# atelier's SEPARATE config root ($ATELIER_CONFIG_DIR, default ~/.claude-work).
+#
+# Why this exists (M4.29): atelier deliberately runs under its own
+# $ATELIER_CONFIG_DIR so its autonomous-mode rules and plugins never collide
+# with the operator's personal Claude Code config. A side effect for anyone who
+# already uses Claude Code is that their existing per-project history lives
+# under ~/.claude/projects/<dir>/*.jsonl and is invisible to atelier sessions —
+# `claude --resume` inside an atelier() session sees an empty history. This
+# helper copies that prior history across so adopting atelier doesn't feel like
+# starting from scratch.
+#
+# What it does and does NOT touch:
+#   - Imports ONLY conversation transcripts: the *.jsonl files inside each
+#     projects/<dir>/ directory.
+#   - NEVER imports personal CLAUDE.md, memory, settings, or .claude.json —
+#     those must stay isolated (importing them would re-introduce the personal-
+#     rules leak that M7.1.F53 fixes).
+#   - NEVER moves, deletes, or modifies anything under the personal root: the
+#     source is read strictly read-only.
+#   - NEVER overwrites a transcript that already exists at the destination: a
+#     same-named *.jsonl at the destination is left untouched and reported as
+#     skipped.
+#
+# Mechanism: COPY, not symlink. A directory symlink would route atelier's own
+# NEW per-project transcripts back into the personal root, mixing atelier
+# history into ~/.claude. A per-file copy snapshots prior history and lets the
+# two roots diverge cleanly. The per-project directory name (`<cwd-hash>`) is
+# the project path with non-alphanumerics turned into `-`, so it is identical
+# under both roots and the directories map 1:1.
+#
+# Usage:
+#   atelier-import-conversations                 # interactive picker (TTY)
+#   atelier-import-conversations --all           # import every project
+#   atelier-import-conversations <path> [<path>] # import specific project(s)
+#   atelier-import-conversations --list          # list importable projects only
+#   atelier-import-conversations --dry-run --all # show what would be copied
+#   atelier-import-conversations --all --yes     # non-interactive, import all
+#   atelier-import-conversations --help
+#
+# A <path> positional may be a project path (e.g. /Users/me/Work/app) or the
+# raw transcript directory name (e.g. -Users-me-Work-app); a bare suffix such
+# as `app` matches by directory-name suffix.
+#
+# Options:
+#   --all          Select every importable project.
+#   --list         List importable projects (with new/total counts) and exit.
+#   --dry-run      Report what would be copied without writing anything.
+#   --yes, -y      Skip the interactive picker / confirmation (needs --all or
+#                  a positional selection).
+#   --from <dir>   Personal source config root (default: ~/.claude).
+#   --to <dir>     Atelier destination root (default: $ATELIER_CONFIG_DIR).
+#   --help, -h     Show this help and exit.
+#
+# Exit codes:
+#   0  completed successfully (even when zero transcripts were imported)
+#   1  unrecoverable error (missing source, src==dst, no TTY for picker, …)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+# ---------- logging ----------
+log()    { printf '==> %s\n' "$*"; }
+sublog() { printf '    %s\n' "$*"; }
+warn()   { printf '!!  %s\n' "$*" >&2; }
+die()    { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+ok()     { printf '    OK: %s\n' "$*"; }
+
+# ---------- usage ----------
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+Import prior Claude Code conversation transcripts from the operator's personal
+config root (~/.claude) into atelier's separate \$ATELIER_CONFIG_DIR. Copies
+only per-project *.jsonl transcripts; never personal CLAUDE.md / memory /
+settings, never overwrites an existing atelier transcript, never touches the
+personal root.
+
+USAGE:
+  ${SCRIPT_NAME}                 Interactive picker (requires a TTY)
+  ${SCRIPT_NAME} --all           Import every importable project
+  ${SCRIPT_NAME} <path> [<path>] Import specific project(s)
+  ${SCRIPT_NAME} --list          List importable projects and exit
+  ${SCRIPT_NAME} --dry-run ...   Show what would be copied, write nothing
+  ${SCRIPT_NAME} --help
+
+OPTIONS:
+  --all          Select every importable project.
+  --list         List importable projects (new/total counts) and exit.
+  --dry-run      Report what would be copied without writing anything.
+  --yes, -y      Non-interactive; needs --all or a positional selection.
+  --from <dir>   Personal source config root (default: ~/.claude).
+  --to <dir>     Atelier destination root (default: \$ATELIER_CONFIG_DIR).
+  --help, -h     Show this help and exit.
+
+A <path> may be a project path (/Users/me/Work/app), the raw transcript dir
+name (-Users-me-Work-app), or a suffix (app) matched against the dir name.
+
+EXIT CODES:
+  0  completed (even when nothing was imported)
+  1  unrecoverable error
+EOF
+}
+
+# ---------- arg parse ----------
+MODE="interactive"   # interactive | all | select | list
+DRY_RUN=false
+ASSUME_YES=false
+SRC_ROOT=""
+DST_ROOT=""
+SELECTORS=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --all)        MODE="all"; shift ;;
+    --list)       MODE="list"; shift ;;
+    --dry-run)    DRY_RUN=true; shift ;;
+    --yes|-y)     ASSUME_YES=true; shift ;;
+    --from)       [ -n "${2:-}" ] || die "--from requires a path"; SRC_ROOT="$2"; shift 2 ;;
+    --from=*)     SRC_ROOT="${1#--from=}"; shift ;;
+    --to)         [ -n "${2:-}" ] || die "--to requires a path"; DST_ROOT="$2"; shift 2 ;;
+    --to=*)       DST_ROOT="${1#--to=}"; shift ;;
+    --help|-h)    usage; exit 0 ;;
+    --*)          die "unknown option: $1 (run --help for usage)" ;;
+    *)            SELECTORS+=("$1"); MODE="select"; shift ;;
+  esac
+done
+
+# ---------- resolve roots ----------
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+[ -n "$SRC_ROOT" ] || SRC_ROOT="$HOME/.claude"
+[ -n "$DST_ROOT" ] || DST_ROOT="$ATELIER_CONFIG_DIR"
+
+# Expand a leading ~ if the operator typed one in --from/--to.
+SRC_ROOT="${SRC_ROOT/#\~/$HOME}"
+DST_ROOT="${DST_ROOT/#\~/$HOME}"
+
+SRC_PROJECTS="$SRC_ROOT/projects"
+DST_PROJECTS="$DST_ROOT/projects"
+
+[ -d "$SRC_ROOT" ]     || die "personal config root not found: $SRC_ROOT"
+[ -d "$SRC_PROJECTS" ] || die "no projects directory under source: $SRC_PROJECTS (nothing to import)"
+
+# Refuse to import a root into itself — that would be a no-op at best and a
+# self-referential copy at worst.
+if [ "$SRC_ROOT" = "$DST_ROOT" ]; then
+  die "source and destination are the same root ($SRC_ROOT) — refusing to import a root into itself"
+fi
+
+# ---------- normalize a selector to a transcript-dir token ----------
+# Claude Code names a project's transcript dir after its path with
+# non-alphanumerics collapsed to `-`. We can't perfectly reverse that, so we
+# normalize the operator's selector the same way and match by equality or
+# suffix against the actual directory basenames.
+normalize_selector() {
+  # shellcheck disable=SC2001
+  printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'
+}
+
+# ---------- enumerate importable project dirs ----------
+# A project dir is "importable" when it contains at least one *.jsonl. For each,
+# compute total transcripts and how many are NEW (absent at the destination).
+ALL_DIRS=()
+while IFS= read -r d; do
+  [ -n "$d" ] && ALL_DIRS+=("$d")
+done < <(find "$SRC_PROJECTS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | LC_ALL=C sort)
+
+# count_jsonl <dir> -> echoes the number of *.jsonl files directly inside <dir>
+count_jsonl() {
+  find "$1" -mindepth 1 -maxdepth 1 -type f -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' '
+}
+
+# count_new <src_dir> <base> -> echoes how many *.jsonl in src_dir are absent
+# from $DST_PROJECTS/<base>.
+count_new() {
+  local src_dir="$1" base="$2" dst_dir="$DST_PROJECTS/$2" n=0 f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ -e "$dst_dir/$(basename "$f")" ] || n=$((n + 1))
+  done < <(find "$src_dir" -mindepth 1 -maxdepth 1 -type f -name '*.jsonl' 2>/dev/null)
+  printf '%s' "$n"
+}
+
+# Build parallel arrays of importable projects (those with >=1 transcript).
+BASES=()
+TOTALS=()
+NEWS=()
+for d in ${ALL_DIRS[@]+"${ALL_DIRS[@]}"}; do
+  total="$(count_jsonl "$d")"
+  [ "$total" -gt 0 ] || continue
+  base="$(basename "$d")"
+  BASES+=("$base")
+  TOTALS+=("$total")
+  NEWS+=("$(count_new "$d" "$base")")
+done
+
+PROJECT_COUNT="${#BASES[@]}"
+
+if [ "$PROJECT_COUNT" -eq 0 ]; then
+  log "No importable conversations found under $SRC_PROJECTS."
+  sublog "Nothing to import — this is normal on a machine with no prior Claude Code history."
+  exit 0
+fi
+
+# ---------- --list mode ----------
+print_catalog() {
+  printf 'Importable projects under %s (%d):\n\n' "$SRC_PROJECTS" "$PROJECT_COUNT"
+  local i=0
+  while [ "$i" -lt "$PROJECT_COUNT" ]; do
+    printf '  [%2d] %s\n' "$((i + 1))" "${BASES[$i]}"
+    printf '       %s new / %s total transcripts\n' "${NEWS[$i]}" "${TOTALS[$i]}"
+    i=$((i + 1))
+  done
+  printf '\n'
+}
+
+if [ "$MODE" = "list" ]; then
+  print_catalog
+  exit 0
+fi
+
+# ---------- resolve which indices to import ----------
+SELECTED=()   # zero-based indices into BASES/TOTALS/NEWS
+
+select_all() {
+  local i=0
+  SELECTED=()
+  while [ "$i" -lt "$PROJECT_COUNT" ]; do SELECTED+=("$i"); i=$((i + 1)); done
+}
+
+case "$MODE" in
+  all)
+    select_all
+    ;;
+
+  select)
+    # Match each operator selector against the catalog by exact base, suffix,
+    # or normalized-path equality. Collect the union of matches.
+    declare -a hit_flag
+    local_i=0
+    while [ "$local_i" -lt "$PROJECT_COUNT" ]; do hit_flag[local_i]=0; local_i=$((local_i + 1)); done
+    for sel in ${SELECTORS[@]+"${SELECTORS[@]}"}; do
+      norm="$(normalize_selector "$sel")"
+      matched=false
+      i=0
+      while [ "$i" -lt "$PROJECT_COUNT" ]; do
+        base="${BASES[$i]}"
+        if [ "$base" = "$sel" ] || [ "$base" = "$norm" ] \
+           || case "$base" in *"$norm") true ;; *) false ;; esac; then
+          hit_flag[i]=1
+          matched=true
+        fi
+        i=$((i + 1))
+      done
+      $matched || warn "no importable project matched selector: $sel"
+    done
+    i=0
+    while [ "$i" -lt "$PROJECT_COUNT" ]; do
+      [ "${hit_flag[$i]}" = "1" ] && SELECTED+=("$i")
+      i=$((i + 1))
+    done
+    [ "${#SELECTED[@]}" -gt 0 ] || die "no projects matched the given selector(s) — run --list to see available names"
+    ;;
+
+  interactive)
+    if $ASSUME_YES; then
+      die "--yes needs an explicit selection: pass --all or one or more project paths"
+    fi
+    if [ ! -t 0 ]; then
+      die "no TTY for the interactive picker — pass --all or specific project path(s), optionally with --yes"
+    fi
+    print_catalog
+    printf 'Select projects to import: space-separated numbers, "a" for all, or Enter to cancel.\n'
+    printf '> '
+    IFS= read -r reply || reply=""
+    reply="$(printf '%s' "$reply" | tr -d '\r')"
+    case "$reply" in
+      ""|q|Q)
+        log "Cancelled — nothing imported."
+        exit 0
+        ;;
+      a|A|all)
+        select_all
+        ;;
+      *)
+        for tok in $reply; do
+          case "$tok" in
+            ''|*[!0-9]*) die "invalid selection: '$tok' (expected numbers, 'a', or Enter)" ;;
+          esac
+          if [ "$tok" -lt 1 ] || [ "$tok" -gt "$PROJECT_COUNT" ]; then
+            die "selection out of range: $tok (valid: 1..$PROJECT_COUNT)"
+          fi
+          SELECTED+=("$((tok - 1))")
+        done
+        ;;
+    esac
+    ;;
+esac
+
+# De-duplicate SELECTED while preserving order.
+DEDUP=()
+for idx in ${SELECTED[@]+"${SELECTED[@]}"}; do
+  seen=false
+  for j in ${DEDUP[@]+"${DEDUP[@]}"}; do [ "$j" = "$idx" ] && seen=true && break; done
+  $seen || DEDUP+=("$idx")
+done
+SELECTED=(${DEDUP[@]+"${DEDUP[@]}"})
+
+# ---------- confirm (interactive non-yes only) ----------
+total_new=0
+for idx in ${SELECTED[@]+"${SELECTED[@]}"}; do total_new=$((total_new + NEWS[idx])); done
+
+printf '\n'
+log "Selected ${#SELECTED[@]} project(s); $total_new new transcript(s) to import into $DST_PROJECTS"
+for idx in ${SELECTED[@]+"${SELECTED[@]}"}; do
+  sublog "${BASES[$idx]}  (${NEWS[$idx]} new / ${TOTALS[$idx]} total)"
+done
+printf '\n'
+
+if $DRY_RUN; then
+  log "Dry run — no files written. Re-run without --dry-run to import."
+  exit 0
+fi
+
+if [ "$total_new" -eq 0 ]; then
+  log "Every selected transcript already exists at the destination — nothing to copy."
+  exit 0
+fi
+
+# ---------- copy ----------
+copied=0
+skipped=0
+for idx in ${SELECTED[@]+"${SELECTED[@]}"}; do
+  base="${BASES[$idx]}"
+  src_dir="$SRC_PROJECTS/$base"
+  dst_dir="$DST_PROJECTS/$base"
+  mkdir -p "$dst_dir"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    fname="$(basename "$f")"
+    if [ -e "$dst_dir/$fname" ]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    # Copy preserving timestamps; never follow into the personal root again.
+    cp -p "$f" "$dst_dir/$fname"
+    copied=$((copied + 1))
+  done < <(find "$src_dir" -mindepth 1 -maxdepth 1 -type f -name '*.jsonl' 2>/dev/null)
+done
+
+printf '\n'
+ok "Imported $copied transcript(s); skipped $skipped already-present."
+sublog "Source left untouched: $SRC_PROJECTS"
+sublog "Open an atelier() session in a project and run \`claude --resume\` to see the imported history."
+exit 0

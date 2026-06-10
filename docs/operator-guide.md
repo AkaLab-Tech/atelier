@@ -92,6 +92,28 @@ This runs atelier's health check. You should see a list of items each marked `�
 
 ---
 
+## Already a Claude Code user? Bring your conversations over (optional)
+
+atelier keeps its own configuration folder, separate from your personal Claude Code folder (`~/.claude`). That separation is deliberate — atelier's autonomous-mode rules and plugins never disturb your personal setup. One side effect: any conversation history you built up using Claude Code on your own lives in the personal folder, so inside an atelier session `claude --resume` starts out empty, as if you were brand new.
+
+If you'd like to carry that prior history into atelier, you can copy it across:
+
+```bash
+atelier-import-conversations
+```
+
+This shows you a list of the projects you've had Claude Code conversations in and lets you pick which ones to bring over (or `--all`). The installer also offers to do this once, near the end, if it finds prior conversations.
+
+What gets copied and what doesn't:
+
+- **Copied:** your conversation transcripts only — the back-and-forth of each chat, per project. After importing, `claude --resume` inside an atelier session for that project lists those earlier conversations.
+- **Never copied:** your personal `CLAUDE.md`, memory, or settings. Those stay isolated on purpose — mixing them in would let your personal instructions leak into atelier's autonomous work.
+- **Non-destructive:** your personal `~/.claude` folder is never moved, changed, or deleted, and an already-imported conversation is never overwritten. Running it twice is safe — it just skips what's already there.
+
+It's a one-time convenience: it copies a snapshot of what you have now. New conversations you start in your personal Claude Code later won't appear in atelier automatically — re-run the command if you want to bring more across. Inside a Claude session the equivalent is `/atelier:import-conversations`; add `--list` to preview or `--dry-run` to see what would be copied without writing anything.
+
+---
+
 ## Step 4 — Set up your first project
 
 Pick a software project on your computer that you want atelier to work on. It can be:
@@ -434,6 +456,7 @@ Quick lookup once you've used atelier a few times.
 | `/atelier:workspace-status` | Aggregated status across a workspace's repos (run from the parent folder) |
 | `atelier-list-workspaces` | List your workspaces and each repo's health |
 | `/atelier:remove-workspace <name>` | Un-group a workspace (repos stay set up; `--with-members` also removes their setup) |
+| `atelier-import-conversations` | Copy your prior Claude Code conversation transcripts from `~/.claude` into atelier (`--list` to preview, `--all` for every project, `--dry-run` to rehearse) |
 | `atelier-doctor` | Run a health check |
 | `atelier-doctor --fix` | Apply the auto-fixable repairs (missing symlinks, stale shellrc block, marketplace not registered) |
 | `atelier-update` | Pull latest atelier release, refresh templates, update the Claude plugin |
@@ -456,4 +479,4 @@ Each `atelier-*` helper also has a Claude-session equivalent under `/atelier:*` 
 - `~/.claude-work/` — atelier's own configuration, separate from your personal Claude config. (This path is `$ATELIER_CONFIG_DIR`; helpers and slash commands always read/write here, never your personal `~/.claude/`.)
 - `~/.claude-work/projects.json` — the registry of your atelier projects. `~/.claude-work/workspaces.json` — your multi-repo workspaces (only present once you create one).
 - `~/.claude-work/atelier-help.txt` — the cheatsheet shown by `atelier --help` (written at install time, refreshed by `atelier-update`).
-- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, `atelier-list-projects`, `atelier-remove-project`, `atelier-setup-workspace`, `atelier-resolve-dep`, `atelier-workspace-status`, `atelier-list-workspaces`, `atelier-remove-workspace`, `atelier-update`, `atelier-permission-diff`, `atelier-pr-size-check`, and `atelier-measure-merge-rate` commands.
+- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, `atelier-list-projects`, `atelier-remove-project`, `atelier-import-conversations`, `atelier-setup-workspace`, `atelier-resolve-dep`, `atelier-workspace-status`, `atelier-list-workspaces`, `atelier-remove-workspace`, `atelier-update`, `atelier-permission-diff`, `atelier-pr-size-check`, and `atelier-measure-merge-rate` commands.
