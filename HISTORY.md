@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F62.1 — fix `/resume-task` orphaned-PR detection (`gh --head` is exact, not prefix) — 2026-06-10
+**PR:** [#TBD] · **Plugin bump:** 0.24.0 → 0.24.1
+
+Follow-up to F62, caught when its end-to-end validation ran (`/atelier:resume-task RLS.2` on storefront#132): the PR-open detection query used `gh pr list --head "task/<id>-"`, but `--head` matches the branch name **exactly**, not as a prefix, so it never matched the full `task/<id>-<slug>` branch. The autonomous run only found the PR because the agent improvised a fallback search. Fixed the spec to list open PRs and filter `headRefName` with `startswith("task/<id>-")` in `jq` (the trailing `-` keeps `RLS.2` from matching `RLS.20`). The rest of F62 worked as designed: pr-open mode detected, orchestrator re-entered at `reviewer → auto-merge`, reviewer returned `request-changes` (the `landing_pages` 8th-table gap), auto-merge correctly held — PR left OPEN.
+
 ### M7.1.F62 — `/resume-task` PR-open mode: atelier finishes an orphaned PR autonomously — 2026-06-10
 **PR:** [#TBD] · **Plugin bump:** 0.23.3 → 0.24.0
 
