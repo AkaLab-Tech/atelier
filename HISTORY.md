@@ -8,6 +8,23 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F54 — Coolify skill: detect GitHub App auto-deploy vs manual deploy — 2026-06-10
+**PR:** [coolify-integration#2](https://github.com/AkaLab-Tech/coolify-integration/pull/2) · **Plugin bump:** coolify-integration 0.1.0 → 0.2.0
+
+The `coolify` skill assumed a deploy is always triggered manually via `atelier-coolify deploy <uuid>`. In practice apps are wired through Coolify's GitHub App, so a push to the watched branch **auto-deploys** — a manual deploy is then redundant, can double-trigger, and misleads diagnosis. The change lands in the `coolify-integration` repo; tracked here per the operator's decision.
+
+**Delivered:**
+- **`atelier-coolify deploy-mode <uuid>`** (new, read-only) — reports `auto` / `manual` / `unknown` by probing the app's auto-deploy flag (`settings.is_auto_deploy_enabled`, `is_auto_deploy_enabled`, `auto_deploy_enabled`) and git source across version-dependent Coolify field names, plus the watched branch. Uses jq `has()` rather than `//` so an explicit `false` (manual) is not confused with an absent flag (unknown).
+- **Per-project cache** — result recorded in `.coolify-deploy-mode.json` (override `COOLIFY_DEPLOY_MODE_FILE`) so the skill resolves the mode once; `--refresh` re-queries.
+- **`status`** now surfaces the `auto_deploy` flag too.
+- **Skill flow rewrite** — resolve deploy mode first; on `auto` apps a push to the watched branch *is* the deploy (skip manual `deploy` for code changes), while a `set-env` change still needs a `deploy` because it bypasses git. Manual path unchanged for apps without auto-deploy.
+- Added `deploy-mode` to the read-only allowlist; fixed a stale Keychain reference in the skill (auth is per-project `.env`).
+
+**Tests:** no live Coolify instance touched. Offline: `bash -n` + `plugin.json` JSON validity; jq extraction across 5 app-JSON variants (auto/manual/unknown, including the `false`-vs-absent distinction); cache get/put roundtrip (cache-hit returns `source: "cache"` with no network call; init handles missing / valid / corrupt cache files).
+
+**Follow-ups:**
+- Field names for the auto-deploy flag are unverified against a live Coolify instance; the probe covers the three known variants and falls back to `unknown`. Adjust the jq expression if a real instance uses a different name.
+
 ### M4.29 — Import an existing operator's Claude conversations on first atelier use — 2026-06-10
 **PR:** [#159](https://github.com/AkaLab-Tech/atelier/pull/159) · **Plugin bump:** 0.21.0 → 0.22.0
 
