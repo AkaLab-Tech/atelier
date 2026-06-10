@@ -21,6 +21,8 @@ priority:    P0 | P1 | P2
 estimate:    <as written, e.g. "~2h">   (may be empty)
 blocked_by:  <as written, e.g. "#23">   (may be empty)
 worktree:    task/<id-without-#>-<kebab-slug-of-title>
+ready:       true | false           (whether the line carries the [ready] marker)
+plan_path:   .plan/<id-without-#>.md  (the approved plan artifact; present when ready)
 acceptance:  <bullet list extracted from the sub-bullets>
 context:     <any "Repro:", "Notes:", or other sub-bullets that aren't the
               acceptance line — verbatim, so the implementer keeps the wording>
@@ -76,9 +78,17 @@ Sections are headed `## 🔥 P0 — …`, `## 🎯 P1 — …`, `## 💭 P2 — 
      atelier-resolve-dep --from <project-root> --token <token> --id <#NN>
      ```
      Exit `0` → blocker merged in the sibling member → satisfied. Any non-zero exit → **not** satisfied, skip the candidate. The verdict word on stdout (`open` / `unknown-token` / `unknown-id`) explains why; carry it into the "no eligible task" report so the operator can act (a typo'd id or a token that is not a workspace member is a roadmap bug, not just an open dependency). If the helper is unavailable or `<project-root>` is not part of any workspace, a `<token>#id` blocker is unresolvable — treat the candidate as blocked and surface that the project is not in a workspace.
-4. **Filter `[OVERSIZE]` and `[BLOCKED]` markers.** A candidate whose heading line contains either marker is **silently skipped** (the operator owns the resolution). Same rule applies to sub-tasks.
-5. **Move on to the next section** only when the current one has no eligible candidates left.
-6. **No eligible task anywhere** → return "no work to pick up — every unchecked item is blocked by another open item, or everything is done". Do not pick a blocked item just to keep busy.
+4. **Filter `[ready]` (planning gate).** For the **autonomous flow** (the skill invoked by `task-orchestrator` or `/atelier:next-task`), a candidate is eligible only if its line carries the literal `[ready]` marker **and** a committed `.plan/<id>.md` exists in the project root. An unchecked task without `[ready]` is **silently skipped** the same way a `blocked_by`-gated task is — it is backlog the product lead has not planned yet via `/atelier:plan-task`. A line marked `[ready]` whose `.plan/<id>.md` is missing is an **inconsistency**: surface it (`ready-without-plan: <#id>`) and treat the candidate as not eligible. See "When is the `[ready]` gate in effect?" below — it does **not** apply to atelier's own dev roadmap.
+5. **Filter `[OVERSIZE]` and `[BLOCKED]` markers.** A candidate whose heading line contains either marker is **silently skipped** (the operator owns the resolution). Same rule applies to sub-tasks.
+6. **Move on to the next section** only when the current one has no eligible candidates left.
+7. **No eligible task anywhere** → return the reason precisely: *"no planned tasks to claim — every unchecked item is unplanned (run `/atelier:plan-task <id>`), blocked by another open item, or everything is done"*. Do not pick an unplanned or blocked item just to keep busy.
+
+### When is the `[ready]` gate in effect?
+
+The `[ready]` filter (step 4) governs the **autonomous selection path** on operator-managed projects (PLAN.md §5 P0/P1/P2 roadmaps): the orchestrator and `/atelier:next-task` only ever claim planned, approved tasks. It does **not** apply to:
+
+- **Atelier's own dev roadmap** (this repo's `## High / Medium / Low Priority` layout — see Edge cases below). That roadmap is maintained by the human maintainer and uses no `[ready]` markers; treat every unchecked item as selectable.
+- **Direct operator queries** ("what's next?") — see "How the caller should use the result": there you *show* unplanned items too, flagged as `unplanned — run /plan-task`, rather than hiding them. Hiding is only for the autonomous auto-pick.
 
 ### Epic-aware parsing
 
@@ -118,5 +128,5 @@ The orchestrator (`task-orchestrator` agent) takes the returned record and:
 2. Invokes `git-wt` with the `worktree` field to create the per-task worktree.
 3. Hands `acceptance` and `context` to `implementer` as the spec.
 
-When this skill is invoked **directly by the operator** ("what's next?"), present the result in a short table — id, title, type, priority, estimate — and ask whether to claim it, rather than auto-claiming.
+When this skill is invoked **directly by the operator** ("what's next?"), present the result in a short table — id, title, type, priority, estimate, and a **planned?** column (`[ready]` vs `unplanned — run /plan-task`). Show unplanned high-priority items too, so the operator sees what to plan next; do not hide them the way the autonomous auto-pick does. Then ask whether to plan or claim, rather than auto-claiming. A task can only be claimed once it is `[ready]`.
 

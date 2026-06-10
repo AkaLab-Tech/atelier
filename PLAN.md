@@ -282,10 +282,11 @@ Markdown with nested checkboxes + inline metadata. One file per project, written
 
 **Conventions:**
 - Sections ordered by priority: P0 → P1 → P2.
-- Item line: `- [ ] <type> <title> [<id>] [~estimate] [blocked_by:...]`.
+- Item line: `- [ ] [ready] <type> <title> [<id>] [~estimate] [blocked_by:...]` — the `[ready]` token is optional and sits immediately after the checkbox (see **Planning gate** below).
 - Types: `bug`, `feat`, `chore`, `docs`, `refactor`.
 - Sub-bullets: context, repro, acceptance criteria.
 - `[x]` marks completed tasks (kept for history).
+- `[ready]` marks a task whose plan a product lead has approved; only `[ready]` tasks are claimable by the orchestrator (see **Planning gate**).
 
 **`blocked_by` — intra-repo and cross-repo (§15):**
 - Intra-repo (unchanged): `blocked_by:#<id>` references another task id in the *same* `ROADMAP.md`; resolved within that file.
@@ -312,6 +313,15 @@ A single task that would produce a PR larger than the project's size budget (see
 - The epic line's checkbox `[ ]` / `[x]` is **derived**, not edited by the operator: it auto-flips to `[x]` when every sub-task is `[x]`. Tooling (`task-discovery` skill) computes this on read; nothing writes the epic checkbox manually.
 - The epic's `~estimate` should be the sum of its sub-tasks' estimates. Drift is harmless but suggests the split changed shape from what was planned.
 
+### Planning gate (M4.30) ✅
+
+Planning is a separate, explicit, **product-lead-owned** step that runs *before* the orchestrator can claim a task. The orchestrator never improvises a plan and never asks the operator to approve one — an unplanned task is simply not claimable.
+
+- **`[ready]` marker.** A claimable unit (top-level task **or** sub-task) carries the literal token `[ready]` immediately after its checkbox: `- [ ] [ready] \`feat\` Export reports to CSV \`#42\` \`~4h\``. Readiness is a **per-unit** property — the **epic line is never marked `[ready]`** (it is a container; the orchestrator descends into sub-tasks). `[ready]` is independent of `[x]` (done), `[OVERSIZE]`, and `[BLOCKED]`; a `[ready]` task still has to pass the `blocked_by` filter before it is claimed.
+- **`.plan/<id>.md` artifact.** Each `[ready]` unit has a committed plan at `.plan/<id-without-#>.md` (e.g. `.plan/42.md`, `.plan/42a.md`) holding: approach, affected areas, acceptance criteria, risks/open questions, and a decomposition note. The `.plan/` directory is **tracked** (the approved plan is spec + evidence). A `[ready]` marker without its `.plan/<id>.md` is an inconsistency — tooling surfaces it and treats the unit as not-ready.
+- **The flow.** The product lead runs **`/plan-task <id>`**, which dispatches the `planner` agent (reads the task, scans the codebase, writes the draft plan; when the task is oversize-likely the planner invokes `task-decomposer` and writes one plan per sub-task). The product lead reviews the draft; on **explicit approval** the command commits the plan(s) and flips the unit(s) to `[ready]`. No approval → nothing is committed and nothing becomes `[ready]`.
+- **Scope.** The gate governs the operator-facing P0/P1/P2 flow. Atelier's own dev roadmap (`## High / Medium / Low Priority`) does not use `[ready]`.
+
 **Selection order (extended):**
 
 The orchestrator selects work in this order:
@@ -319,11 +329,12 @@ The orchestrator selects work in this order:
 1. Highest-priority section (P0 → P1 → P2).
 2. Within a section, the first unchecked top-level item. If that item is an epic, descend into its sub-tasks.
 3. Within an epic, the first unchecked sub-task with no open `blocked_by` (resolved against sibling sub-tasks first, then global tasks).
-4. Sub-tasks marked `[OVERSIZE]` or `[BLOCKED]` are skipped (same as top-level tasks — see M7.1.F26 / M7.1.F27.1).
+4. The candidate must carry `[ready]` with a committed `.plan/<id>.md` (Planning gate above). Unplanned items are skipped exactly like `blocked_by`-gated ones.
+5. Sub-tasks marked `[OVERSIZE]` or `[BLOCKED]` are skipped (same as top-level tasks — see M7.1.F26 / M7.1.F27.1).
 
 An epic with **all** sub-tasks `[x]` is fully complete; the epic line itself auto-flips to `[x]` and moves to `HISTORY.md` as a single closing entry referencing each sub-task's PR.
 
-**Auto-decomposition** (M4.24.b, future): a task that triggers the orchestrator's oversize-likely heuristics is run through the `task-decomposer` agent, which rewrites the top-level task as an epic with sub-tasks in place. The operator can pre-empt this by writing the epic structure manually, or disable the auto-pass via `<project>/.atelier.json`'s `taskDecomposer.enabled: false`. See M4.24.a (this section) for the *format*, M4.24.b for the *engine*.
+**Decomposition** (M4.24.b → M4.30): oversize-likely tasks are decomposed during **planning**, not during orchestration. The `planner` (invoked by `/plan-task`) evaluates the oversize-likely heuristics and, when they trip, runs the `task-decomposer` agent to rewrite the top-level task as an epic with sub-tasks in place — then plans each sub-task. The operator can pre-empt this by writing the epic structure manually, by running `/atelier:slice-task <id>` to pre-split, or disable the auto-pass via `<project>/.atelier.json`'s `taskDecomposer.enabled: false`. The orchestrator itself never decomposes (the old step-4 auto-trigger is removed). See M4.24.a (this section) for the *format*, M4.24.b for the *engine*, M4.30 for the planning gate that owns it.
 
 ---
 
@@ -367,7 +378,8 @@ Auto-merge when:
 
 | Agent | Model | Purpose |
 |---|---|---|
-| `task-orchestrator` | Opus | Plans the task, routes to specialists |
+| `planner` | Opus | Produces the approved plan (`.plan/<id>.md`); decomposes oversize tasks via `task-decomposer`. Product-lead-invoked via `/plan-task` |
+| `task-orchestrator` | Opus | Claims only `[ready]` tasks; routes them through specialists (never plans or decomposes) |
 | `implementer` | Sonnet | Writes feature / fix code |
 | `tester` | Sonnet | Writes and runs unit + integration tests |
 | `e2e-runner` | Sonnet | Drives Playwright, captures screenshots |
@@ -404,7 +416,8 @@ Declared in `.mcp.json` at the plugin root and auto-loaded when atelier is activ
 
 ### Slash commands (global)
 
-- `/next-task` — full pickup-to-PR flow.
+- `/plan-task <id>` — product-lead planning gate: dispatch the `planner`, review the draft, and on approval commit `.plan/<id>.md` + mark the task `[ready]` (§5 Planning gate). A task is only claimable once planned.
+- `/next-task` — full pickup-to-PR flow (claims only `[ready]` tasks).
 - `/resume-task <id>` — continue after interruption.
 - `/finish-task` — finalize PR.
 - `/status` — what's in progress, blocked, awaiting review.
