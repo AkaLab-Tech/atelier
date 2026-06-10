@@ -638,6 +638,52 @@ check_git_identity() {
 /path/to/atelier/install.sh"
 }
 
+check_reviewer_repo_access() {
+  # M7.1.F56 — the independent reviewer agent runs under a SEPARATE GitHub
+  # identity ($ATELIER_CONFIG_DIR/gh/reviewer), distinct from the author.
+  # On a freshly-created PRIVATE repo that identity is not a collaborator,
+  # so `gh pr review --approve` fails with "Could not resolve to a
+  # Repository" and the auto-merge gate stalls silently. Verify, for the
+  # CURRENT repo, that the reviewer identity can actually resolve it.
+  local reviewer_dir="$ATELIER_CONFIG_DIR/gh/reviewer"
+  local author_dir="$ATELIER_CONFIG_DIR/gh/author"
+
+  if ! command -v gh >/dev/null 2>&1; then
+    push_host "$SKIP reviewer repo access (gh not on PATH)"
+    return
+  fi
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    push_host "$SKIP reviewer repo access (not inside a git repo)"
+    return
+  fi
+  if [ ! -d "$reviewer_dir" ]; then
+    push_host "$SKIP reviewer repo access (reviewer identity not configured at $reviewer_dir)"
+    return
+  fi
+  # Resolve owner/name via the author identity (the account that can see it).
+  local owner_repo
+  owner_repo="$(env GH_CONFIG_DIR="$author_dir" gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+  if [ -z "$owner_repo" ]; then
+    push_host "$SKIP reviewer repo access (no GitHub remote resolved for the current repo)"
+    return
+  fi
+  # Can the reviewer identity resolve the repo?
+  if env GH_CONFIG_DIR="$reviewer_dir" gh repo view "$owner_repo" --json nameWithOwner >/dev/null 2>&1; then
+    push_host "$OK reviewer can access $owner_repo (auto-merge review path available)"
+    return
+  fi
+  local reviewer_login
+  reviewer_login="$(env GH_CONFIG_DIR="$reviewer_dir" gh api user --jq .login 2>/dev/null || true)"
+  push_host "$FAIL reviewer identity${reviewer_login:+ ($reviewer_login)} cannot access $owner_repo — auto-merge review will fail"
+  push_fix_manual "# Grant the reviewer GitHub user read access to $owner_repo, or the auto-merge
+# review step fails with \"Could not resolve to a Repository\" and PRs stall.
+# Easiest: re-run /atelier:setup-project in this repo — it offers to do this.
+# Manual (as the repo admin): add the reviewer as a read collaborator, then
+# have the reviewer accept the invitation:
+env GH_CONFIG_DIR=\"$author_dir\" gh api -X PUT \"repos/$owner_repo/collaborators/${reviewer_login:-<reviewer-login>}\" -f permission=pull
+inv=\$(env GH_CONFIG_DIR=\"$reviewer_dir\" gh api user/repository_invitations --jq '.[] | select(.repository.full_name==\"$owner_repo\") | .id' | head -1) && env GH_CONFIG_DIR=\"$reviewer_dir\" gh api -X PATCH \"user/repository_invitations/\$inv\""
+}
+
 check_atelier_auto_mode() {
   # M2.8 — verify $ATELIER_CONFIG_DIR/settings.json has
   # permissions.defaultMode == "auto" so atelier-launched sessions get
@@ -746,6 +792,7 @@ check_workspaces
 check_atelier_config_dir
 check_atelier_claude_auth
 check_git_identity
+check_reviewer_repo_access
 check_atelier_auto_mode
 
 # ---------- emit the report ----------

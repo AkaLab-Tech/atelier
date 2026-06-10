@@ -55,6 +55,8 @@ Important: GitHub's `reviewDecision` is the **net** decision after all reviews. 
 
 Note: the `reviewer` agent runs under `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/reviewer`, a distinct GitHub user from the author identity at `$ATELIER_CONFIG_DIR/gh/author`. With distinct identities, GitHub honours the reviewer's `--approve` and `reviewDecision` resolves to `APPROVED`. If the two identities resolve to the same GitHub login, this guardrail keeps holding until the reviewer dir is re-authenticated with a different account.
 
+Reviewer has no access to the repo: on a freshly-created **private** repo the reviewer identity is often not a collaborator, so it never managed to post an approval and `reviewDecision` is `REVIEW_REQUIRED`/`null`. Do not treat this as a normal "waiting for review" hold that will resolve on its own — it never will. When the review never landed because the reviewer could not resolve the repo, surface it as the terminal state `held: reviewer cannot access this repo — auto-merge unavailable; grant the reviewer read access (run /atelier:setup-project or add it as a collaborator)`, not an open-ended wait.
+
 ### 3. All CI checks succeeded
 
 ```bash
@@ -97,7 +99,7 @@ Exit codes:
 - **1** OVERSIZE → `held: PR exceeds size budget (<counted-lines> lines AND <counted-files> files, limits <maxLines>/<maxFiles>)`. Include the tool's stdout — particularly the suggested slice boundaries — in the held-state report so the operator (and the orchestrator on the next pass) see the slicing hints.
 - **2** error → `held: size check failed (<stderr-tail>)`. Do not silently widen the gate.
 
-The AND-gate is deliberate (M7.1.F27): a tightly-scoped diff that grows long, or a broad refactor that stays small, both pass — only PRs that breach **both** axes after exemptions auto-block. Per-project overrides live in `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`. The skill never widens the gate at runtime; if a project legitimately needs a higher ceiling, that decision is made in `.atelier.json` and version-controlled.
+The AND-gate is deliberate: a tightly-scoped diff that grows long, or a broad refactor that stays small, both pass — only PRs that breach **both** axes after exemptions auto-block. Per-project overrides live in `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`. The skill never widens the gate at runtime; if a project legitimately needs a higher ceiling, that decision is made in `.atelier.json` and version-controlled.
 
 ### 6. No unresolved human comments
 

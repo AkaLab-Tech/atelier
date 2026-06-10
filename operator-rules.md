@@ -110,6 +110,20 @@ regardless of phrasing.
 **Post-merge:** delete the remote branch, remove the local worktree, mark
 the roadmap item `[x]`.
 
+**Reviewer access requirement.** The independent `reviewer`
+agent runs under a separate GitHub identity (`$ATELIER_CONFIG_DIR/gh/reviewer`),
+distinct from the author (`$ATELIER_CONFIG_DIR/gh/author`). On a
+**freshly-created private repo** that reviewer user is not a collaborator,
+so its `gh pr review --approve` fails with `Could not resolve to a
+Repository` — the review never lands and the auto-merge gate can never be
+satisfied (on a repo with branch protection requiring an approval, the PR
+is permanently stuck). This is a **terminal** state, not a transient wait:
+`/atelier:doctor` flags it for the current repo, and `/atelier:setup-project`
+offers to add the reviewer as a read collaborator (and accept the invite)
+when you are the repo admin. For a new private repo, grant the reviewer
+read access — via org membership or per-repo collaborator — before the
+first task, or auto-merge silently will not work.
+
 ### Atelier's gates are the only authority on commit / push / merge
 
 In autonomous mode (`ATELIER_AUTO` set, `interactive: false`, or a `--yes`
@@ -190,7 +204,7 @@ Entry point: the `/atelier:next-task` slash command picks the highest-priority
 unblocked item from the project's `ROADMAP.md` and routes it through this
 chain.
 
-## Invoking `claude` from atelier scripts (M7.1.F29)
+## Invoking `claude` from atelier scripts
 
 Atelier maintains a config root **separate** from the operator's personal
 Claude Code config: `$ATELIER_CONFIG_DIR` (default `~/.claude-work/`) vs.
@@ -218,7 +232,7 @@ interactive sessions; the issue only applies to scripts that invoke
 The same rule applies to suggestions the doctor / setup-project / similar
 scripts surface to the operator as copy-paste commands.
 
-## Keeping atelier up to date (M6.1)
+## Keeping atelier up to date
 
 Atelier ships as a Claude Code plugin **plus** a host-OS layer (the
 `atelier-*` helpers symlinked into `~/.local/bin/` by `install.sh`).
@@ -233,7 +247,7 @@ Both have to be refreshed when upstream releases a new version:
   permission-diff prompt resolves through Claude Code's I/O. Use this
   whenever the upstream release touches `settings.template.json` — the
   helper will show you what changed and ask before applying.
-- `atelier-doctor --fix` (M7.1.F30): after the standard health check
+- `atelier-doctor --fix`: after the standard health check
   report, auto-execute the runnable fix commands the doctor would
   otherwise have asked you to copy-paste (typically the
   `CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR claude plugin update ...`
@@ -261,7 +275,7 @@ After any successful update, **restart open Claude Code sessions** —
 the plugin cache is refreshed but each session loads its agents /
 skills / commands at start.
 
-## Epic + sub-tasks (M4.24.a)
+## Epic + sub-tasks
 
 Large tasks that would produce an oversize PR can be expressed as an
 **epic** with sub-tasks. The epic acts as a container; each sub-task is
@@ -290,9 +304,9 @@ Rules to remember:
 - `[OVERSIZE]` and `[BLOCKED]` markers on a sub-task apply only to that
   sub-task. The same markers on the epic line apply to the whole epic.
 
-When does the orchestrator auto-decompose? M4.24.b (a follow-up to this
-milestone) wires the `task-decomposer` agent into the orchestrator's
-plan step: tasks that trip oversize-likely heuristics (`~estimate > 4h`,
+When does the orchestrator auto-decompose? The `task-decomposer` agent is
+wired into the orchestrator's plan step: tasks that trip oversize-likely
+heuristics (`~estimate > 4h`,
 acceptance criteria with > 5 distinct bullets, title containing
 `epic`/`system`/`framework`/`platform`, or mention of ≥ 3 top-level
 dirs) are decomposed automatically before `implementer` runs. The
@@ -306,14 +320,14 @@ operator can:
 - **Disable**: set `taskDecomposer.enabled: false` in
   `<project>/.atelier.json` to turn off the automatic pass project-wide.
 
-## Permission model: layer 3 is auto-mode (M2.8)
+## Permission model: layer 3 is auto-mode
 
 Atelier ships with **Claude Code's native auto permission mode** as the layer-3 fallback for the static allow/deny/ask matrix in `templates/settings.template.json`. `install.sh` writes `{"permissions": {"defaultMode": "auto"}}` into `$ATELIER_CONFIG_DIR/settings.json`; `atelier`-launched sessions inherit auto-mode while the operator's personal `~/.claude/` config stays untouched.
 
 What auto-mode does, for the operator:
 
 - **Bash commands the matrix did not enumerate** (e.g. a new `gh` subcommand the template doesn't list yet, a `git wt ls` alias the matcher can't expand statically) are evaluated by Anthropic's classifier instead of prompting. Most pass; the residual that don't are the high-risk surface where the prompt is still the right answer.
-- **Shell control flow** (`for`/`while`/`if`, compound `&&`/`||`, command substitution) — what used to trip *"Contains shell syntax (string) that cannot be statically analyzed"* — is now classifier-judged. The friction symptom that originated M2.6 is gone.
+- **Shell control flow** (`for`/`while`/`if`, compound `&&`/`||`, command substitution) — what used to trip *"Contains shell syntax (string) that cannot be statically analyzed"* — is now classifier-judged. The friction symptom this used to cause is gone.
 
 What the static matrix still does, unchanged:
 
@@ -327,7 +341,7 @@ What changed at install time:
 
 Empirical reproducibility (Q4 of the spike): the classifier adds ~200–400 ms per Bash call; reads and in-worktree edits skip it entirely. Token overhead is ~10–15% on a long refactor. Acceptable for atelier's typical task wall-time.
 
-Full design notes + the three open-questions that validated this adoption: [docs/research/permission-layer-3.md](docs/research/permission-layer-3.md) (M2.6 spike + M2.7 addendum).
+Full design notes + the three open-questions that validated this adoption: [docs/research/permission-layer-3.md](docs/research/permission-layer-3.md).
 
 If you ever want to disable auto-mode for an atelier session and fall back to `acceptEdits`, edit `$ATELIER_CONFIG_DIR/settings.json` and change `.permissions.defaultMode` to `acceptEdits` (or remove the key). The deny list and allow list keep working unchanged.
 
@@ -335,16 +349,16 @@ If you ever want to disable auto-mode for an atelier session and fall back to `a
 
 An opt-in `PreToolUse` hook (`hooks/semantic-risk-judge.sh`) adds a Haiku judgement on top of auto-mode for a narrow high-risk Bash surface only (lockfile, container build, CI/CD, package manifest, deploy/infra — catalogued in `hooks/patterns/semantic-risk-judge.json`). Enable per project with `"semanticRiskJudge": { "enabled": true }` in `.atelier.json`; off by default. It escalates risky commands to `ask`, never hard-blocks (the deny list owns that), and is fail-open — an unavailable model allows the command and logs a degraded line to `<worktree>/.task-log/hook-decisions.jsonl`. A cheap local check runs first, so only high-risk commands reach the model.
 
-## Decision policy (M4.26)
+## Decision policy
 
-Atelier sometimes faces **strategic decisions** during a task — situations where multiple legitimate options exist and one must be chosen. The classic example is the M7.1 dogfood Nivel 4 friction: a pre-existing lint error on `main` blocks the gate, the operator can fix-first, override, scope-package, or abort. The static permission matrix doesn't cover these (none is forbidden); the M2.4 PreToolUse hooks don't cover them either (none is unsafe). They are **ambiguous** by construction, and historically atelier surfaced every one to the operator.
+Atelier sometimes faces **strategic decisions** during a task — situations where multiple legitimate options exist and one must be chosen. A classic example: a pre-existing lint error on `main` blocks the gate, and the operator can fix-first, override, scope-package, or abort. The static permission matrix doesn't cover these (none is forbidden); the PreToolUse hooks don't cover them either (none is unsafe). They are **ambiguous** by construction, and historically atelier surfaced every one to the operator.
 
 Since v0.9.0, atelier ships a **decision broker** as the configurable policy layer for this class. The broker:
 
 - Reads a catalog of known strategic-decision categories (atelier-managed at `$CLAUDE_PLUGIN_ROOT/agents/decision-broker/catalog.json`; operators do NOT edit the catalog).
 - Reads each project's `.atelier.json` `decisionPolicy` block: `default` (catch-all for unlisted categories) + `byCategory.<category>` (per-category override).
 - Dispatches the decision to a risk-tiered evaluator agent (Haiku for `low`, Sonnet for `medium`, Opus for `high`) when the policy is `auto`, returns a fixed option when the policy is an option id, or falls back to `AskUserQuestion` when the policy is `ask` (the conservative default).
-- Logs every resolution to `<worktree>/.task-log/decisions.jsonl`. The `pr-author` surfaces the log in the PR body (M4.26.e, deferred) so the reviewer can audit autonomous decisions before merge.
+- Logs every resolution to `<worktree>/.task-log/decisions.jsonl` so the reviewer can audit autonomous decisions before merge.
 
 Categories shipping in v0.9.0:
 
@@ -362,13 +376,13 @@ How operators configure it:
 - **Later revisions**: `/atelier:set-policy [category]` re-prompts a single category (or all of them when no argument is given) without re-running the full setup.
 - **Manual edit**: `.atelier.json`'s `decisionPolicy.byCategory.<category>` accepts `"auto"`, `"ask"`, or a fixed option id from the catalog (e.g. `"fix-first"`).
 
-Two complementary controls layered on top of the per-project policy (M4.26.d, deferred):
+Two complementary controls layered on top of the per-project policy:
 
 - **Panic switch**: `/atelier:abort-auto` writes a flag file the broker checks first. Until cleared with `/atelier:resume-auto`, every decision falls back to `AskUserQuestion`. Useful when the operator notices a task going sideways and wants every remaining decision routed through them, without aborting the task.
 - **Task wrapper flags**: `task --policy=auto` overrides `.atelier.json` to all-auto for the invocation; `task --policy=ask` overrides to all-ask; `task --ask-for=<categories>` overrides only those categories.
 
 What the broker is NOT:
 
-- **Not a permission gate.** That is auto-mode (M2.8). The broker handles strategic AMBIGUITY, not forbidden actions.
-- **Not a safety net for unsafe writes.** That is the M2.4 PreToolUse hook suite. `safe-package-change rejected`, `block-env-commit`, `scan-edit-write` do NOT go through the broker — they bypass to their own escalation per PLAN.md §3.
+- **Not a permission gate.** That is auto-mode. The broker handles strategic AMBIGUITY, not forbidden actions.
+- **Not a safety net for unsafe writes.** That is the PreToolUse hook suite. `safe-package-change rejected`, `block-env-commit`, `scan-edit-write` do NOT go through the broker — they bypass to their own escalation per PLAN.md §3.
 - **Not extensible by the operator.** If a strategic decision arises that does not match a catalog category, the broker falls back to `ask`. The growth signal lives in the operator's experience; the catalog grows in a future atelier version when the maintainer adds the category.

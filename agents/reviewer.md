@@ -53,6 +53,14 @@ Prefix every `gh ...` call with `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer"
 
 If `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh auth status` fails, or if the reviewer identity coincides with the author identity (`GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh api user --jq .login` returns the same login as the author dir), stop and report. Do not fall back to the author identity — GitHub silently downgrades same-identity approvals to comments.
 
+**Reviewer cannot access the repo.** Before reviewing, confirm the reviewer identity can resolve the repository:
+
+```bash
+GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh repo view <owner>/<repo> --json nameWithOwner
+```
+
+On a freshly-created **private** repo the reviewer user is often not a collaborator, so this (and every later `gh pr ...` call) fails with `GraphQL: Could not resolve to a Repository`. This is **not** a transient error and the chain must **not** stall on it. Stop immediately and report a clear terminal state — *"reviewer identity `<login>` cannot access `<owner>/<repo>`: auto-merge is unavailable until it is granted read access. Run `/atelier:setup-project` in this repo (it offers to add the reviewer as a collaborator), or have the repo admin add it manually."* Do **not** retry, and do **not** fall back to the author identity.
+
 ## Inputs
 
 You require a PR identifier (number or URL). If the operator did not provide one, list the open PRs and ask which one to review. Do not pick one yourself:
@@ -145,7 +153,7 @@ A PR is **not auto-mergeable** when any of these is true. Surface each one expli
 - Human comments are pending (any non-bot comment that has not been resolved).
 - `reviewDecision` already has a `CHANGES_REQUESTED` from a human reviewer that hasn't been re-reviewed.
 
-### Size finding template (M7.1.F27)
+### Size finding template
 
 When the size guardrail trips, append a finding to your report under the standard format. Severity is **important** (correctness is unaffected — just reviewability):
 
