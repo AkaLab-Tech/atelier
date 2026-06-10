@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M7.1.F56 — `reviewer` identity verified/granted access to the repo so auto-merge never stalls silently — 2026-06-10
-**PR:** _pending_ · **Plugin bump:** 0.20.4 → 0.20.5
+**PR:** [#155](https://github.com/AkaLab-Tech/atelier/pull/155) · **Plugin bump:** 0.20.4 → 0.20.5
 
 Dogfood bug (workspace sandbox, 2026-06-09): the independent `reviewer` agent runs under a separate GitHub identity (`$ATELIER_CONFIG_DIR/gh/reviewer`). On a freshly-created **private** repo that user is not a collaborator, so `gh pr review --approve` failed with `GraphQL: Could not resolve to a Repository`. The author's flow proceeded (push, PR) but the review step died, so the auto-merge gate could never be satisfied — and on a repo with branch protection the PR would be permanently stuck. Observed live on a private `AkaLab-Tech/todo-web` (merged only because the operator, as admin, did it manually).
 
