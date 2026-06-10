@@ -24,23 +24,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 2–5 — Single-project agent flow + robustness + multi-project foundation.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries — and when an operator can install / uninstall atelier without risking unrelated Claude state.
 
-### M7.1.F54 — Coolify skill assumes manual deploy; must detect GitHub App auto-deploy
-
-`[coolify-integration]` · Source: dogfood (2026-06-05) · **Change lands in the `coolify-integration` repo** ([skills/coolify/SKILL.md](../coolify-integration/skills/coolify/SKILL.md)), tracked here per the operator's decision.
-
-The coolify skill's validate-and-fix flow assumes a deploy is always triggered manually via `atelier-coolify deploy <uuid>`. In practice the apps are wired through Coolify's GitHub App so that a push to `main` (or the per-env branch) **auto-deploys** — assuming a manual deploy is wrong, can double-trigger, and misleads diagnosis. The skill should read the app's deployment configuration (connected git source, auto-deploy flag, watched branch) and remember that a push already deploys, instead of assuming.
-
-**Scope:**
-
-- [ ] Add a way to read an app's git/auto-deploy config via `atelier-coolify` (git source connected, auto-deploy enabled, watched branch) — new subcommand or extend `status` / `validate` output.
-- [ ] Update the skill flow: before suggesting a manual `deploy`, check whether the app auto-deploys on push; if so, a `git push` to the watched branch *is* the deploy — say so rather than calling `deploy`.
-- [ ] Persist / record the per-app deploy mode so the skill does not re-assume on every run (skill guidance + where the fact is stored).
-- [ ] Keep the manual `deploy <uuid>` path for apps that genuinely lack auto-deploy.
-
-**Acceptance:** on an app configured with the GitHub App + auto-deploy on a branch, the skill reports that pushing the watched branch deploys (and does not propose a redundant manual `deploy`); on an app without auto-deploy, the manual flow is unchanged.
-
-**Trigger to revisit:** captured 2026-06-05 from live dogfooding. The fix is in `coolify-integration` but tracked here per the operator's decision.
-
 ### M5.4 — Daily housekeeping of worktrees + local/remote branches (operator-authorized)
 
 `[maintenance]` · Source: operator request (2026-06-05) · Related: [skills/auto-merge/SKILL.md](skills/auto-merge/SKILL.md) (post-merge cleanup), [agents/task-orchestrator.md](agents/task-orchestrator.md) (worktree-as-evidence on blocked/oversize)
