@@ -48,7 +48,7 @@ Read `IN_PROGRESS.md`. Search for a heading line that contains the task id (`#<i
     --jq '[.[] | select(.headRefName | startswith("task/<id>-"))][0]'
   ```
 
-  Filter on `headRefName` with `startswith` in `jq` — **do not** use `gh pr list --head "task/<id>-"`, because `--head` matches the branch name *exactly*, not as a prefix, so it never matches the full `task/<id>-<slug>` branch. The `-` after the id keeps `RLS.2` from also matching `RLS.20`. Two sub-outcomes:
+  Filter on `headRefName` with `startswith` in `jq` — **do not** use `gh pr list --head "task/<id>-"`, because `--head` matches the branch name *exactly*, not as a prefix, so it never matches the full `task/<id>-<slug>` branch. The trailing `-` anchors on the id boundary so a shorter id does not also match a longer id that shares its prefix. Two sub-outcomes:
   - **An open PR exists** → **PR-open-resume mode**. Skip step 3; go to step 4c with the PR number, URL, and `headRefName` (the `task/<id>-<slug>` branch).
   - **No open PR** → the task is genuinely not resumable here. It may be in `ROADMAP.md` (operator wanted `/atelier:next-task #<id>`), in `HISTORY.md` (already merged), or nonexistent. Surface which and suggest the right command. Stop.
 - **Multiple matches.** Two different tasks have the same id in their headings — an inconsistency in the operator's tracking files. Stop and surface the ambiguity. Do not guess.
