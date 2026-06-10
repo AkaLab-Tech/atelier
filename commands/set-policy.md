@@ -1,10 +1,10 @@
 ---
-description: Configure or revise the per-project decision-broker policy (M4.26.b). Walks through each catalogued category and asks the operator how atelier should handle it — auto, ask, or fix to the catalog default. Writes the result to `<project>/.atelier.json` under `decisionPolicy.byCategory`. Use this command after `/atelier:setup-project` if the operator skipped the interactive policy step (or used `--skip-policy`), or any time the operator wants to revise their answers without re-running the full setup.
+description: Configure or revise the per-project decision-broker policy. Walks through each catalogued category and asks the operator how atelier should handle it — auto, ask, or fix to the catalog default. Writes the result to `<project>/.atelier.json` under `decisionPolicy.byCategory`. Use this command after `/atelier:setup-project` if the operator skipped the interactive policy step (or used `--skip-policy`), or any time the operator wants to revise their answers without re-running the full setup.
 argument-hint: "[category]"
 allowed-tools: Read, Edit, AskUserQuestion, Bash(jq:*), Bash(cat:*), Bash(ls:*)
 ---
 
-You are running the `/atelier:set-policy` slash command. Your job is to walk the operator through the **decision-broker catalog** (M4.26.a, M4.26.b) one category at a time and capture their per-category policy in the project's `.atelier.json` under `decisionPolicy.byCategory`. You do NOT run any task work yourself — you only edit configuration.
+You are running the `/atelier:set-policy` slash command. Your job is to walk the operator through the **decision-broker catalog** one category at a time and capture their per-category policy in the project's `.atelier.json` under `decisionPolicy.byCategory`. You do NOT run any task work yourself — you only edit configuration.
 
 If the operator provided an argument (`$ARGUMENTS`), it is a single category id (e.g. `baseline-conflict`). Walk only that category. If empty, walk every category in the catalog.
 
@@ -41,7 +41,7 @@ For each category you walk:
    - "Ask"      → `"ask"`. **Special case**: if `decisionPolicy.default` in `.atelier.json` is also `"ask"` (the template default), you may DELETE the `byCategory.<category>` entry instead of writing `"ask"` — equivalent semantics, less noise in the file. Prefer the delete for the common case.
    - "Keep current" → no change.
 
-4. **Update `.atelier.json`** via `Edit`. Use `jq` semantically through `Bash(jq:*)` to merge the new value into `decisionPolicy.byCategory.<category>`, then read the result back and write it via `Edit`. The `Edit` tool ensures the file change goes through atelier's standard write path (including the M2.4 hooks).
+4. **Update `.atelier.json`** via `Edit`. Use `jq` semantically through `Bash(jq:*)` to merge the new value into `decisionPolicy.byCategory.<category>`, then read the result back and write it via `Edit`. The `Edit` tool ensures the file change goes through atelier's standard write path (including the safety hooks).
 
    Pattern (illustrative):
 

@@ -17,7 +17,7 @@ Then output whatever the binary printed, unchanged.
 
 ## Stop rule
 
-Your turn ends when you finish emitting the binary's last line. No commentary, no "everything looks good", no follow-up suggestions. Same rule as `/atelier:doctor` (M7.1.F25): the binary already produced the structured report the operator wants; anything you add is noise.
+Your turn ends when you finish emitting the binary's last line. No commentary, no "everything looks good", no follow-up suggestions. Same rule as `/atelier:doctor`: the binary already produced the structured report the operator wants; anything you add is noise.
 
 ## Decision rules
 

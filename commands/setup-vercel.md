@@ -4,7 +4,7 @@ allowed-tools: Bash(atelier-setup-vercel:*), Bash(atelier-vercel:*), Read(.env),
 ---
 
 You are running the `/atelier:setup-vercel` slash command — the interactive
-front for the `atelier-setup-vercel` host-OS helper (M4.27). Use it to set up
+front for the `atelier-setup-vercel` host-OS helper. Use it to set up
 Vercel at install time or any time afterward.
 
 ## Steps
