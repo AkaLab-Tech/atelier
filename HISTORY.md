@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M4.30 — Plan-gated execution: orchestrator only claims pre-planned, approved tasks — 2026-06-10
-**PR:** _pending_ · **Plugin bump:** 0.20.5 → 0.21.0
+**PR:** [#158](https://github.com/AkaLab-Tech/atelier/pull/158) · **Plugin bump:** 0.20.5 → 0.21.0
 
 Planning is now a separate, explicit, **product-lead-owned** step that runs before the orchestrator. The orchestrator no longer improvises a plan at execution time or asks the non-technical operator to approve one — an unplanned task is simply not claimable. Follow-on to M7.1.F52 (orchestrator over-reaching) and M7.1.F53 (personal rules leaking into the autonomous flow).
 
