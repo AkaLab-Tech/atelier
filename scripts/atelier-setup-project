@@ -56,6 +56,14 @@ OPTIONS:
                          The .atelier.json keeps the template's conservative
                          defaults (every category falls back to "ask").
                          Run /atelier:set-policy later to configure.
+  --reconfigure          Re-run setup on an already-configured project without
+                         a TTY (M7.1.F59). Replaces the interactive "Re-run
+                         setup?" confirmation, so a headless caller (a fresh
+                         shell after atelier-update, CI, an automation chain)
+                         can refresh a registered project to the current
+                         plugin template. settings.json is backed up with a
+                         timestamp before it is resynced, so the refresh is
+                         lossless. No effect on an unconfigured project.
   --mode <new|existing>  Force the project-mode detection (M4.19) used
                          by the /setup-project slash command to decide
                          whether to interview the operator (new) or
@@ -92,6 +100,7 @@ PLUGIN_ROOT_FLAG=""
 PER_TASK_SETTINGS_PATH=""
 MODE_OVERRIDE=""           # M4.19: --mode=new|existing forces detection
 SKIP_POLICY=false          # M4.26.b: --skip-policy skips the interactive decision-policy step
+RECONFIGURE_FLAG=false     # M7.1.F59: --reconfigure allows headless re-setup of an already-configured project
 NONINTERACTIVE=false
 [ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
 
@@ -127,6 +136,15 @@ while [ $# -gt 0 ]; do
       # byCategory = {}). The operator can revise later with
       # /atelier:set-policy.
       SKIP_POLICY=true; shift ;;
+    --reconfigure)
+      # M7.1.F59: explicit opt-in to re-run setup on an already-configured
+      # project without a TTY. Replaces the interactive "Re-run setup? [y/N]"
+      # confirmation so headless callers (a fresh shell after atelier-update,
+      # CI, an automation chain) can refresh a registered project to the
+      # current plugin template. settings.json is always backed up before it
+      # is resynced, so the refresh is lossless. No effect when the project is
+      # not yet configured (the normal create path runs).
+      RECONFIGURE_FLAG=true; shift ;;
     --help|-h)
       usage; exit 0 ;;
     --)
@@ -495,16 +513,21 @@ step_settings_json() {
     rm -f "$tmp_probe"
 
     if $NONINTERACTIVE; then
-      SETTINGS_STATUS="preserved"
-      warn "$target has local edits — preserved (non-interactive default)"
-      return
+      # M7.1.F59: reaching this branch non-interactively means the caller
+      # passed --reconfigure (otherwise the already-configured guard exits 2
+      # before any step runs). That is an explicit opt-in to refresh, so back
+      # up and resync rather than preserve — the timestamped .bak keeps any
+      # local edits recoverable.
+      should_write=true; needs_backup=true
+      warn "$target differs from the current template — backing up and resyncing (--reconfigure)"
+    else
+      printf "%s has local edits. Overwrite with current template (existing file will be backed up)? [y/N]: " "$target" >&2
+      local ans; read -r ans
+      case "$ans" in
+        y|Y|yes|Yes) should_write=true; needs_backup=true ;;
+        *)           SETTINGS_STATUS="preserved"; return ;;
+      esac
     fi
-    printf "%s has local edits. Overwrite with current template (existing file will be backed up)? [y/N]: " "$target" >&2
-    local ans; read -r ans
-    case "$ans" in
-      y|Y|yes|Yes) should_write=true; needs_backup=true ;;
-      *)           SETTINGS_STATUS="preserved"; return ;;
-    esac
   else
     # Target exists, NOT in reconfigure flow.
     if is_atelier_managed_settings "$target"; then
@@ -1148,20 +1171,27 @@ if is_configured "$PROJECT"; then
   completed="$(jq -r --arg p "$PROJECT" '.projects[$p].setupCompleted // "unknown"' "$CONFIG_FILE")"
   version="$(jq -r --arg p "$PROJECT" '.projects[$p].setupVersion // "unknown"' "$CONFIG_FILE")"
 
-  if $NONINTERACTIVE; then
+  if $RECONFIGURE_FLAG; then
+    # M7.1.F59: explicit headless opt-in. The interactive prompt below exists
+    # to stop an accidental settings.json overwrite; --reconfigure is the
+    # operator stating that intent up front, and step_settings_json backs the
+    # file up before resyncing, so the refresh is lossless.
+    RECONFIGURE=true
+    sublog "reconfigure requested via --reconfigure (since $completed, version $version)"
+  elif $NONINTERACTIVE; then
     warn "$PROJECT is already configured (since $completed, version $version)."
     warn "Reconfigure is not allowed in non-interactive mode because it overwrites"
-    warn ".claude/settings.json with the current plugin template. Re-run interactively"
-    warn "(without --yes / ATELIER_AUTO) if you genuinely want to reconfigure."
+    warn ".claude/settings.json with the current plugin template. Re-run interactively,"
+    warn "or pass --reconfigure to refresh headlessly (the old file is backed up first)."
     exit 2
+  else
+    printf "Project already configured (since %s, version %s). Re-run setup? [y/N]: " "$completed" "$version" >&2
+    read -r ans
+    case "$ans" in
+      y|Y|yes|Yes) RECONFIGURE=true; sublog "operator confirmed reconfigure" ;;
+      *) ok "$PROJECT already configured — nothing to do"; exit 0 ;;
+    esac
   fi
-
-  printf "Project already configured (since %s, version %s). Re-run setup? [y/N]: " "$completed" "$version" >&2
-  read -r ans
-  case "$ans" in
-    y|Y|yes|Yes) RECONFIGURE=true; sublog "operator confirmed reconfigure" ;;
-    *) ok "$PROJECT already configured — nothing to do"; exit 0 ;;
-  esac
 fi
 
 step_settings_json

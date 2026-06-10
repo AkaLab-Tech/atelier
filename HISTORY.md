@@ -8,8 +8,21 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F59 — `atelier-setup-project --reconfigure` allows headless re-setup of a registered project — 2026-06-10
+**PR:** [#TBD] · **Plugin bump:** 0.23.1 → 0.23.2
+
+Found during M7.1 dogfood (storefront), immediately after F58: with the plugin updated to 0.23.1 but the project still registered at `setupVersion 0.10.0`, refreshing it was impossible from a Claude Code session. `atelier-setup-project` only reconfigures an already-configured project via an interactive `Re-run setup? [y/N]` prompt; under `--yes`/`$ATELIER_AUTO` it refuses outright (`exit 2`), and a Claude session has no TTY for the prompt. So a registered project's `settings.json` stays pinned to whatever plugin version first set it up, with no headless path to catch up — and the autonomous flow can't self-heal config drift after an update.
+
+The interactive guard exists to prevent an accidental `settings.json` overwrite, but that risk is already covered by the M7.1.F38 auto-resync, which **backs up the file with a timestamp** before rewriting. So an explicit opt-in flag is safe by construction.
+
+**Delivered:**
+- **`scripts/atelier-setup-project`** — new `--reconfigure` flag. On an already-configured project it sets the reconfigure path directly instead of prompting, so `--reconfigure --yes <path>` refreshes headlessly. The settings step backs up the existing `settings.json` (timestamped `.bak`) and resyncs it to the current template rather than preserving it silently — the operator opted in, and the backup keeps any local edits recoverable. No effect on an unconfigured project (the normal create path runs); the refusal message now points at `--reconfigure`.
+- `--help` documents the flag; plugin bump **0.23.1 → 0.23.2** (patch, closes a setup-tooling gap per PLAN.md §14.2).
+
+**Verified:** `bash -n` clean; `--help` lists `--reconfigure`. Logic walk-through: `--reconfigure --yes` on a configured project enters the reconfigure path (no `exit 2`); the settings step takes the back-up-and-resync branch. End-to-end refresh of storefront (0.10.0 → 0.23.2 registration) exercised by Phase 2 of the dogfood run after merge.
+
 ### M7.1.F58 — `atelier-update` refreshes the plugin cache even when the clone is already synced — 2026-06-10
-**PR:** [#TBD] · **Plugin bump:** 0.23.0 → 0.23.1
+**PR:** [#163](https://github.com/AkaLab-Tech/atelier/pull/163) · **Plugin bump:** 0.23.0 → 0.23.1
 
 Found during M7.1 dogfood on a real project (storefront): the active plugin cache was at **0.20.1** while the clone (`origin/main`) was already at **0.23.0**, and `atelier-update` could not close the gap. The script gated its entire delta-application — including the `claude plugin update` step that refreshes Claude Code's plugin cache — on the `git pull` advancing the clone SHA. When `OLD_SHA == NEW_SHA` it printed `already up to date — nothing to do` and `exit 2` **before** ever reaching the plugin-update step. So a clone advanced out-of-band (a direct `git pull`, or a prior run whose `claude plugin update` failed / a session that never restarted) left the cache permanently stale — uncorrectable by the very tool meant to fix it. The "clone advanced ⟺ plugin needs update" assumption is false.
 
