@@ -52,7 +52,7 @@ From anywhere on your machine:
 task
 ```
 
-Resolves the project from your cwd (longest-prefix match against the registry). If your cwd isn't inside any registered project, an `fzf` picker opens for you to pick one (M5.3 — sorted by `setupCompleted` desc).
+Resolves the project from your cwd (longest-prefix match against the registry). If your cwd isn't inside any registered project, an `fzf` picker opens for you to pick one (sorted by `setupCompleted` desc).
 
 The task runs end-to-end inside the Claude session you can watch live:
 
@@ -76,7 +76,7 @@ gh issue list --label blocked         # tasks atelier gave up on (if any)
 
 If atelier hit the retry budget (3 attempts → reset → 3 more) and gave up, it opens a GitHub issue labeled `blocked` containing every `.task-log/*.md` entry from the attempts. Read those to decide whether to retry (refine the task) or abandon (close `wontfix`).
 
-### 5. Measure the autonomous merge rate (M7.3)
+### 5. Measure the autonomous merge rate
 
 After ≥10 atelier-driven PRs have merged on a project:
 
@@ -105,12 +105,12 @@ First step: `atelier-doctor` (or `/atelier:doctor` inside a Claude session). Eac
 
 If `atelier-doctor` reports drift between the installed version and the latest release, run `atelier-update` (or `/atelier:update`) — it pulls latest, refreshes `$ATELIER_CONFIG_DIR/templates/`, and re-runs the plugin update under the atelier config root.
 
-Symptom-indexed common problems: [docs/troubleshooting.md](docs/troubleshooting.md). Covers the M7.1 dogfood findings + every operator-facing failure mode derivable from the design.
+Symptom-indexed common problems: [docs/troubleshooting.md](docs/troubleshooting.md). Covers the dogfood findings + every operator-facing failure mode derivable from the design.
 
 ### Pause / abandon / reset
 
 - **Pause a session:** Ctrl+C in the Claude session. The task stays in `IN_PROGRESS.md`. Run `task` again later to resume.
-- **Abandon a blocked task:** close the GitHub `blocked` issue with `wontfix`, manually move the entry from `IN_PROGRESS.md` to `HISTORY.md` under an "abandoned" heading. Future work: `/abandon-task` slash command (ROADMAP M4.5).
+- **Abandon a blocked task:** close the GitHub `blocked` issue with `wontfix`, manually move the entry from `IN_PROGRESS.md` to `HISTORY.md` under an "abandoned" heading. Future work: `/abandon-task` slash command (tracked in `ROADMAP.md`).
 - **Remove atelier from one project:** `atelier-remove-project <path>` (deregister only) or `atelier-remove-project <path> --purge` (also strip the `.gitignore` / `.npmrc` atelier-additions). Files under `.claude/`, `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md` are preserved.
 - **Reset everything (nuclear):** `atelier-uninstall --purge` + `rm -rf ~/atelier` + `git clone` + `./install.sh`. See the [troubleshooting doc](docs/troubleshooting.md#reset-everything-nuclear-option). Project files and `.claude/` folders inside projects are not touched.
 
