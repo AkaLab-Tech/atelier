@@ -8,6 +8,27 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M5.4 — Daily, operator-authorized housekeeping of worktrees + task branches — 2026-06-10
+**PR:** [#161](https://github.com/AkaLab-Tech/atelier/pull/161) · **Plugin bump:** 0.22.0 → 0.23.0
+
+Auto-merge cleans up after each task it merges, but anything off that happy path accumulates: worktrees from abandoned tasks, local `task/*` branches whose PR merged elsewhere, stale `origin/task/*` remotes. M5.4 adds a **daily, you-authorize-it** sweep across all registered projects. Source: operator request (2026-06-05).
+
+**Design decision (operator, 2026-06-10):** cadence is a **lightweight `SessionStart` nudge**, not a scheduled job and not a heavy in-hook sweep. The hook only checks a date stamp and prints a one-line reminder at most once per calendar day; all git/gh enumeration and every deletion happen in the helper, invoked via `/atelier:housekeeping`. This keeps session start fast and fail-open, and keeps the "always ask first" authorization in the conversation rather than relying on a TTY prompt the slash command can't reach.
+
+**Delivered:**
+- **`scripts/atelier-housekeeping`** (new helper) — enumerates removable items per project and deletes them only on authorization. Three categories: orphan **worktrees** under `<project>-worktrees/`, merged/closed local **`task/*` branches**, merged/closed **`origin/task/*` remotes**. Modes: `--report`/`--dry-run` (enumerate only), default (enumerate + confirm), `--yes` (non-interactive apply), `--json` (machine-readable, implies report), `--project PATH` (scope to one project), `--no-stamp`. Resolves PR state via `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author gh pr list`; falls back to merged-into-`main` detection when `gh` is absent. Exit codes 0/1/2 (success / fatal / refusal).
+- **Safety rails (cannot be bypassed by `--yes`)** — never a protected branch (`main`/`master`/`develop`/`staging`), never an item with an **open PR**, never a worktree backing an **`[BLOCKED]`/`[OVERSIZE]`** (or any active) task cross-checked against `IN_PROGRESS.md`, never a **dirty** worktree, never **unmerged** work (no merged PR) unless the operator passes `--include-unmerged` — those land in a "needs review" group. Uses `git worktree remove` (no `--force`), `git branch -d` for ancestry-merged / `-D` only when `gh` confirms the PR merged, and `git push origin --delete` for merged/closed remotes.
+- **`hooks/daily-housekeeping.sh`** (new `SessionStart` hook) — cheap, fail-open: reads `$ATELIER_CONFIG_DIR/housekeeping-last-check`, and if today's date differs, prints a one-line nudge and stamps today (so the nudge fires at most once per calendar day). Touches no git/gh. Registered as a second `SessionStart` entry in `hooks/hooks.json`. The helper writes the same stamp on a completed sweep so running it suppresses the rest of the day's nudge.
+- **`commands/housekeeping.md`** (new) — `/atelier:housekeeping`. Interactive by design: runs `--report` first, relays the categorized summary, asks for explicit authorization, and only then runs `--yes` (with the same scope). Never auto-adds `--include-unmerged`, never runs git/gh itself.
+- **`install.sh`** — symlinks `atelier-housekeeping` into `~/.local/bin`.
+- **`docs/operator-guide.md`** — new "Daily housekeeping (worktrees and branches)" section (the nudge, what's removable, the safety rails, `--report`/`--project`), plus a Reference-table row and the helper-list entry.
+
+**Verified:** `bash -n` clean on the helper + hook; `hooks.json` and `plugin.json` valid JSON; `--help` exits 0; unknown-arg exits 1; `--json` output validates with `jq`. End-to-end against a synthetic repo fixture: a worktree merged into `main` was removed; a worktree backing a `[BLOCKED]` `IN_PROGRESS.md` entry was preserved; a branch merged into `main` was deleted; an unmerged branch with no PR was preserved under "needs review". Fixed a real bug found in testing — `git branch --merged` prefixes worktree-checked-out branches with `+`, which the merge-detection `sed` did not strip (so a merged worktree was misclassified as unmerged).
+
+**Follow-ups:**
+- PR-state detection requires `gh`; without it the sweep is reduced to merged-into-`main` ancestry only (clearly noted in the report). Squash-merged branches are only recognized as merged when `gh` is present.
+- A worktree and its backing branch converge over two daily runs: the first run removes the worktree, the next run (branch now orphaned and merged) removes the branch. Safe by construction; not a single-pass operation.
+
 ### M7.1.F54 — Coolify skill: detect GitHub App auto-deploy vs manual deploy — 2026-06-10
 **PR:** [coolify-integration#2](https://github.com/AkaLab-Tech/coolify-integration/pull/2) · **Plugin bump:** coolify-integration 0.1.0 → 0.2.0
 

@@ -1343,6 +1343,14 @@ phase_c_1_setup_project_helper() {
   # /atelier:remove-workspace (PLAN.md §15.7).
   _phase_c_1_symlink_helper atelier-list-workspaces
   _phase_c_1_symlink_helper atelier-remove-workspace
+  # M5.4: atelier-housekeeping sweeps the task-cycle debris auto-merge's
+  # per-task cleanup leaves behind — orphan worktrees, merged/closed local
+  # task/* branches, and merged/closed origin/task/* remotes — across every
+  # registered project. Always enumerates first and deletes only on operator
+  # authorization; never touches active/blocked/oversize tasks, open PRs,
+  # dirty worktrees, or protected branches. Backs /atelier:housekeeping and
+  # the once-a-day SessionStart nudge (hooks/daily-housekeeping.sh).
+  _phase_c_1_symlink_helper atelier-housekeeping
 
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it
