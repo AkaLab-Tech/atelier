@@ -4,7 +4,7 @@ allowed-tools: Bash(atelier-setup-neon:*), Bash(atelier-neon:*), Read(.env), Edi
 ---
 
 You are running the `/atelier:setup-neon` slash command — the interactive front
-for the `atelier-setup-neon` host-OS helper (M4.28). Use it to set up Neon at
+for the `atelier-setup-neon` host-OS helper. Use it to set up Neon at
 install time or any time afterward.
 
 ## Steps

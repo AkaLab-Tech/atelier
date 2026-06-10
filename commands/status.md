@@ -7,7 +7,7 @@ You are running the `/status` slash command. This is **read-only** — never mod
 
 Your job is to produce a single compact dashboard the operator can scan in five seconds.
 
-## Bash output handling — never retry on success (M7.1.F39)
+## Bash output handling — never retry on success
 
 When a Bash call returns exit code 0 with non-empty stdout, treat it as **successful** and use the captured output verbatim. The Bash tool's UI may collapse long output with `… +N lines (ctrl+o to expand)` — that ellipsis is **cosmetic**; the full output is already in your context. **Do NOT re-invoke the same command** "to see the rest" — there is no rest, and repeated identical invocations create a loop the operator has to interrupt. If you genuinely need different data, run a *different* command. Identical successive Bash invocations are always a bug in your own reasoning, never a system retry.
 
@@ -21,7 +21,7 @@ Read `IN_PROGRESS.md`. For each task block you find, extract `id`, `title`, and 
 
 - **No marker** → active task currently being worked on. There should be at most one of these at any time; more than one indicates a chain that did not finish cleanly.
 - **`[BLOCKED]` marker** → task that `unblocker` parked after a hard-stop. The operator manages these via the GitHub issue queue and `/atelier:resume-task`.
-- **`[OVERSIZE]` marker** (M7.1.F27.1) → task whose PR was refused by `pr-author`'s size gate (branch pushed, no PR opened, suggested slice boundaries in `pr-author`'s output and possibly the GitHub branch description). The operator handles these by re-planning into sub-tasks, opening the PR manually, or raising the budget in `.atelier.json`.
+- **`[OVERSIZE]` marker** → task whose PR was refused by `pr-author`'s size gate (branch pushed, no PR opened, suggested slice boundaries in `pr-author`'s output and possibly the GitHub branch description). The operator handles these by re-planning into sub-tasks, opening the PR manually, or raising the budget in `.atelier.json`.
 
 If the file is empty (only placeholder comments), report "no active task".
 

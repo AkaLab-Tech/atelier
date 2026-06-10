@@ -4,7 +4,7 @@ allowed-tools: Bash(atelier-setup-coolify:*), Bash(atelier-coolify:*), Read(.env
 ---
 
 You are running the `/atelier:setup-coolify` slash command — the interactive
-front for the `atelier-setup-coolify` host-OS helper (M4.23). Use it to set up
+front for the `atelier-setup-coolify` host-OS helper. Use it to set up
 Coolify at install time or any time afterward.
 
 ## Steps

@@ -1,10 +1,10 @@
 ---
-description: Deconfigure the current project from atelier. Default mode preserves operator content (ROADMAP/IN_PROGRESS/HISTORY, .claude/CLAUDE.md, .gitignore, .npmrc); `--purge` extends the cleanup to those files (with surgical strip of atelier's exact entries in .gitignore/.npmrc). Wraps the `atelier-remove-project` host-OS helper (M7.1.F32).
+description: Deconfigure the current project from atelier. Default mode preserves operator content (ROADMAP/IN_PROGRESS/HISTORY, .claude/CLAUDE.md, .gitignore, .npmrc); `--purge` extends the cleanup to those files (with surgical strip of atelier's exact entries in .gitignore/.npmrc). Wraps the `atelier-remove-project` host-OS helper.
 argument-hint: "[--purge] [--yes|-y]"
 allowed-tools: Bash(atelier-remove-project:*), Bash(pwd)
 ---
 
-You are running the `/atelier:remove-project` slash command. This is a thin wrapper around the `atelier-remove-project` bash binary (M7.1.F32) that detects the current project root and runs the removal against it.
+You are running the `/atelier:remove-project` slash command. This is a thin wrapper around the `atelier-remove-project` bash binary that detects the current project root and runs the removal against it.
 
 ## ⚠ Important safety caveat — running from inside Claude Code
 
@@ -27,7 +27,7 @@ atelier-remove-project "$ATELIER_REMOVE_TARGET" $ARGUMENTS
 
 ## Stop rule
 
-Your turn ends when you finish emitting the binary's last line. No commentary, no "everything looks good", no follow-up suggestions. Same rule as `/atelier:doctor` (M7.1.F25): the binary's report is the entire output the operator needs.
+Your turn ends when you finish emitting the binary's last line. No commentary, no "everything looks good", no follow-up suggestions. Same rule as `/atelier:doctor`: the binary's report is the entire output the operator needs.
 
 ## Decision rules
 

@@ -1,5 +1,5 @@
 ---
-description: Health check for atelier — detects drift against upstream for `atelier`, `claude-roadmap-tools`, and `git-wt`, plus auxiliary host checks (legacy hooks, personal CLAUDE.md leak, shellrc, .npmrc, Chrome, docker compose, `$ATELIER_CONFIG_DIR`, git-identity.conf). Reports findings. With `--fix`, auto-applies the runnable fixes (M7.1.F30); manual fixes still print as instructions.
+description: Health check for atelier — detects drift against upstream for `atelier`, `claude-roadmap-tools`, and `git-wt`, plus auxiliary host checks (legacy hooks, personal CLAUDE.md leak, shellrc, .npmrc, Chrome, docker compose, `$ATELIER_CONFIG_DIR`, git-identity.conf). Reports findings. With `--fix`, auto-applies the runnable fixes; manual fixes still print as instructions.
 argument-hint: "[--fix]"
 allowed-tools: Bash(atelier-doctor:*)
 ---
@@ -12,12 +12,12 @@ If `$ARGUMENTS` contains `--fix`, run the binary with `--fix`. Otherwise run it 
 
 ```bash
 atelier-doctor          # checks only
-atelier-doctor --fix    # checks + auto-apply runnable fixes (M7.1.F30)
+atelier-doctor --fix    # checks + auto-apply runnable fixes
 ```
 
 Then output whatever the binary printed, unchanged. The report already has its own structure (`atelier /doctor — health check` header, three sections, optional fix block, and — under `--fix` — an `Applying N runnable fix(es)` section followed by a per-fix `✓` / `✗` summary). Do **not** rewrap, summarize, or commentate — the operator wants the raw report.
 
-## Stop rule (M7.1.F25)
+## Stop rule
 
 Your turn ends the instant you finish emitting the binary's last line of stdout. After that line, output NOTHING — no commentary, no translation, no summary, no interpretation, no "everything looks good", no clarification of the `–` SKIP lines, no follow-up suggestion. Regardless of:
 
@@ -29,7 +29,7 @@ The binary already includes everything the operator needs: status lines + (when 
 
 This rule overrides any default conversational behavior. If you find yourself about to write a sentence after the binary's output — stop and delete it.
 
-## Why the bash binary instead of inline checks (M7.1.F23)
+## Why the bash binary instead of inline checks
 
 Prior versions of this command ran each check as a separate `Bash(...)` invocation from inside the slash command. Each iteration surfaced a different Claude Code permission gate that prompted the operator interactively:
 
@@ -76,7 +76,7 @@ All checks passed. atelier is up to date.
 
 If any check is `✗`, the binary follows the report with a "To apply pending fixes, run:" block listing the copy-pasteable fix commands. The operator runs them; this slash command never modifies anything.
 
-## Per-check independence (M7.1.F15)
+## Per-check independence
 
 The binary runs every check regardless of any individual check's outcome. Three guarantees the operator can rely on:
 
@@ -86,7 +86,7 @@ The binary runs every check regardless of any individual check's outcome. Three 
 
 If you see a partial report (fewer rows than the format above), suspect the binary itself failed before completion — re-run `install.sh` to refresh the `~/.local/bin/atelier-doctor` symlink, or invoke the script directly from the atelier checkout to surface the underlying error.
 
-## Plugin-drift probe chain (M7.1.F14)
+## Plugin-drift probe chain
 
 For the two "Plugins (compared against AkaLab-Tech/claude-plugins marketplace)" rows, the binary tries four upstream-version probes in order, taking the first non-empty result:
 

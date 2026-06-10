@@ -7,7 +7,7 @@ description: Resolve a STRATEGIC decision for an atelier task — a situation wh
 
 The skill that turns "the agent should ask the operator about X" into "the agent decides X autonomously, OR asks the operator with full context, OR uses the operator's prescribed answer — whichever the project's policy says".
 
-This skill is the **only** entry point an agent should use for strategic decisions. The static permission matrix is the safety net for what is FORBIDDEN; the M2.4 hooks are the safety net for what is UNSAFE; this skill is the policy layer for what is AMBIGUOUS.
+This skill is the **only** entry point an agent should use for strategic decisions. The static permission matrix is the safety net for what is FORBIDDEN; the safety hooks are the safety net for what is UNSAFE; this skill is the policy layer for what is AMBIGUOUS.
 
 ## What this skill produces
 
@@ -76,7 +76,7 @@ rationale:  "Category '<id>' is not in the atelier catalog yet. Falling back to 
 
 The caller falls back to `AskUserQuestion`. Surface the missing category prominently — it is a signal atelier's catalog needs to grow.
 
-### Step 2.5 — Read per-invocation flag overrides (M4.26.d)
+### Step 2.5 — Read per-invocation flag overrides
 
 Before reading the project policy, check two env vars set by the `task` shell wrapper when the operator passed `--policy` or `--ask-for`:
 
@@ -164,7 +164,7 @@ The pre-existing `AskUserQuestion` flow stays intact — the broker just interce
 
 ## Where this skill is wired in
 
-Specialists that integrate the broker in v0.9.0 (M4.26.c, separate PR):
+Specialists that integrate the broker in v0.9.0:
 
 - `task-orchestrator` — `baseline-conflict`, `oversize-handling`, `scope-creep-detected`.
 - `pr-author` — `oversize-handling` (last-chance check), `merge-conflict-tracking` (during the same-PR IN_PROGRESS → HISTORY move).

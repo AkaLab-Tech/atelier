@@ -67,7 +67,7 @@ Format:
   - The acceptance criteria, in 1–3 bullets.
   - For dependency additions: the PLAN.md §4 justification (self-question + ≥2 alternatives compared + why this choice).
 
-**Always pass the message via a HEREDOC** so multi-line bodies survive shell quoting. **Always prefix `git commit` with `GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf`** (M7.1.F7b) so the commit's Author / Committer fields match the atelier-author GitHub identity (M5.0.1 dual-gh-id), not the operator's personal global git config:
+**Always pass the message via a HEREDOC** so multi-line bodies survive shell quoting. **Always prefix `git commit` with `GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf`** so the commit's Author / Committer fields match the atelier-author GitHub identity (dual-gh-id), not the operator's personal global git config:
 
 ```sh
 GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" git commit -m "$(cat <<'EOF'
@@ -116,7 +116,7 @@ The `HISTORY.md` entry follows the existing template:
 - <bullet>
 ```
 
-### 5. Size gate — `atelier-pr-size-check` before opening the PR (M7.1.F27)
+### 5. Size gate — `atelier-pr-size-check` before opening the PR
 
 Before `gh pr create` runs, the branch is pushed and the tracking commit is in place. Run the size check now — local mode, no network — and short-circuit if it trips:
 

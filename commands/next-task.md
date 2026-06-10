@@ -101,7 +101,7 @@ Exit codes:
 
 **Hard refusals:**
 - **Never** substitute `<worktree>` with the main-repo path. The whole point of per-task settings is to scope `Edit` / `Write` to the task's worktree.
-- **Never** bypass the helper with an inline `mkdir + sed + > .claude/settings.json` chain. The harness denies `.claude/**` writes — that is exactly what motivated this helper (see HISTORY → M4.11, M4.16).
+- **Never** bypass the helper with an inline `mkdir + sed + > .claude/settings.json` chain. The harness denies `.claude/**` writes — that is exactly what motivated this helper (see HISTORY.md).
 - **Never** advance to step 8 if the helper exits non-zero. Stop and report verbatim. Do not retry with `--dangerously-skip-permissions` to force a pass; that loses every other safety guarantee in the template.
 
 ### 8. Hand off to `task-orchestrator`

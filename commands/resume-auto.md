@@ -1,5 +1,5 @@
 ---
-description: Clear the decision-broker panic flag set by `/atelier:abort-auto` (M4.26.d). Returns control of strategic decisions in the current task worktree to the broker, which will then honor `.atelier.json`'s `decisionPolicy` configuration as usual (auto / ask / fixed option per category). Use this when the operator has resolved whatever made them invoke `/atelier:abort-auto` and wants the broker autonomous again.
+description: Clear the decision-broker panic flag set by `/atelier:abort-auto`. Returns control of strategic decisions in the current task worktree to the broker, which will then honor `.atelier.json`'s `decisionPolicy` configuration as usual (auto / ask / fixed option per category). Use this when the operator has resolved whatever made them invoke `/atelier:abort-auto` and wants the broker autonomous again.
 allowed-tools: Bash(git rev-parse:*), Bash(test:*), Bash(rm:*), Read
 ---
 
@@ -11,7 +11,7 @@ You are running the `/atelier:resume-auto` slash command. Your job is to remove 
 
 2. **Check if the flag exists.** Run `Bash(test -f "<worktree>/.atelier-abort-auto.flag" && echo exists || echo absent)`. If `absent`, report idempotently: *"Panic switch was not active for `<worktree>`. The broker has been routing decisions per `.atelier.json` all along; no change needed."* and stop.
 
-3. **Optionally read the flag content for audit context.** Use `Read` to capture the `ts:` and `reason:` fields if the flag is well-formed. The data is useful for the operator-facing report — it tells them how long the panic switch was active and why. If the flag is malformed (M4.26.d wrote files of a specific shape; older formats are tolerated but not parsed), skip the parse silently.
+3. **Optionally read the flag content for audit context.** Use `Read` to capture the `ts:` and `reason:` fields if the flag is well-formed. The data is useful for the operator-facing report — it tells them how long the panic switch was active and why. If the flag is malformed (older formats are tolerated but not parsed), skip the parse silently.
 
 4. **Remove the flag** with `Bash(rm "<worktree>/.atelier-abort-auto.flag")`. **Never** use `rm -f` or `rm -rf` — the file existence was already verified in step 2, and using `-f` would mask a permission error that the operator should see.
 

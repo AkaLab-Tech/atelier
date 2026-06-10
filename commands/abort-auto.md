@@ -1,5 +1,5 @@
 ---
-description: Panic switch for the decision broker (M4.26.d). Defers every subsequent strategic decision in the current task worktree back to the operator via `AskUserQuestion`, regardless of the project's `decisionPolicy` configuration in `.atelier.json`. Use this when a task starts going sideways under `auto` policy and the operator wants every remaining decision routed through them — without aborting the task itself. The flag persists across specialist dispatches inside the worktree; clear it with `/atelier:resume-auto` when the operator is ready to hand decisions back to the broker.
+description: Panic switch for the decision broker. Defers every subsequent strategic decision in the current task worktree back to the operator via `AskUserQuestion`, regardless of the project's `decisionPolicy` configuration in `.atelier.json`. Use this when a task starts going sideways under `auto` policy and the operator wants every remaining decision routed through them — without aborting the task itself. The flag persists across specialist dispatches inside the worktree; clear it with `/atelier:resume-auto` when the operator is ready to hand decisions back to the broker.
 allowed-tools: Bash(git rev-parse:*), Bash(touch:*), Bash(test:*), Bash(date:*), Write, Read
 ---
 
@@ -7,7 +7,7 @@ You are running the `/atelier:abort-auto` slash command. Your job is to write th
 
 ## What the flag means
 
-The `decision-broker` skill (M4.26.a) checks `<worktree>/.atelier-abort-auto.flag` as the first step of every resolution. If the file exists, the skill returns `mode: panic` regardless of the catalog entry, the project's `.atelier.json`, or any environment-variable override. The caller then falls back to `AskUserQuestion` exactly as the pre-broker behaviour.
+The `decision-broker` skill checks `<worktree>/.atelier-abort-auto.flag` as the first step of every resolution. If the file exists, the skill returns `mode: panic` regardless of the catalog entry, the project's `.atelier.json`, or any environment-variable override. The caller then falls back to `AskUserQuestion` exactly as the pre-broker behaviour.
 
 The flag is **per-worktree**, not per-project or per-session. A task chain operating inside `<project>-worktrees/task-42-feature/` is affected; a parallel chain in `<project>-worktrees/task-43-bugfix/` is not. This matches the auditability scope — every decision the broker logs is keyed to a single worktree's `.task-log/decisions.jsonl`.
 
@@ -25,7 +25,7 @@ The flag is **per-worktree**, not per-project or per-session. A task chain opera
    reason: <$ARGUMENTS or "operator-initiated">
    ```
 
-   The broker only checks the file's *existence*, not its content — the metadata is for audit purposes. Do NOT use `Bash(touch:*)` for the write; `Write` ensures the change goes through atelier's standard write path (M2.4 hooks apply, settings allow/deny matrix applies).
+   The broker only checks the file's *existence*, not its content — the metadata is for audit purposes. Do NOT use `Bash(touch:*)` for the write; `Write` ensures the change goes through atelier's standard write path (safety hooks apply, settings allow/deny matrix applies).
 
 4. **Report back.** Print exactly:
 

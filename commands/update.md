@@ -4,7 +4,7 @@ argument-hint: "[--dry-run]"
 allowed-tools: Bash(atelier-update:*), Bash(atelier-permission-diff:*)
 ---
 
-You are running the `/atelier:update` slash command. This is the interactive front for the `atelier-update` host-OS helper introduced in M6.1.a, with the permission-diff prompt added in M6.1.b.
+You are running the `/atelier:update` slash command. This is the interactive front for the `atelier-update` host-OS helper, with the permission-diff prompt.
 
 ## What this command does
 
@@ -59,5 +59,5 @@ If `--dry-run` was used, remind the operator: *"This was a dry run — nothing c
 ## Edge cases
 
 - **No `claude` CLI on PATH**: the helper warns and continues; surface the warning so the operator knows the plugin cache wasn't refreshed (which means open and new Claude Code sessions will keep loading the cached old version until the operator manually runs `claude plugin update atelier@akalab-tech`).
-- **`atelier-permission-diff` not found**: the helper warns and applies the new template without the diff. Surface the warning — the operator should check whether `install.sh` was run after the permission-diff helper landed (M6.1.b).
+- **`atelier-permission-diff` not found**: the helper warns and applies the new template without the diff. Surface the warning — the operator should check whether `install.sh` was run after the permission-diff helper landed.
 - **Operator runs from inside Claude Code where the per-task `.claude/settings.json` is the active config** (rather than the project-level one): the update only refreshes the instantiated templates in `$ATELIER_CONFIG_DIR/templates/`. Per-task settings in worktrees are regenerated each task by `atelier-setup-project --per-task-settings`, so they pick up the new template on next task. No special handling needed.

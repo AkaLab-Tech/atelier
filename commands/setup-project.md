@@ -6,11 +6,11 @@ allowed-tools: Read, Glob, Grep, Write, Bash(atelier-setup-project:*), AskUserQu
 
 You are running the `/setup-project` slash command. This command has two phases: (1) delegate mechanical scaffolding to the `atelier-setup-project` bash binary on `$PATH`, then (2) dispatch the `project-profiler` agent to draft the root `CLAUDE.md` based on the mode the bash helper detected.
 
-**Typical invocation is `$ARGUMENTS = empty`** (M7.1.F19) — the operator runs `/atelier:setup-project` from inside the project directory they want to configure, and the helper resolves the project path to `pwd` automatically. A positional `<project-path>` is only used when configuring a project from outside it; the argument-hint puts it last so operators don't reflexively pass `.` as a "required" path.
+**Typical invocation is `$ARGUMENTS = empty`** — the operator runs `/atelier:setup-project` from inside the project directory they want to configure, and the helper resolves the project path to `pwd` automatically. A positional `<project-path>` is only used when configuring a project from outside it; the argument-hint puts it last so operators don't reflexively pass `.` as a "required" path.
 
 ## Phase 1 — bash helper
 
-Invoke the bash helper, passing through the operator's arguments verbatim. **Do NOT pass `--plugin-root` from the slash command** (M7.1.F18): `$CLAUDE_PLUGIN_ROOT` is only auto-set by Claude Code for hook invocations, not for Bash tool calls inside slash commands. Passing `--plugin-root ""` (the empty expansion of an unset env var) used to make the helper die with `"--plugin-root requires a path"`. The helper now auto-discovers its own plugin root via the symlink chain (`~/.local/bin/atelier-setup-project` → `<dotfiles>/scripts/atelier-setup-project`, parent dir is the atelier checkout containing `templates/` + `.claude-plugin/`), so the slash command just calls:
+Invoke the bash helper, passing through the operator's arguments verbatim. **Do NOT pass `--plugin-root` from the slash command**: `$CLAUDE_PLUGIN_ROOT` is only auto-set by Claude Code for hook invocations, not for Bash tool calls inside slash commands. Passing `--plugin-root ""` (the empty expansion of an unset env var) used to make the helper die with `"--plugin-root requires a path"`. The helper now auto-discovers its own plugin root via the symlink chain (`~/.local/bin/atelier-setup-project` → `<dotfiles>/scripts/atelier-setup-project`, parent dir is the atelier checkout containing `templates/` + `.claude-plugin/`), so the slash command just calls:
 
 ```bash
 atelier-setup-project $ARGUMENTS
@@ -22,7 +22,7 @@ That single command does **all** of the mechanical work:
 2. Detects non-interactive mode via `--yes` / `-y` in `$ARGUMENTS`, or `$ATELIER_AUTO`.
 3. Reads `$ATELIER_CONFIG_DIR/projects.json` (atelier's project registry). If the project is already configured: interactive → ask to reconfigure; non-interactive → refuse with exit code 2.
 4. Writes `<path>/.claude/settings.json` from `$ATELIER_CONFIG_DIR/templates/settings.template.json` with `<worktree>` substituted. Validates the result parses with `jq empty` and that no literal `<worktree>` token remains.
-5. Writes `<path>/.atelier.json` from `$ATELIER_CONFIG_DIR/templates/atelier.template.json` **only when missing** (M7.1.F27). This file is operator-owned after creation — it carries per-project overrides for `prSize.{maxLines,maxFiles,exempt}` (the auto-merge size budget enforced by `atelier-pr-size-check`) and `taskDecomposer.enabled` (M4.24.a — set to `false` to disable the automatic epic-decomposition pass that runs before delegating to `implementer`; the `/atelier:slice-task` manual override stays available regardless). To reset to defaults, delete the file and re-run setup-project.
+5. Writes `<path>/.atelier.json` from `$ATELIER_CONFIG_DIR/templates/atelier.template.json` **only when missing**. This file is operator-owned after creation — it carries per-project overrides for `prSize.{maxLines,maxFiles,exempt}` (the auto-merge size budget enforced by `atelier-pr-size-check`) and `taskDecomposer.enabled` (set to `false` to disable the automatic epic-decomposition pass that runs before delegating to `implementer`; the `/atelier:slice-task` manual override stays available regardless). To reset to defaults, delete the file and re-run setup-project.
 6. Creates `<path>/ROADMAP.md`, `<path>/IN_PROGRESS.md`, `<path>/HISTORY.md`, `<path>/.claude/CLAUDE.md` only when missing (the latter from `$CLAUDE_PLUGIN_ROOT/templates/project-claude.md.template`).
 7. Creates or appends to `<path>/.npmrc` the three PLAN.md §4 guardrails (`ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate`); never weakens existing values.
 8. Creates or appends to `<path>/.gitignore` the four required entries (`.task-log/`, `.claude/settings.json`, `.claude/settings.local.json`, `.DS_Store`). `.claude/settings.json` is gitignored because the helper substitutes `<worktree>` with the operator's absolute path; committing it would propagate that path to every clone. Note `.atelier.json` is **not** gitignored — it's part of the project's source of truth (per-project size budget belongs in version control).
@@ -32,11 +32,11 @@ The helper also emits three `atelier-*=...` marker lines that Phase 2 and Phase 
 
 - `atelier-detected-mode=new|existing` — the heuristic result (or `--mode=...` override).
 - `atelier-root-claude-md=present|missing` — whether `<path>/CLAUDE.md` already exists.
-- `atelier-tracking-layout=created|preserved-empty|preserved-nonempty` (M7.1.F50) — whether `IN_PROGRESS.md` was created fresh (canonical empty slot), pre-existed and is empty, or pre-existed with task-like content. `preserved-nonempty` triggers Phase 3.
+- `atelier-tracking-layout=created|preserved-empty|preserved-nonempty` — whether `IN_PROGRESS.md` was created fresh (canonical empty slot), pre-existed and is empty, or pre-existed with task-like content. `preserved-nonempty` triggers Phase 3.
 
 Relay the helper's stdout back to the operator verbatim. If the helper exits non-zero, surface the error and stop — do NOT run Phase 2.
 
-## Phase 2 — root `CLAUDE.md` draft (M4.19)
+## Phase 2 — root `CLAUDE.md` draft
 
 After the bash helper completes, parse its stdout for the two marker lines (`atelier-detected-mode=...` and `atelier-root-claude-md=...`). The split:
 
@@ -81,7 +81,7 @@ If `Task` returns an error (agent not found, dispatch refused, etc.), surface it
 
 If the agent's report is missing the `## Drafted content` block (and status is not `kept-existing`), the agent malformed its output: surface the report verbatim and stop. The slash command should not try to "recover" by inventing content.
 
-## Phase 3 — legacy tracking adoption check (M7.1.F50)
+## Phase 3 — legacy tracking adoption check
 
 Parse the helper's stdout for `atelier-tracking-layout=...`. This phase only does something when the value is `preserved-nonempty`; for `created` and `preserved-empty` there is nothing to check — print nothing extra and stop.
 
@@ -102,7 +102,7 @@ This phase is read-only on the operator's tracking files. The only write that ca
 These all live in the bash helper; documented here so the operator knows what to expect when reading the `/setup-project` contract:
 
 - **Never overwrite** `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` / `.claude/CLAUDE.md` / root `CLAUDE.md` if they already exist (the root file is `project-profiler`'s own refusal, but the rule is the same).
-- **Never normalize a legacy `IN_PROGRESS.md` inline** (M7.1.F50). Phase 3 detects and offers `/adopt-roadmap`; the rewrite is that command's job, not `/setup-project`'s.
+- **Never normalize a legacy `IN_PROGRESS.md` inline**. Phase 3 detects and offers `/adopt-roadmap`; the rewrite is that command's job, not `/setup-project`'s.
 - **Never weaken** an existing `.npmrc` (no `audit-level` downgrade, no `minimum-release-age` reduction).
 - **Never reconfigure under `--yes` / `ATELIER_AUTO`**: re-running on a configured project in non-interactive mode exits with code 2.
 - **Never run `git init`** or any git write — `/setup-project` is for atelier scaffolding only.

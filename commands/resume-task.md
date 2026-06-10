@@ -95,7 +95,7 @@ The contract: closing the issue is the operator's signal. The 6 attempt logs are
    ```bash
    git checkout -b docs/resume-<id>
    git add IN_PROGRESS.md
-   # M7.1.F7b: commit under atelier-author identity (mirror unblocker.md).
+   # commit under atelier-author identity (mirror unblocker.md).
    GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
      git commit -m "docs(tracking): unmark task <id> [BLOCKED] — resuming via /atelier:resume-task (issue #<NN> closed)"
    git push origin docs/resume-<id>

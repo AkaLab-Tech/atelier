@@ -7,7 +7,7 @@ description: Parse a project's `ROADMAP.md` and pick the next task to work on. U
 
 A skill for picking the next task to work on from a project's `ROADMAP.md`.
 
-> **Bash output handling — never retry on success (M7.1.F39).** When you query the filesystem or git state (`git wt list`, `git -C <path> status --porcelain`, `Read` against `ROADMAP.md`), a single successful invocation per question is enough. The Bash tool's UI may collapse long output with `… +N lines (ctrl+o to expand)` — that ellipsis is cosmetic; the full output is already in your context. Do **not** re-invoke the same command "to see the rest" — there is no rest, and repeated identical invocations create a loop the operator has to interrupt. If you need different data, run a *different* command.
+> **Bash output handling — never retry on success.** When you query the filesystem or git state (`git wt list`, `git -C <path> status --porcelain`, `Read` against `ROADMAP.md`), a single successful invocation per question is enough. The Bash tool's UI may collapse long output with `… +N lines (ctrl+o to expand)` — that ellipsis is cosmetic; the full output is already in your context. Do **not** re-invoke the same command "to see the rest" — there is no rest, and repeated identical invocations create a loop the operator has to interrupt. If you need different data, run a *different* command.
 
 ## What this skill produces
 
@@ -76,7 +76,7 @@ Sections are headed `## 🔥 P0 — …`, `## 🎯 P1 — …`, `## 💭 P2 — 
      atelier-resolve-dep --from <project-root> --token <token> --id <#NN>
      ```
      Exit `0` → blocker merged in the sibling member → satisfied. Any non-zero exit → **not** satisfied, skip the candidate. The verdict word on stdout (`open` / `unknown-token` / `unknown-id`) explains why; carry it into the "no eligible task" report so the operator can act (a typo'd id or a token that is not a workspace member is a roadmap bug, not just an open dependency). If the helper is unavailable or `<project-root>` is not part of any workspace, a `<token>#id` blocker is unresolvable — treat the candidate as blocked and surface that the project is not in a workspace.
-4. **Filter `[OVERSIZE]` and `[BLOCKED]` markers.** A candidate whose heading line contains either marker is **silently skipped** (the operator owns the resolution — see M7.1.F26 and M7.1.F27.1). Same rule applies to sub-tasks.
+4. **Filter `[OVERSIZE]` and `[BLOCKED]` markers.** A candidate whose heading line contains either marker is **silently skipped** (the operator owns the resolution). Same rule applies to sub-tasks.
 5. **Move on to the next section** only when the current one has no eligible candidates left.
 6. **No eligible task anywhere** → return "no work to pick up — every unchecked item is blocked by another open item, or everything is done". Do not pick a blocked item just to keep busy.
 
