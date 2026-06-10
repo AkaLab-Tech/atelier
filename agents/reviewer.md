@@ -153,7 +153,7 @@ A PR is **not auto-mergeable** when any of these is true. Surface each one expli
 - Human comments are pending (any non-bot comment that has not been resolved).
 - `reviewDecision` already has a `CHANGES_REQUESTED` from a human reviewer that hasn't been re-reviewed.
 
-### Size finding template (M7.1.F27)
+### Size finding template
 
 When the size guardrail trips, append a finding to your report under the standard format. Severity is **important** (correctness is unaffected — just reviewability):
 

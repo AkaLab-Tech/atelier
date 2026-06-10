@@ -262,7 +262,7 @@ If a repo gets moved or removed, `/atelier:doctor` will flag the workspace so yo
 
 ## About permission prompts (auto-mode)
 
-Since v0.8.0 (M2.8), atelier-launched Claude Code sessions run with Claude Code's native **auto permission mode** enabled. This is a classifier built into Claude Code itself that decides safe Bash commands without asking you. Practical effect:
+Since v0.8.0, atelier-launched Claude Code sessions run with Claude Code's native **auto permission mode** enabled. This is a classifier built into Claude Code itself that decides safe Bash commands without asking you. Practical effect:
 
 - Bash commands that *used to* prompt — a compound `cd && git fetch && gh pr view 123`, a `for p in foo bar; do …; done` loop, a `gh` subcommand the template didn't enumerate yet — are **judged by the classifier** instead. Most pass through silently.
 - The categorical safety list (`git push --force`, `rm -rf /`, modifying `.github/workflows/`, etc.) **still blocks** before the classifier ever sees the command. Auto-mode adds a layer; it does not replace the existing safety net.
@@ -298,7 +298,7 @@ Beyond *permission prompts*, atelier sometimes hits **strategic decisions** duri
 - The PR is about to be opened but `atelier-pr-size-check` reports it would trip the AND-gate. Options: slice the task, raise the budget, open as-is and accept human review, abort.
 - The implementer's diff touches files unrelated to the stated scope. Options: keep the wider change, narrow back to scope, split into two PRs, ask.
 
-None of these is forbidden (the permission matrix doesn't cover them) and none is unsafe (the M2.4 hooks don't cover them either). They are **ambiguous** by construction, and historically atelier asked you about every one.
+None of these is forbidden (the permission matrix doesn't cover them) and none is unsafe (the safety hooks don't cover them either). They are **ambiguous** by construction, and historically atelier asked you about every one.
 
 Since v0.9.0, atelier ships a **decision broker** as the configurable policy layer for this class. The broker:
 
@@ -352,7 +352,7 @@ Every PR atelier opens carries a `## Autonomous decisions taken` section in its 
 ### What the broker is NOT
 
 - **Not a permission gate.** That is auto-mode. The broker handles strategic AMBIGUITY, not forbidden actions.
-- **Not a safety net.** That is the M2.4 hook suite. `safe-package-change rejected`, `block-env-commit`, etc. bypass to their own escalation.
+- **Not a safety net.** That is the safety hook suite. `safe-package-change rejected`, `block-env-commit`, etc. bypass to their own escalation.
 - **Not operator-extensible.** Categories are atelier-maintained. If atelier hits a strategic decision not in the catalog, it falls back to asking you — and surfaces the missing category as a signal the catalog should grow in a future version.
 
 ---
