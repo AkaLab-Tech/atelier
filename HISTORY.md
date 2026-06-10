@@ -8,6 +8,26 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M4.30 — Plan-gated execution: orchestrator only claims pre-planned, approved tasks — 2026-06-10
+**PR:** _pending_ · **Plugin bump:** 0.20.5 → 0.21.0
+
+Planning is now a separate, explicit, **product-lead-owned** step that runs before the orchestrator. The orchestrator no longer improvises a plan at execution time or asks the non-technical operator to approve one — an unplanned task is simply not claimable. Follow-on to M7.1.F52 (orchestrator over-reaching) and M7.1.F53 (personal rules leaking into the autonomous flow).
+
+**Design decisions (operator, 2026-06-10):** the approved plan lives in an indexed `.plan/<id>.md` artifact per claimable unit (committed — spec + evidence); the `planner` owns decomposition and invokes `task-decomposer` itself when a task is oversize-likely, so the orchestrator's step-4 auto-decompose trigger is removed.
+
+**Delivered:**
+- **`agents/planner.md`** (new, Opus) — reads a ROADMAP task, scans the codebase, and writes a draft `.plan/<id>.md` (approach, affected areas, acceptance criteria, risks/open questions). When the task is oversize-likely it invokes `task-decomposer` and writes one plan per sub-task. Never writes code, commits, or flips `[ready]`.
+- **`commands/plan-task.md`** (new) — `/atelier:plan-task <id>`: dispatches the planner, presents the draft to the product lead, and **only on explicit approval** commits the plan + flips the unit(s) to `[ready]`; discards working-tree changes on rejection. Interactive by design — refuses to auto-approve in non-interactive mode.
+- **`agents/task-orchestrator.md`** — step 1 gates auto-pick and named-pick on `[ready]` (refusing unplanned tasks with a pointer to `/plan-task`); step 4 now *loads* the approved `.plan/<id>.md` instead of auto-decomposing; new hard rule "never author, improvise, or decompose a plan, never ask the operator to approve one"; implementer briefing now carries the approved plan.
+- **`skills/task-discovery/SKILL.md`** — `[ready]` filter in the selection algorithm (autonomous path only; atelier's own dev roadmap and direct "what's next?" queries are exempt); new `ready`/`plan_path` output fields; `ready-without-plan` inconsistency surfaced.
+- **`commands/next-task.md`** — id-pick validates `[ready]` + `.plan/<id>.md`; new hard refusal for unplanned tasks.
+- **`agents/task-decomposer.md`** + **`commands/slice-task.md`** — caller is now the planner (`/plan-task`) or `/slice-task`; `entry_point: planner`; `/slice-task` reframed as a standalone pre-split that still requires `/plan-task` to mark `[ready]`.
+- **`PLAN.md` §5/§7** — new **Planning gate** subsection (`[ready]` convention + `.plan/<id>.md`), `[ready]` added to the item-line format, selection order extended with the `[ready]` filter, decomposition note rewritten (planner-owned), `planner` added to the agent roster + `/plan-task` to the command list.
+- **`operator-rules.md`** — new "Planning gate — tasks must be `[ready]` before they run" section; the auto-decompose paragraph rewritten to reflect planning-time decomposition.
+- **`README.md`** — new daily-use step 3 "Plan it" (`/plan-task`), subsequent steps renumbered, "picks the first `[ready]` item".
+
+**Verified:** YAML frontmatter parses on all new/edited `agents/*.md`, `commands/*.md`, and `skills/task-discovery/SKILL.md` (the CI structural check); repo-wide grep confirms no stale `auto-decompose`/`step 3.5` references survive outside intentional planner mentions. No behavioural test suite exists for spec files (pre-implementation repo).
+
 ### M7.1.F56 — `reviewer` identity verified/granted access to the repo so auto-merge never stalls silently — 2026-06-10
 **PR:** [#155](https://github.com/AkaLab-Tech/atelier/pull/155) · **Plugin bump:** 0.20.4 → 0.20.5
 
