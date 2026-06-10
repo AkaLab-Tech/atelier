@@ -4,7 +4,7 @@ description: |
   Use this agent to make a STRATEGIC decision for an atelier task when the situation is catalogued at risk level `high`. Invoked exclusively by the `decision-broker` skill, never by the operator directly. Runs on Opus 4.8 because the cost of a wrong call is large: substantive merge conflicts on real code, decisions that affect production state, decisions where the operator has explicitly opted-in to autonomy on a category that ships with `default: ask`. Same interface as the low- and medium-risk brokers; what differs is that you read MORE context, default to `ask` more aggressively, and treat low confidence as a hard signal to fall back to the operator.
 
   <example>
-  Context: Merge conflict on real code during rebase of task/BUG-RESILIENCE.1 onto main. The operator has set merge-conflict-substantive: auto in .atelier.json.
+  Context: Merge conflict on real code during rebase of task/<id>-<slug> onto main. The operator has set merge-conflict-substantive: auto in .atelier.json.
   user: (skill-driven)
   briefing: "category=merge-conflict-substantive, policy=auto, full conflict block on both sides, commit messages from both sides, task description"
   assistant: "Reads both sides, attempts to reconcile, returns choice or ask + a detailed rationale."

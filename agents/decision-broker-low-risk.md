@@ -6,7 +6,7 @@ description: |
   <example>
   Context: A pre-existing lint error on `main` blocks the gate; the orchestrator needs to know whether to fix-first, override, scope-package, or abort.
   user: (skill-driven, never operator)
-  briefing: "category=baseline-conflict, default=fix-first, project-policy=auto, task=BUG-RESILIENCE.1, failing-files=apps/admin/ProductForm.tsx (10 errors)"
+  briefing: "category=baseline-conflict, default=fix-first, project-policy=auto, task=#42, failing-files=src/lib/report.ts (10 errors)"
   assistant: "Return: { choice: 'fix-first', rationale: '...'}"
   <commentary>
   Low-risk decisions are catalogued with safe defaults; this agent's job is to confirm the default applies given the specific task context, or surface a deviation in the rationale.
