@@ -400,6 +400,34 @@ If you're inside a Claude session, `/atelier:update` does the same thing. After 
 
 ---
 
+## Daily housekeeping (worktrees and branches)
+
+When atelier saves (merges) a task, it cleans up after that one task right away. But anything that falls outside that happy path slowly piles up: a worktree from a task you abandoned, a `task/*` branch whose work merged but the branch lingered, a remote branch left behind on GitHub. atelier offers a **once-a-day, you-authorize-it** sweep to keep this tidy.
+
+Once per day, when you start a Claude session, atelier reminds you:
+
+> *Daily housekeeping is due. Run `/atelier:housekeeping` …*
+
+Run it whenever you see that (or anytime you like):
+
+```bash
+/atelier:housekeeping
+```
+
+It first **shows you a categorized list** of what it *could* remove across all your projects — orphan worktrees, merged/closed local branches, merged/closed remote branches — and **why each one is removable**. Nothing is deleted until you explicitly say yes. You can narrow it to one project with `--project <path>`.
+
+What it **never** touches, no matter what:
+
+- A task that's still **active, blocked, or oversize** in `IN_PROGRESS.md` — that's live evidence.
+- A branch or worktree with an **open pull request**.
+- A worktree with **unsaved (uncommitted) changes**.
+- The protected branches (`main`, `master`, `develop`, `staging`).
+- **Unmerged** work with no merged PR — these are listed under "needs review" and left alone unless you opt in with `--include-unmerged`.
+
+Want to look without being asked to delete? Run `atelier-housekeeping --report` from a terminal — it only enumerates.
+
+---
+
 ## If something goes wrong
 
 First stop: run the health check.
@@ -457,6 +485,7 @@ Quick lookup once you've used atelier a few times.
 | `atelier-list-workspaces` | List your workspaces and each repo's health |
 | `/atelier:remove-workspace <name>` | Un-group a workspace (repos stay set up; `--with-members` also removes their setup) |
 | `atelier-import-conversations` | Copy your prior Claude Code conversation transcripts from `~/.claude` into atelier (`--list` to preview, `--all` for every project, `--dry-run` to rehearse) |
+| `/atelier:housekeeping` | Review and clean up orphan worktrees + merged/closed task branches (local + remote) across your projects — always asks first (`--project <path>` to narrow; `atelier-housekeeping --report` to only enumerate) |
 | `atelier-doctor` | Run a health check |
 | `atelier-doctor --fix` | Apply the auto-fixable repairs (missing symlinks, stale shellrc block, marketplace not registered) |
 | `atelier-update` | Pull latest atelier release, refresh templates, update the Claude plugin |
@@ -479,4 +508,4 @@ Each `atelier-*` helper also has a Claude-session equivalent under `/atelier:*` 
 - `~/.claude-work/` — atelier's own configuration, separate from your personal Claude config. (This path is `$ATELIER_CONFIG_DIR`; helpers and slash commands always read/write here, never your personal `~/.claude/`.)
 - `~/.claude-work/projects.json` — the registry of your atelier projects. `~/.claude-work/workspaces.json` — your multi-repo workspaces (only present once you create one).
 - `~/.claude-work/atelier-help.txt` — the cheatsheet shown by `atelier --help` (written at install time, refreshed by `atelier-update`).
-- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, `atelier-list-projects`, `atelier-remove-project`, `atelier-import-conversations`, `atelier-setup-workspace`, `atelier-resolve-dep`, `atelier-workspace-status`, `atelier-list-workspaces`, `atelier-remove-workspace`, `atelier-update`, `atelier-permission-diff`, `atelier-pr-size-check`, and `atelier-measure-merge-rate` commands.
+- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, `atelier-list-projects`, `atelier-remove-project`, `atelier-import-conversations`, `atelier-setup-workspace`, `atelier-resolve-dep`, `atelier-workspace-status`, `atelier-list-workspaces`, `atelier-remove-workspace`, `atelier-update`, `atelier-permission-diff`, `atelier-pr-size-check`, `atelier-measure-merge-rate`, and `atelier-housekeeping` commands.

@@ -24,27 +24,7 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 2–5 — Single-project agent flow + robustness + multi-project foundation.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries — and when an operator can install / uninstall atelier without risking unrelated Claude state.
 
-### M5.4 — Daily housekeeping of worktrees + local/remote branches (operator-authorized)
-
-`[maintenance]` · Source: operator request (2026-06-05) · Related: [skills/auto-merge/SKILL.md](skills/auto-merge/SKILL.md) (post-merge cleanup), [agents/task-orchestrator.md](agents/task-orchestrator.md) (worktree-as-evidence on blocked/oversize)
-
-Today cleanup is per-task: `auto-merge` removes the worktree and deletes the remote branch right after a successful squash-merge. Anything that falls outside that happy path accumulates — abandoned task worktrees, local `task/*` branches whose PR merged elsewhere, stale `origin/task/*` remotes. Atelier should run a **daily** housekeeping sweep that proposes what to clean, shows the operator a full summary, and acts **only** after explicit authorization.
-
-**Scope:**
-
-- [ ] An `atelier-housekeeping` helper that enumerates removable items in the registered projects/worktrees:
-  - **Worktrees** with no active/blocked/oversize task (cross-checked against `IN_PROGRESS.md` markers — never a worktree that is task evidence).
-  - **Local branches** that are fully merged into `main` (or whose PR is merged/closed) and are not checked out.
-  - **Remote branches** (`origin/task/*`) whose PR is merged/closed.
-- [ ] **Daily cadence, not per-session spam:** gate on a last-run timestamp (e.g. a `SessionStart` check that fires the sweep at most once per calendar day; record the stamp under `$ATELIER_CONFIG_DIR`). Decide whether a scheduled job is in scope or the session-gated check suffices.
-- [ ] **Always ask first:** present a summary grouped by category — the exact list of worktrees, local branches, and remote branches that would be deleted, with why each is removable — then require explicit authorization (single confirm; ideally per-category or per-item opt-out) before touching anything.
-- [ ] **Hard safety rails:** never delete protected branches (`main`/`master`/`develop`/`staging`), never delete a branch/worktree with an open PR, never remove a worktree backing an `[BLOCKED]` or `[OVERSIZE]` entry, never force-delete unmerged work without an explicit operator override.
-- [ ] A manual entry point too (`/atelier:housekeeping` or similar) so the operator can run the sweep on demand, not only on the daily trigger.
-- [ ] Document the cadence, what counts as removable, and the safety rails in the operator guide.
-
-**Acceptance:** with a stale merged `task/*` branch, its merged `origin/task/*` remote, and an orphan worktree present, the daily sweep (or manual command) lists all three in a categorized summary, deletes them only after the operator authorizes, and leaves untouched any protected branch, open-PR branch, or worktree backing a blocked/oversize task; re-running the same day does not re-prompt.
-
-**Trigger to revisit:** requested by the operator 2026-06-05 — wants worktrees and local/remote branches kept tidy automatically, but always behind an authorized summary rather than silent deletion.
+_No medium-priority tasks open. (M5.4 — daily housekeeping — delivered; see [HISTORY.md](HISTORY.md).)_
 
 ---
 

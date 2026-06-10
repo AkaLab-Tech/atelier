@@ -1,0 +1,458 @@
+#!/usr/bin/env bash
+#
+# atelier-housekeeping — daily, operator-authorized cleanup of the
+# task-cycle debris that falls outside auto-merge's per-task cleanup:
+#
+#   - Orphan WORKTREES under <project>-worktrees/ whose task is no longer
+#     active/blocked/oversize in IN_PROGRESS.md (i.e. not task evidence).
+#   - Local task/* BRANCHES that are merged into main (or whose PR is
+#     merged/closed) and are not checked out.
+#   - Remote origin/task/* BRANCHES whose PR is merged/closed.
+#
+# It NEVER deletes anything without an explicit operator authorization
+# (interactive confirm, or --yes in non-interactive contexts). The default
+# mode enumerates and confirms; --report / --dry-run only enumerate.
+#
+# Safety rails (always on, cannot be overridden by --yes):
+#   - Never a protected branch (main/master/develop/staging).
+#   - Never a branch/worktree with an OPEN PR.
+#   - Never a worktree backing an [BLOCKED] or [OVERSIZE] entry (these are
+#     cross-checked against IN_PROGRESS.md — task evidence is sacred).
+#   - Never a DIRTY worktree (uncommitted changes).
+#   - Never force-delete UNMERGED work: unmerged-with-no-PR (or PR closed
+#     unmerged) items are reported under "needs review" and skipped unless
+#     the operator passes --include-unmerged.
+#   - Never --force / never a non-fast-forward push.
+#
+# Cadence: each completed run stamps $ATELIER_CONFIG_DIR/housekeeping-last-check
+# with today's date. The SessionStart hook (hooks/daily-housekeeping.sh)
+# reads that stamp and nudges the operator at most once per calendar day.
+#
+# Usage:
+#   atelier-housekeeping [--report|--dry-run] [--project PATH]
+#                        [--include-unmerged] [--yes|-y] [--json] [--no-stamp]
+#   atelier-housekeeping --help
+#
+# Exit codes:
+#   0  swept successfully (nothing to do, reported, or deletions applied)
+#   1  unrecoverable error (no config / malformed JSON / jq missing)
+#   2  refusal (operator declined the confirmation in interactive mode)
+
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+# ---------- logging ----------
+log()    { printf '==> %s\n' "$*"; }
+sublog() { printf '    %s\n' "$*"; }
+warn()   { printf '!!  %s\n' "$*" >&2; }
+die()    { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+ok()     { printf '    OK: %s\n' "$*"; }
+
+# ---------- usage ----------
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+Operator-authorized cleanup of orphan worktrees and merged/closed task
+branches (local + remote) across atelier-registered projects. Always asks
+before deleting; --report / --dry-run only enumerate.
+
+USAGE:
+  ${SCRIPT_NAME} [--report|--dry-run] [--project PATH] [OPTIONS]
+  ${SCRIPT_NAME} --help
+
+OPTIONS:
+  --report, --dry-run  Enumerate removable items and print the categorized
+                       summary, then exit WITHOUT deleting anything. Safe to
+                       run anytime. (Both flags are synonyms.)
+  --project PATH       Limit the sweep to one registered project instead of
+                       every project in \$ATELIER_CONFIG_DIR/projects.json.
+  --include-unmerged   Also offer to remove items holding UNMERGED work
+                       (orphan worktrees / branches with no PR, or a PR that
+                       was closed without merging). Off by default — these
+                       are listed under "needs review" and skipped.
+  --yes, -y            Non-interactive. Apply deletions without the confirm
+                       prompt. Required to delete in a non-TTY context.
+  --json               Emit the enumeration as JSON instead of human text.
+                       Implies --report (never deletes).
+  --no-stamp           Do not update the daily cadence stamp. Useful when
+                       scripting repeated runs.
+  --help, -h           Show this help and exit.
+
+EXIT CODES:
+  0  swept successfully (nothing to do, reported, or deletions applied)
+  1  unrecoverable error
+  2  refusal (operator declined)
+EOF
+}
+
+# ---------- arg parse ----------
+MODE="sweep"             # sweep | report
+PROJECT_FILTER=""
+INCLUDE_UNMERGED=false
+NONINTERACTIVE=false
+JSON=false
+STAMP=true
+[ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --report|--dry-run) MODE="report"; shift ;;
+    --project)          PROJECT_FILTER="${2:-}"; [ -n "$PROJECT_FILTER" ] || die "--project needs a path"; shift 2 ;;
+    --include-unmerged) INCLUDE_UNMERGED=true; shift ;;
+    --yes|-y)           NONINTERACTIVE=true; shift ;;
+    --json)             JSON=true; MODE="report"; shift ;;
+    --no-stamp)         STAMP=false; shift ;;
+    --help|-h)          usage; exit 0 ;;
+    *)                  die "unknown arg: $1 (run --help for usage)" ;;
+  esac
+done
+
+# ---------- config + deps ----------
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+CONFIG_FILE="$ATELIER_CONFIG_DIR/projects.json"
+STAMP_FILE="$ATELIER_CONFIG_DIR/housekeeping-last-check"
+
+command -v jq  >/dev/null 2>&1 || die "jq not found in PATH"
+command -v git >/dev/null 2>&1 || die "git not found in PATH"
+HAVE_GH=false
+command -v gh >/dev/null 2>&1 && HAVE_GH=true
+
+[ -f "$CONFIG_FILE" ] || die "$CONFIG_FILE not found — atelier may not be installed (run install.sh)"
+jq empty "$CONFIG_FILE" >/dev/null 2>&1 || die "$CONFIG_FILE is not valid JSON"
+
+# Today's date (YYYY-MM-DD). Used only for the cadence stamp.
+TODAY="$(date +%F 2>/dev/null || true)"
+
+PROTECTED_BRANCHES="main master develop staging"
+
+is_protected_branch() {
+  local b="$1"
+  case " $PROTECTED_BRANCHES " in *" $b "*) return 0 ;; esac
+  return 1
+}
+
+# ---------- resolve target projects ----------
+PROJECTS=()
+if [ -n "$PROJECT_FILTER" ]; then
+  case "$PROJECT_FILTER" in /*) ;; *) PROJECT_FILTER="$(pwd)/$PROJECT_FILTER" ;; esac
+  [ -d "$PROJECT_FILTER" ] && PROJECT_FILTER="$(cd -P "$PROJECT_FILTER" && pwd)"
+  jq -e --arg p "$PROJECT_FILTER" '.projects[$p]' "$CONFIG_FILE" >/dev/null 2>&1 \
+    || die "$PROJECT_FILTER is not registered in $CONFIG_FILE"
+  PROJECTS+=("$PROJECT_FILTER")
+else
+  while IFS= read -r p; do
+    [ -n "$p" ] && PROJECTS+=("$p")
+  done < <(jq -r '.projects | keys[]' "$CONFIG_FILE" 2>/dev/null)
+fi
+
+# ---------- repo / PR helpers ----------
+
+# Resolve OWNER/NAME for a project from its origin remote (HTTPS or SSH form).
+repo_slug() {
+  local proj="$1" url slug
+  url="$(git -C "$proj" remote get-url origin 2>/dev/null || true)"
+  [ -n "$url" ] || { printf ''; return; }
+  slug="${url%.git}"
+  slug="${slug#https://github.com/}"
+  slug="${slug#git@github.com:}"
+  slug="${slug#ssh://git@github.com/}"
+  case "$slug" in */*) printf '%s' "$slug" ;; *) printf '' ;; esac
+}
+
+# Echo the PR state for a head branch: MERGED | CLOSED | OPEN | NONE | UNKNOWN.
+# Conservative: any failure to determine returns UNKNOWN (treated as not-safe).
+pr_state() {
+  local slug="$1" branch="$2" out
+  $HAVE_GH || { printf 'UNKNOWN'; return; }
+  [ -n "$slug" ] || { printf 'UNKNOWN'; return; }
+  out="$(env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh pr list \
+           --repo "$slug" --head "$branch" --state all \
+           --json state --jq '.[0].state // "NONE"' 2>/dev/null || true)"
+  case "$out" in
+    MERGED|CLOSED|OPEN|NONE) printf '%s' "$out" ;;
+    *)                       printf 'UNKNOWN' ;;
+  esac
+}
+
+# Task id embedded in a task/<id>-<slug> branch (portion before the first dash).
+branch_task_id() {
+  local b="${1#task/}"
+  printf '%s' "${b%%-*}"
+}
+
+# Is a task id referenced (active / blocked / oversize) in <project>/IN_PROGRESS.md?
+# Over-protective by design: a positive match keeps the item (we never delete
+# task evidence). Matches `#id`, a bare id at a word boundary, or the full
+# branch name.
+referenced_in_progress() {
+  local proj="$1" id="$2" branch="$3" f="$1/IN_PROGRESS.md"
+  [ -f "$f" ] || return 1
+  grep -qF -- "$branch" "$f" 2>/dev/null && return 0
+  grep -qE "(^|[^A-Za-z0-9_])#?${id//./\\.}([^A-Za-z0-9_]|\$)" "$f" 2>/dev/null && return 0
+  return 1
+}
+
+# ---------- enumerate ----------
+# Each removable item is recorded as a TSV line in one of the arrays:
+#   "<project>\t<kind>\t<branch-or-path>\t<reason>\t<command-token>"
+# command-token tells the executor how to delete it.
+declare -a DEL_WORKTREES=()   # safe-to-remove worktrees
+declare -a DEL_LBRANCHES=()   # safe-to-remove local branches
+declare -a DEL_RBRANCHES=()   # safe-to-remove remote branches
+declare -a REVIEW=()          # unmerged / unknown — needs operator review
+declare -a SKIPPED=()         # protected, for transparency (only shown in report)
+
+add_review()  { REVIEW+=("$1"$'\t'"$2"$'\t'"$3"$'\t'"$4"); }
+add_skip()    { SKIPPED+=("$1"$'\t'"$2"$'\t'"$3"$'\t'"$4"); }
+
+enumerate_project() {
+  local proj="$1"
+  [ -d "$proj" ] || { add_skip "$proj" "project" "$proj" "directory missing"; return; }
+  git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 \
+    || { add_skip "$proj" "project" "$proj" "not a git repo"; return; }
+
+  local slug; slug="$(repo_slug "$proj")"
+  local main_root; main_root="$(cd -P "$proj" && pwd)"
+
+  # ----- worktrees -----
+  # Parse `git worktree list --porcelain`: blocks separated by blank lines,
+  # each with `worktree <path>` and (optionally) `branch refs/heads/<name>`.
+  local wt_path="" wt_branch=""
+  flush_worktree() {
+    [ -n "$wt_path" ] || return 0
+    local path="$wt_path" branch="$wt_branch"
+    wt_path=""; wt_branch=""
+    # Skip the main worktree itself.
+    [ "$path" = "$main_root" ] && return 0
+    # Only manage task/* worktrees; leave anything else alone.
+    case "$branch" in task/*) ;; *) return 0 ;; esac
+    is_protected_branch "$branch" && return 0
+
+    local id; id="$(branch_task_id "$branch")"
+    if referenced_in_progress "$proj" "$id" "$branch"; then
+      add_skip "$proj" "worktree" "$path" "active/blocked/oversize task #$id in IN_PROGRESS.md"
+      return 0
+    fi
+    # Dirty worktree → never auto-remove.
+    if [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
+      add_skip "$proj" "worktree" "$path" "uncommitted changes — left untouched"
+      return 0
+    fi
+    local st; st="$(pr_state "$slug" "$branch")"
+    local merged=false
+    git -C "$proj" branch --merged main 2>/dev/null | sed 's/^[+* ]*//' | grep -qxF "$branch" && merged=true
+    if [ "$st" = "MERGED" ] || [ "$st" = "CLOSED" ] || $merged; then
+      DEL_WORKTREES+=("$proj"$'\t'"worktree"$'\t'"$path"$'\t'"branch $branch (PR:$st)"$'\t'"$branch")
+    elif [ "$st" = "OPEN" ]; then
+      add_skip "$proj" "worktree" "$path" "open PR for $branch"
+    else
+      # NONE / UNKNOWN, not merged → possibly unmerged work.
+      add_review "$proj" "worktree" "$path" "orphan, unmerged ($branch, PR:$st)"
+    fi
+  }
+
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) flush_worktree; wt_path="${line#worktree }" ;;
+      "branch "*)   wt_branch="${line#branch refs/heads/}" ;;
+      "")           flush_worktree ;;
+    esac
+  done < <(git -C "$proj" worktree list --porcelain 2>/dev/null)
+  flush_worktree
+
+  # Paths still backing a kept worktree must not have their branch deleted.
+  local kept_branches=""
+  while IFS= read -r line; do
+    case "$line" in "branch refs/heads/"*) kept_branches="$kept_branches ${line#branch refs/heads/}" ;; esac
+  done < <(git -C "$proj" worktree list --porcelain 2>/dev/null)
+  local current_branch; current_branch="$(git -C "$proj" symbolic-ref --short HEAD 2>/dev/null || true)"
+
+  # ----- local task/* branches -----
+  local b
+  while IFS= read -r b; do
+    b="${b#refs/heads/}"
+    [ -n "$b" ] || continue
+    case "$b" in task/*) ;; *) continue ;; esac
+    is_protected_branch "$b" && continue
+    # Checked out / backing a worktree we keep → never touch.
+    [ "$b" = "$current_branch" ] && { add_skip "$proj" "local-branch" "$b" "currently checked out"; continue; }
+    case " $kept_branches " in *" $b "*) add_skip "$proj" "local-branch" "$b" "backs a retained worktree"; continue ;; esac
+
+    local id; id="$(branch_task_id "$b")"
+    if referenced_in_progress "$proj" "$id" "$b"; then
+      add_skip "$proj" "local-branch" "$b" "active/blocked/oversize task #$id in IN_PROGRESS.md"
+      continue
+    fi
+    local merged=false
+    git -C "$proj" branch --merged main 2>/dev/null | sed 's/^[+* ]*//' | grep -qxF "$b" && merged=true
+    local st; st="$(pr_state "$slug" "$b")"
+    if $merged; then
+      DEL_LBRANCHES+=("$proj"$'\t'"local-branch"$'\t'"$b"$'\t'"merged into main"$'\t'"-d")
+    elif [ "$st" = "MERGED" ]; then
+      DEL_LBRANCHES+=("$proj"$'\t'"local-branch"$'\t'"$b"$'\t'"PR merged (squash)"$'\t'"-D")
+    elif [ "$st" = "OPEN" ]; then
+      add_skip "$proj" "local-branch" "$b" "open PR"
+    elif [ "$st" = "CLOSED" ]; then
+      add_review "$proj" "local-branch" "$b" "PR closed without merging (unmerged)"
+    else
+      add_review "$proj" "local-branch" "$b" "no PR, not merged into main"
+    fi
+  done < <(git -C "$proj" for-each-ref --format='%(refname)' refs/heads/task 2>/dev/null)
+
+  # ----- remote origin/task/* branches -----
+  while IFS= read -r b; do
+    b="${b#refs/remotes/origin/}"
+    [ -n "$b" ] || continue
+    case "$b" in task/*) ;; *) continue ;; esac
+    is_protected_branch "$b" && continue
+    local id; id="$(branch_task_id "$b")"
+    if referenced_in_progress "$proj" "$id" "$b"; then
+      add_skip "$proj" "remote-branch" "origin/$b" "active/blocked/oversize task #$id in IN_PROGRESS.md"
+      continue
+    fi
+    local st; st="$(pr_state "$slug" "$b")"
+    if [ "$st" = "MERGED" ] || [ "$st" = "CLOSED" ]; then
+      DEL_RBRANCHES+=("$proj"$'\t'"remote-branch"$'\t'"$b"$'\t'"PR $st"$'\t'"$b")
+    elif [ "$st" = "OPEN" ]; then
+      add_skip "$proj" "remote-branch" "origin/$b" "open PR"
+    else
+      add_review "$proj" "remote-branch" "origin/$b" "no PR / state unknown ($st)"
+    fi
+  done < <(git -C "$proj" for-each-ref --format='%(refname)' refs/remotes/origin/task 2>/dev/null)
+}
+
+for proj in ${PROJECTS[@]+"${PROJECTS[@]}"}; do
+  enumerate_project "$proj"
+done
+
+DEL_COUNT=$(( ${#DEL_WORKTREES[@]} + ${#DEL_LBRANCHES[@]} + ${#DEL_RBRANCHES[@]} ))
+
+# ---------- JSON output ----------
+if $JSON; then
+  emit_arr() {
+    local name="$1"; shift
+    printf '"%s":[' "$name"
+    local first=true row
+    for row in "$@"; do
+      $first && first=false || printf ','
+      IFS=$'\t' read -r p k t r _cmd <<<"$row"
+      jq -cn --arg project "$p" --arg kind "$k" --arg target "$t" --arg reason "$r" \
+        '{project:$project,kind:$kind,target:$target,reason:$reason}'
+    done
+    printf ']'
+  }
+  printf '{'
+  emit_arr "worktrees"      ${DEL_WORKTREES[@]+"${DEL_WORKTREES[@]}"}; printf ','
+  emit_arr "local_branches" ${DEL_LBRANCHES[@]+"${DEL_LBRANCHES[@]}"}; printf ','
+  emit_arr "remote_branches" ${DEL_RBRANCHES[@]+"${DEL_RBRANCHES[@]}"}; printf ','
+  emit_arr "needs_review"   ${REVIEW[@]+"${REVIEW[@]}"}
+  printf '}\n'
+  $STAMP && [ -n "$TODAY" ] && printf '%s\n' "$TODAY" > "$STAMP_FILE" 2>/dev/null || true
+  exit 0
+fi
+
+# ---------- human report ----------
+log "atelier-housekeeping ${VERSION}"
+sublog "projects scanned: ${#PROJECTS[@]}"
+$HAVE_GH || sublog "note: gh not found — PR state unknown; merged-into-main detection only"
+echo ""
+
+print_group() {
+  local title="$1"; shift
+  [ $# -eq 0 ] && return 0
+  log "$title ($#):"
+  local row
+  for row in "$@"; do
+    IFS=$'\t' read -r p k t r _cmd <<<"$row"
+    sublog "$t"
+    sublog "    └ $(basename "$p") · $r"
+  done
+  echo ""
+}
+
+print_group "Worktrees to remove"       ${DEL_WORKTREES[@]+"${DEL_WORKTREES[@]}"}
+print_group "Local branches to delete"  ${DEL_LBRANCHES[@]+"${DEL_LBRANCHES[@]}"}
+print_group "Remote branches to delete" ${DEL_RBRANCHES[@]+"${DEL_RBRANCHES[@]}"}
+
+if [ ${#REVIEW[@]} -gt 0 ]; then
+  log "Needs review — UNMERGED work, NOT auto-removed (${#REVIEW[@]}):"
+  for row in "${REVIEW[@]}"; do
+    IFS=$'\t' read -r p k t r <<<"$row"
+    sublog "$t"
+    sublog "    └ $(basename "$p") · $k · $r"
+  done
+  $INCLUDE_UNMERGED && sublog "(--include-unmerged is set, but these are still only listed — promote them manually)"
+  $INCLUDE_UNMERGED || sublog "pass --include-unmerged to review these for removal"
+  echo ""
+fi
+
+# Always stamp a completed enumeration so the daily nudge does not re-fire.
+$STAMP && [ -n "$TODAY" ] && printf '%s\n' "$TODAY" > "$STAMP_FILE" 2>/dev/null || true
+
+if [ "$DEL_COUNT" -eq 0 ]; then
+  ok "nothing to clean up"
+  exit 0
+fi
+
+if [ "$MODE" = "report" ]; then
+  log "report only — nothing deleted. Re-run without --report to act on the above."
+  exit 0
+fi
+
+# ---------- confirm ----------
+log "$DEL_COUNT item(s) above will be deleted."
+if ! $NONINTERACTIVE; then
+  if [ ! -t 0 ]; then
+    die "non-interactive context (no TTY) but --yes was not given; pass --yes to proceed"
+  fi
+  printf 'Proceed with deletion? [y/N]: ' >&2
+  read -r ans
+  case "$ans" in
+    y|Y|yes|Yes) sublog "operator confirmed" ;;
+    *) warn "operator declined — nothing deleted"; exit 2 ;;
+  esac
+fi
+
+# ---------- execute ----------
+echo ""
+log "applying cleanup"
+
+for row in ${DEL_WORKTREES[@]+"${DEL_WORKTREES[@]}"}; do
+  IFS=$'\t' read -r p k path r branch <<<"$row"
+  if git -C "$p" worktree remove "$path" 2>/dev/null; then
+    sublog "removed worktree $path"
+  else
+    warn "could not remove worktree $path (skipped — may be dirty/locked)"
+  fi
+done
+
+for row in ${DEL_LBRANCHES[@]+"${DEL_LBRANCHES[@]}"}; do
+  IFS=$'\t' read -r p k branch r flag <<<"$row"
+  if git -C "$p" branch "$flag" "$branch" >/dev/null 2>&1; then
+    sublog "deleted local branch $branch"
+  else
+    warn "could not delete local branch $branch (skipped)"
+  fi
+done
+
+for row in ${DEL_RBRANCHES[@]+"${DEL_RBRANCHES[@]}"}; do
+  IFS=$'\t' read -r p k branch r ref <<<"$row"
+  if git -C "$p" push origin --delete "$branch" >/dev/null 2>&1; then
+    sublog "deleted remote branch origin/$branch"
+  else
+    warn "could not delete remote branch origin/$branch (skipped)"
+  fi
+done
+
+# Prune stale administrative worktree entries.
+for proj in ${PROJECTS[@]+"${PROJECTS[@]}"}; do
+  git -C "$proj" worktree prune 2>/dev/null || true
+done
+
+echo ""
+ok "housekeeping complete"
+exit 0
