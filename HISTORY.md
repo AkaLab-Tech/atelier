@@ -8,6 +8,18 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F62 — `/resume-task` PR-open mode: atelier finishes an orphaned PR autonomously — 2026-06-10
+**PR:** [#TBD] · **Plugin bump:** 0.23.3 → 0.24.0
+
+Found during M7.1 dogfood (storefront): RLS.2's PR (#132) was opened on 2026-06-05 and never touched again — `reviewDecision` empty, `autoMergeRequest` null, zero reviews. The orchestrator died right after `pr-author` opened the PR; `reviewer` + `auto-merge` never ran. No atelier command could finish it autonomously: `next-task` would re-implement from scratch (the task is still in `ROADMAP.md`), `resume-task` refused because the task is no longer in `IN_PROGRESS.md` (`pr-author` already moved it to `HISTORY.md` in the PR branch), and there is no standalone auto-merge entry point. The operator was forced to merge by hand — defeating the autonomy guarantee.
+
+**Delivered:**
+- **`commands/resume-task.md`** — new third mode **PR-open-resume**, auto-detected. When the task id has no `IN_PROGRESS.md` entry, the command now checks for an open `task/<id>-*` PR (`gh pr list --head`). If one exists, it pre-flights the PR (open, not draft, `task/*` branch, CI not failing, worktree resolved-or-`<none>`) and hands off with `resume_mode: pr-open` + `pr_number`/`pr_url`. The "never resume without an `IN_PROGRESS.md` entry" refusal is relaxed to allow exactly this anchor.
+- **`agents/task-orchestrator.md`** — Step 1 resume handling gains the `pr-open` sub-case: **skip the entire specialist chain** (implementer/tester/e2e/pr-author) and re-enter at `reviewer → auto-merge` against the supplied PR (straight to `auto-merge` if `reviewDecision` is already `APPROVED`), then close the loop per step 8. The open PR on origin is the source of truth.
+- Plugin bump **0.23.3 → 0.24.0** (minor — new capability per PLAN.md §14.2).
+
+**Verified:** plugin.json valid JSON; the new flow reviewed against the existing interrupted/blocked modes (no overlap — PR-open is the only mode that runs with no `IN_PROGRESS.md` entry). End-to-end exercised after merge by `/atelier:resume-task RLS.2` on storefront#132.
+
 ### M7.1.F61 + F60 — `atelier-update` resyncs instantiated templates and helper symlinks, not just the plugin cache — 2026-06-10
 **PR:** [#TBD] · **Plugin bump:** 0.23.2 → 0.23.3
 
