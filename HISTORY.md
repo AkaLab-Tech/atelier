@@ -8,8 +8,25 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F61 + F60 — `atelier-update` resyncs instantiated templates and helper symlinks, not just the plugin cache — 2026-06-10
+**PR:** [#TBD] · **Plugin bump:** 0.23.2 → 0.23.3
+
+Found during M7.1 dogfood (storefront), immediately after F58/F59. After updating the plugin to 0.23.2 and reconfiguring storefront, its `.claude/settings.json` was missing F53's `Bash(git push -u origin task/*)` allow — which would have re-broken the autonomous push (the classifier would fall back to the operator's personal `~/.claude/CLAUDE.md` "never push" rule and deny). Root cause: two install-artifact dimensions that `atelier-update` never resynced when the clone was already at `origin/main`.
+
+**F61 — instantiated templates.** The F58 cache-drift path (`OLD_SHA == NEW_SHA`) only refreshed the plugin cache; it never refreshed the instantiated templates under `$ATELIER_CONFIG_DIR/templates/`. Those are what `atelier-setup-project` reads, so a project (re)configured after an out-of-band `git pull` instantiates its `settings.json` from a **stale** template and silently misses permission/config changes shipped in the release (here: F53's push allow). The drift was also undetectable — F58 keyed "nothing to do" on the cache version alone.
+
+**F60 — helper symlinks.** A release that adds a `scripts/atelier-*` helper symlinks it via `install.sh`, but `atelier-update` never re-ran that step. On this machine **9 helpers were unlinked** (`atelier-housekeeping`, `atelier-import-conversations`, the four workspace helpers, `atelier-setup-neon`, `atelier-setup-vercel`, `atelier-resolve-dep`) — every operator command added since the last manual `install.sh` was unreachable from the shell.
+
+**Delivered (`scripts/atelier-update`):**
+- The cache-drift path now detects **three independent dimensions** — plugin cache version, instantiated templates, and helper symlinks — and only reports "nothing to do" when all three align. `--dry-run` reports each would-be action.
+- `refresh_instantiated_templates()` rewrites the templates from the clone, backing up `settings.template.json` (timestamped) whenever its content changes.
+- `resync_script_symlinks()` auto-discovers every `scripts/atelier-*` and symlinks it into `~/.local/bin` (idempotent; never clobbers a non-symlink). Called on both the drift path and the normal pulled-commits path, so a newly shipped helper is linked without a matching `install.sh` edit.
+- Plugin bump **0.23.2 → 0.23.3** (patch, per PLAN.md §14.2).
+
+**Verified:** `bash -n` clean. Drift detection exercised against the live machine state: templates reported out-of-sync (missing F53 allow) and 9 helper symlinks reported missing — both the conditions that triggered this finding. End-to-end resync (templates refreshed, 9 helpers linked, storefront reconfigured to carry the F53 allow) exercised after merge.
+
 ### M7.1.F59 — `atelier-setup-project --reconfigure` allows headless re-setup of a registered project — 2026-06-10
-**PR:** [#TBD] · **Plugin bump:** 0.23.1 → 0.23.2
+**PR:** [#164](https://github.com/AkaLab-Tech/atelier/pull/164) · **Plugin bump:** 0.23.1 → 0.23.2
 
 Found during M7.1 dogfood (storefront), immediately after F58: with the plugin updated to 0.23.1 but the project still registered at `setupVersion 0.10.0`, refreshing it was impossible from a Claude Code session. `atelier-setup-project` only reconfigures an already-configured project via an interactive `Re-run setup? [y/N]` prompt; under `--yes`/`$ATELIER_AUTO` it refuses outright (`exit 2`), and a Claude session has no TTY for the prompt. So a registered project's `settings.json` stays pinned to whatever plugin version first set it up, with no headless path to catch up — and the autonomous flow can't self-heal config drift after an update.
 

@@ -71,6 +71,112 @@ refresh_plugin_cache() {
   fi
 }
 
+# ---------- template + symlink resync helpers (M7.1.F61 / F60) ----------
+# UTC timestamp for backup filenames (mirrors atelier-setup-project).
+utc_ts() { date -u +%Y-%m-%dT%H-%M-%SZ; }
+
+# True (0) when any instantiated template under $ATELIER_CONFIG_DIR/templates/
+# differs from the clone source (after the <atelier-config-dir> substitution).
+# The instantiated copy is what setup-project reads, so a stale template means
+# freshly-(re)configured projects silently miss permission/config changes
+# shipped in a release — independent of whether the plugin cache is current.
+# This is the dimension M7.1.F58 missed: it only compared the cache version.
+templates_out_of_sync() {
+  local cfg="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+  [ -d "$cfg/templates" ] || return 1
+  local src dst tmp
+  src="$PLUGIN_ROOT/templates/settings.template.json"
+  dst="$cfg/templates/settings.template.json"
+  if [ -f "$src" ]; then
+    tmp="$(mktemp)"
+    sed "s|<atelier-config-dir>|$cfg|g" "$src" > "$tmp"
+    if ! diff -q "$dst" "$tmp" >/dev/null 2>&1; then rm -f "$tmp"; return 0; fi
+    rm -f "$tmp"
+  fi
+  local t
+  for t in project-claude.md.template atelier.template.json; do
+    [ -f "$PLUGIN_ROOT/templates/$t" ] || continue
+    diff -q "$cfg/templates/$t" "$PLUGIN_ROOT/templates/$t" >/dev/null 2>&1 || return 0
+  done
+  return 1
+}
+
+# Refresh the instantiated templates from the clone, backing up
+# settings.template.json whenever its content changes (the permission set may
+# differ). Headless and idempotent — used by the cache-drift path, which has
+# no pulled-commit delta to drive the normal refresh block below.
+refresh_instantiated_templates() {
+  local cfg="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+  [ -d "$cfg/templates" ] || { warn "$cfg/templates missing — run install.sh"; return 0; }
+  log "refreshing instantiated templates in $cfg/templates/"
+  local src dst tmp
+  src="$PLUGIN_ROOT/templates/settings.template.json"
+  dst="$cfg/templates/settings.template.json"
+  if [ -f "$src" ]; then
+    tmp="$(mktemp)"
+    sed "s|<atelier-config-dir>|$cfg|g" "$src" > "$tmp"
+    if [ -f "$dst" ] && diff -q "$dst" "$tmp" >/dev/null 2>&1; then
+      rm -f "$tmp"
+    else
+      [ -f "$dst" ] && { cp "$dst" "$dst.bak.$(utc_ts)"; sublog "backed up settings.template.json (permission set may have changed)"; }
+      mv "$tmp" "$dst"
+      sublog "refreshed settings.template.json"
+    fi
+  fi
+  local t
+  for t in project-claude.md.template atelier.template.json; do
+    [ -f "$PLUGIN_ROOT/templates/$t" ] || continue
+    cp "$PLUGIN_ROOT/templates/$t" "$cfg/templates/$t"
+    sublog "refreshed $t"
+  done
+}
+
+# True (0) when any scripts/atelier-* helper is missing from ~/.local/bin or
+# points somewhere other than the clone. A release that adds a helper (e.g.
+# M5.4's atelier-housekeeping) leaves it unlinked until install.sh is re-run
+# by hand — atelier-update never re-symlinked. This closes that gap (F60).
+symlinks_out_of_sync() {
+  local bin_dir="$HOME/.local/bin"
+  local src name dest
+  for src in "$PLUGIN_ROOT"/scripts/atelier-*; do
+    [ -f "$src" ] || continue
+    name="$(basename "$src")"
+    dest="$bin_dir/$name"
+    if [ -L "$dest" ]; then
+      [ "$(readlink "$dest")" = "$src" ] || return 0
+    elif [ ! -e "$dest" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Symlink every scripts/atelier-* helper into ~/.local/bin (idempotent; mirrors
+# install.sh's _phase_c_1_symlink_helper but auto-discovers, so a newly shipped
+# helper never needs a matching install.sh edit to be linked). Never clobbers a
+# plain file the operator may have pinned manually.
+resync_script_symlinks() {
+  local bin_dir="$HOME/.local/bin"
+  mkdir -p "$bin_dir"
+  local src name dest current linked=0
+  for src in "$PLUGIN_ROOT"/scripts/atelier-*; do
+    [ -f "$src" ] || continue
+    name="$(basename "$src")"
+    dest="$bin_dir/$name"
+    [ -x "$src" ] || chmod +x "$src"
+    if [ -L "$dest" ]; then
+      current="$(readlink "$dest")"
+      [ "$current" = "$src" ] && continue
+      ln -sfn "$src" "$dest"; sublog "updated symlink: $name"; linked=$((linked+1))
+    elif [ -e "$dest" ]; then
+      warn "$dest exists and is not a symlink — leaving it alone"
+    else
+      ln -s "$src" "$dest"; sublog "linked $name"; linked=$((linked+1))
+    fi
+  done
+  if [ "$linked" -gt 0 ]; then log "re-symlinked $linked new/changed helper(s) into $bin_dir"; else sublog "helper symlinks already in sync"; fi
+}
+
 # ---------- usage ----------
 usage() {
   cat <<EOF
@@ -219,32 +325,47 @@ NEW_SHA="$(git -C "$PLUGIN_ROOT" rev-parse HEAD)"
 NEW_VERSION="$(jq -r '.version' "$PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null || echo 'unknown')"
 
 if [ "$OLD_SHA" = "$NEW_SHA" ]; then
-  # The clone is synced with origin/main, but the plugin CACHE that Claude
-  # Code actually loads may still lag — e.g. a prior run's `claude plugin
-  # update` failed, the operator advanced the clone with a direct `git pull`,
-  # or a session never restarted. Tying "nothing to do" to the clone SHA
-  # alone leaves that drift uncorrectable by the very tool meant to fix it.
-  # Compare the cached plugin version against the clone manifest and only
-  # declare done when BOTH are aligned; otherwise refresh the cache.
+  # The clone is synced with origin/main, but the artifacts INSTALLED from it
+  # can each lag independently: the plugin CACHE Claude Code loads, the
+  # instantiated TEMPLATES setup-project reads, and the helper SYMLINKS in
+  # ~/.local/bin. A direct `git pull`, a prior failed refresh, a session that
+  # never restarted, or a release that added a helper all leave one of these
+  # behind. Tying "nothing to do" to the clone SHA alone leaves that drift
+  # uncorrectable by the tool meant to fix it (M7.1.F58 cache, F61 templates,
+  # F60 symlinks). Detect each dimension; only declare done when ALL align.
   ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
   CACHED_VERSION="$(read_cached_plugin_version)"
-  if [ "$CACHED_VERSION" = "$NEW_VERSION" ]; then
+  cache_drift=false; tmpl_drift=false; link_drift=false
+  [ "$CACHED_VERSION" != "$NEW_VERSION" ] && cache_drift=true || true
+  templates_out_of_sync && tmpl_drift=true || true
+  symlinks_out_of_sync && link_drift=true || true
+
+  if ! $cache_drift && ! $tmpl_drift && ! $link_drift; then
     log "already up to date — nothing to do"
     echo ""
-    ok "version: $NEW_VERSION (clone and plugin cache aligned)"
+    ok "version: $NEW_VERSION (cache, templates and helper symlinks all in sync)"
     exit 2
   fi
-  warn "clone is at $NEW_VERSION but plugin cache is at ${CACHED_VERSION:-unknown}"
+
+  $cache_drift && warn "plugin cache is at ${CACHED_VERSION:-unknown}, clone is at $NEW_VERSION" || true
+  $tmpl_drift  && warn "instantiated templates differ from the clone" || true
+  $link_drift  && warn "one or more helper symlinks are missing or stale" || true
+
   if $DRY_RUN; then
-    log "DRY-RUN — would refresh plugin cache only (no new commits to pull)"
+    log "DRY-RUN — would resync installed artifacts (no new commits to pull)"
     echo ""
-    ok "would refresh plugin cache: ${CACHED_VERSION:-unknown} → $NEW_VERSION"
+    $cache_drift && ok "would refresh plugin cache: ${CACHED_VERSION:-unknown} → $NEW_VERSION" || true
+    $tmpl_drift  && ok "would refresh instantiated templates" || true
+    $link_drift  && ok "would re-symlink helper scripts" || true
     exit 0
   fi
-  log "refreshing plugin cache only (no new commits to pull)"
-  refresh_plugin_cache
+
+  log "resyncing installed artifacts (no new commits to pull)"
+  $tmpl_drift  && refresh_instantiated_templates || true
+  $cache_drift && refresh_plugin_cache || true
+  resync_script_symlinks
   echo ""
-  ok "plugin cache refreshed to $NEW_VERSION — restart open Claude Code sessions to pick it up"
+  ok "installed artifacts resynced to $NEW_VERSION — restart open Claude Code sessions to pick up plugin/agent changes"
   exit 0
 fi
 
@@ -399,6 +520,11 @@ else
   #    on the new version. Open sessions keep loading the old version
   #    until they restart — surface this in the final report.
   refresh_plugin_cache
+
+  # 3) Re-symlink helper scripts (M7.1.F60). A pulled release may have added a
+  #    new scripts/atelier-* helper; without this it would stay unlinked until
+  #    the operator re-ran install.sh by hand.
+  resync_script_symlinks
 fi
 
 # ---------- report ----------
