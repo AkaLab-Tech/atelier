@@ -53,7 +53,7 @@ Prefix every `gh ...` call with `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer"
 
 If `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh auth status` fails, or if the reviewer identity coincides with the author identity (`GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh api user --jq .login` returns the same login as the author dir), stop and report. Do not fall back to the author identity — GitHub silently downgrades same-identity approvals to comments.
 
-**Reviewer cannot access the repo (M7.1.F56).** Before reviewing, confirm the reviewer identity can resolve the repository:
+**Reviewer cannot access the repo.** Before reviewing, confirm the reviewer identity can resolve the repository:
 
 ```bash
 GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh repo view <owner>/<repo> --json nameWithOwner

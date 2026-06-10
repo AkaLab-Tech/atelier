@@ -110,7 +110,7 @@ regardless of phrasing.
 **Post-merge:** delete the remote branch, remove the local worktree, mark
 the roadmap item `[x]`.
 
-**Reviewer access requirement (M7.1.F56).** The independent `reviewer`
+**Reviewer access requirement.** The independent `reviewer`
 agent runs under a separate GitHub identity (`$ATELIER_CONFIG_DIR/gh/reviewer`),
 distinct from the author (`$ATELIER_CONFIG_DIR/gh/author`). On a
 **freshly-created private repo** that reviewer user is not a collaborator,
