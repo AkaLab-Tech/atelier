@@ -8,6 +8,23 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M4.29 — Import an existing operator's Claude conversations on first atelier use — 2026-06-10
+**PR:** [#159](https://github.com/AkaLab-Tech/atelier/pull/159) · **Plugin bump:** 0.21.0 → 0.22.0
+
+atelier runs under a config root (`$ATELIER_CONFIG_DIR`, default `~/.claude-work/`) deliberately **separate** from the operator's personal `~/.claude/`. A side effect for anyone who already used Claude Code: their prior conversation history lives under the personal root, so `claude --resume` inside an atelier session starts empty, as if brand new. M4.29 gives the operator an opt-in, non-destructive way to bring that history across. Companion to M7.1.F53 — same separation boundary, opposite direction (F53 keeps personal *rules* out; this lets personal *history* in, scoped).
+
+**Design decisions (during implementation):**
+- **Copy, not symlink.** A directory symlink would route atelier's own new per-project transcripts back into the personal root, mixing atelier history into `~/.claude`. A per-file copy of existing `*.jsonl` snapshots prior history and lets the two roots diverge cleanly. The per-project dir name (`<cwd-hash>`) is the project path with non-alphanumerics → `-`, identical under both roots, so dirs map 1:1.
+- **Entry point = both.** A durable helper + command for any time, plus a first-use opt-in step in the installer.
+
+**Delivered:**
+- **`scripts/atelier-import-conversations`** (new helper) — copies per-project transcript files (`projects/<dir>/*.jsonl`) from the personal root (`~/.claude`, override `--from`) into `$ATELIER_CONFIG_DIR` (override `--to`). Modes: interactive numbered picker (default, TTY), `--all`, positional project selectors (path / raw dir-name / suffix), `--list`, `--dry-run`, `--yes`. Imports `*.jsonl` only; never personal `CLAUDE.md` / memory / settings / `.claude.json`. Non-destructive: never overwrites an existing destination transcript, never touches the source; idempotent. Guards for empty source, `src == dst`, and no-TTY-without-selection.
+- **`commands/import-conversations.md`** (new) — `/atelier:import-conversations`, a thin wrapper that forwards `$ARGUMENTS` and relays the helper's output verbatim (same pattern as `/atelier:list-projects`); never auto-adds `--all`/`--yes`.
+- **`install.sh`** — symlinks the helper into `~/.local/bin`; new `phase_c_1_import_conversations` Phase C.1 step that is strictly **opt-in** and **fail-open**: only prompts with a TTY and when there is at least one importable project, defaults to "no", and never aborts the install.
+- **`docs/operator-guide.md`** — new "Already a Claude Code user? Bring your conversations over (optional)" section (what is/isn't imported, non-destructive, one-time/opt-in), plus Reference table + helper-list entries.
+
+**Verified:** `bash -n` clean on `install.sh` + `scripts/atelier-import-conversations`; `commands/import-conversations.md` frontmatter parses (CI structural check); `--help` exits 0. Sandbox functional test confirmed: `--list`, `--dry-run` writes nothing, `--all` copies only new `*.jsonl` and skips existing without overwrite, `CLAUDE.md` not imported, idempotent re-run, suffix selector match, empty-source guard, `src == dst` guard, and the source root left byte-for-byte untouched.
+
 ### M4.30 — Plan-gated execution: orchestrator only claims pre-planned, approved tasks — 2026-06-10
 **PR:** [#158](https://github.com/AkaLab-Tech/atelier/pull/158) · **Plugin bump:** 0.20.5 → 0.21.0
 
