@@ -44,10 +44,11 @@ Read `IN_PROGRESS.md`. Search for a heading line that contains the task id (`#<i
 - **Zero matches.** The task is not in `IN_PROGRESS.md`. Before concluding, check for an **orphaned open PR** — `pr-author` moves the entry out of `IN_PROGRESS.md` as part of opening the PR, so a task whose session died after that point legitimately has no `IN_PROGRESS.md` entry yet an open, never-merged PR:
 
   ```bash
-  gh pr list --head "task/<id>-" --state open --json number,headRefName,url --jq '.[0]'
+  gh pr list --state open --json number,headRefName,url \
+    --jq '[.[] | select(.headRefName | startswith("task/<id>-"))][0]'
   ```
 
-  (Match `task/<id>-` as a prefix; the slug follows the id.) Two sub-outcomes:
+  Filter on `headRefName` with `startswith` in `jq` — **do not** use `gh pr list --head "task/<id>-"`, because `--head` matches the branch name *exactly*, not as a prefix, so it never matches the full `task/<id>-<slug>` branch. The trailing `-` anchors on the id boundary so a shorter id does not also match a longer id that shares its prefix. Two sub-outcomes:
   - **An open PR exists** → **PR-open-resume mode**. Skip step 3; go to step 4c with the PR number, URL, and `headRefName` (the `task/<id>-<slug>` branch).
   - **No open PR** → the task is genuinely not resumable here. It may be in `ROADMAP.md` (operator wanted `/atelier:next-task #<id>`), in `HISTORY.md` (already merged), or nonexistent. Surface which and suggest the right command. Stop.
 - **Multiple matches.** Two different tasks have the same id in their headings — an inconsistency in the operator's tracking files. Stop and surface the ambiguity. Do not guess.
