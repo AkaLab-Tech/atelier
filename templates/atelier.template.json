@@ -25,6 +25,10 @@
     "_comment": "Autonomous task decomposition (M4.24.a defines the Epic / sub-task format; M4.24.b adds the agent that auto-rewrites large tasks into epics before implementer runs). Set `enabled: false` to turn off the automatic pass — the operator can still invoke /atelier:slice-task <id> manually. The orchestrator's heuristic for `oversize-likely` only fires when this flag is true.",
     "enabled": true
   },
+  "taskConcurrency": {
+    "_comment": "How many tasks /atelier:next-task may have in flight at once for this repo (M7.1.F66). Each task runs in its own worktree cut from origin/<base>, so parallel tasks are isolated; the claim registry is the set of open `task/*` PRs on origin, not a single IN_PROGRESS.md slot. Raise `max` to parallelise non-colliding work — across workspace members it is always safe; within one repo, tasks with overlapping `scope:` may collide at merge time (the auto-merge gate resolves or escalates). Absent field is treated as `1`.",
+    "max": 1
+  },
   "semanticRiskJudge": {
     "_comment": "Layer-3 second gate above auto-mode (M2.9). When `enabled: true`, the semantic-risk-judge PreToolUse hook asks Haiku 4.5 to judge Bash commands that touch a high-risk surface (lockfile, container build, CI/CD, package manifest, deploy/infra — catalogued in $CLAUDE_PLUGIN_ROOT/hooks/patterns/semantic-risk-judge.json) and escalates risky ones to an operator `ask`. Off by default: the static deny-list + auto-mode already cover most cases, and each judged command spends a short Haiku call. Fail-open — if Haiku is unavailable the command is allowed and a degraded line is written to .task-log/hook-decisions.jsonl. Only commands on the high-risk surface ever reach the model.",
     "enabled": false
