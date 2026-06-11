@@ -104,10 +104,6 @@ This is **not** the primary loop mechanism (M4.14 is). It is captured as an alte
 
 How to write [PLAN.md §5](PLAN.md)-shaped roadmaps: priorities, types, estimates, `blocked_by`, acceptance criteria. With examples.
 
-### M7.1 — Dogfood on a real (non-toy) project
-
-Run a full task cycle on an actual project. Capture friction.
-
 ### M7.2 — Iterate the network allowlist
 
 Grow the allowlist organically based on what M7.1 needs. Document each addition with a one-line justification.
