@@ -368,8 +368,20 @@ members_json="$(
 )"
 
 # ---------- resolve plugin version for setupVersion ----------
+# M7.1.F71: this script is invoked through a symlink (~/.local/bin/atelier-setup-workspace
+# -> <checkout>/scripts/atelier-setup-workspace), so BASH_SOURCE must be resolved
+# through the symlink chain before deriving the plugin root — otherwise the parent
+# dir is ~/.local (no .claude-plugin/plugin.json) and setupVersion stayed "unknown".
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+  _d="$(cd -P "$(dirname "$_self")" && pwd)"
+  _self="$(readlink "$_self")"
+  case "$_self" in /*) ;; *) _self="$_d/$_self" ;; esac
+done
+_script_dir="$(cd -P "$(dirname "$_self")" && pwd)"
+
 plugin_version="unknown"
-for cand in "${ATELIER_PLUGIN_ROOT:-}" "$(dirname "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)")"; do
+for cand in "${ATELIER_PLUGIN_ROOT:-}" "$(dirname "$_script_dir")"; do
   [ -n "$cand" ] || continue
   if [ -f "$cand/.claude-plugin/plugin.json" ]; then
     plugin_version="$(jq -r '.version // "unknown"' "$cand/.claude-plugin/plugin.json")"

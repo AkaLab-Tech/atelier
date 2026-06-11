@@ -18,6 +18,8 @@ Before doing anything that would otherwise pause for operator input, decide whet
 
 If none of those is true, you are **interactive**.
 
+> **Headless / autonomous runs (M7.1.F69).** A slash command is model prose, not a process, so it cannot probe `[ -t 0 ]` to detect a non-TTY the way the shell helpers do. A headless `claude -p "/atelier:next-task"` therefore looks **interactive** unless you tell it otherwise: any autonomous invocation **must** set `ATELIER_AUTO=1` (or pass `--yes`), or this command will stop at the first decision point waiting for input that never comes.
+
 **Rule for every "ask the operator" step below:** in interactive mode, ask as written. In non-interactive mode, **never** use `AskUserQuestion` or any other prompt — auto-resolve per the per-step rule documented inline (typically: proceed with the safe default, or stop with a clear error if no safe default exists). Prefer **stop with error** over a silent guess when in doubt — a clear refusal is recoverable, a wrong assumption may corrupt the chain.
 
 ## Steps

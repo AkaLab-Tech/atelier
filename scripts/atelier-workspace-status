@@ -114,7 +114,11 @@ compute_status() {
 # Count unchecked `- [ ]` items in a ROADMAP.md (0 if absent).
 open_count() {
   [ -f "$1/ROADMAP.md" ] || { printf '0'; return; }
-  grep -cE '^[[:space:]]*- \[ \]' "$1/ROADMAP.md" 2>/dev/null || printf '0'
+  # M7.1.F72: `grep -c` already prints the count (0 included) but exits 1 when it
+  # is zero. The old `|| printf '0'` then printed a SECOND 0, yielding "0\n0" —
+  # the embedded newline is what wrapped/garbled the status row. `|| true` keeps
+  # the single printed count and just absorbs the exit code (matches the xb rows).
+  grep -cE '^[[:space:]]*- \[ \]' "$1/ROADMAP.md" 2>/dev/null || true
 }
 
 # First active task in IN_PROGRESS.md (a `- [ ]`/`- [x]` line that is not an
@@ -124,9 +128,12 @@ in_progress_task() {
   [ -f "$f" ] || { printf '—'; return; }
   line="$(grep -nE '^[[:space:]]*- \[[ xX]\]' "$f" 2>/dev/null | grep -v '<!--' | head -n1 | sed 's/^[0-9]*://')"
   if [ -z "$line" ]; then printf '—'; return; fi
-  # Trim leading "- [ ] " and surrounding whitespace; cap length.
+  # Trim leading "- [ ] " and surrounding whitespace.
   line="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*- \[[ xX]\][[:space:]]*//')"
-  printf '%.60s' "$line"
+  # M7.1.F72: emit the full title untruncated. It is printed on its own indented
+  # line by the caller, so it never shifts the fixed-width status columns and a
+  # byte-truncation can't split a multibyte (accented) character.
+  printf '%s' "$line"
 }
 
 # Emit cross-repo blockers for a member that are NOT satisfied, one per line:
@@ -211,8 +218,12 @@ for i in "${!M_PATHS[@]}"; do
     missing-directory) glyph='✗' ;;
     *)                 glyph='?' ;;
   esac
-  printf '  %-14s %s %-17s  in-progress: %-28s  open: %-3s  x-repo-blocked: %s\n' \
-    "$t" "$glyph" "$st" "$ip" "${oc:-0}" "${xb:-0}"
+  # M7.1.F72: two lines per member. The first is fixed-width (name · status ·
+  # counts) so columns always align and the row never wraps; the in-progress
+  # title goes on its own indented line untruncated (UTF-8 safe).
+  printf '  %-22s %s %-14s  open: %-3s  x-repo-blocked: %s\n' \
+    "$t" "$glyph" "$st" "${oc:-0}" "${xb:-0}"
+  printf '      in-progress: %s\n' "$ip"
 done
 
 blocked_n="$(printf '%s' "$XREPO_ROWS" | grep -cE '.' || true)"
