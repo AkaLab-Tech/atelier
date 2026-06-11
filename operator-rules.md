@@ -6,6 +6,14 @@ at the start of each session. Authoritative versions live in
 [PLAN.md §4](https://github.com/AkaLab-Tech/atelier/blob/main/PLAN.md) (deps),
 §6 (push/PR/merge), §7 (agents), §8 (failure recovery).
 
+## Deliverable language (M7.1.F73)
+
+Every **repo deliverable** is written in the project's deliverable language — `.atelier.json` → `deliverableLanguage` (read it from the project root; **default `English`** when the field or the file is absent). This holds **regardless** of the language of the existing project content or of the operator's chat. On a project whose `ROADMAP.md` / code / docs are in another language, you still write the deliverables below in `deliverableLanguage` — do not mirror the project's language into them.
+
+Governs: commit messages, PR titles and descriptions, code comments, and atelier-generated docs/artifacts (`.plan/<id>.md`, a drafted `CLAUDE.md`, and the `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` entries atelier writes).
+
+Does **not** govern: operator-facing chat / status messages (mirror the operator's language there), or the project's pre-existing content (never translate or rewrite it). Identifiers and code are language-neutral.
+
 ## Dependency installs (§4)
 
 Before any `pnpm add`:
