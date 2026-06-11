@@ -77,6 +77,17 @@ OPTIONS:
                          timestamp first, so the overwrite is lossless. Unlike
                          --reconfigure (which targets already-registered
                          projects), --override applies during first-time setup.
+  --grant-reviewer       Headless opt-in to grant the independent reviewer
+                         identity read access to this repo (M7.1.F65). The
+                         reviewer-access step normally only grants when run
+                         interactively; without a TTY it just warns and the
+                         auto-merge review step would later fail on a private
+                         repo. With this flag the step invites the reviewer as
+                         a read collaborator (via the author identity, which
+                         must be a repo admin) and accepts the invitation (via
+                         the reviewer identity), headless. No-op when the
+                         reviewer already has access or no reviewer identity is
+                         configured.
   --mode <new|existing>  Force the project-mode detection (M4.19) used
                          by the /setup-project slash command to decide
                          whether to interview the operator (new) or
@@ -115,6 +126,7 @@ MODE_OVERRIDE=""           # M4.19: --mode=new|existing forces detection
 SKIP_POLICY=false          # M4.26.b: --skip-policy skips the interactive decision-policy step
 RECONFIGURE_FLAG=false     # M7.1.F59: --reconfigure allows headless re-setup of an already-configured project
 OVERRIDE_FLAG=false        # M7.1.F63: --override overwrites a legacy non-atelier settings.json headlessly (with backup)
+GRANT_REVIEWER_FLAG=false  # M7.1.F65: --grant-reviewer grants the reviewer identity read access headlessly (author must be admin)
 NONINTERACTIVE=false
 [ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
 # M7.1.F63: a non-TTY stdin cannot answer a `read` prompt — under `set -e` the
@@ -175,6 +187,15 @@ while [ $# -gt 0 ]; do
       # disk. The existing file is always backed up first. Applies during
       # first-time setup, unlike --reconfigure (already-registered projects).
       OVERRIDE_FLAG=true; shift ;;
+    --grant-reviewer)
+      # M7.1.F65: explicit, headless-capable opt-in to grant the independent
+      # reviewer identity read access to this repo. Without it, a non-TTY /
+      # non-interactive run only WARNS that the reviewer lacks access (the
+      # auto-merge review step would fail). With it, the reviewer-access step
+      # invites the reviewer as a read collaborator (using the author identity,
+      # which must be a repo admin) and accepts the invitation (using the
+      # reviewer identity) — the same invite+accept the interactive prompt does.
+      GRANT_REVIEWER_FLAG=true; shift ;;
     --help|-h)
       usage; exit 0 ;;
     --)
@@ -1088,19 +1109,25 @@ step_reviewer_access() {
     return 0
   fi
 
-  if $NONINTERACTIVE; then
+  # M7.1.F65: --grant-reviewer is the explicit, headless-capable opt-in. With
+  # it, skip both the non-interactive refusal and the interactive prompt and go
+  # straight to the invite+accept below (author admin already confirmed above).
+  if $GRANT_REVIEWER_FLAG; then
+    sublog "granting reviewer access (--grant-reviewer)"
+  elif $NONINTERACTIVE; then
     warn "Reviewer ${reviewer_login:-<reviewer>} cannot access $owner_repo; not granting in non-interactive mode."
-    warn "Grant manually: env GH_CONFIG_DIR=\"$author_dir\" gh api -X PUT repos/$owner_repo/collaborators/${reviewer_login:-<login>} -f permission=pull"
-    REVIEWER_ACCESS_STATUS="needs access (non-interactive — not granted)"
+    warn "Grant via the flow: re-run setup-project with --grant-reviewer (the author identity must be a repo admin)."
+    warn "Or manually: env GH_CONFIG_DIR=\"$author_dir\" gh api -X PUT repos/$owner_repo/collaborators/${reviewer_login:-<login>} -f permission=pull"
+    REVIEWER_ACCESS_STATUS="needs access (non-interactive — pass --grant-reviewer to grant)"
     return 0
+  else
+    printf "Reviewer '%s' cannot access %s. Add it as a read collaborator now? [y/N]: " "${reviewer_login:-<reviewer>}" "$owner_repo" >&2
+    local ans; read -r ans
+    case "$ans" in
+      y|Y|yes|Yes) ;;
+      *) REVIEWER_ACCESS_STATUS="declined (reviewer still lacks access)"; return 0 ;;
+    esac
   fi
-
-  printf "Reviewer '%s' cannot access %s. Add it as a read collaborator now? [y/N]: " "${reviewer_login:-<reviewer>}" "$owner_repo" >&2
-  local ans; read -r ans
-  case "$ans" in
-    y|Y|yes|Yes) ;;
-    *) REVIEWER_ACCESS_STATUS="declined (reviewer still lacks access)"; return 0 ;;
-  esac
 
   if [ -z "$reviewer_login" ]; then
     warn "Could not resolve the reviewer GitHub login; cannot grant access."
