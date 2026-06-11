@@ -54,6 +54,10 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 5–7 + deferred v2 patterns.** Multi-project, docs, end-to-end validation, and the OMC-borrowed ideas from PLAN.md §11.
 
+### Idea — first-class `High`/`Medium`/`Low` ROADMAP layout for operator projects (M7.1.F68 option B)
+
+Surfaced designing the F68 fix. Today operator projects must use the PLAN.md §5 layout (`P0`/`P1`/`P2` + backtick type tags + `#id` + `~estimate` + `[ready]`) for `task-discovery` / `/atelier:next-task`; real teams' roadmaps use simpler `High`/`Medium`/`Low` + checkboxes (which `/adopt-roadmap`'s default and `claude-roadmap-tools` produce). **Option B** was to make atelier's `task-discovery` accept the `High`/`Med`/`Low` layout natively for operator projects too — applying the `[ready]` planning gate there and treating `type`/`estimate` as optional — instead of requiring the §5 conversion (option A, shipped in claude-roadmap-tools #15). It would cut onboarding friction (no §5 rewrite) and meet teams where they are, but it **changes a decided spec (PLAN.md §5)**, so it is a product-design conversation, not a quick fix. Revisit once the §5 + `--format atelier` path has real mileage and we can judge whether the §5 metadata (type/estimate/priority granularity) earns its onboarding cost.
+
 ### M4.4 — Blocked-task visibility in `/status`
 
 Extend the existing `/status` command so it also lists tasks currently marked `[BLOCKED]` in `IN_PROGRESS.md`, with their issue URL and the count of attached `.task-log/*.md` entries. Today the operator only sees blocked tasks by filtering GitHub Issues by label `blocked` or by reading `IN_PROGRESS.md` manually — neither is discoverable from inside a Claude session.
