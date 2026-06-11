@@ -1,7 +1,7 @@
 ---
 description: Pick the next task from `ROADMAP.md`, set up its worktree, and hand it to the `task-orchestrator` agent end-to-end.
 argument-hint: "[task-id] [--yes|-y]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git wt:*), Bash(atelier-setup-project:*), Bash(atelier-resolve-dep:*), Bash(env:*), Skill, Task
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git fetch:*), Bash(git ls-remote:*), Bash(git show:*), Bash(git wt:*), Bash(gh pr list:*), Bash(atelier-setup-project:*), Bash(atelier-resolve-dep:*), Bash(env:*), Skill, Task
 ---
 
 You are running the `/next-task` slash command. Drive the full pickup-to-PR flow for one task from the project's `ROADMAP.md`, exactly as [PLAN.md §7](PLAN.md) prescribes.
@@ -22,38 +22,40 @@ If none of those is true, you are **interactive**.
 
 ## Steps
 
-### 1. Sanity-check the worktree
+### 1. Resolve the base branch and fetch
 
-Run `git status --short` and `git branch --show-current`.
+The task runs in an **isolated worktree cut from the remote base branch**, so the operator's current branch and any uncommitted work are irrelevant. **Never** inspect, stash, switch, or commit to the operator's checkout, and never refuse on account of its state — it is left completely untouched.
 
-- **Working tree clean and branch is `main` / `master` / a base branch** → proceed to step 2.
-- **Working tree dirty or non-base branch, interactive mode** → surface the state and ask the operator whether to stash, continue on the current branch, or abort. Picking a new task on top of unrelated uncommitted work corrupts the chain.
-- **Working tree dirty or non-base branch, non-interactive mode** → **stop with error**:
-  ```text
-  ✗ /next-task: working tree is dirty or current branch is not a base branch.
-     status: <one-line summary>
-     branch: <name>
-     In non-interactive mode, the command refuses rather than guess.
-     Resolve manually (commit, stash, or `git checkout main`) and re-run.
-  ```
-  Do NOT auto-stash or auto-checkout — that hides operator-in-progress work.
+- Resolve the **base branch**: `dev` if `origin/dev` exists, else `main` (the same policy the `git-wt` skill uses). Probe with `git ls-remote --heads origin dev`.
+- `git fetch origin <base>` so everything downstream reads the freshest **merged** backlog — a recently-merged PR may have added or reprioritised tasks. Every later step reads `origin/<base>`, never the local working copy.
 
-### 2. Refuse to start if `IN_PROGRESS.md` is occupied
+(If the operator is mid-work on a feature branch with uncommitted changes, that is fine and expected — say nothing about it.)
 
-Read `IN_PROGRESS.md`. If it contains anything other than the placeholder HTML comments, a task is already in progress. **Do not silently override it** — this applies in both interactive and non-interactive mode; an occupied `IN_PROGRESS.md` is never overridden by `/next-task`.
+### 2. Read the backlog and check concurrency — the task provider
 
-- **Interactive mode:** report the existing entry and offer two options:
-  - Resume the in-progress task with `/atelier:resume-task <id>`.
-  - Explicitly close out the existing task first (move to `HISTORY.md` or back to `ROADMAP.md`) before picking a new one.
-- **Non-interactive mode:** stop with a clear error pointing at the same two options. The operator must rerun manually after resolving.
+The **backlog source** and the **claim registry** are an abstraction (the *task provider*), so a future Linear backend can replace the file-/git-backed one below without touching any of the git/worktree mechanics in steps 3–8. Today both are git-backed:
+
+- **Backlog** = `ROADMAP.md` as it exists on `origin/<base>`: read it with `git show origin/<base>:ROADMAP.md`. The local working copy is **not** the source of truth — a task the operator edited locally but has not merged is **not** eligible until it lands on `origin/<base>`.
+- **Claim registry** = the set of **open `task/*` PRs** on origin. Each open `task/<id>-<slug>` PR is one in-flight task. List them with `gh pr list --state open --json number,headRefName` and keep the `headRefName`s that start with `task/`; the `<id>` segment is the claimed task id.
+
+**Concurrency:** atelier allows up to **N** concurrent tasks per repo — `.atelier.json` → `taskConcurrency.max` (default `1`). Worktrees isolate the work, so N tasks run in parallel safely **as long as they do not collide** (step 3 handles collision-avoidance). If the count of open `task/*` PRs is already ≥ N:
+
+- **Interactive:** list the in-flight `task/*` PRs and stop — offer `/atelier:resume-task <id>` or raising `taskConcurrency.max`.
+- **Non-interactive:** stop with a clear error listing the open `task/*` PRs.
+
+This replaces the old single-slot `IN_PROGRESS.md` guard: while a task is in flight its claim lives only on its own branch (step 6), so the base branch's `IN_PROGRESS.md` stays empty and is **not** the concurrency signal — the open `task/*` PRs are.
 
 ### 3. Pick the task — `task-discovery` skill
 
 Strip the `--yes` / `-y` flag from `$ARGUMENTS` before parsing the task id (so `#42 --yes` still resolves to id `#42`).
 
-If the remaining `$ARGUMENTS` is empty: invoke the `atelier:task-discovery` skill on the project's `ROADMAP.md`. It returns the structured record (`id`, `title`, `type`, `priority`, `estimate`, `blocked_by`, `worktree`, `acceptance`, `context`) per PLAN.md §5.
+Build the **claimed-id set** from step 2 (the open `task/*` PRs). **Never** pick or re-claim an id already in that set, whether auto-picked or explicitly named.
 
-If `$ARGUMENTS` names a specific id: find that block in `ROADMAP.md` directly, parse it into the same shape, and **validate** it is unchecked, carries the `[ready]` marker (with a committed `.plan/<id>.md`), and has no open `blocked_by` — surface the violation and stop if any fails.
+If the remaining `$ARGUMENTS` is empty: invoke the `atelier:task-discovery` skill on the **`origin/<base>` ROADMAP content** read in step 2 (not the local file), excluding the claimed-id set. It returns the structured record (`id`, `title`, `type`, `priority`, `estimate`, `blocked_by`, `scope`, `worktree`, `acceptance`, `context`) per PLAN.md §5.
+
+**Collision-avoidance (within-repo parallelism):** when other tasks are already in flight, prefer a candidate whose declared `scope:` / paths do **not** overlap theirs — overlapping work would only collide at merge time. Tasks in *different* workspace members never collide. If no `scope:` is declared, proceed optimistically: a residual conflict is caught by the auto-merge gate (the first PR merges; the others rebase + re-validate; a real conflict falls back to a human).
+
+If `$ARGUMENTS` names a specific id: find that block in the `origin/<base>` ROADMAP directly, parse it into the same shape, and **validate** it is unchecked, not already in the claimed-id set, carries the `[ready]` marker (with a committed `.plan/<id>.md`), and has no open `blocked_by` — surface the violation and stop if any fails.
 
 The **`[ready]` validation** is absolute: a named-but-unplanned task is refused exactly like an auto-picked one. If the task lacks `[ready]` (or `.plan/<id>.md` is missing), **stop and refuse** in both interactive and non-interactive mode — never improvise a plan, never offer to plan it inline:
 
@@ -64,7 +66,7 @@ The **`[ready]` validation** is absolute: a named-but-unplanned task is refused 
 
 The `blocked_by` validation covers both forms:
 
-- **Intra-repo** (`#NN`): the referenced id must be `[x]` in this `ROADMAP.md`.
+- **Intra-repo** (`#NN`): the referenced id must be `[x]` in the `origin/<base>` ROADMAP.
 - **Cross-repo** (`<token>#NN`): resolve it offline with the helper, where `<project-root>` is the directory containing this `ROADMAP.md`:
   ```bash
   atelier-resolve-dep --from <project-root> --token <token> --id <#NN>
@@ -84,13 +86,18 @@ Display the chosen task in a short summary (`id`, `title`, `priority`, `estimate
 - **Interactive mode:** ask explicitly: *"Claim this task?"*. Wait for a yes/no. If no, stop — do not move tracking or create a worktree.
 - **Non-interactive mode:** log a single line `auto-claiming task <id> (non-interactive)` and proceed to step 5. No prompt. The operator's `--yes` / `-y` flag (or `ATELIER_AUTO=1`) **is** the consent.
 
-### 5. Move `ROADMAP.md` → `IN_PROGRESS.md` in a single edit
+### 5. Create the per-task worktree — `git-wt` skill
 
-Remove the task block from `ROADMAP.md`. Paste it into `IN_PROGRESS.md` between the marker comments. The roadmap-tracking-flow convention says the same PR that closes the task moves it from `IN_PROGRESS.md` to `HISTORY.md`, so this edit lives on the per-task branch you are about to create.
+Invoke the `git-wt` skill (or `git wt switch <branch> --from origin/<base>` directly) to create the worktree for branch `task/<id-without-#>-<kebab-slug>` **cut from `origin/<base>`** — the ref fetched in step 1. The operator's local branches are left untouched. Capture the **absolute path** the skill prints on stdout — every subsequent step runs scoped to that path.
 
-### 6. Create the per-task worktree — `git-wt` skill
+### 6. Move `ROADMAP.md` → `IN_PROGRESS.md` inside the worktree
 
-Invoke the external `git-wt` skill (or `git wt switch <branch>` directly) to create the worktree at `task/<id-without-#>-<kebab-slug>` cut from updated `main` (or `dev` if it exists; the skill resolves the base policy). Capture the **absolute path** the skill prints on stdout — every subsequent step runs scoped to that path.
+Now that the worktree exists, make the tracking move **in the worktree, on the task branch** — **never** in the operator's main checkout:
+
+- Remove the task block from `<worktree>/ROADMAP.md`.
+- Paste it into `<worktree>/IN_PROGRESS.md` between the marker comments.
+
+This edit lives on the per-task branch and travels through the task's PR; the roadmap-tracking-flow convention says the same PR later moves it from `IN_PROGRESS.md` to `HISTORY.md` when the task closes. Because the claim lives only on the task branch, `origin/<base>`'s `ROADMAP.md` / `IN_PROGRESS.md` are unchanged until the PR merges — which is exactly why step 2 uses the open `task/*` PRs (not the base `IN_PROGRESS.md`) as the claim registry.
 
 ### 7. Instantiate the per-task `.claude/settings.json`
 
@@ -102,7 +109,7 @@ Run **as a single Bash command**:
 atelier-setup-project --per-task-settings <absolute-worktree-path>
 ```
 
-Where `<absolute-worktree-path>` is the path captured in step 6, NOT the main repo path.
+Where `<absolute-worktree-path>` is the path captured in step 5, NOT the main repo path.
 
 Exit codes:
 - `0` → success. Helper prints `OK: per-task settings created: <path>/.claude/settings.json`.
@@ -117,7 +124,7 @@ Exit codes:
 
 Launch the `atelier:task-orchestrator` agent (Opus) via the `Task` tool. The briefing must include:
 
-- **`worktree_path`** — absolute path to the per-task worktree from step 6.
+- **`worktree_path`** — absolute path to the per-task worktree from step 5.
 - **task record** — structured fields from step 3 (`id`, `title`, `type`, `priority`, `estimate`, `worktree`, `acceptance`, `context`).
 - **interaction mode** — when non-interactive, pass `interactive: false` (or equivalent prose) so the orchestrator's Step 1 standard-mode branch skips its own confirmation prompt (Step 1 also reads `ATELIER_AUTO` as a fallback, but the briefing is the authoritative signal when set).
 - **cwd reminder** — the explicit one-liner: *"Your `Bash` cwd is the cwd this `/next-task` invocation inherited, NOT `<worktree_path>`. Every `Bash` call targeting the worktree must use `git -C <worktree_path>`, `pnpm --dir <worktree_path>`, `gh --repo <owner/name>`, or `cd <worktree_path> && ...` prefix. Read/Edit/Write on absolute paths are fine. See `operator-rules.md` § Operating against the task worktree."* The orchestrator's own system prompt repeats this rule (defense in depth), but the briefing is the authoritative carrier — if `SessionStart` did not fire for the subagent dispatch, the briefing is the only place the rule reaches the orchestrator.
@@ -140,7 +147,9 @@ Or, if any step aborted, report exactly which step and why — the operator deci
 ## Hard refusals
 
 - **Never** claim a task that is not `[ready]` with a committed `.plan/<id>.md` — auto-picked or explicitly named. Refuse with a pointer to `/atelier:plan-task <id>`; never improvise or approve a plan from this command.
-- **Never** create a worktree if `IN_PROGRESS.md` already has a task — see step 2.
+- **Never** exceed `taskConcurrency.max` open `task/*` PRs, and **never** re-claim an id that already has an open `task/*` PR — see step 2.
+- **Never** inspect, stash, switch, or commit to the operator's main checkout — the task runs entirely in its own worktree cut from `origin/<base>`; the operator's local branches and uncommitted work stay untouched.
+- **Never** read the local working-copy `ROADMAP.md` as the backlog source — the eligible backlog is `origin/<base>:ROADMAP.md` (merged), so locally-edited, unmerged tasks are not claimable until they land.
 - **Never** claim a task whose `blocked_by:` references an open item — including a cross-repo `<token>#id` whose target is not closed in that member's `HISTORY.md` (`atelier-resolve-dep` exits non-zero), or whose token/project is not a resolvable workspace member.
 - **Never** edit `settings.template.json` itself from this command — that file is the template, not the output. The helper writes the instantiated copy to `<worktree>/.claude/settings.json`; this command never touches either file directly.
 - **Never** push or open a PR from this command — that is `pr-author`'s job at the end of the chain.
