@@ -51,7 +51,9 @@ OPTIONS:
                          (default \$ATELIER_CONFIG_DIR is ~/.claude-work/).
   --yes, -y              Non-interactive mode. Auto-resolves every prompt
                          with the safe default (never overwrite, never
-                         weaken). Also honored if \$ATELIER_AUTO is set.
+                         weaken). Also honored if \$ATELIER_AUTO is set, and
+                         implied when stdin is not a TTY. To overwrite a
+                         legacy settings.json headlessly, add --override.
   --skip-policy          Skip the interactive decision-policy step (M4.26.b).
                          The .atelier.json keeps the template's conservative
                          defaults (every category falls back to "ask").
@@ -64,6 +66,17 @@ OPTIONS:
                          plugin template. settings.json is backed up with a
                          timestamp before it is resynced, so the refresh is
                          lossless. No effect on an unconfigured project.
+  --override             Headless opt-in to overwrite a non-atelier-managed
+                         (legacy / hand-edited) settings.json with the current
+                         template (M7.1.F63). Without it, --yes / non-TTY runs
+                         PRESERVE such a file (the safe default), which leaves
+                         atelier's acceptEdits + allowlist off disk. --override
+                         is the explicit "yes, replace it" signal and works
+                         without a TTY, including on a not-yet-registered
+                         project. The existing file is ALWAYS backed up with a
+                         timestamp first, so the overwrite is lossless. Unlike
+                         --reconfigure (which targets already-registered
+                         projects), --override applies during first-time setup.
   --mode <new|existing>  Force the project-mode detection (M4.19) used
                          by the /setup-project slash command to decide
                          whether to interview the operator (new) or
@@ -101,8 +114,16 @@ PER_TASK_SETTINGS_PATH=""
 MODE_OVERRIDE=""           # M4.19: --mode=new|existing forces detection
 SKIP_POLICY=false          # M4.26.b: --skip-policy skips the interactive decision-policy step
 RECONFIGURE_FLAG=false     # M7.1.F59: --reconfigure allows headless re-setup of an already-configured project
+OVERRIDE_FLAG=false        # M7.1.F63: --override overwrites a legacy non-atelier settings.json headlessly (with backup)
 NONINTERACTIVE=false
 [ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
+# M7.1.F63: a non-TTY stdin cannot answer a `read` prompt — under `set -e` the
+# read hits EOF and aborts the whole script (this is what made a headless /
+# piped invocation exit 1 at the first prompt instead of taking the safe
+# default). Treat "no TTY" as non-interactive, mirroring git-wt. Explicit
+# overwrites still require --override; this only routes prompts to their
+# safe defaults instead of crashing.
+[ -t 0 ] || NONINTERACTIVE=true
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -145,6 +166,15 @@ while [ $# -gt 0 ]; do
       # is resynced, so the refresh is lossless. No effect when the project is
       # not yet configured (the normal create path runs).
       RECONFIGURE_FLAG=true; shift ;;
+    --override)
+      # M7.1.F63: explicit, headless-capable opt-in to overwrite a
+      # non-atelier-managed settings.json (legacy pre-atelier file or a
+      # hand-rolled one) with the current template. Without this flag a
+      # non-interactive / non-TTY run PRESERVES such a file (the F26-safe
+      # default), which silently leaves atelier's acceptEdits + allowlist off
+      # disk. The existing file is always backed up first. Applies during
+      # first-time setup, unlike --reconfigure (already-registered projects).
+      OVERRIDE_FLAG=true; shift ;;
     --help|-h)
       usage; exit 0 ;;
     --)
@@ -450,18 +480,27 @@ detect_tracking_layout() {
   fi
 }
 
-# ---------- helpers used by step_settings_json (M7.1.F26) ----------
+# ---------- helpers used by step_settings_json (M7.1.F26 / M7.1.F64) ----------
 # Detect whether $1 looks like an atelier-managed settings.json. Heuristic:
-# top-level .permissions.defaultMode == "acceptEdits" AND .permissions.deny
-# contains the distinctive "Bash(git push --force*)" entry from the template.
-# Robust against operator edits to the allow list (those don't touch these
-# two markers) while still catching pre-atelier or hand-rolled files.
+# .permissions.deny contains BOTH distinctive guardrails from the template —
+# "Bash(git push --force*)" and "Bash(git push * main)". A pre-atelier or
+# hand-rolled file is extremely unlikely to carry both exact strings, while
+# operator edits to the allow list never touch the deny block.
+#
+# M7.1.F64: this used to also require .permissions.defaultMode == "acceptEdits".
+# That marker is stale — the per-project template intentionally omits
+# defaultMode (auto-mode is a SESSION-level setting written by install.sh into
+# $ATELIER_CONFIG_DIR/settings.json as defaultMode="auto", verified by
+# atelier-doctor, NOT a per-project key). The acceptEdits condition therefore
+# always failed, so every atelier-managed project was misclassified as legacy:
+# F38 drift-resync never fired and the F26 "not atelier-managed" warning fired
+# on every project. Detecting on the deny guardrails fixes both.
 is_atelier_managed_settings() {
   local f="$1"
   [ -f "$f" ] || return 1
   jq -e '
-    (.permissions.defaultMode // "") == "acceptEdits"
-    and ((.permissions.deny // []) | index("Bash(git push --force*)") != null)
+    ((.permissions.deny // []) | index("Bash(git push --force*)") != null)
+    and ((.permissions.deny // []) | index("Bash(git push * main)") != null)
   ' "$f" >/dev/null 2>&1
 }
 
@@ -562,24 +601,31 @@ step_settings_json() {
       # permission for every command because the template's acceptEdits +
       # allowlist never made it onto disk.
       warn "$target exists but is not atelier-managed"
-      warn "(missing atelier's defaultMode=acceptEdits and/or distinctive deny entries)."
+      warn "(missing atelier's distinctive deny guardrails — e.g. Bash(git push --force*))."
       warn "Likely a pre-atelier settings.json or a hand-edited file."
 
-      if $NONINTERACTIVE; then
+      # M7.1.F63: --override is the explicit, headless-capable "yes, replace it"
+      # signal. It overwrites the legacy file with the current template (backed
+      # up first), and works without a TTY — so the setup-workspace cascade can
+      # configure a member that carries a pre-atelier settings.json.
+      if $OVERRIDE_FLAG; then
+        should_write=true; needs_backup=true
+        warn "Overwriting non-atelier-managed $target (--override; existing file backed up)."
+      elif $NONINTERACTIVE; then
         SETTINGS_STATUS="preserved"
-        warn "Preserving (non-interactive default). Re-run interactively to overwrite."
+        warn "Preserving (non-interactive default). Re-run with --override to overwrite (backup kept)."
         return
+      else
+        printf "Overwrite with current atelier template (existing file will be backed up)? [y/N]: " >&2
+        local ans; read -r ans
+        case "$ans" in
+          y|Y|yes|Yes) should_write=true; needs_backup=true ;;
+          *)
+            SETTINGS_STATUS="preserved"
+            sublog "Operator declined — preserving existing $target"
+            return ;;
+        esac
       fi
-
-      printf "Overwrite with current atelier template (existing file will be backed up)? [y/N]: " >&2
-      local ans; read -r ans
-      case "$ans" in
-        y|Y|yes|Yes) should_write=true; needs_backup=true ;;
-        *)
-          SETTINGS_STATUS="preserved"
-          sublog "Operator declined — preserving existing $target"
-          return ;;
-      esac
     fi
   fi
 
