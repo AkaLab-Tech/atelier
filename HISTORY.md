@@ -8,6 +8,17 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### M7.1.F76 — `/import-conversations` no-TTY path: conversational picker instead of bouncing the operator to the terminal — 2026-06-12
+**PR:** [#178](https://github.com/AkaLab-Tech/atelier/pull/178) · **Plugin bump:** 0.26.0 → 0.26.1
+
+Found during M7.1 dogfood: running `/atelier:import-conversations` with no arguments inside a Claude session hit the binary's `no TTY for the interactive picker` refusal, and the command relayed it as `!`-prefixed shell suggestions (`! atelier-import-conversations --list` / `--all`) — pushing terminal work onto the non-technical operator, against atelier's core contract. The command had everything needed to degrade conversationally: `--list` is read-only and TTY-free, and the binary accepts explicit project-name selectors with no further prompting.
+
+**Delivered (`commands/import-conversations.md`):**
+- New **No-TTY fallback**: on the binary's no-TTY refusal the command runs `--list` itself, shows the catalog unchanged, asks which projects to import via `AskUserQuestion` (per-project options plus "All projects"; free-text names when the catalog outgrows the options), and re-invokes the binary with the chosen names as positional selectors (or `--all`), carrying over flags like `--dry-run`. `AskUserQuestion` added to `allowed-tools`.
+- New hard rule: never bounce the operator to raw terminal commands to work around a missing TTY — the picker is the command's job (same bash/AI split as `/setup-project`).
+- Non-interactive runs (`claude -p`, `$ATELIER_AUTO`): print the catalog plus a one-line recommendation and stop, since `AskUserQuestion` would hang the session.
+- The "never auto-add `--all`/`--yes`" rule now clarifies that a conversational-picker selection **is** the operator choosing — forwarded verbatim.
+
 ### M7.1.F62.1 — fix `/resume-task` orphaned-PR detection (`gh --head` is exact, not prefix) — 2026-06-10
 **PR:** [#TBD] · **Plugin bump:** 0.24.0 → 0.24.1
 
