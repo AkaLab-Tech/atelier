@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M7.1.F77 — `atelier-update` crashes on releases that touch no templates (`TEMPLATES[@]: unbound variable`) — 2026-06-12
-**PR:** [#TBD] · **Plugin bump:** 0.26.1 → 0.26.2
+**PR:** [#179](https://github.com/AkaLab-Tech/atelier/pull/179) · **Plugin bump:** 0.26.1 → 0.26.2
 
 Found during M7.1 dogfood, on the very first `atelier-update` run after F76 merged: the pull succeeded (0.26.0 → 0.26.1, 3 commits) but the file-classification step died with `line 416: TEMPLATES[@]: unbound variable`, leaving the update half-done — repo pulled, but instantiated templates, helper symlinks, and the plugin cache never resynced. Root cause: the release's changed files touched no `templates/*`, so the `TEMPLATES` array stayed empty, and macOS bash 3.2 under `set -u` treats `"${TEMPLATES[@]}"` on an empty array as unbound. It was the **only** unguarded array expansion in the script — the other ten already use the `${ARR[@]+"${ARR[@]}"}` idiom.
 
