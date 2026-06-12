@@ -136,9 +136,29 @@ This is a one-time configuration step per project. atelier will:
 - If the project uses Node.js, add an `.npmrc` file with safety settings for installing packages.
 - Check that your **reviewer** account can see the repo. This matters for **private** repos: the reviewer is a second GitHub account (see Step 1), and a brand-new private repo doesn't share access with it automatically — so the reviewer can't approve pull requests and atelier can't auto-merge. If you're the repo's admin, setup will offer to add the reviewer as a read-only collaborator for you (it asks first). If you skip it, grant the reviewer access on GitHub before running your first task, or auto-merge won't work.
 
+**One step is yours: the onboarding pull request.** Part of what setup creates belongs in your repo's version control (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `.atelier.json` — but *not* `.claude/settings.json`, which stays on your machine). atelier never commits to your main branch directly, so ask the session that ran the setup to commit these files and open a pull request — then **review and merge that PR yourself**. This is the one PR atelier won't merge for you. It matters more than it looks: when atelier picks tasks, it reads your `ROADMAP.md` **from GitHub** (your base branch), not from your computer — until the onboarding PR is merged, atelier sees no roadmap and no task can start.
+
 You can run `atelier /atelier:setup-project .` on as many projects as you like — atelier will remember each one. Run `atelier-list-projects` from any shell to see them all.
 
 If you ever want to retire a project from atelier (no more `task` will run on it), `cd` into the project and run `atelier-remove-project .` — it deregisters the project but keeps your files. Add `--purge` to also strip the few `.gitignore` and `.npmrc` entries atelier added during setup. Both flows have a Claude-session equivalent under `/atelier:remove-project`.
+
+### Already have a roadmap? Adopt it instead of rewriting it
+
+If your project already tracks its work in `ROADMAP.md` — its own priority names, ids like `TASK-12`, maybe another language — atelier won't recognize those tasks: the picker only reads the exact format shown in Step 5. Don't convert it by hand. In the project folder, run:
+
+```bash
+atelier
+```
+
+and inside the session:
+
+```
+/adopt-roadmap --format atelier
+```
+
+It shows you the full conversion plan **before touching anything**: every item is kept (nothing is ever dropped), existing ids survive (`TASK-68` becomes `#68`), finished items move to `HISTORY.md`, and anything it can't safely infer is left as an explicit `TODO-type` / `~TODO` placeholder for you to fill in — it never invents a type or an estimate. After it runs: review the changes, fill in the placeholders, and get the result onto your base branch the same way as the onboarding PR above. From there every task follows the normal flow (Step 6 onwards).
+
+Setup sometimes offers this conversion automatically (when it spots legacy content in `IN_PROGRESS.md`), but don't count on it — if your roadmap doesn't look like Step 5's format, run `/adopt-roadmap --format atelier` yourself.
 
 ---
 
@@ -165,18 +185,47 @@ Add a task under `## 🎯 P1 — Next`. For your first task, pick something smal
 ```markdown
 ## 🎯 P1 — Next
 
-- [ ] feat Add a "Contact Us" link to the footer that opens a mailto link
-- [ ] bug Fix the typo on the homepage where it says "Welcom" instead of "Welcome"
-- [ ] chore Add a README section explaining how to run the test suite
+- [ ] `feat` Add a "Contact Us" link to the footer that opens a mailto link `#1` `~1h`
+- [ ] `bug` Fix the typo on the homepage where it says "Welcom" instead of "Welcome" `#2` `~30m`
+- [ ] `chore` Add a README section explaining how to run the test suite `#3` `~1h`
 ```
 
-The `[ ]` is an empty checkbox — atelier marks it as `[x]` when the task is done. The word right after the checkbox (`feat`, `bug`, `chore`) tells atelier what kind of work this is.
+Each line has four parts, and the punctuation matters — atelier parses these:
 
-Save the file.
+- `[ ]` — an empty checkbox. atelier marks it `[x]` when the task is done.
+- `` `feat` `` — what kind of work this is (`feat`, `bug`, `chore`, `docs`, or `refactor`), **wrapped in backticks**.
+- The title — one sentence saying what you want.
+- `` `#1` `` — the task's id, also in backticks. Pick the next unused number; never reuse one. This is how you'll refer to the task from now on (and how one task can wait for another: `blocked_by:#1`).
+- Optionally `` `~1h` `` — your rough size guess. Leave it off if you have no idea.
+
+Save the file — and remember from Step 4 that atelier reads this file **from GitHub**, so the edit needs to land on your base branch (push it, or include it in a small PR) before atelier can see it.
 
 ---
 
-## Step 6 — Run the task
+## Step 6 — Approve a plan for the task
+
+Writing the task down isn't enough — atelier only ever starts work on a task **you have approved a plan for**. This is deliberate: the planning gate is your control over what the autonomous flow is allowed to pick up. In the project folder, run:
+
+```bash
+atelier
+```
+
+and inside the session:
+
+```
+/atelier:plan-task #1
+```
+
+atelier studies your project and drafts a short plan: what it understood the task to be, which parts of the code it expects to touch, and how it will check its own work. Read it. If something looks off, say so and it revises. When you're happy and approve, atelier saves the plan as a file (`.plan/1.md`) and marks the task's line `[ready]` in `ROADMAP.md`, in one commit.
+
+Two things to know about this step:
+
+- **Approval is always a human decision.** atelier never approves a plan by itself — not even in unattended mode (it stops after drafting and waits for you to run `/atelier:plan-task` interactively).
+- **atelier doesn't push that commit.** Getting it onto your base branch on GitHub is yours to do, the way you normally would (push, or a small PR). Until it lands there, the task isn't visible to the next step. Tasks without `[ready]` are silently skipped — that's the gate working as intended.
+
+---
+
+## Step 7 — Run the task
 
 From anywhere on your computer, run:
 
@@ -186,18 +235,30 @@ task
 
 atelier will figure out which project you mean based on the folder you're in. (If you're not inside a registered project, atelier shows a picker to choose one.)
 
-A Claude session opens and starts working on the top task in your `ROADMAP.md`. You can watch what it does — atelier shows every step on screen. Here's roughly what happens:
+A Claude session opens and starts working. You can watch what it does — atelier shows every step on screen. Here's roughly what happens:
 
-1. atelier picks the first item from `ROADMAP.md` and moves it to `IN_PROGRESS.md`.
-2. The author agent reads the task, then writes the code change.
+1. atelier reads your `ROADMAP.md` **from GitHub** and picks the highest-priority task marked `[ready]` (the one you planned in Step 6). It doesn't matter what branch your own checkout is on or what uncommitted work you have — atelier does everything in its own separate working copy and never touches yours.
+2. The author agent reads the plan you approved, then writes the code change.
 3. atelier runs your project's tests (if you have any) to make sure nothing broke.
 4. The author shares the change on GitHub as a pull request.
 5. The reviewer agent (the second GitHub account!) reads the change and gives it a thumbs-up or asks for fixes.
-6. If the reviewer approves and nothing is risky, atelier saves the change to your project and marks the task `[x]` in `HISTORY.md`.
+6. If the reviewer approves and nothing is risky, atelier saves the change to your project, and the same pull request moves the task out of `ROADMAP.md` and records it in `HISTORY.md`.
 
 Time per task varies: a typo fix might take 5 minutes; adding a new feature might take an hour or more. You can leave it running and come back.
 
+atelier limits how many tasks run at the same time in a project (it counts its own open `task/...` pull requests; the limit is configurable in `.atelier.json`). If you ask for a task while the limit is reached, it tells you instead of starting a second one.
+
 If atelier gets stuck (e.g. a test keeps failing), it stops and creates an issue on GitHub tagged `blocked` so you know to look at it. It doesn't keep retrying forever.
+
+### Running atelier unattended (headless)
+
+Everything above assumes you're watching the session. You can also run the cycle with no one at the keyboard — from a script, a scheduled job, or just to fire-and-forget:
+
+```bash
+ATELIER_AUTO=1 atelier -p "/atelier:next-task"
+```
+
+`ATELIER_AUTO=1` is **required** for unattended runs: it tells atelier to take the documented safe default at every decision point instead of asking you. Without it, a headless run stops silently at the first question and never finishes. (The one thing that never happens unattended is plan approval — see Step 6.)
 
 ---
 
@@ -207,7 +268,7 @@ Some products are **several repositories that ship together** — for example a 
 
 > **The golden rule stays the same:** every task is still *one* task in *one* repo, producing *one* pull request. A workspace doesn't merge repos or make a single change span several of them — it just lets you **manage the group from one place** and **say "this task waits for that other repo's task"**. A change that needs both backend and frontend is simply two tasks, done in order.
 
-You only need this if your product is made of multiple repos. A single-repo project never needs a workspace — keep using `/atelier:setup-project` and `task` as in Steps 4–6.
+You only need this if your product is made of multiple repos. A single-repo project never needs a workspace — keep using `/atelier:setup-project` and `task` as in Steps 4–7.
 
 ### Set it up once
 
@@ -217,8 +278,13 @@ Put the repos under a common parent folder, then from that parent folder run:
 /atelier:setup-workspace my-product --discover .
 ```
 
-- `--discover .` scans the parent folder for git repos and shows you the list to confirm. Any repo that isn't an atelier project yet gets set up for you (Step 4) before being added.
+- `--discover .` scans the parent folder for git repos and shows you the list to confirm. Any repo that isn't an atelier project yet gets set up for you (Step 4) before being added — you run one command; the per-repo setup cascades automatically.
 - Prefer to be explicit? List them instead: `/atelier:setup-workspace my-product --members ./backend,./frontend,./strapi`.
+
+Two things from Step 4 apply **per member repo**, so expect them once per repo:
+
+- Each newly set-up member gets its own **onboarding pull request** — review and merge each one, or that repo stays invisible to the task picker.
+- If a member already has a `.claude/settings.json` from earlier Claude Code use, atelier won't overwrite it silently: it asks you first, and only replaces the file (backing up the old one) with your explicit yes.
 
 Each repo keeps its **own** `ROADMAP.md` and runs tasks exactly as before. The workspace just remembers they belong together. Inside any one repo, nothing changes — `task`, `/status`, etc. all behave as usual.
 
@@ -230,7 +296,7 @@ From the **parent folder** (not inside a single repo), run:
 task
 ```
 
-atelier shows a **picker of the member repos** (with how many open tasks each has) and routes you into the one you choose — from there it's the normal Step 6 flow. Running `task` from *inside* a repo still goes straight to that repo, as always.
+atelier shows a **picker of the member repos** (with how many open tasks each has) and routes you into the one you choose — from there it's the normal Step 7 flow. Running `task` from *inside* a repo still goes straight to that repo, as always.
 
 ### See the whole product at a glance
 
@@ -478,6 +544,8 @@ Quick lookup once you've used atelier a few times.
 | `atelier` | Open a Claude session under atelier's configuration |
 | `atelier --help` | List every `atelier-*` helper installed on your machine |
 | `atelier /atelier:setup-project .` | Set up the current folder as an atelier project |
+| `/adopt-roadmap --format atelier` | Convert a project's pre-existing roadmap into the format atelier reads (keeps every item; from the `claude-roadmap-tools` plugin) |
+| `/atelier:plan-task <id>` | Draft + approve the plan for one task, marking it `[ready]` so `task` can claim it |
 | `atelier-list-projects` | List every project registered with atelier (`--json` for machine-readable) |
 | `atelier-remove-project <path>` | Deregister a project (`--purge` also strips atelier's `.gitignore` / `.npmrc` additions) |
 | `/atelier:setup-workspace <name> --discover .` | Group the repos under the current folder into a multi-repo workspace (or `--members a,b,c`) |

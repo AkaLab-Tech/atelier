@@ -79,13 +79,19 @@ Issues that come up while running a task.
 
 **Fix:** Run `atelier-list-projects` to confirm the registry is empty. Then `cd` into each project that should be registered and run `atelier /atelier:setup-project .` — it's idempotent and only writes the registry entry if it doesn't exist.
 
-### `/next-task` stops at step 2 — "a task is already in progress" but you never started one
+### `task` / `/next-task` says there's nothing to do, but `ROADMAP.md` has open items
 
-**Symptom:** `/next-task` refuses to claim a task, reporting `IN_PROGRESS.md` as occupied, even though no atelier task is running. The file is full of sections like `RLS`, `ADMIN`, `WEB`, `i18n` with `[x]`/`[ ]` items.
+**Symptom:** the task picker reports no eligible task even though your `ROADMAP.md` clearly lists unchecked items.
 
-**Cause:** the project predates the atelier tracking flow. Its `IN_PROGRESS.md` is a hand-rolled **multi-phase progress tracker**, not the single active-task slot the flow expects. `/next-task` correctly refuses to overwrite a non-empty slot — but here the slot was never one task, it's a phase board.
+**Cause:** `/next-task` reads the roadmap from **`origin/<base>`** (your base branch on GitHub, not your local file) and only claims items that parse in the atelier format **and** carry the `[ready]` marker from an approved plan. Any of these makes an item invisible or ineligible:
 
-**Fix:** normalize the tracking in place with **`/adopt-roadmap`** (from the `claude-roadmap-tools` plugin): done items move to `HISTORY.md`, open items to `ROADMAP.md`, and `IN_PROGRESS.md` is reset to an empty slot — nothing is dropped. Re-running `/atelier:setup-project` in the project also detects this layout (M7.1.F50) and offers to run `/adopt-roadmap` for you. If the plugin is not installed: `claude plugin install claude-roadmap-tools@akalab-tech`. After adoption, `/next-task` picks the next item normally.
+1. **The roadmap (or your latest edit) was never pushed/merged to the base branch.** Local-only edits don't exist as far as task selection is concerned — this includes the onboarding PR from `/atelier:setup-project`, which must be merged first.
+2. **The item isn't in the atelier format** (no backtick type tag, no `` `#id` ``, sections not `P0`/`P1`/`P2`) — common on projects with a pre-existing roadmap. Normalize it with **`/adopt-roadmap --format atelier`** (from the `claude-roadmap-tools` plugin; `claude plugin install claude-roadmap-tools@akalab-tech` if missing). Nothing is dropped; legacy ids are preserved.
+3. **The item was never planned.** Unplanned tasks (no `[ready]` marker / no committed `.plan/<id>.md`) are silently skipped by design — run `/atelier:plan-task <id>`, approve the plan, and land the commit on the base branch.
+4. **The concurrency limit is reached.** atelier counts its open `task/...` PRs against `.atelier.json → taskConcurrency.max`; close or merge one, or raise the limit.
+5. **The item is blocked** (`blocked_by:#id` or `blocked_by:<repo>#id` not yet merged). The picker's report names exactly what it's waiting for.
+
+**Fix:** the picker's "no eligible task" report lists what it saw and why each candidate was skipped — read it bottom-up and address the first reason that applies, in the order above.
 
 ### `atelier --help` prints nothing / "atelier-help.txt: No such file"
 
