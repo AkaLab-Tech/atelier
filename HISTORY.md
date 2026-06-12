@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### M7.1.F76 — `/import-conversations` no-TTY path: conversational picker instead of bouncing the operator to the terminal — 2026-06-12
-**PR:** [#TBD] · **Plugin bump:** 0.26.0 → 0.26.1
+**PR:** [#178](https://github.com/AkaLab-Tech/atelier/pull/178) · **Plugin bump:** 0.26.0 → 0.26.1
 
 Found during M7.1 dogfood: running `/atelier:import-conversations` with no arguments inside a Claude session hit the binary's `no TTY for the interactive picker` refusal, and the command relayed it as `!`-prefixed shell suggestions (`! atelier-import-conversations --list` / `--all`) — pushing terminal work onto the non-technical operator, against atelier's core contract. The command had everything needed to degrade conversationally: `--list` is read-only and TTY-free, and the binary accepts explicit project-name selectors with no further prompting.
 
