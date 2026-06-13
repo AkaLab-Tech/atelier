@@ -701,3 +701,74 @@ A **new** command (does not overload `/status`, whose single-project refusal is 
 - `/list-workspaces` + `atelier-list-workspaces` — enumerate workspaces with per-member health (mirrors `atelier-list-projects`).
 - `/remove-workspace <slug>` + `atelier-remove-workspace` — remove only the `workspaces.json` entry; members stay registered projects. `--with-members` (destructive, off by default) also runs `atelier-remove-project` per member.
 - `/doctor` extension — `check_workspaces`: `root` exists, every member path is still a directory AND still in `projects.json`, tokens unique; silent skip when `workspaces.json` is absent.
+
+## 16. External task-manager backends 🟡
+
+Captured 2026-06-13. Lets a project keep its tasks in an **external task manager** instead of the local `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` files — **starting with GitHub Projects v2**. The backend is chosen at `/setup-project` time and the operator can switch backends **at any time, in either direction**. Delivered incrementally as **Phase 9** (ROADMAP M9.x).
+
+This does **not** start from zero. Two foundations already exist and Phase 9 connects them:
+
+- **`claude-roadmap-tools` (crt)** already ships a multi-backend architecture (its `TASK_001`, closed): a `.roadmap.json` config (`backend: files|linear`), a `RoadmapBackend` interface (`listTasks` / `getTask` / `addTask` / `moveTask` / `appendHistoryEntry` / `isAvailable`, spec in crt's `docs/RoadmapBackend.md`), `FilesBackend` + `LinearBackend`, and `/create-roadmap --backend` / `/migrate-roadmap --to`.
+- **atelier** already frames `next-task`'s backlog source + claim registry as a pluggable **task provider** (§7 / `commands/next-task.md` step 2), explicitly "Linear-ready".
+
+The gap Phase 9 closes: **the two are not wired together.** atelier's `task-discovery` / `next-task` read the backlog straight from `origin/<base>:ROADMAP.md` (git), bypassing crt's `RoadmapBackend` entirely — so *no* remote backend, not even the Linear one crt already implements, drives atelier's autonomous cycle today.
+
+### 16.1 The two-layer split + the coupling decision ✅
+
+Two layers across two repos:
+
+1. **crt — the backend.** Owns the `RoadmapBackend` contract and each concrete backend (`FilesBackend`, `LinearBackend`, new `GitHubProjectBackend`), plus the operator-facing `/create-roadmap` / `/migrate-roadmap` and the `roadmap-tracking-flow` skill.
+2. **atelier — the consumer.** Its task provider (`task-discovery` + `next-task`), `setup-project`, and the worktree/PR cycle.
+
+**Coupling decision (✅): atelier aligns to crt's `RoadmapBackend` contract rather than re-implementing its own provider.** crt is the tracking layer; atelier is its consumer. This avoids two divergent backend implementations and makes GitHub Projects the *second* consumer of a now-real abstraction rather than a one-off. The contract — not crt's internals — is the dependency surface; atelier already requires crt installed (for `/adopt-roadmap`), so this formalizes an existing relationship.
+
+### 16.2 Wire the abstraction first — Phase 9.1 🟡
+
+The first slice is backend-agnostic and ships value on its own. atelier's task provider stops reading `origin/<base>:ROADMAP.md` directly and instead routes through `RoadmapBackend` (selected by the project's `.roadmap.json`, defaulting to `files`):
+
+- **No behaviour change for `files`** — the file-/git-backed path is preserved as `FilesBackend` semantics; existing projects see no difference.
+- **Validation target: Linear.** With the provider wired, the existing `LinearBackend` becomes the first remote backend that actually drives atelier's cycle — discover next task, honour the planning gate, move buckets — proving the seam before GitHub exists.
+- **Claim registry stays git.** §16.4 keeps open `task/*` PRs as the concurrency/claim signal; only the *backlog + state surface* moves behind the abstraction.
+
+### 16.3 `GitHubProjectBackend` — Phase 9.2 🟡
+
+A third `RoadmapBackend` implementation in crt, mirroring the `LinearBackend` shape.
+
+- **Target: GitHub Projects v2** (GraphQL Projects API), not raw Issues + labels. The Project's **Status** single-select field maps to the three buckets via a configurable `stateMap` (e.g. `Backlog`/`Todo` → roadmap, `In Progress` → in_progress, `Done` → history), exactly like `linear.stateMap`.
+- **Auth via a GitHub MCP** (OAuth), mirroring the `LinearBackend` MCP pattern — **not** `gh`. `isAvailable()` checks the GitHub MCP is registered without making an API call (no premature OAuth). `/create-roadmap` runs the MCP-registration one-liner when missing (confirm the GitHub hosted-MCP endpoint, analogous to `claude mcp add --transport http … https://mcp.linear.app/mcp`).
+- **Field mapping** onto Projects v2 fields:
+  - `#id` → a **custom field** (e.g. `Atelier ID`), *not* the Project item number (uncontrollable, non-stable across moves). Preserves §5 `#NN` ids.
+  - type tag → a single-select `Type` custom field; estimate → a `Estimate` text/number custom field.
+  - `[ready]` → a dedicated **`Ready`** field (boolean/single-select), **separate from Status** so readiness is orthogonal to the bucket (§16.5).
+  - `blocked_by` → a text custom field, parsed with the same grammar as today (`#id`, `<token>#id`).
+  - `backendId` (the Project item node id) is written into each task file's frontmatter when the offline mirror is on (crt's existing coherence scheme).
+
+### 16.4 `setup-project` selection + `next-task` on GitHub Projects — Phase 9.3 🟡
+
+- **`setup-project` backend choice.** Today the helper only writes the `files` layout. It gains a backend prompt that **delegates to `/create-roadmap --backend github-project`** (reusing crt, never re-implementing the `.roadmap.json` write or MCP registration). Headless: `files` stays the safe default; a remote backend requires the operator to pick it interactively or pass it explicitly (a remote backend needs OAuth, which can't be auto-resolved).
+- **`next-task` runs against the Project.** With §16.2's provider in place, selection, the planning gate, and the `ROADMAP → IN_PROGRESS → HISTORY` moves run against `GitHubProjectBackend`.
+- **Claim registry = open `task/*` PRs (✅).** Concurrency stays anchored on atelier's open `task/*` PRs, not on the Project's "In Progress" column — the git/worktree/PR mechanics of `next-task` steps 3–8 are untouched. The Project is the backlog + state surface; the PR is the unit of claim.
+
+### 16.5 The planning gate against a Project — Phase 9.3 🟡
+
+The §5 planning gate (M4.30) splits cleanly across the two surfaces:
+
+- **`.plan/<id>.md` stays a tracked repo file.** The implementer needs the approved plan in the worktree; it is spec + evidence and belongs in git regardless of backend.
+- **`[ready]` becomes the Project's `Ready` field.** `/plan-task` flips that field (via the backend) on approval instead of editing a `ROADMAP.md` line. The gate is satisfied iff `Ready` is set **and** `.plan/<id>.md` is committed — a `Ready` item without its plan file is surfaced as the same inconsistency §5 already defines. Approval remains interactive-only (never headless).
+
+### 16.6 Two-way migration — Phase 9.4 🟡
+
+The operator asked to switch backends "at any time, in either direction." crt's v1 only does `files → linear` (and `single → indexed`); `remote → files` is "not yet implemented."
+
+- Add **`files ↔ github-project` in both directions** to `/migrate-roadmap`.
+- **Generalize the reverse path** as `backend → files` driven by `RoadmapBackend.listTasks` across the three buckets, so it is not GitHub-specific — it also unlocks `linear → files`. Preserve crt's ID-based coherence (`backendId`) and its partial-failure / orphan-state guards.
+
+### 16.7 Workspaces — Phase 9.5 🟡
+
+- **One backend per repo** in v1 (crt's current rule): one GitHub Project per member repo. A single Project shared across a multi-repo workspace is deferred — it complicates `blocked_by:<token>#id` resolution and breaks one-backend-per-repo.
+- **Cross-repo `blocked_by:<token>#id`** keeps resolving as in §15.4, but the sibling member's task state is read through *its* backend (its `HISTORY` bucket via `RoadmapBackend`) instead of assuming a local `HISTORY.md`. `atelier-resolve-dep` gains a backend-aware path; the offline-`HISTORY.md` route stays the `files` case.
+- e2e validation across a real 2–3 repo workspace closes Phase 9.
+
+### 16.8 Sequencing
+
+`9.1` (wire the abstraction; validate with Linear) → `9.2` (`GitHubProjectBackend` in crt) → `9.3` (`setup-project` selection + `next-task` + planning gate on Projects) → `9.4` (two-way migration) → `9.5` (workspaces + e2e). 9.1 is the keystone and ships standalone value (any remote backend starts driving the cycle); everything after it layers on a now-real seam.

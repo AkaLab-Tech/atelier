@@ -64,15 +64,16 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 - **Auth via a GitHub MCP** (OAuth), mirroring the `LinearBackend` pattern — not `gh`. (Confirm the GitHub hosted-MCP endpoint/registration, analogous to `claude mcp add … https://mcp.linear.app/mcp`.)
 - **Sequence: wire the abstraction first.** First connect atelier's task provider to crt's `RoadmapBackend` (today bypassed — `next-task`/`task-discovery` read `origin/<base>:ROADMAP.md` directly) so that *any* non-files backend — Linear included — drives the autonomous cycle; **then** land `GitHubProjectBackend` on top. This makes the GitHub work the second consumer of a now-real abstraction rather than a one-off.
 
-**Still open (resolve in the detailed plan):**
+**Resolved in planning — full design in [PLAN.md §16](PLAN.md):**
 
-- **Field mapping.** How `#id`, the type tag, the estimate, the `[ready]` marker, and `blocked_by` map onto Projects v2 fields (custom fields vs. the Status field).
-- **Claim registry / concurrency.** Keep open `task/*` PRs as the claim unit (leaning yes) and use the Project as backlog/state, or read "in progress" from the Project?
-- **The planning gate.** Where `[ready]` + the committed `.plan/<id>.md` live when the backlog is a Project board (`.plan/` is a repo file; readiness may need to become a Project field).
-- **Two-way migration.** `files ↔ github-project` in both directions, generalizing crt's reverse path (today `remote → files` is "not yet implemented").
-- **Workspaces.** One backend per repo (crt's current rule), or one Project shared by a multi-repo workspace; how `blocked_by:<token>#id` resolves when state lives in a Project.
+- **Coupling** — atelier aligns to crt's `RoadmapBackend` contract (consumer), not a duplicate provider (§16.1).
+- **Field mapping** — Projects v2 Status → buckets via `stateMap`; `#id`/type/estimate as custom fields; `[ready]` as a dedicated `Ready` field; `blocked_by` as text (§16.3).
+- **Claim registry** — open `task/*` PRs stay the claim unit; the Project is backlog + state (§16.4).
+- **Planning gate** — `.plan/<id>.md` stays a tracked repo file; `[ready]` becomes the Project `Ready` field; approval interactive-only (§16.5).
+- **Two-way migration** — `files ↔ github-project` both ways, with a generalized `backend → files` reverse path (also unlocks `linear → files`) (§16.6).
+- **Workspaces** — one backend per repo in v1; cross-repo `blocked_by` reads the sibling's state through its backend (§16.7).
 
-**Needs its own PLAN.md section (Phase 9).**
+**Sub-phases (§16.8):** 9.1 wire the task provider to `RoadmapBackend` (keystone; validates with Linear) → 9.2 `GitHubProjectBackend` in crt → 9.3 `setup-project` selection + `next-task` + planning gate on Projects → 9.4 two-way migration → 9.5 workspaces + e2e.
 
 ---
 
