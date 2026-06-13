@@ -49,6 +49,8 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 - [TASK_010 — M6.3 — Product owner guide (ROADMAP.md format)](roadmap/TASK_010_m6-3-product-owner-guide.md)
 - [TASK_011 — M7.2 — Iterate the network allowlist](roadmap/TASK_011_m7-2-iterate-network-allowlist.md)
 - [TASK_012 — v2 ideas (deferred)](roadmap/TASK_012_v2-ideas-deferred.md)
+- [TASK_014 — Cost monitoring / per-task budget caps (v2)](roadmap/TASK_014_cost-monitoring-budget-caps.md)
+- [TASK_015 — Visual regression (baseline diff) (v2)](roadmap/TASK_015_visual-regression-baseline-diff.md)
 
 ### Out of scope for v1
 
