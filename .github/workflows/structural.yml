@@ -38,6 +38,11 @@ jobs:
           bash hooks/tests/safe-commit-worktree.test.sh \
             || { echo "::error::safe-commit F57 regression failed"; exit 1; }
 
+      - name: setup-project ROADMAP §5 detection (M7.1.F74)
+        run: |
+          bash hooks/tests/setup-project-roadmap-format-f74.test.sh \
+            || { echo "::error::setup-project F74 ROADMAP-format regression failed"; exit 1; }
+
       - name: python3 -m json.tool on JSON files
         run: |
           fail=0

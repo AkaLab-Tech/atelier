@@ -81,21 +81,33 @@ If `Task` returns an error (agent not found, dispatch refused, etc.), surface it
 
 If the agent's report is missing the `## Drafted content` block (and status is not `kept-existing`), the agent malformed its output: surface the report verbatim and stop. The slash command should not try to "recover" by inventing content.
 
-## Phase 3 — legacy tracking adoption check
+## Phase 3 — tracking adoption checks
 
-Parse the helper's stdout for `atelier-tracking-layout=...`. This phase only does something when the value is `preserved-nonempty`; for `created` and `preserved-empty` there is nothing to check — print nothing extra and stop.
+Two **independent** checks run here, off two separate bash signals. Evaluate **both** — a project can trip either, both, or neither. Both only ever *offer* `/adopt-roadmap`; this phase is read-only on the operator's tracking files. The only write that can happen is `/adopt-roadmap`'s own — invoked through its command, with its own confirmation — never an inline edit from `/setup-project`.
+
+### Phase 3a — legacy `IN_PROGRESS.md` tracker
+
+Parse the helper's stdout for `atelier-tracking-layout=...`. This check only does something when the value is `preserved-nonempty`; for `created` and `preserved-empty` there is nothing to check.
 
 When `atelier-tracking-layout=preserved-nonempty`, `IN_PROGRESS.md` pre-existed and carries task-like content. That content is one of two things, and the bash signal cannot tell them apart — **you** decide by reading the file:
 
 1. **`Read` `<project>/IN_PROGRESS.md`.**
 2. **Classify it:**
-   - **A legit single active task** — one task block (one checkbox or one heading), no completed (`[x]`) items mixed in, no multiple phase/section headings. This is the normal occupied-slot state. **Do nothing** — print a one-line note that an active task is already in the slot and stop.
+   - **A legit single active task** — one task block (one checkbox or one heading), no completed (`[x]`) items mixed in, no multiple phase/section headings. This is the normal occupied-slot state. **Do nothing** — print a one-line note that an active task is already in the slot.
    - **A legacy multi-phase tracker** — multiple `##`/`###` section headings (e.g. `RLS`, `ADMIN`, `WEB`, `i18n`), and/or several checkboxes including done (`[x]`) items. This is the layout that predates the single-active-task slot and blocks tools like `/next-task`. Continue.
 3. **For the legacy case, offer normalization — do not transform anything yourself.** The transformation logic is sovereign in `claude-roadmap-tools`'s `/adopt-roadmap`; `/setup-project` only detects and delegates. It must never rewrite tracking files directly.
    - **Interactive mode:** use `AskUserQuestion` — *"`IN_PROGRESS.md` looks like a multi-phase tracker, not a single active-task slot. Tools like `/next-task` will treat it as permanently occupied. Normalize it now with `/adopt-roadmap` (done items → `HISTORY.md`, open items → `ROADMAP.md`, slot reset to empty; nothing is dropped)?"* — options: run `/adopt-roadmap` now / skip for now. If the operator agrees and the `claude-roadmap-tools` plugin is installed (the `/adopt-roadmap` command resolves), run it **with `--format atelier`** so the adopted `ROADMAP.md` lands in the PLAN.md §5 layout that `task-discovery` / `/next-task` parse (`P0`/`P1`/`P2` + type tags; the operator then fills any `` `TODO-type` `` / `` `~TODO` `` placeholders and runs `/atelier:plan-task <id>` per task). If the plugin is not installed, point the operator at it (`claude plugin install claude-roadmap-tools@akalab-tech`) and stop — do not attempt the adoption manually.
    - **Non-interactive mode** (`--yes` / `-y` / `$ATELIER_AUTO`): **do not** run the adoption automatically — it is a judgment-heavy content rewrite. Print the recommendation (*"Detected a legacy phase-tracker `IN_PROGRESS.md`; run `/adopt-roadmap --format atelier` interactively to normalize it"*) and stop.
 
-This phase is read-only on the operator's tracking files. The only write that can happen is `/adopt-roadmap`'s own — invoked through its command, with its own confirmation — never an inline edit from `/setup-project`.
+### Phase 3b — non-§5 `ROADMAP.md` (M7.1.F74)
+
+Parse the helper's stdout for `atelier-roadmap-format=...`. This check only does something when the value is `non-conforming`; for `conforming` and `absent` there is nothing to do.
+
+`non-conforming` means `ROADMAP.md` pre-existed but does **not** use the PLAN.md §5 layout (no `P0`/`P1`/`P2` priority sections — e.g. a foreign format with `## Backlog`, `TASK-NN` ids, "Prioridad Alta"). This is **independent of `IN_PROGRESS.md`**: F74 was the gap where a non-§5 ROADMAP onboarded silently — zero tasks plannable or claimable by `task-discovery` / `/next-task` — because the adoption offer keyed only off `IN_PROGRESS.md` (Phase 3a), which a "(no tasks in progress)" file passes as `preserved-empty`.
+
+Offer normalization — do not transform anything yourself (same delegation rule as 3a):
+- **Interactive mode:** use `AskUserQuestion` — *"`ROADMAP.md` doesn't use atelier's §5 layout (no P0/P1/P2 priority sections), so `/atelier:next-task` can't claim any of its tasks. Normalize it now with `/adopt-roadmap --format atelier` (emits the `P0`/`P1`/`P2` + type-tag + `#id` layout with `TODO` placeholders; nothing is dropped)?"* — options: run `/adopt-roadmap --format atelier` now / skip for now. If the operator agrees and `claude-roadmap-tools` is installed, run it **with `--format atelier`**; the operator then fills any `` `TODO-type` `` / `` `~TODO` `` placeholders and runs `/atelier:plan-task <id>` per task. If the plugin is not installed, point them at it (`claude plugin install claude-roadmap-tools@akalab-tech`) and stop. Note: atelier's own repo and any project intentionally using the `High`/`Medium`/`Low` layout will also trip this — the operator simply declines.
+- **Non-interactive mode** (`--yes` / `-y` / `$ATELIER_AUTO`): **do not** run the adoption automatically. Print the recommendation (*"`ROADMAP.md` is not §5 (no P0/P1/P2 sections); run `/adopt-roadmap --format atelier` interactively to make its tasks claimable"*) and stop.
 
 ## Hard refusals
 

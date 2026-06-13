@@ -370,6 +370,7 @@ SETUP_VERSION=""
 DETECTED_MODE=""           # set by detect_project_mode (new|existing) — M4.19
 ROOT_CLAUDE_MD_STATUS=""   # set by step_root_claude_md_detect (missing|present) — M4.19
 TRACKING_LAYOUT_STATUS=""  # set by detect_tracking_layout (created|preserved-empty|preserved-nonempty) — M7.1.F50
+ROADMAP_FORMAT_STATUS=""   # set by detect_roadmap_format (absent|conforming|non-conforming) — M7.1.F74
 
 # ---------- M4.19: detect project mode (new vs existing) ----------
 # Bash side does detection ONLY. Drafting the root CLAUDE.md (AI work)
@@ -498,6 +499,46 @@ detect_tracking_layout() {
     printf 'preserved-nonempty\n'
   else
     printf 'preserved-empty\n'
+  fi
+}
+
+# ---------- M7.1.F74: detect ROADMAP.md §5 conformance ----------
+# Bash side emits a signal ONLY. The /setup-project slash command offers
+# /adopt-roadmap --format atelier when this returns `non-conforming`,
+# REGARDLESS of IN_PROGRESS.md state. This closes F74: a non-§5 ROADMAP was
+# never flagged when IN_PROGRESS.md was empty, because the legacy-adoption
+# offer keyed only off detect_tracking_layout (IN_PROGRESS.md) — so a project
+# whose ROADMAP.md uses a foreign format (Spanish headings, `TASK-NN` ids, no
+# P0/P1/P2 sections) onboarded silently with zero claimable tasks.
+#
+# §5 (PLAN.md §5) discriminator — the strong, parseable-by-task-discovery
+# signal is the priority-section structure: at least one heading bearing a
+# `P0`/`P1`/`P2` token (e.g. `## 🔥 P0 — Blockers`; the emoji is not
+# load-bearing). A freshly-created ROADMAP (written from the §5 template this
+# run) is conforming by construction.
+#
+# Outcomes:
+#   absent          — no ROADMAP.md (nothing to check).
+#   conforming      — created fresh this run, OR has a P0/P1/P2 priority heading.
+#   non-conforming  — ROADMAP.md exists but has no P0/P1/P2 section heading
+#                     (legacy / foreign format) → offer /adopt-roadmap --format atelier.
+detect_roadmap_format() {
+  local f="$PROJECT/ROADMAP.md"
+
+  if [ "$ROADMAP_STATUS" = "created" ]; then
+    printf 'conforming\n'
+    return
+  fi
+  [ -f "$f" ] || { printf 'absent\n'; return; }
+
+  # A §5 priority heading leads with a P0/P1/P2 token after the `#` marker and
+  # any non-alphanumeric run (whitespace, an optional emoji, etc.):
+  #   `## P0 — Blockers`   `## 🎯 P1 — Next`   `### 💭 P2 — Later`
+  # The trailing boundary keeps `Phase`/`Plan`-style headings from matching.
+  if grep -Eq '^#{1,6}[^A-Za-z0-9]*P[012]([^A-Za-z0-9]|$)' "$f"; then
+    printf 'conforming\n'
+  else
+    printf 'non-conforming\n'
   fi
 }
 
@@ -1284,6 +1325,7 @@ step_reviewer_access
 DETECTED_MODE="$(detect_project_mode "$PROJECT")"
 ROOT_CLAUDE_MD_STATUS="$(detect_root_claude_md "$PROJECT")"
 TRACKING_LAYOUT_STATUS="$(detect_tracking_layout)"
+ROADMAP_FORMAT_STATUS="$(detect_roadmap_format)"
 
 # ---------- output ----------
 echo ""
@@ -1294,6 +1336,7 @@ sublog "decision policy:                $POLICY_STATUS"
 sublog "ROADMAP.md:                     $ROADMAP_STATUS"
 sublog "IN_PROGRESS.md:                 $INPROGRESS_STATUS"
 sublog "tracking layout:                $TRACKING_LAYOUT_STATUS"
+sublog "ROADMAP format:                 $ROADMAP_FORMAT_STATUS"
 sublog "HISTORY.md:                     $HISTORY_STATUS"
 sublog ".claude/CLAUDE.md:              $CLAUDE_STATUS"
 sublog ".npmrc:                         $NPMRC_STATUS"
@@ -1309,6 +1352,7 @@ echo ""
 printf 'atelier-detected-mode=%s\n' "$DETECTED_MODE"
 printf 'atelier-root-claude-md=%s\n' "$ROOT_CLAUDE_MD_STATUS"
 printf 'atelier-tracking-layout=%s\n' "$TRACKING_LAYOUT_STATUS"
+printf 'atelier-roadmap-format=%s\n' "$ROADMAP_FORMAT_STATUS"
 echo ""
 if [ "$ROOT_CLAUDE_MD_STATUS" = "missing" ]; then
   sublog "Root CLAUDE.md is missing. The /setup-project slash command will dispatch"
@@ -1321,6 +1365,12 @@ if [ "$TRACKING_LAYOUT_STATUS" = "preserved-nonempty" ]; then
   sublog "IN_PROGRESS.md pre-existed and carries task-like content. The /setup-project"
   sublog "slash command will check whether it is a legacy multi-phase tracker and, if so,"
   sublog "offer to normalize it with /adopt-roadmap (claude-roadmap-tools)."
+fi
+if [ "$ROADMAP_FORMAT_STATUS" = "non-conforming" ]; then
+  echo ""
+  sublog "ROADMAP.md does not use the PLAN.md §5 layout (no P0/P1/P2 priority sections)."
+  sublog "task-discovery / /atelier:next-task cannot claim its tasks as-is. The /setup-project"
+  sublog "slash command will offer to normalize it with /adopt-roadmap --format atelier."
 fi
 echo ""
 sublog "Next: cd $PROJECT && run /atelier:next-task to claim the first ROADMAP.md item."
