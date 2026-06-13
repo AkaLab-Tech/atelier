@@ -1,34 +1,34 @@
-# Manual E2E Test — A Non-Technical Operator Onboards Their Mature Multi-Repo Product
+# Manual E2E Test — A Non-Technical Operator Joins a Mature Multi-Repo Project
 
-**Who this test plays.** A **non-technical operator** who has built a product over several years and now wants atelier to work on it. They are not a developer: they don't branch, merge, or run git by hand. They deliver software by **talking to atelier**. The only tools they touch directly are: one installer, a couple of one-word commands (`task`, `atelier`, `atelier-doctor`), and the GitHub website's **Merge** button.
+**Who this test plays.** A **non-technical operator** — think a product owner or project lead, **not a developer** — who is **joining a project that already exists**: a codebase a development team has been building for a while, spread across several repositories. This person didn't write the code and can't read most of it. They don't branch, merge, or run git by hand. Their job is to **direct the work by talking to atelier**. The only tools they touch directly are: one installer, a few one-word commands (`task`, `atelier`, `atelier-doctor`), some copy-paste lines to fetch the code, and the GitHub website's **Merge** button.
 
-**What it proves.** That such a person can go from **nothing installed** to **atelier shipping a real change** in their existing, actively-developed, **multi-repo** product — installing atelier, configuring everything, and running the agents — without ever needing to understand git, branches, or the terminal beyond copy-paste.
+**What it proves.** That a newcomer like this can go from **nothing installed and no code on their machine** to **atelier shipping a real change** in a mature, actively-developed, **multi-repo** project — installing atelier, getting the code, configuring everything, and running the agents — without needing to understand git, branches, or the terminal beyond copy-paste.
 
-**How to run it.** Follow it top to bottom, doing exactly what a non-technical operator would do (no shortcuts a developer would take). Each step says: **what you do**, **what you say to atelier**, **what you should see**, and **how you know it worked**. When reality differs from "what you should see", write it down in Stage 9 — that's the deliverable.
+**How to run it.** Follow it top to bottom, doing exactly what a non-technical newcomer would do (no shortcuts a developer would take). Each step says: **what you do**, **what you say to atelier**, **what you should see**, and **how you know it worked**. When reality differs from "what you should see", write it down in the findings log — that's the deliverable.
 
-> There are **no prerequisites to arrange in advance**. Everything — including the second GitHub account and connecting your repos — happens *inside* the steps below. That is the whole point: this is the complete journey from zero.
+> There are **no prerequisites to arrange in advance**. Everything — installing atelier, the second GitHub account, even getting the project's code onto your machine — happens *inside* the steps below. That is the point: this is the complete journey from zero.
 
 ---
 
-## The product in this test
+## The project in this test
 
-Your product is **three repositories that ship together** — a backend, a web app, and a CMS — that you've been developing for years. In this plan they're called:
+The project you're joining is **three repositories that ship together** — a backend, a web app, and a CMS — that the team has been developing for years. In this plan they're called:
 
 - **acme-api** — the backend.
 - **acme-web** — the web app.
 - **acme-cms** — the content manager.
 
-Wherever you see `acme`, substitute your real product's name and folders. The flow is identical.
+Wherever you see `acme`, substitute the real project's name and repositories. The flow is identical.
 
-Because this product is **mature, not new**, three things will be true that a brand-new project never has — and this test deliberately checks atelier handles each one gracefully, so you never have to:
+Because the project is **mature, not new**, three things will be true that a brand-new project never has — and this test deliberately checks atelier handles each one gracefully, so you don't have to:
 
-- One repo (**acme-api**) already has Claude Code settings from earlier experiments.
-- One repo (**acme-web**) already has a to-do list (`ROADMAP.md`) written in your team's own style, not atelier's.
+- One repo (**acme-api**) already has Claude Code settings from a developer's earlier experiments.
+- One repo (**acme-web**) already has a to-do list (`ROADMAP.md`) written in the team's own style, not atelier's.
 - One repo (**acme-cms**) has no to-do list at all yet.
 
 You don't need to know which is which or do anything about it up front — atelier detects and walks you through each case.
 
-**One thing to do before you start:** make sure the three repos sit **together inside one folder** on your computer, for example a folder called `acme` in your `Work` folder, with `acme-api`, `acme-web`, and `acme-cms` inside it. If they're scattered, drag them into one folder. That's the only manual tidying required.
+**About access.** You'll need enough permission on the repos to approve changes (the **Merge** button). Granting the review account access (Stage 4) needs admin rights; if you're not an admin, the step tells you what to ask the project's administrator for. If you have neither, line that up before Stage 4 — it's the one thing a true newcomer might not start with.
 
 ---
 
@@ -48,9 +48,9 @@ cd ~/atelier && ./install.sh
 - **Installing tools** — it sets up the building blocks atelier needs (a package manager, Node, the GitHub tool, Claude Code). Anything already on your machine is skipped. You don't choose anything here.
 - **Signing you in** — three sign-ins, in order:
   1. **Claude** — a browser window opens; log in. The installer confirms it can actually reach Claude, not just that you clicked "allow".
-  2. **GitHub — your main account** — log in with the GitHub account that owns your product.
+  2. **GitHub — your main account** — log in with your own GitHub account (the one that will be a member of the project).
   3. **GitHub — a second, separate account** — atelier uses a *different* GitHub account to **review** its own work, so approvals are independent. **If you don't have a second account, create one now (it's free) and log in with it.** The installer checks the two accounts are genuinely different and won't let you use the same one twice.
-- **Optional extras** — it may offer Chrome (for screenshots) and a few integrations (Coolify/Vercel/Neon). For this test, **say no** to the integrations unless your product already uses them.
+- **Optional extras** — it may offer Chrome (for screenshots) and a few integrations (Coolify/Vercel/Neon). For this test, **say no** to the integrations unless the project already uses them.
 
 It finishes with a short "what's next" message.
 
@@ -88,15 +88,46 @@ atelier-doctor
 
 **How you know it worked.** Every line is ✓. If any line shows a ⚠ or ✗, run `atelier-doctor --fix`, then `atelier-doctor` again — it repairs the common issues itself.
 
-> Don't continue past a red doctor. If `--fix` doesn't clear it, that's a finding for Stage 9.
+> Don't continue past a red doctor. If `--fix` doesn't clear it, that's a finding for the log.
 
 ---
 
-## Stage 3 — Connect your whole product (one command)
+## Stage 3 — Get the project's code onto your machine
+
+As a newcomer you don't have the project yet. Put all three repos **together inside one folder**, so atelier can find them as one product.
+
+### Step 3.1 — Create a home for the project and clone the repos
+
+**What you do.** Copy-paste these lines, replacing the org name and repo names with the real ones (ask a teammate for the exact GitHub links if you're unsure):
+
+```bash
+mkdir -p ~/Work/acme && cd ~/Work/acme
+git clone https://github.com/acme-org/acme-api.git
+git clone https://github.com/acme-org/acme-web.git
+git clone https://github.com/acme-org/acme-cms.git
+```
+
+If a repo is private, your browser or GitHub may ask you to confirm it's you — use your **main** GitHub account.
+
+**What you should see.** Three folders appear inside `~/Work/acme`: `acme-api`, `acme-web`, `acme-cms`.
+
+**How you know it worked.**
+
+```bash
+ls ~/Work/acme
+```
+
+lists exactly your three repos.
+
+> **A note on connection types (only if a clone fails with a key/SSH error):** always use the `https://github.com/...` links shown above, not `git@github.com:...` ones. atelier only works over HTTPS. If a teammate gave you an SSH link, swap it for the HTTPS one from the repo's GitHub page.
+
+---
+
+## Stage 4 — Connect the whole project (one command)
 
 This is the big one — and it's a **single command**. atelier finds your three repos, sets each one up, and groups them together as one "workspace". You do **not** set them up one by one; atelier does the whole cascade and pauses to ask you whenever a decision is yours.
 
-### Step 3.1 — Start the setup
+### Step 4.1 — Start the setup
 
 **What you do.** Open an atelier session:
 
@@ -110,13 +141,13 @@ atelier
 /atelier:setup-workspace acme --discover ~/Work/acme
 ```
 
-(Replace `acme` and `~/Work/acme` with your product's name and the folder that holds your three repos.)
+(Replace `acme` and `~/Work/acme` with the project's name and the folder that holds the three repos.)
 
 **What you should see, and the questions atelier asks you:**
 
 1. **"Here are the repositories I found — confirm the list."** atelier shows the repos it discovered inside your folder and asks you to confirm or uncheck any. You should see exactly your three repos.
 
-2. **"acme-api already has Claude settings — replace them?"** Because acme-api has old settings, atelier won't overwrite them silently. It explains that its safety rules can't take effect until the settings are replaced, and asks permission. **If you're unsure, you can ask atelier:**
+2. **"acme-api already has Claude settings — replace them?"** Because acme-api has old settings from a developer, atelier won't overwrite them silently. It explains that its safety rules can't take effect until the settings are replaced, and asks permission. **If you're unsure, you can ask atelier:**
 
    ```
    What exactly will change if I let you replace acme-api's old settings,
@@ -125,7 +156,7 @@ atelier
 
    atelier should explain it backs up the old file with a timestamp before replacing it. Say yes.
 
-3. **"Give the reviewer account access to your private repos?"** The second GitHub account can't see your private repos yet. Since you own them, atelier can grant it read access for you. Say yes.
+3. **"Give the reviewer account access to the private repos?"** The second GitHub account can't see private repos yet. If you have admin rights, atelier can grant it read access for you — say yes. **If you're not an admin**, atelier will tell you; ask the project's administrator to either add the second account as a read-only collaborator on each repo, or make you an admin so atelier can.
 
 **How you know it worked.** atelier ends with a summary: the workspace `acme`, the folder it lives in, and your three repos each with a short nickname (its "token"). You can double-check any time by asking, in an atelier session:
 
@@ -135,11 +166,11 @@ atelier
 
 You should see `acme` with all three repos marked **configured** (not "partial").
 
-> **Watch for:** a repo marked **partial** (setup didn't finish for it) — tell atelier "finish setting up acme-cms" (or whichever). Also note if atelier ever complained your repos use an unsupported connection type — see the note at the end of Stage 3.
+> **Watch for:** a repo marked **partial** (setup didn't finish for it) — tell atelier "finish setting up acme-cms" (or whichever).
 
-### Step 3.2 — Approve atelier's setup changes (GitHub Merge button)
+### Step 4.2 — Approve atelier's setup changes (GitHub Merge button)
 
-atelier prepared some setup files for each repo, but — by design — it never saves changes to your project without your say-so. It opens a **pull request** (GitHub's "please approve this change" page) for each repo. This is the one kind of change atelier will **not** approve on its own: **you** approve it.
+atelier prepared some setup files for each repo, but — by design — it never saves changes to the project without your say-so. It opens a **pull request** (GitHub's "please approve this change" page) for each repo. This is the one kind of change atelier will **not** approve on its own: **you** approve it.
 
 **What you say to atelier** (still in the session):
 
@@ -151,19 +182,17 @@ Open a pull request for each repo with its atelier setup files.
 
 **What you should see.** Three pull requests, each small, each merged.
 
-**How you know it worked, and why it matters.** Until you merge these, atelier sees an *empty* product — it reads your to-do lists from the approved (merged) version on GitHub, not from your computer. After merging, your product is officially connected.
-
-> **About connection types (read only if atelier flagged it):** atelier connects to GitHub over a method called HTTPS. If any repo was set up long ago with the older "SSH" method, atelier will say so. If that happens, tell atelier: `One of my repos uses SSH — can you switch it to HTTPS?` and note it in Stage 9 (atelier doesn't convert it automatically yet).
+**How you know it worked, and why it matters.** Until you merge these, atelier sees an *empty* project — it reads the to-do lists from the approved (merged) version on GitHub, not from your computer. After merging, the project is officially connected.
 
 ---
 
-## Stage 4 — Put your to-do lists in atelier's format
+## Stage 5 — Put the to-do lists in atelier's format
 
 atelier picks tasks from each repo's `ROADMAP.md`, but only understands its own simple format. Your three repos are each in a different starting state — handle all three. You never edit files by hand; you ask atelier.
 
-### Step 4.1 — acme-web: convert your existing to-do list
+### Step 5.1 — acme-web: convert the existing to-do list
 
-acme-web already has a to-do list in your team's own style. atelier can keep every item but needs to restyle it.
+acme-web already has a to-do list in the team's own style. atelier can keep every item but needs to restyle it.
 
 **What you do.** Open an atelier session *in that repo's folder*:
 
@@ -185,15 +214,15 @@ Show me the full plan first. Confirm you're not dropping any task, and tell me
 which items you couldn't fully fill in so I can complete them.
 ```
 
-**What you should see.** atelier shows a complete before/after plan **without changing anything yet**: every existing task is kept, your existing task numbers are preserved, finished items are moved to a "history" list, and anything it couldn't infer (like a task's type or size estimate) is clearly marked as "TODO" for you to fill. Approve only when you're happy.
+**What you should see.** atelier shows a complete before/after plan **without changing anything yet**: every existing task is kept, the team's existing task numbers are preserved, finished items are moved to a "history" list, and anything it couldn't infer (like a task's type or size estimate) is clearly marked as "TODO" for you to fill. Approve only when you're happy.
 
 **How you know it worked.** atelier confirms the to-do list is now in its format and gives you a short list of "TODO" spots to fill in.
 
-> **Watch for (known issue):** atelier did **not** offer this conversion automatically back in Stage 3. That's a known gap (its auto-detection looks at the wrong file when your "in progress" list is empty). Running `/adopt-roadmap --format atelier` yourself, as here, is the correct workaround — note in Stage 9 if you'd have expected the offer.
+> **Watch for (known issue):** atelier did **not** offer this conversion automatically back in Stage 4. That's a known gap (its auto-detection looks at the wrong file when the "in progress" list is empty). Running `/adopt-roadmap --format atelier` yourself, as here, is the correct workaround — note in the log if you'd have expected the offer.
 
-### Step 4.2 — acme-cms: create a to-do list from scratch
+### Step 5.2 — acme-cms: create a to-do list from scratch
 
-acme-cms has no to-do list. Just describe a couple of small real tasks and let atelier write them in the right format.
+acme-cms has no to-do list. Just describe a couple of small real tasks and let atelier write them in the right format. (As a non-technical operator, you decide *what* needs doing; atelier handles *how* it's written.)
 
 **What you do.**
 
@@ -214,7 +243,7 @@ and (2) a bug fix for the broken favicon in the admin panel. Then show me the re
 
 **How you know it worked.** The new to-do list exists with your two tasks in atelier's format.
 
-### Step 4.3 — Finish and save the lists
+### Step 5.3 — Finish and save the lists
 
 **What you say to atelier** (in each repo where you adopted or created a list):
 
@@ -223,13 +252,13 @@ Fill in the TODO spots with sensible values, then save these to-do list changes
 the same way as the setup — open a pull request I can approve.
 ```
 
-**What you do.** Approve (Merge) each pull request in your browser, just like Stage 3.2.
+**What you do.** Approve (Merge) each pull request in your browser, just like Stage 4.2.
 
 **How you know it worked.** All three repos now have an atelier-format to-do list approved on GitHub.
 
 ---
 
-## Stage 5 — Approve a plan for one task
+## Stage 6 — Approve a plan for one task
 
 atelier only starts work on a task **after you've approved a plan for it**. This is your safety switch: nothing runs that you haven't okayed. Pick one small task to drive all the way through — say the acme-cms favicon bug.
 
@@ -267,24 +296,24 @@ Save the approved plan so the task is ready to run.
 
 ---
 
-## Stage 6 — Let atelier do the work
+## Stage 7 — Let atelier do the work
 
-### Step 6.1 — Start a task from your product folder
+### Step 7.1 — Start a task from the project folder
 
-**What you do.** Go to the **product folder** (the one holding all three repos) and run the one-word command:
+**What you do.** Go to the **project folder** (the one holding all three repos) and run the one-word command:
 
 ```bash
 cd ~/Work/acme
 task
 ```
 
-**What you should see.** Because you're in the multi-repo product folder, atelier shows a **menu of your three repos** with how many open tasks each has. Choose acme-cms.
+**What you should see.** Because you're in the multi-repo project folder, atelier shows a **menu of your three repos** with how many open tasks each has. Choose acme-cms.
 
 **How you know it worked.** atelier picks up the favicon task and starts working — without you choosing branches or typing git anything.
 
 > If you run `task` from *inside* a single repo, atelier skips the menu and goes straight to that repo.
 
-### Step 6.2 — Watch the cycle (and ask questions)
+### Step 7.2 — Watch the cycle (and ask questions)
 
 atelier now does the whole job on its own. While it runs, you can ask:
 
@@ -293,13 +322,13 @@ Which task are you doing, and which repo?
 Show me the pull request and the test results before you finalize it.
 ```
 
-**What you should see, in order.** atelier: reads the to-do list from GitHub and picks the **ready** favicon task; works in its own private copy (**it never touches the version of the project you have open**); makes the change; runs the project's checks; opens a pull request with a written summary; has the **reviewer** account (your second GitHub account) review it; and, if the review passes and nothing looks risky, **approves and saves it automatically**. Afterwards it cleans up and records the finished task in the repo's history.
+**What you should see, in order.** atelier: reads the to-do list from GitHub and picks the **ready** favicon task; works in its own private copy (**it never touches the code you have open**); makes the change; runs the project's checks; opens a pull request with a written summary; has the **reviewer** account (your second GitHub account) review it; and, if the review passes and nothing looks risky, **approves and saves it automatically**. Afterwards it cleans up and records the finished task in the repo's history.
 
 **How you know it worked.** The favicon task ends up in acme-cms's "history", the change is merged on GitHub, and you did **zero** git work.
 
-> **Watch for:** atelier asking *you* to approve the final merge of a normal small task (it should auto-approve once the reviewer is happy); the reviewer step failing because the second account never got access (Stage 3.1); any written output (the summary, code comments) coming out in a language other than English when your project's content is in another language. Note any of these in Stage 9.
+> **Watch for:** atelier asking *you* to approve the final merge of a normal small task (it should auto-approve once the reviewer is happy); the reviewer step failing because the second account never got access (Stage 4.1); any written output (the summary, code comments) coming out in a language other than English when the project's content is in another language. Note any of these in the log.
 
-### Step 6.3 — (Optional) Let it run unattended
+### Step 7.3 — (Optional) Let it run unattended
 
 **What you do.** To let atelier pick up the next ready task with nobody watching:
 
@@ -308,11 +337,11 @@ cd ~/Work/acme/acme-cms
 ATELIER_AUTO=1 atelier -p "/atelier:next-task"
 ```
 
-**What you should see.** The same cycle, but it answers its own routine questions with the safe default and never pauses — **except** it still won't approve a *plan* by itself (that's why Stage 5 is always a hands-on step). `ATELIER_AUTO=1` is the part that tells it "go unattended"; without it, an unwatched run just waits forever at the first question.
+**What you should see.** The same cycle, but it answers its own routine questions with the safe default and never pauses — **except** it still won't approve a *plan* by itself (that's why Stage 6 is always a hands-on step). `ATELIER_AUTO=1` is the part that tells it "go unattended"; without it, an unwatched run just waits forever at the first question.
 
 ---
 
-## Stage 7 — See the whole product at a glance
+## Stage 8 — See the whole project at a glance
 
 **What you do.**
 
@@ -335,7 +364,7 @@ atelier
 
 ---
 
-## Stage 8 — Spot-check the safety boundaries (optional)
+## Stage 9 — Spot-check the safety boundaries (optional)
 
 These confirm atelier stops where it should. For each, note what you triggered and whether the boundary held.
 
@@ -345,7 +374,7 @@ These confirm atelier stops where it should. For each, note what you triggered a
 
 ---
 
-## Stage 9 — Write down what you found
+## Stage 10 — Write down what you found
 
 This log is the deliverable. For each thing that didn't match "what you should see":
 
@@ -356,19 +385,20 @@ This log is the deliverable. For each thing that didn't match "what you should s
 
 **Already known — just confirm whether still true, don't re-report as new:**
 
-- atelier doesn't offer the to-do list conversion automatically when the "in progress" list is empty (Step 4.1).
-- atelier doesn't auto-convert an old "SSH" repo connection to HTTPS (end of Stage 3).
-- The setup and to-do list changes need you to click **Merge** yourself (Steps 3.2 and 4.3) — atelier never auto-approves those.
+- atelier doesn't offer the to-do list conversion automatically when the "in progress" list is empty (Step 5.1).
+- atelier expects HTTPS repo links, not SSH, and doesn't convert them for you (end of Stage 3).
+- The setup and to-do list changes need you to click **Merge** yourself (Steps 4.2 and 5.3) — atelier never auto-approves those.
 
 ---
 
 ## You're done when
 
 - [ ] `atelier-doctor` is all green after install (Stage 2).
-- [ ] Your product `acme` is connected, with all three repos shown as **configured** (Stage 3).
-- [ ] You've merged the setup pull requests for all three repos (Step 3.2).
-- [ ] All three repos have an atelier-format to-do list approved on GitHub (Stage 4).
-- [ ] One task is **ready** and has been **finished end-to-end automatically** — change merged, task in history — with no git work from you (Stages 5–6).
-- [ ] `task` from the product folder shows the three-repo menu (Step 6.1).
-- [ ] `/atelier:workspace-status` shows all three repos cleanly (Stage 7).
-- [ ] Everything that surprised you is written down (Stage 9).
+- [ ] All three repos are cloned together under one folder (Stage 3).
+- [ ] The project `acme` is connected, with all three repos shown as **configured** (Stage 4).
+- [ ] You've merged the setup pull requests for all three repos (Step 4.2).
+- [ ] All three repos have an atelier-format to-do list approved on GitHub (Stage 5).
+- [ ] One task is **ready** and has been **finished end-to-end automatically** — change merged, task in history — with no git work from you (Stages 6–7).
+- [ ] `task` from the project folder shows the three-repo menu (Step 7.1).
+- [ ] `/atelier:workspace-status` shows all three repos cleanly (Stage 8).
+- [ ] Everything that surprised you is written down (Stage 10).
