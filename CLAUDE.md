@@ -15,7 +15,7 @@ The repo is currently **pre-implementation**: the only authoritative artifact is
 
 ## Tracking flow
 
-This repo uses the single-file layout for [ROADMAP.md](ROADMAP.md) → [IN_PROGRESS.md](IN_PROGRESS.md) → [HISTORY.md](HISTORY.md). The `roadmap-tracking-flow` skill activates automatically. When a PR closes a task, the **same PR** must remove the entry from `IN_PROGRESS.md` and add it to `HISTORY.md` — never split that across commits.
+This repo uses the **indexed** layout for [ROADMAP.md](ROADMAP.md) → [IN_PROGRESS.md](IN_PROGRESS.md) → [HISTORY.md](HISTORY.md): `ROADMAP.md` / `IN_PROGRESS.md` carry one-line links and each task's detail lives in `roadmap/TASK_NNN_<slug>.md` (progress updates go in the task file, not in `IN_PROGRESS.md`). The `roadmap-tracking-flow` skill activates automatically. When a PR closes a task, the **same PR** must remove the link from `IN_PROGRESS.md` and add the entry to `HISTORY.md` — never split that across commits.
 
 Note: the **operator-facing** ROADMAP format defined in PLAN.md §5 (P0/P1/P2 with `bug`/`feat`/`chore` tags, `~estimate`, `blocked_by:`) is the format used inside *target projects* the operator manages. The `ROADMAP.md` at this repo's root tracks **atelier's own development** and uses the simpler high/medium/low priority layout from the `roadmap-tracking-flow` skill.
 

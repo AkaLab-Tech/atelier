@@ -2,7 +2,7 @@
 
 Backlog of work for this project. Tasks flow: `ROADMAP.md` → `IN_PROGRESS.md` → `HISTORY.md`.
 
-Each task lives here as a heading with whatever description it needs (acceptance criteria, design notes, sub-tasks). When work starts, move the block to `IN_PROGRESS.md`.
+This roadmap uses the **indexed** layout: each task is a one-line link below, pointing to its detail file under `roadmap/TASK_NNN_<slug>.md` (acceptance criteria, design notes, sub-tasks). When work starts, move the task's link to `IN_PROGRESS.md`; progress updates from then on go inside the `roadmap/TASK_NNN_*.md` file, not here.
 
 Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Milestone IDs (M1.1, M2.3, …) refer to that plan and are kept in titles for traceability. Always read the referenced PLAN.md section before starting a task.
 
@@ -24,56 +24,8 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 2–5 — Single-project agent flow + robustness + multi-project foundation.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries — and when an operator can install / uninstall atelier without risking unrelated Claude state.
 
-### M7.4 — Detect + migrate non-§5 task ids in a project's ROADMAP
-
-**Found during M7.1 dogfood (storefront, 2026-06-10).** A real project's `ROADMAP.md` used a hierarchical, phase-prefixed id scheme (`RLS.2`, `WEB.5g`, `BUG-RESILIENCE.2`) instead of the numeric `#NN` / `#NNa` convention PLAN.md §5 defines. The planning gate (M4.30) enforces §5 via `plan-task` (`^#?\d+[a-z]?$`) and `slice-task` (`^#?\d+$`), so **no task in such a project is plannable → none is claimable by the orchestrator**. RLS.2 only shipped because it predated M4.30. This is **not** a bug in `plan-task` (§5 is numeric by design); it is a project whose ids drifted from the convention, which atelier should detect and migrate — the same way the operator migrated tracking layouts via `migrate-roadmap`.
-
-**Design (two parts):**
-
-1. **Detection — `atelier-doctor` per-project check.** Doctor already iterates `projects.json`. Add a check that parses each registered project's `ROADMAP.md` and flags task ids that do not match §5 (`#NN` / `#NNa`). Emit `✗` with the count and a pointer to the migration. Same per-check-independence contract as the rest of the binary.
-2. **Migration — `atelier-migrate-task-ids <project>`** (analogous to `migrate-roadmap`). Assign sequential `#NN` ids preserving section/priority order and epic structure (epic `#NN` + sub-tasks `#NNa`/`#NNb`), rewrite `ROADMAP.md` + `IN_PROGRESS.md`, rewrite `blocked_by:` references through the same mapping, and emit a traceability map (`RLS.2 → #5`).
-
-**Open design questions to resolve when planned:**
-- **`HISTORY.md` is an immutable log** of merged PRs. Decide whether to rewrite historical ids or preserve them with a forward-mapping table (leaning preserve + map).
-- **Live branches / open PRs** (`task/RLS.2-rls-policies`, PR #132) carry the old id. Decide whether the migration re-maps them or leaves them as legacy with a recorded mapping.
-- Interaction with the **`[ready]` / `.plan/<id>.md`** artifacts already on disk for a partially-planned project.
-
-**Acceptance:** `atelier-doctor` flags a project whose ROADMAP uses non-§5 ids; `atelier-migrate-task-ids <project>` converts them to §5 ids across `ROADMAP.md` + `IN_PROGRESS.md` with `blocked_by:` updated and a printed mapping, leaving `HISTORY.md` handled per the resolved design question. Idempotent: a second run on an already-§5 ROADMAP is a no-op.
-
-**Note:** this task should itself be planned via `/atelier:plan-task` once it carries a §5 id — a small irony worth preserving as the first dogfood of the very gate it unblocks.
-
-### M9 — External task-manager backends: GitHub Projects (replace local ROADMAP / IN_PROGRESS / HISTORY)
-
-**Requested 2026-06-13.** Let a project track its tasks in an external manager instead of the local `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` files, **starting with GitHub Projects**. The backend is chosen when a project is set up, and the operator can **switch between backends at any time** in either direction.
-
-**This builds on an existing foundation — it does not start from zero:**
-
-- `claude-roadmap-tools` already ships a multi-backend architecture (its `TASK_001`, closed): a `.roadmap.json` (`backend: files|linear`), a `RoadmapBackend` interface (`listTasks` / `getTask` / `addTask` / `moveTask` / `appendHistoryEntry` / `isAvailable` — see `docs/RoadmapBackend.md`), `FilesBackend` + `LinearBackend`, and `/create-roadmap --backend` / `/migrate-roadmap --to`. **GitHub Projects becomes a third backend in that same contract** — the design doc already lists GitHub Issues / Jira / Trello as future backends to add once one is prioritized.
-- atelier's `next-task` already frames its backlog source + claim registry as a pluggable **task provider** ([next-task.md](commands/next-task.md) §2), explicitly "Linear-ready".
-
-**Two repos, two layers:**
-
-1. **`claude-roadmap-tools` — the backend.** Implement `GitHubProjectBackend` against the existing `RoadmapBackend` contract; extend `/create-roadmap --backend github-project` and `/migrate-roadmap --to github-project`; teach `roadmap-tracking-flow` to route to it. Mirror the Linear shape (status mapping, optional offline mirror, `backend` + `backendId` frontmatter).
-2. **atelier — the integration.**
-   - **`setup-project`**: offer the backend choice during setup (today it only writes the `files` layout), delegating to `/create-roadmap --backend …`.
-   - **the task provider (the deep part)**: `next-task` / `task-discovery` today read the backlog from `origin/<base>:ROADMAP.md` and use open `task/*` PRs as the claim registry — **git, not the `RoadmapBackend`**. For an external backend to genuinely *replace* the files in the autonomous cycle, the provider must discover the next task, honor the planning gate, and move `ROADMAP → IN_PROGRESS → HISTORY` against the backend. **This is not wired even for the existing Linear backend**, so M9 closes that gap generally, with GitHub Projects as the first remote provider exercised in atelier's cycle.
-
-**Decided (2026-06-13):**
-
-- **Target = GitHub Projects v2** (GraphQL API, custom Status field), not raw Issues + labels. Status maps to the three buckets the way Linear's `stateMap` does.
-- **Auth via a GitHub MCP** (OAuth), mirroring the `LinearBackend` pattern — not `gh`. (Confirm the GitHub hosted-MCP endpoint/registration, analogous to `claude mcp add … https://mcp.linear.app/mcp`.)
-- **Sequence: wire the abstraction first.** First connect atelier's task provider to crt's `RoadmapBackend` (today bypassed — `next-task`/`task-discovery` read `origin/<base>:ROADMAP.md` directly) so that *any* non-files backend — Linear included — drives the autonomous cycle; **then** land `GitHubProjectBackend` on top. This makes the GitHub work the second consumer of a now-real abstraction rather than a one-off.
-
-**Resolved in planning — full design in [PLAN.md §16](PLAN.md):**
-
-- **Coupling** — atelier aligns to crt's `RoadmapBackend` contract (consumer), not a duplicate provider (§16.1).
-- **Field mapping** — Projects v2 Status → buckets via `stateMap`; `#id`/type/estimate as custom fields; `[ready]` as a dedicated `Ready` field; `blocked_by` as text (§16.3).
-- **Claim registry** — open `task/*` PRs stay the claim unit; the Project is backlog + state (§16.4).
-- **Planning gate** — `.plan/<id>.md` stays a tracked repo file; `[ready]` becomes the Project `Ready` field; approval interactive-only (§16.5).
-- **Two-way migration** — `files ↔ github-project` both ways, with a generalized `backend → files` reverse path (also unlocks `linear → files`) (§16.6).
-- **Workspaces** — one backend per repo in v1; cross-repo `blocked_by` reads the sibling's state through its backend (§16.7).
-
-**Sub-phases (§16.8):** 9.1 wire the task provider to `RoadmapBackend` (keystone; validates with Linear) → 9.2 `GitHubProjectBackend` in crt → 9.3 `setup-project` selection + `next-task` + planning gate on Projects → 9.4 two-way migration → 9.5 workspaces + e2e.
+- [TASK_001 — M7.4 — Detect + migrate non-§5 task ids in a project's ROADMAP](roadmap/TASK_001_m7-4-migrate-non-s5-task-ids.md)
+- [TASK_002 — M9 — External task-manager backends: GitHub Projects](roadmap/TASK_002_m9-github-projects-backend.md)
 
 ---
 
@@ -87,111 +39,16 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 5–7 + deferred v2 patterns.** Multi-project, docs, end-to-end validation, and the OMC-borrowed ideas from PLAN.md §11.
 
-### Idea — first-class `High`/`Medium`/`Low` ROADMAP layout for operator projects (M7.1.F68 option B)
-
-Surfaced designing the F68 fix. Today operator projects must use the PLAN.md §5 layout (`P0`/`P1`/`P2` + backtick type tags + `#id` + `~estimate` + `[ready]`) for `task-discovery` / `/atelier:next-task`; real teams' roadmaps use simpler `High`/`Medium`/`Low` + checkboxes (which `/adopt-roadmap`'s default and `claude-roadmap-tools` produce). **Option B** was to make atelier's `task-discovery` accept the `High`/`Med`/`Low` layout natively for operator projects too — applying the `[ready]` planning gate there and treating `type`/`estimate` as optional — instead of requiring the §5 conversion (option A, shipped in claude-roadmap-tools #15). It would cut onboarding friction (no §5 rewrite) and meet teams where they are, but it **changes a decided spec (PLAN.md §5)**, so it is a product-design conversation, not a quick fix. Revisit once the §5 + `--format atelier` path has real mileage and we can judge whether the §5 metadata (type/estimate/priority granularity) earns its onboarding cost.
-
-### Idea — actionable "nothing planned" dead-end: surface plan candidates
-
-Surfaced finishing M7.1: when `/atelier:next-task` finds no `[ready]` task it stops with a bare "run `/atelier:plan-task` first" error. Instead, make the dead-end **actionable** — hand the operator a ranked shortlist of what to plan next, so `task` always returns something useful (either a started task or a precise "plan one of these").
-
-**Where it lives:** in `task-discovery` + `/next-task`'s no-eligible-task path — **not** the `task-orchestrator` (the orchestrator is only dispatched *after* a task is claimed; with nothing claimable it never runs). `task-discovery` already parses the whole ROADMAP and knows each item's `[ready]` state, so it has the data — it just needs to **return the unplanned candidates** instead of only an error.
-
-**Smart dead-end, by ROADMAP state:**
-- **§5 backlog with unplanned candidates** → ranked shortlist (P0 > P1 > P2, tie-break by *no open `blocked_by`*), each line `#id · title · priority · why-not-ready`, suggesting `/atelier:plan-task #X`.
-- **Non-§5 ROADMAP** (nothing parseable) → suggest `/adopt-roadmap --format atelier` first (the deminut state today).
-- **Empty backlog** → say so.
-
-**Interaction:**
-- **Interactive** → offer to plan one now (`AskUserQuestion` → dispatch `/atelier:plan-task #X`).
-- **Headless** (`ATELIER_AUTO`) → only print the list; never auto-plan — approving a plan is a human gate by design.
-
-**Trigger to revisit:** soon — it directly improves the most common autonomous dead-end (validated live during M7.1: a real run on deminut hit exactly this, and an ad-hoc list was helpful but not guaranteed).
-
-### Idea — `/setup-project` detects CI/CD and offers to scaffold it per stack
-
-`/atelier:setup-project` should check whether the project has CI/CD configured (e.g. `.github/workflows/**`, or other providers) and, when absent, **proactively offer to create a baseline pipeline** inferred from the detected stack (lint + typecheck + test, matching the package manager / language already detected for `/validate`). Today a freshly-onboarded project with no CI means the push/PR gates have no automated backstop on the remote. Read-only detection + an opt-in offer (never write workflows without confirmation — and recall agents never edit `.github/workflows/**` autonomously, so this is an explicit operator-confirmed scaffold at setup time, not a per-task action). Identified while onboarding deminut.
-
-### M4.4 — Blocked-task visibility in `/status`
-
-Extend the existing `/status` command so it also lists tasks currently marked `[BLOCKED]` in `IN_PROGRESS.md`, with their issue URL and the count of attached `.task-log/*.md` entries. Today the operator only sees blocked tasks by filtering GitHub Issues by label `blocked` or by reading `IN_PROGRESS.md` manually — neither is discoverable from inside a Claude session.
-
-**Acceptance:** `/status` on a project with N blocked tasks prints `Blocked: N` followed by one line per task with `<id> — <title> — <issue-url>`.
-
-**Trigger to revisit:** when the operator starts having more than ~2 blocked tasks open simultaneously and finding them becomes friction. Identified while designing M4.2 — deferred because the M4.2 + M4.3 loop is functional without it; this is pure quality-of-life.
-
-### M4.5 — `/abandon-task <id>`
-
-A slash command for the Camino C of the blocked-task lifecycle (operator decides the task will not be retried). Today this requires the operator to (a) close the GitHub `blocked` issue with a `wontfix` comment and (b) manually move the entry from `IN_PROGRESS.md` to `HISTORY.md` with an "abandoned" note. The command automates both steps:
-
-1. Close the GitHub `blocked` issue with a `wontfix` reason comment.
-2. Move the `[BLOCKED]` entry from `IN_PROGRESS.md` to `HISTORY.md` under an explicit `### <id> — <title> — abandoned — <date>` heading.
-3. Preserve the `.task-log/` directory inside the worktree (post-mortem evidence stays in case the task is ever revived) and `git wt rm` the worktree only after the operator confirms.
-
-**Acceptance:** running `/abandon-task <id>` on a `[BLOCKED]` entry closes the issue with `wontfix`, moves the entry to `HISTORY.md` with `abandoned` mark, and removes the worktree (with confirmation).
-
-**Trigger to revisit:** after M4.2 + M4.3 land and the operator hits a real "I'm not retrying this" situation. Identified while designing M4.2 — deferred because the manual workaround (close issue + edit two markdown files) works fine for the rare case where a task is genuinely abandoned.
-
-### M4.21 — `/validate` Python toolchain in `allowed-tools` frontmatter
-
-`commands/validate.md` (added in [M4.14](HISTORY.md) / PR #65) detects Python-project tooling in its body (`ruff` for lint, `mypy` / `pyright` for typecheck, `pytest` for tests via `pnpm` script) but its `allowed-tools` frontmatter only explicitly grants the JS/TS toolchain (`Bash(eslint:*)`, `Bash(biome:*)`, `Bash(tsc:*)`, `Bash(vitest:*)`, `Bash(jest:*)`, etc.) plus a single `Bash(pytest:*)` and `Bash(playwright:*)`. Missing: `Bash(ruff:*)`, `Bash(mypy:*)`, `Bash(pyright:*)`.
-
-Concrete effect on a Python project: the first time `/validate` tries to invoke any of those three tools, the Claude Code harness prompts the operator for permission ("Allow `Bash(ruff check)` once / always?"). Same outcome as Phase 0 of any new permission — not broken, just interactive. The inner loop ([M4.14](HISTORY.md)) under `claude -p` would stall on that prompt.
-
-**Scope:**
-
-- [ ] Add `Bash(ruff:*)`, `Bash(mypy:*)`, `Bash(pyright:*)` to `commands/validate.md` frontmatter `allowed-tools`.
-- [ ] Sanity check: any other Python-friendly invocations the body uses (e.g. `pnpm` is already covered; if `pdm` / `uv` / `poetry` are later added to the detection logic, allowlist those too).
-- [ ] No behavior change — purely a permission-prompt prevention.
-
-**Acceptance:** running `/atelier:validate` against a Python project (`pyproject.toml` with `[tool.ruff]` + `[tool.mypy]`) under `claude -p` completes without a permission prompt for any of the three tools. Static check: `grep -E "Bash\\(ruff|Bash\\(mypy|Bash\\(pyright" commands/validate.md` returns 3 matches.
-
-**Trigger to revisit:** when the first Python project gets `/atelier:setup-project`-ed and `/validate` runs against it. Until atelier sees a Python project in real use, this is purely defensive — captured here so the next operator who hits the prompt knows the fix is one frontmatter edit. Identified during PR #65 pre-merge review (2026-05-23).
-
-### M4.15 — `Stop`-hook auto-reprompt on validation failure (exceptional path)
-
-`blocked_by: M4.14`
-
-Complement to M4.14. Where M4.14 puts the implement↔validate loop inside `task-orchestrator` (the orchestrator reads the validation output and decides whether to re-invoke `implementer`), M4.15 explores doing the same thing one layer lower — at the harness level, via a `Stop` hook that triggers automatically when an assistant turn ends with a failed validation.
-
-The hook script:
-
-1. Detects that the last turn ran `/validate` (or `/validate --full`) and the exit was failure.
-2. Reads `<worktree>/.task-log/attempt-count` and increments it. If the count exceeds the 3+3 budget, the hook does **nothing** — the orchestrator-side `blocked` issue path takes over.
-3. Emits a structured retry prompt back to Claude containing:
-   - An explicit `RETRY-attempt-N / 6` header (so the model knows this is not a fresh task and how much budget remains).
-   - The full output of the failed validation (stdout + stderr from the failing checks) verbatim.
-   - A directive: *"the previous attempt failed the checks below — correct the issues without restarting the task; do not reset the worktree".*
-
-This is **not** the primary loop mechanism (M4.14 is). It is captured as an alternative for cases where the orchestrator-driven loop is too high-latency (long agent dispatch overhead per turn) or where the operator wants the loop to keep running across session restarts without re-entering `/next-task`.
-
-**Acceptance:**
-
-- A `Stop` hook script under `hooks/` detects validation-failure conditions and emits a structured retry prompt with `RETRY-attempt-N` framing and the previous validation output verbatim.
-- The hook respects the same 3+3 budget anchored to `<worktree>/.task-log/attempt-count` (the file written by M4.14) — never exceeds it, never bypasses the `blocked` issue path.
-- Hook is **opt-in** (off by default), enabled via a per-project setting or env var — atelier ships without it active to avoid surprising the operator.
-- When active, the hook composes with M4.14 cleanly (no double-incrementing the counter, no race between orchestrator-driven and hook-driven reprompts).
-
-**Trigger to revisit:** after M4.14 is in production and the operator observes that orchestrator dispatch latency dominates iteration time, **or** wants the loop to survive a session restart. Captured in conversation 2026-05-21 as an exceptional-case mechanism — the operator likes the idea but explicitly tagged it as "for later".
-
-### M6.3 — Product owner guide (ROADMAP.md format)
-
-How to write [PLAN.md §5](PLAN.md)-shaped roadmaps: priorities, types, estimates, `blocked_by`, acceptance criteria. With examples.
-
-### M7.2 — Iterate the network allowlist
-
-Grow the allowlist organically based on what M7.1 needs. Document each addition with a one-line justification.
-
-### v2 ideas (deferred)
-
-Per [PLAN.md §11](PLAN.md). Revisit only after v1 is stable.
-
-- v2.1 — Skill auto-injector hook (`UserPromptSubmit`) to load skills by context signals.
-- v2.2 — Router skill with subcommands (`/atelier setup|doctor|update|reconfigure`).
-- v2.3 — `PermissionRequest` Bash hook for dynamic permissions, replacing static `settings.template.json`.
-- v2.4 — Project-memory hooks (`SessionStart` + `PostToolUse`) to auto-persist project learnings.
-- v2.5 — `/learner` + `/skillify` to extract reusable patterns from successful tasks.
-- v2.6 — Node.js hook dispatcher (`scripts/run.cjs`) for portable, fail-open hook execution.
+- [TASK_003 — Idea — first-class High/Medium/Low ROADMAP layout for operator projects (M7.1.F68 option B)](roadmap/TASK_003_first-class-high-med-low-layout.md)
+- [TASK_004 — Idea — actionable "nothing planned" dead-end: surface plan candidates](roadmap/TASK_004_nothing-planned-dead-end.md)
+- [TASK_005 — Idea — `/setup-project` detects CI/CD and offers to scaffold it per stack](roadmap/TASK_005_setup-project-detects-cicd.md)
+- [TASK_006 — M4.4 — Blocked-task visibility in `/status`](roadmap/TASK_006_m4-4-blocked-task-visibility.md)
+- [TASK_007 — M4.5 — `/abandon-task <id>`](roadmap/TASK_007_m4-5-abandon-task.md)
+- [TASK_008 — M4.21 — `/validate` Python toolchain in `allowed-tools` frontmatter](roadmap/TASK_008_m4-21-validate-python-toolchain.md)
+- [TASK_009 — M4.15 — `Stop`-hook auto-reprompt on validation failure (exceptional path)](roadmap/TASK_009_m4-15-stop-hook-auto-reprompt.md)
+- [TASK_010 — M6.3 — Product owner guide (ROADMAP.md format)](roadmap/TASK_010_m6-3-product-owner-guide.md)
+- [TASK_011 — M7.2 — Iterate the network allowlist](roadmap/TASK_011_m7-2-iterate-network-allowlist.md)
+- [TASK_012 — v2 ideas (deferred)](roadmap/TASK_012_v2-ideas-deferred.md)
 
 ### Out of scope for v1
 
