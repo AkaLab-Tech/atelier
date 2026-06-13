@@ -411,7 +411,7 @@ done <<< "$CHANGED_FILES_RAW"
 # Detect whether settings.template.json specifically changed — flag for the
 # operator since M6.1.a does not render the permission diff yet.
 SETTINGS_TEMPLATE_CHANGED=false
-for f in "${TEMPLATES[@]}"; do
+for f in ${TEMPLATES[@]+"${TEMPLATES[@]}"}; do
   [ "$f" = "templates/settings.template.json" ] && SETTINGS_TEMPLATE_CHANGED=true
 done
 
