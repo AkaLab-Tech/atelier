@@ -89,6 +89,62 @@ fi
 jq empty "$CONFIG_FILE" >/dev/null 2>&1 \
   || die "$CONFIG_FILE is not valid JSON"
 
+# ---------- presentation (default mode only) ----------
+# Colors are gated on a TTY + absence of NO_COLOR (repo convention). They are
+# NEVER emitted in --json / --quiet, which stay machine-clean.
+if [ "$MODE" = "default" ] && [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+  C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'; C_CYAN=$'\033[36m'
+else
+  C_RESET=''; C_BOLD=''; C_DIM=''; C_GREEN=''; C_YELLOW=''; C_RED=''; C_CYAN=''
+fi
+
+WORKSPACES_FILE="$ATELIER_CONFIG_DIR/workspaces.json"
+
+# Installed atelier version (best-effort) for drift hints — resolved from the
+# plugin root this script lives in (via the symlink chain). Empty if unresolved.
+installed_version() {
+  local self="${BASH_SOURCE[0]}" d cand
+  while [ -L "$self" ]; do
+    d="$(cd -P "$(dirname "$self")" && pwd)"; self="$(readlink "$self")"
+    case "$self" in /*) ;; *) self="$d/$self" ;; esac
+  done
+  d="$(cd -P "$(dirname "$self")" && pwd)"
+  for cand in "${ATELIER_PLUGIN_ROOT:-}" "$(dirname "$d")"; do
+    [ -n "$cand" ] || continue
+    if [ -f "$cand/.claude-plugin/plugin.json" ]; then
+      jq -r '.version // empty' "$cand/.claude-plugin/plugin.json" 2>/dev/null
+      return
+    fi
+  done
+}
+
+# older_than A B → true if semver A is strictly older than B (pure bash, no
+# `sort -V` so it stays portable to BSD/macOS). Non-numeric suffixes ignored.
+older_than() {
+  [ -n "$1" ] && [ -n "$2" ] && [ "$1" != "$2" ] || return 1
+  local IFS='.' a b i x y
+  a=($1); b=($2)
+  for i in 0 1 2; do
+    x="${a[$i]:-0}"; y="${b[$i]:-0}"
+    x="${x%%[!0-9]*}"; y="${y%%[!0-9]*}"
+    [ "${x:-0}" -lt "${y:-0}" ] && return 0
+    [ "${x:-0}" -gt "${y:-0}" ] && return 1
+  done
+  return 1
+}
+
+# workspace_of PATH → "slug<TAB>root" | "slug<TAB>member" | "" (best-effort)
+workspace_of() {
+  [ -f "$WORKSPACES_FILE" ] || return 0
+  jq -r --arg p "$1" '
+    .workspaces // {} | to_entries[]
+    | if .value.root == $p then "\(.key)\troot"
+      elif any(.value.members[]?; .path == $p) then "\(.key)\tmember"
+      else empty end' "$WORKSPACES_FILE" 2>/dev/null | head -n1
+}
+CURRENT_VERSION="$(installed_version || true)"
+
 # ---------- compute per-project on-disk status ----------
 # Returns one of:
 #   "configured"         — directory present and both atelier-managed files
@@ -153,36 +209,81 @@ case "$MODE" in
       exit 0
     fi
 
-    printf 'Atelier-managed projects (%d):\n\n' "$PROJECT_COUNT"
+    # Header + installed-version banner.
+    printf '%sAtelier-managed projects (%d)%s' "$C_BOLD" "$PROJECT_COUNT" "$C_RESET"
+    [ -n "$CURRENT_VERSION" ] && printf '   %s·   atelier %s installed%s' "$C_DIM" "$CURRENT_VERSION" "$C_RESET"
+    printf '\n'
 
+    # Workspaces overview (one-liner: slug + member count).
+    if [ -f "$WORKSPACES_FILE" ]; then
+      ws_summary="$(jq -r '.workspaces // {} | to_entries[] | "\(.key) (\(.value.members | length))"' "$WORKSPACES_FILE" 2>/dev/null | paste -sd '·' - | sed 's/·/ · /g')"
+      [ -n "$ws_summary" ] && printf '%sWorkspaces:%s %s\n' "$C_CYAN" "$C_RESET" "$ws_summary"
+    fi
+    printf '\n'
+
+    drift_n=0
     for p in ${PATHS[@]+"${PATHS[@]}"}; do
       name="$(jq -r --arg p "$p" '.projects[$p].name // "(unnamed)"' "$CONFIG_FILE")"
       version="$(jq -r --arg p "$p" '.projects[$p].setupVersion // "?"' "$CONFIG_FILE")"
       since="$(jq -r --arg p "$p" '.projects[$p].setupCompleted // "?"' "$CONFIG_FILE")"
       status="$(compute_status "$p")"
 
-      # Status glyph + detail message
+      # Workspace membership label.
+      ws="$(workspace_of "$p" || true)"
+      if [ -n "$ws" ]; then
+        ws_slug="${ws%%$'\t'*}"; ws_role="${ws##*$'\t'}"
+        [ "$ws_role" = "root" ] && wslabel="workspace root: ${ws_slug}" || wslabel="workspace: ${ws_slug}"
+      else
+        wslabel="standalone"
+      fi
+
+      # Status glyph + colour + detail + a suggested fix command.
+      suggest=""
       case "$status" in
-        configured)        glyph='✓'; detail='configured' ;;
+        configured)        gcol="$C_GREEN"; glyph='✓'; detail='configured' ;;
         partial)
-          glyph='⚠'
+          gcol="$C_YELLOW"; glyph='⚠'
           missing=()
           [ -f "$p/.claude/settings.json" ] || missing+=('.claude/settings.json')
           [ -f "$p/.atelier.json" ]        || missing+=('.atelier.json')
-          detail="partial (${missing[*]} missing — re-run setup-project)"
+          detail="partial (${missing[*]} missing)"
+          suggest="re-run /atelier:setup-project in this dir to restore it"
           ;;
         missing-files)
-          glyph='⚠'
-          detail='partial (both atelier files missing — re-run setup-project)'
+          gcol="$C_YELLOW"; glyph='⚠'; detail='partial (both atelier files missing)'
+          suggest="re-run /atelier:setup-project in this dir to restore it"
           ;;
-        missing-directory) glyph='✗'; detail='directory no longer exists — atelier-remove-project will unregister' ;;
-        *)                 glyph='?'; detail="$status" ;;
+        missing-directory)
+          gcol="$C_RED"; glyph='✗'; detail='directory no longer exists'
+          suggest="atelier-remove-project '$p' to unregister"
+          ;;
+        *) gcol=""; glyph='?'; detail="$status" ;;
       esac
 
-      printf '  %s\n' "$p"
-      printf '    name: %s · version: %s · since: %s\n' "$name" "$version" "$since"
-      printf '    status: %s %s\n' "$glyph" "$detail"
+      # Version drift vs installed.
+      vcol=""; drift_note=""
+      if older_than "$version" "$CURRENT_VERSION"; then
+        vcol="$C_YELLOW"; drift_n=$((drift_n + 1))
+        drift_note="set up with v${version}, installed is v${CURRENT_VERSION} — re-run /atelier:setup-project to resync"
+      fi
+
+      printf '  %s%s%s\n' "$C_BOLD" "$p" "$C_RESET"
+      printf '    %s · v%s%s%s · %s%s%s · since %s\n' \
+        "$name" "$vcol" "$version" "$C_RESET" "$C_DIM" "$wslabel" "$C_RESET" "${since%%T*}"
+      printf '    %s%s %s%s\n' "$gcol" "$glyph" "$detail" "$C_RESET"
+      [ -n "$drift_note" ] && printf '    %s↻ %s%s\n' "$C_YELLOW" "$drift_note" "$C_RESET"
+      [ -n "$suggest" ]    && printf '    %s→ %s%s\n' "$C_DIM" "$suggest" "$C_RESET"
       printf '\n'
     done
+
+    # Footer: suggested commands.
+    printf '%sSuggested:%s\n' "$C_BOLD" "$C_RESET"
+    printf '  %s•%s atelier-doctor                         %shealth check%s\n' "$C_CYAN" "$C_RESET" "$C_DIM" "$C_RESET"
+    if [ -f "$WORKSPACES_FILE" ]; then
+      ws_list="$(jq -r '.workspaces // {} | keys | join(", ")' "$WORKSPACES_FILE" 2>/dev/null)"
+      [ -n "$ws_list" ] && printf '  %s•%s atelier-workspace-status <slug>        %sper-workspace status (%s)%s\n' "$C_CYAN" "$C_RESET" "$C_DIM" "$ws_list" "$C_RESET"
+      [ -n "$ws_list" ] && printf '  %s•%s /atelier:onboard-workspace <slug>      %sadopt non-§5 roadmaps from the root%s\n' "$C_CYAN" "$C_RESET" "$C_DIM" "$C_RESET"
+    fi
+    [ "$drift_n" -gt 0 ] && printf '  %s•%s /atelier:setup-project (per project)   %sresync the %d project(s) marked ↻%s\n' "$C_CYAN" "$C_RESET" "$C_DIM" "$drift_n" "$C_RESET"
     ;;
 esac
