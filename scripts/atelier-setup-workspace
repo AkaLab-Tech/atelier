@@ -84,6 +84,13 @@ OPTIONS:
   --token-for <path>=<t> Override the short token for a member (default is the
                          member's basename). The token is what the operator
                          types in \`blocked_by:<token>#id\`. Repeatable.
+  --policy <value>       Set decisionPolicy.default in EVERY member's
+                         .atelier.json (workspace-wide, one place). Common
+                         values: \`auto\` / \`ask\`; a catalog option id (e.g.
+                         \`fix-first\`) is also accepted. Existing decisionPolicy
+                         keys (_comment, byCategory) are preserved. The change
+                         lands in each member's working file — commit it to the
+                         member's base branch so the autonomous cycle honors it.
   --force                Proceed even if a member already belongs to a
                          different workspace, or --name already exists with a
                          different member set.
@@ -110,6 +117,7 @@ NONINTERACTIVE=false
 WHICH_PATH=""
 DISCOVER_DIR=""
 LIST_DISCOVER_DIR=""
+POLICY=""   # M8.x: when set, write decisionPolicy.default to every member's .atelier.json
 declare -a TOKEN_OVERRIDES=()
 [ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
 
@@ -127,6 +135,8 @@ while [ $# -gt 0 ]; do
     --root=*)           ROOT_ARG="${1#--root=}"; shift ;;
     --token-for)        TOKEN_OVERRIDES+=("${2:-}"); shift 2 ;;
     --token-for=*)      TOKEN_OVERRIDES+=("${1#--token-for=}"); shift ;;
+    --policy)           POLICY="${2:-}"; shift 2 ;;
+    --policy=*)         POLICY="${1#--policy=}"; shift ;;
     --which-workspace)  WHICH_PATH="${2:-}"; shift 2 ;;
     --which-workspace=*) WHICH_PATH="${1#--which-workspace=}"; shift ;;
     --force)            FORCE=true; shift ;;
@@ -220,6 +230,32 @@ fi
 case "$WS_NAME" in
   *[!a-zA-Z0-9_-]*) die "--name '$WS_NAME' must be a slug (letters, digits, '-', '_')" ;;
 esac
+
+# --policy (optional): a decision-broker default applied to every member's
+# .atelier.json. `auto` / `ask` are the common values; a catalog option id
+# (a lowercase slug, e.g. `fix-first`) is also accepted as a fixed default.
+if [ -n "$POLICY" ]; then
+  case "$POLICY" in
+    *[!a-z0-9-]*) die "--policy '$POLICY' must be a slug (e.g. auto, ask, or a catalog option id)" ;;
+  esac
+fi
+
+# Set decisionPolicy.default in a single member's .atelier.json, preserving any
+# existing decisionPolicy keys (_comment, byCategory). Returns non-zero if the
+# file is missing or is not valid JSON. (M8.x: --policy workspace propagation.)
+apply_member_policy() {
+  local f="$1" value="$2" ptmp
+  [ -f "$f" ] || return 1
+  ptmp="$(mktemp)"
+  if jq --arg v "$value" \
+       '.decisionPolicy = ((.decisionPolicy // {}) + {default: $v})' \
+       "$f" > "$ptmp" 2>/dev/null; then
+    mv "$ptmp" "$f"
+    return 0
+  fi
+  rm -f "$ptmp"
+  return 1
+}
 
 # --members and --discover are mutually exclusive; exactly one is required.
 if [ -n "$DISCOVER_DIR" ] && [ -n "$MEMBERS_RAW" ]; then
@@ -414,6 +450,27 @@ else
 fi
 mv "$tmp" "$WORKSPACES_FILE"
 
+# ---------- apply decision policy to all members (--policy) ----------
+# Workspace-wide convenience: set decisionPolicy.default in every member's
+# .atelier.json from ONE command, instead of running /atelier:set-policy per
+# repo. Preserves any existing decisionPolicy keys (_comment, byCategory).
+# NOTE: .atelier.json is committed per project and the decision broker reads it
+# from each task's worktree (branched from the base) — so for the autonomous
+# cycle to honor the new policy, the member must commit its .atelier.json to its
+# base branch. This writes the working file; committing is the operator's step.
+POLICY_APPLIED=0
+POLICY_SKIPPED=0
+if [ -n "$POLICY" ]; then
+  for path in "${MEMBER_PATHS[@]}"; do
+    if apply_member_policy "$path/.atelier.json" "$POLICY"; then
+      POLICY_APPLIED=$((POLICY_APPLIED + 1))
+    else
+      warn "policy: could not update $path/.atelier.json (missing or invalid JSON) — skipped"
+      POLICY_SKIPPED=$((POLICY_SKIPPED + 1))
+    fi
+  done
+fi
+
 # ---------- report ----------
 echo ""
 ok "workspace '$WS_NAME' $STATUS in $WORKSPACES_FILE"
@@ -424,6 +481,12 @@ for path in "${MEMBER_PATHS[@]}"; do
   sublog "  - ${TOKENS[$i]}  ->  $path"
   i=$((i + 1))
 done
+if [ -n "$POLICY" ]; then
+  echo ""
+  sublog "decision policy: set default='$POLICY' on $POLICY_APPLIED member .atelier.json file(s)$([ "$POLICY_SKIPPED" -gt 0 ] && printf ' (%s skipped)' "$POLICY_SKIPPED")"
+  sublog "  commit each member's .atelier.json to its base branch so the autonomous"
+  sublog "  task cycle (which reads it from the per-task worktree) honors the new policy."
+fi
 echo ""
 sublog "next: \`task\` from the root routes to a member; cross-repo deps use blocked_by:<token>#id"
 exit 0

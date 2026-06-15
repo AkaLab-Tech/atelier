@@ -1,6 +1,6 @@
 ---
 description: Group several already-configured atelier projects into a workspace so the operator can route tasks, see aggregated status, and express cross-repo `blocked_by:<token>#id` dependencies. Wraps the `atelier-setup-workspace` host-OS helper, adding interactive member confirmation and driving `/atelier:setup-project` for any member that is not yet a registered project.
-argument-hint: "<name> (--members <p1,p2,...> | --discover <parent-dir>) [--yes|-y]"
+argument-hint: "<name> (--members <p1,p2,...> | --discover <parent-dir>) [--policy <auto|ask>] [--yes|-y]"
 allowed-tools: Bash(atelier-setup-workspace:*), AskUserQuestion, SlashCommand(/atelier:setup-project)
 ---
 
@@ -34,12 +34,21 @@ Each line is `<path>\t<registered|unregistered>`.
 - Interactive: present the candidates with `AskUserQuestion` (multi-select) so the operator confirms or prunes. Skip nothing silently.
 - Non-interactive: take every discovered repo.
 
+## Step 2.5 — decision policy (one prompt for the whole workspace)
+
+A workspace groups projects so the operator configures them together — that includes the decision-broker policy. Capture it ONCE here and let the helper propagate it to every member's `.atelier.json`, instead of making the operator run `/atelier:set-policy` per repo (and instead of every member silently defaulting to `ask` because the cascaded `/atelier:setup-project` ran headless).
+
+- **Interactive:** before registering, ask via `AskUserQuestion` — *"Decision-broker policy for the whole workspace? `auto` = atelier decides strategic calls itself (most autonomous); `ask` = atelier asks you each time; or skip and set it per project later."* Map the answer to a `--policy` value (`auto` / `ask`), or omit `--policy` entirely if the operator chooses "set later".
+- **Non-interactive:** if `$ARGUMENTS` carries `--policy <value>`, forward it verbatim. Otherwise omit `--policy` — do NOT guess; preserve each member's existing policy.
+
+`--policy` sets `decisionPolicy.default` in each member's working `.atelier.json` (preserving `_comment` / `byCategory`). Because the decision broker reads `.atelier.json` from each task's **worktree** (branched from the base), remind the operator the change must be **committed to each member's base branch** to take effect in the autonomous cycle — the helper writes the working file; committing is theirs.
+
 ## Step 3 — register the workspace
 
-Invoke the helper once with the resolved selection (pass `--discover <parent>` straight through when the operator did not prune; otherwise pass the confirmed paths as `--members`). Forward `--yes` when non-interactive.
+Invoke the helper once with the resolved selection (pass `--discover <parent>` straight through when the operator did not prune; otherwise pass the confirmed paths as `--members`). Forward `--yes` when non-interactive, and `--policy <value>` when Step 2.5 resolved one.
 
 ```bash
-atelier-setup-workspace --name <name> --members <p1,p2,...>
+atelier-setup-workspace --name <name> --members <p1,p2,...> [--policy <auto|ask>]
 ```
 
 Handle the exit code:
