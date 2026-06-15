@@ -53,6 +53,11 @@ jobs:
           bash hooks/tests/workspace-status-roadmap-format.test.sh \
             || { echo "::error::workspace-status roadmap_format regression failed"; exit 1; }
 
+      - name: list-projects friendly render
+        run: |
+          bash hooks/tests/list-projects-render.test.sh \
+            || { echo "::error::list-projects render regression failed"; exit 1; }
+
       - name: python3 -m json.tool on JSON files
         run: |
           fail=0
