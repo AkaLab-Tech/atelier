@@ -48,6 +48,11 @@ jobs:
           bash hooks/tests/setup-workspace-policy.test.sh \
             || { echo "::error::setup-workspace --policy regression failed"; exit 1; }
 
+      - name: workspace-status ROADMAP §5 signal
+        run: |
+          bash hooks/tests/workspace-status-roadmap-format.test.sh \
+            || { echo "::error::workspace-status roadmap_format regression failed"; exit 1; }
+
       - name: python3 -m json.tool on JSON files
         run: |
           fail=0
