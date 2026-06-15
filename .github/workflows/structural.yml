@@ -43,6 +43,11 @@ jobs:
           bash hooks/tests/setup-project-roadmap-format-f74.test.sh \
             || { echo "::error::setup-project F74 ROADMAP-format regression failed"; exit 1; }
 
+      - name: setup-workspace --policy member propagation
+        run: |
+          bash hooks/tests/setup-workspace-policy.test.sh \
+            || { echo "::error::setup-workspace --policy regression failed"; exit 1; }
+
       - name: python3 -m json.tool on JSON files
         run: |
           fail=0
