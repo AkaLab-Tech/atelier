@@ -141,6 +141,7 @@ For the full setup (recommended), run [`install.sh`](install.sh) per the [Operat
 
 ## Other docs
 
+- [docs/quickstart.md](docs/quickstart.md) — command-first runbook: update, verify, onboard an existing project, set up a new one, cut a release.
 - [docs/troubleshooting.md](docs/troubleshooting.md) — symptom-indexed guide for when something doesn't work.
 - [operator-rules.md](operator-rules.md) — invariants every atelier session honors (update flow, epic + sub-tasks, oversize handling, config-root semantics).
 - [docs/measurements/autonomous-merge-rate.md](docs/measurements/autonomous-merge-rate.md) — methodology for the Phase 7 ship-gate metric.
