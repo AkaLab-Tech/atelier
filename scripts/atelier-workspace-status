@@ -121,6 +121,19 @@ open_count() {
   grep -cE '^[[:space:]]*- \[ \]' "$1/ROADMAP.md" 2>/dev/null || true
 }
 
+# PLAN.md §5 conformance of a member's ROADMAP.md — mirrors detect_roadmap_format
+# in atelier-setup-project (M7.1.F74). `conforming` = has a P0/P1/P2 priority
+# heading (task-discovery / next-task can claim its tasks); `non-conforming` =
+# ROADMAP exists but has none (foreign / High-Med-Low layout); `absent` = no file.
+roadmap_format() {
+  [ -f "$1/ROADMAP.md" ] || { printf 'absent'; return; }
+  if grep -Eq '^#{1,6}[^A-Za-z0-9]*P[012]([^A-Za-z0-9]|$)' "$1/ROADMAP.md"; then
+    printf 'conforming'
+  else
+    printf 'non-conforming'
+  fi
+}
+
 # First active task in IN_PROGRESS.md (a `- [ ]`/`- [x]` line that is not an
 # HTML comment), trimmed; "—" when none.
 in_progress_task() {
@@ -185,10 +198,11 @@ if [ "$MODE" = "json" ]; then
       p="${M_PATHS[$i]}"; t="${M_TOKENS[$i]}"
       st="$(compute_status "$p")"; oc="$(open_count "$p")"
       xb="$(printf '%s' "$XREPO_ROWS" | { grep -cE "^${t}	" || true; })"
-      ip="$(in_progress_task "$p")"
+      ip="$(in_progress_task "$p")"; rf="$(roadmap_format "$p")"
       jq -n --arg token "$t" --arg path "$p" --arg status "$st" \
-            --arg inprogress "$ip" --argjson open "${oc:-0}" --argjson xblocked "${xb:-0}" \
-            '{token:$token, path:$path, status:$status, inProgress:$inprogress, openTasks:$open, crossRepoBlocked:$xblocked}'
+            --arg inprogress "$ip" --arg roadmapfmt "$rf" \
+            --argjson open "${oc:-0}" --argjson xblocked "${xb:-0}" \
+            '{token:$token, path:$path, status:$status, inProgress:$inprogress, roadmapFormat:$roadmapfmt, openTasks:$open, crossRepoBlocked:$xblocked}'
     done | jq -s '.'
   )"
   blocked_json="$(printf '%s' "$XREPO_ROWS" | jq -R 'select(length>0) | split("\t") | {member:.[0], task:.[1], title:.[2], blocker:.[3], verdict:.[4]}' | jq -s '.')"
@@ -224,6 +238,10 @@ for i in "${!M_PATHS[@]}"; do
   printf '  %-22s %s %-14s  open: %-3s  x-repo-blocked: %s\n' \
     "$t" "$glyph" "$st" "${oc:-0}" "${xb:-0}"
   printf '      in-progress: %s\n' "$ip"
+  case "$(roadmap_format "$p")" in
+    non-conforming) printf '      roadmap §5: no — run /atelier:onboard-workspace (adopts to §5)\n' ;;
+    absent)         printf '      roadmap §5: no ROADMAP.md\n' ;;
+  esac
 done
 
 blocked_n="$(printf '%s' "$XREPO_ROWS" | grep -cE '.' || true)"
