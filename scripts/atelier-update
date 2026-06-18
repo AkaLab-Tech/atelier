@@ -525,6 +525,21 @@ else
   #    new scripts/atelier-* helper; without this it would stay unlinked until
   #    the operator re-ran install.sh by hand.
   resync_script_symlinks
+
+  # 4) Re-inject the shellrc hook block (TASK_016). A pulled release may change
+  #    the PATH/env exports or the task()/atelier() functions (versioned by
+  #    phase_c_1_shellrc_hooks); without this they would NOT propagate —
+  #    atelier-update never touched the shellrc, so the operator had to re-run
+  #    the full install.sh by hand. Delegate to install.sh's dedicated path;
+  #    idempotent (no-ops when the rc block version already matches).
+  if [ -f "$PLUGIN_ROOT/install.sh" ]; then
+    rc_out="$(bash "$PLUGIN_ROOT/install.sh" --config-dir "$ATELIER_CONFIG_DIR" --refresh-shellrc 2>&1 || true)"
+    if printf '%s' "$rc_out" | grep -qiE 'append|refresh'; then
+      sublog "shellrc hook block updated — run \`exec zsh\` (or open a new terminal) to load it"
+    else
+      sublog "shellrc hook block already current"
+    fi
+  fi
 fi
 
 # ---------- report ----------
