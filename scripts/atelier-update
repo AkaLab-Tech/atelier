@@ -177,6 +177,24 @@ resync_script_symlinks() {
   if [ "$linked" -gt 0 ]; then log "re-symlinked $linked new/changed helper(s) into $bin_dir"; else sublog "helper symlinks already in sync"; fi
 }
 
+# Re-inject the shellrc hook block via install.sh's dedicated path (TASK_016).
+# A pulled release — or simply an operator whose rc block drifted behind the
+# clone — may need the PATH/env exports or task()/atelier() functions refreshed;
+# atelier-update used to never touch the shellrc, forcing a full install re-run.
+# Idempotent: install.sh --refresh-shellrc no-ops when the rc block version
+# already matches. Runs on BOTH the pulled-update path and the no-commits resync
+# path, so a clone that is current but an rc that is behind still converges.
+refresh_shellrc_block() {
+  [ -f "$PLUGIN_ROOT/install.sh" ] || return 0
+  local cfg="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}" out
+  out="$(bash "$PLUGIN_ROOT/install.sh" --config-dir "$cfg" --refresh-shellrc 2>&1 || true)"
+  if printf '%s' "$out" | grep -qiE 'append|refresh'; then
+    sublog "shellrc hook block updated — run \`exec zsh\` (or open a new terminal) to load it"
+  else
+    sublog "shellrc hook block already current"
+  fi
+}
+
 # ---------- usage ----------
 usage() {
   cat <<EOF
@@ -364,6 +382,7 @@ if [ "$OLD_SHA" = "$NEW_SHA" ]; then
   $tmpl_drift  && refresh_instantiated_templates || true
   $cache_drift && refresh_plugin_cache || true
   resync_script_symlinks
+  refresh_shellrc_block
   echo ""
   ok "installed artifacts resynced to $NEW_VERSION — restart open Claude Code sessions to pick up plugin/agent changes"
   exit 0
@@ -526,20 +545,8 @@ else
   #    the operator re-ran install.sh by hand.
   resync_script_symlinks
 
-  # 4) Re-inject the shellrc hook block (TASK_016). A pulled release may change
-  #    the PATH/env exports or the task()/atelier() functions (versioned by
-  #    phase_c_1_shellrc_hooks); without this they would NOT propagate —
-  #    atelier-update never touched the shellrc, so the operator had to re-run
-  #    the full install.sh by hand. Delegate to install.sh's dedicated path;
-  #    idempotent (no-ops when the rc block version already matches).
-  if [ -f "$PLUGIN_ROOT/install.sh" ]; then
-    rc_out="$(bash "$PLUGIN_ROOT/install.sh" --config-dir "$ATELIER_CONFIG_DIR" --refresh-shellrc 2>&1 || true)"
-    if printf '%s' "$rc_out" | grep -qiE 'append|refresh'; then
-      sublog "shellrc hook block updated — run \`exec zsh\` (or open a new terminal) to load it"
-    else
-      sublog "shellrc hook block already current"
-    fi
-  fi
+  # 4) Re-inject the shellrc hook block (TASK_016) — see refresh_shellrc_block.
+  refresh_shellrc_block
 fi
 
 # ---------- report ----------

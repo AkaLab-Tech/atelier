@@ -38,8 +38,10 @@ refresh
 # --- did NOT do the heavy install (no deps/auth) — block-only, fast ---
 grep -q 'fnm' "$RC" && pass "shellrc still has the full block content (fnm hook)" || fail "block content incomplete"
 
-# --- atelier-update wires the refresh ---
+# --- atelier-update wires the refresh in BOTH paths ---
 grep -q -- '--refresh-shellrc' "$UPDATE" && pass "atelier-update calls install.sh --refresh-shellrc" || fail "atelier-update does not wire the refresh"
+# refresh_shellrc_block: 1 definition + 2 call sites (no-commits resync + pulled-update)
+[ "$(grep -c 'refresh_shellrc_block' "$UPDATE")" -ge 3 ] && pass "refresh_shellrc_block called in both update paths" || fail "refresh_shellrc_block not wired in both paths"
 
 echo ""
 if [ "$fails" -eq 0 ]; then echo "refresh-shellrc: all assertions passed."; exit 0
