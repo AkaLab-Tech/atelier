@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+#
+# atelier-orient — print a prioritized "what to do next" for a directory,
+# derived from LOCAL state only (filesystem + jq; no `gh`, no remote `git`), so
+# it is cheap enough to run from the SessionStart hook on every session.
+#
+# TASK_016 Phase 1. The network-dependent picture (open PRs, remote in-progress)
+# is added by the `/atelier:orient` command in Phase 2; this helper points the
+# operator at `/atelier:status` for that.
+#
+# Usage:   atelier-orient [<dir>]      (defaults to $PWD)
+# Output:  a short, plain-text orientation block (no ANSI — it is injected into
+#          the model's session context by the hook). Always exits 0 (fail-open).
+
+set -uo pipefail
+
+DIR="${1:-$PWD}"
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+WORKSPACES_FILE="$ATELIER_CONFIG_DIR/workspaces.json"
+PROJECTS_FILE="$ATELIER_CONFIG_DIR/projects.json"
+
+# Fail-open: without jq or a resolvable dir, say nothing rather than error.
+command -v jq >/dev/null 2>&1 || exit 0
+DIR="$(cd "$DIR" 2>/dev/null && pwd -P)" || exit 0
+
+# ---------- cheap detectors ----------
+is_gitrepo()    { [ -e "$DIR/.git" ]; }
+is_configured() { [ -f "$DIR/.atelier.json" ] && [ -f "$DIR/.claude/settings.json" ]; }
+is_partial()    { { [ -f "$DIR/.atelier.json" ] || [ -f "$DIR/.claude/settings.json" ]; } && ! is_configured; }
+
+# "slug<TAB>root" | "slug<TAB>member" | "" — DIR's role in any workspace.
+ws_role() {
+  [ -f "$WORKSPACES_FILE" ] || return 0
+  jq -r --arg p "$DIR" '
+    .workspaces // {} | to_entries[]
+    | if .value.root == $p then "\(.key)\troot"
+      elif any(.value.members[]?; .path == $p) then "\(.key)\tmember"
+      else empty end' "$WORKSPACES_FILE" 2>/dev/null | head -n1
+}
+
+count_child_repos() {
+  local n=0 d
+  for d in "$DIR"/*/; do [ -e "${d}.git" ] && n=$((n + 1)); done
+  printf '%s' "$n"
+}
+
+# ROADMAP layout: section5 | highmedlow | foreign | absent.
+#   section5    — PLAN.md §5 (P0/P1/P2): claimable by task-discovery / next-task.
+#   highmedlow  — the roadmap-tracking-flow / crt default (High/Medium/Low Priority):
+#                 a SANCTIONED layout (atelier's own repo uses it) — worked manually,
+#                 not auto-claimable. Do NOT push adoption on it (avoids a false
+#                 "adopt to §5" nudge on atelier itself or a deliberate High/Med/Low project).
+#   foreign     — a ROADMAP exists but matches neither → genuinely needs adoption.
+roadmap_layout() {
+  local f="$DIR/ROADMAP.md"
+  [ -f "$f" ] || { printf 'absent'; return; }
+  grep -Eq '^#{1,6}[^A-Za-z0-9]*P[012]([^A-Za-z0-9]|$)' "$f" && { printf 'section5'; return; }
+  grep -Eq '^#{2,3}[[:space:]].*(High|Medium|Low)[[:space:]]+Priority' "$f" && { printf 'highmedlow'; return; }
+  printf 'foreign'
+}
+
+inprogress_occupied() {
+  local f="$DIR/IN_PROGRESS.md"
+  [ -f "$f" ] || return 1
+  grep -Eq '^[[:space:]]*-[[:space:]]+\[[ xX]\]' "$f" || grep -Eq '^#{2,3}[[:space:]]' "$f"
+}
+
+# ready | unplanned | empty | none  (only meaningful when ROADMAP is §5)
+backlog_state() {
+  local f="$DIR/ROADMAP.md"
+  [ -f "$f" ] || { printf 'none'; return; }
+  grep -Eq '\[ready\]' "$f" && { printf 'ready'; return; }
+  grep -Eq '^[[:space:]]*- \[ \].*#[0-9]' "$f" && { printf 'unplanned'; return; }
+  printf 'empty'
+}
+
+# installed atelier version (best-effort) for setup-drift hints.
+installed_version() {
+  local self="${BASH_SOURCE[0]}" d cand
+  while [ -L "$self" ]; do
+    d="$(cd -P "$(dirname "$self")" && pwd)"; self="$(readlink "$self")"
+    case "$self" in /*) ;; *) self="$d/$self" ;; esac
+  done
+  d="$(cd -P "$(dirname "$self")" && pwd)"
+  for cand in "${ATELIER_PLUGIN_ROOT:-}" "$(dirname "$d")"; do
+    [ -n "$cand" ] || continue
+    [ -f "$cand/.claude-plugin/plugin.json" ] && { jq -r '.version // empty' "$cand/.claude-plugin/plugin.json" 2>/dev/null; return; }
+  done
+}
+setup_version_of() { [ -f "$PROJECTS_FILE" ] && jq -r --arg p "$DIR" '.projects[$p].setupVersion // empty' "$PROJECTS_FILE" 2>/dev/null || true; }
+older_than() {
+  [ -n "$1" ] && [ -n "$2" ] && [ "$1" != "$2" ] || return 1
+  local IFS='.' a b i x y; a=($1); b=($2)
+  for i in 0 1 2; do
+    x="${a[$i]:-0}"; y="${b[$i]:-0}"; x="${x%%[!0-9]*}"; y="${y%%[!0-9]*}"
+    [ "${x:-0}" -lt "${y:-0}" ] && return 0
+    [ "${x:-0}" -gt "${y:-0}" ] && return 1
+  done
+  return 1
+}
+
+# ---------- decide ----------
+WS="$(ws_role)"; WS_SLUG="${WS%%$'\t'*}"; WS_ROLE="${WS##*$'\t'}"
+CURRENT_VERSION="$(installed_version || true)"
+
+printf '[atelier] Next step here:\n'
+
+# Workspace root — point at the board + the router.
+if [ -n "$WS" ] && [ "$WS_ROLE" = "root" ]; then
+  printf '  Root of workspace "%s".\n' "$WS_SLUG"
+  printf '  -> atelier-workspace-status %s   (board)   |   task   (claim/continue a member)\n' "$WS_SLUG"
+  exit 0
+fi
+
+# Not (fully) atelier-managed.
+if ! is_configured; then
+  if is_partial; then
+    printf '  Partially configured (an atelier file is missing).\n'
+    printf '  -> /atelier:setup-project   (restore it)\n'
+    exit 0
+  fi
+  childn="$(count_child_repos)"
+  if ! is_gitrepo && [ "${childn:-0}" -ge 2 ]; then
+    printf '  This folder has %s git repos — looks like a multi-repo project.\n' "$childn"
+    printf '  -> /atelier:setup-workspace --discover .   (group them into a workspace)\n'
+    exit 0
+  fi
+  if ! is_gitrepo; then
+    printf '  Not a git repository — atelier needs one.\n'
+    printf '  -> git init   then   /atelier:setup-project\n'
+    exit 0
+  fi
+  printf '  Git repo, not yet atelier-managed.\n'
+  printf '  -> /atelier:setup-project\n'
+  exit 0
+fi
+
+# Configured — gather secondary notes, then the headline.
+notes=""
+sv="$(setup_version_of)"
+older_than "$sv" "$CURRENT_VERSION" && notes="${notes}setup v${sv} < installed v${CURRENT_VERSION} (re-run /atelier:setup-project to resync); "
+[ "$WS_ROLE" = "member" ] && notes="${notes}member of workspace ${WS_SLUG} (drive from its root with \`task\`); "
+
+if inprogress_occupied; then
+  printf '  A task is in progress here.\n'
+  printf '  -> /atelier:resume-task   (continue it)\n'
+else
+  case "$(roadmap_layout)" in
+    section5)
+      case "$(backlog_state)" in
+        ready)      printf '  A planned task is ready to claim.\n  -> /atelier:next-task\n' ;;
+        unplanned)  printf '  Backlog has tasks but none are [ready].\n  -> /atelier:plan-task <id>   (then /atelier:next-task)\n' ;;
+        *)          printf '  No open tasks in the backlog.\n  -> add a §5 task to ROADMAP.md, then /atelier:plan-task <id>\n' ;;
+      esac ;;
+    foreign)
+      printf '  ROADMAP.md is not in the §5 layout — its tasks are not claimable yet.\n'
+      if [ "$WS_ROLE" = "member" ]; then
+        printf '  -> /atelier:onboard-workspace %s   (adopt members to §5)\n' "$WS_SLUG"
+      else
+        printf '  -> /adopt-roadmap --format atelier   (then fill TODOs, commit to base)\n'
+      fi ;;
+    highmedlow)
+      printf '  ROADMAP.md uses the High/Medium/Low layout — pick a task from ROADMAP.md to work.\n'
+      printf '  -> (worked manually; not auto-claimable by /atelier:next-task — /adopt-roadmap --format atelier to switch to §5)\n' ;;
+    *)
+      printf '  No ROADMAP.md yet.\n'
+      printf '  -> add one (or re-run /atelier:setup-project)\n' ;;
+  esac
+fi
+
+[ -n "$notes" ] && printf '  also: %s\n' "${notes%%; }"
+printf '  For open PRs / review / merge state: /atelier:status\n'
+exit 0

@@ -107,3 +107,18 @@ Lead with ONE protagonist action + a compact summary of the rest. Never dump a w
   vs. duplicating. Prefer reuse.
 - Interaction with **headless** (`ATELIER_AUTO`) sessions — orient should print but
   never auto-act.
+
+## Progress
+
+- **2026-06-18 — Phase 1 (B) implemented** (PR pending): `scripts/atelier-orient`
+  (cheap, filesystem+jq only, no network) emits a prioritized headline per the
+  decision tree; `hooks/orient-session.sh` (`SessionStart`) injects it into the
+  session context; hermetic test `hooks/tests/orient-decision-tree.test.sh`
+  (11 cases) wired into `structural.yml`. Notable refinement vs the plan: the
+  helper distinguishes **three** ROADMAP layouts — `section5` / `highmedlow` /
+  `foreign` — and does NOT push §5 adoption on the sanctioned High/Med/Low layout
+  (so atelier's own repo and deliberate High/Med/Low projects aren't nagged);
+  only `foreign` roadmaps get the adopt suggestion.
+- **Phase 2 (A) — pending:** `/atelier:orient` command (adds open-PRs / remote
+  in-progress via `gh`, reusing `/atelier:status`) and the `atelier()` shellrc
+  change in `install.sh` so the bare entry point opens with it.
