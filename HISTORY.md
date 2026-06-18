@@ -8,6 +8,18 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_017 — `atelier-align`: one pass to converge every project/workspace to the installed atelier — 2026-06-18
+**PR:** [#205](https://github.com/AkaLab-Tech/atelier/pull/205) · **Plugin bump:** 0.30.1 → 0.31.0
+
+Aligning projects after an atelier upgrade was a per-repo slog (resync each config, set policy per workspace, adopt non-§5 roadmaps, commit each to base). This adds one surveyor + applier, tiered by risk.
+
+**Delivered:**
+- `scripts/atelier-align [<slug>] [--plan|--apply] [--policy V] [--json] [--yes]` — surveys version drift / policy / ROADMAP layout (§5 vs sanctioned High-Med-Low vs foreign) / legacy IN_PROGRESS / partial / missing-dir across every registered project (or one workspace via `<slug>`). `--plan` (default) read-only (+ `--json`); `--apply` does **Tier 1** (resync drift via `setup-project --reconfigure` + set `decisionPolicy.default`), dry-run unless `--yes`. Reuses the orient/list-projects/workspace-status detectors.
+- `commands/align.md` (`/atelier:align`) — orchestrates **Tier 2** (§5 adoption via `/adopt-roadmap` / `/atelier:onboard-workspace`, never the sanctioned High/Med/Low) and **Tier 3** (one commit-to-base PR per changed repo via temp worktree, operator-confirmed; never pushes to/merges base). Headless prints the plan only.
+- `install.sh` symlinks `atelier-align`; hermetic survey test in `structural.yml`.
+
+On its first run against the live registry the survey already surfaced a real gap: `deminut-spa` was `partial` (missing `.atelier.json`).
+
 ### TASK_016 — Session orientation: prioritized next-step when the operator opens atelier — 2026-06-18
 **PR:** [#196](https://github.com/AkaLab-Tech/atelier/pull/196) (Phase 1) · [#197](https://github.com/AkaLab-Tech/atelier/pull/197) (Phase 2) · **Plugin bump:** 0.28.0 → 0.29.0
 

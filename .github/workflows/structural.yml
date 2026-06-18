@@ -83,6 +83,11 @@ jobs:
           bash hooks/tests/refresh-shellrc.test.sh \
             || { echo "::error::refresh-shellrc regression failed"; exit 1; }
 
+      - name: atelier-align survey (TASK_017)
+        run: |
+          bash hooks/tests/atelier-align-survey.test.sh \
+            || { echo "::error::atelier-align survey regression failed"; exit 1; }
+
       - name: python3 -m json.tool on JSON files
         run: |
           fail=0

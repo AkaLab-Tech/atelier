@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+#
+# atelier-align — survey (and optionally apply Tier-1 fixes to) every registered
+# atelier project / workspace so they converge to the INSTALLED atelier.
+#
+# Dimensions (per project): version drift (setupVersion < installed), decision
+# policy default, ROADMAP layout (§5 / High-Med-Low / foreign), legacy
+# IN_PROGRESS, partial/missing config.
+#
+# Tiers:
+#   1 (mechanical — THIS helper applies): version-drift resync + policy default.
+#   2 (content rewrite — /atelier:align orchestrates): §5 adoption, IN_PROGRESS reset.
+#   3 (outward-facing — /atelier:align orchestrates): commit-to-base PR per repo.
+#
+# Usage:
+#   atelier-align [<workspace-slug>] [--plan | --apply] [--policy <auto|ask|id>] [--json] [--yes]
+#     <slug>      restrict to one workspace's members (default: every registered project)
+#     --plan      read-only cross-project report (default)
+#     --json      machine-readable plan (implies --plan)
+#     --apply     apply Tier 1 (resync drift + set --policy) to working files;
+#                 DRY-RUN unless --yes
+#     --policy V  desired decisionPolicy.default for --apply (e.g. auto)
+#     --yes       actually apply (with --apply); otherwise --apply previews
+#     --help
+#
+# Exit: 0 ok · 1 error (no config / jq missing). Read-only unless --apply --yes.
+
+set -uo pipefail
+
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+PROJECTS_FILE="$ATELIER_CONFIG_DIR/projects.json"
+WORKSPACES_FILE="$ATELIER_CONFIG_DIR/workspaces.json"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+die() { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+
+# ---------- args ----------
+MODE="plan"; JSON=false; YES=false; POLICY=""; SLUG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --plan)    MODE="plan"; shift ;;
+    --apply)   MODE="apply"; shift ;;
+    --json)    JSON=true; shift ;;
+    --yes|-y)  YES=true; shift ;;
+    --policy)  POLICY="${2:-}"; shift 2 ;;
+    --policy=*) POLICY="${1#--policy=}"; shift ;;
+    --help|-h) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --*)       die "unknown flag: $1 (run --help)" ;;
+    *)         [ -z "$SLUG" ] && SLUG="$1" || die "unexpected arg: $1"; shift ;;
+  esac
+done
+[ -n "${ATELIER_AUTO:-}" ] && YES=true
+command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+[ -f "$PROJECTS_FILE" ] || die "$PROJECTS_FILE not found — atelier not installed?"
+if [ -n "$POLICY" ]; then case "$POLICY" in *[!a-z0-9-]*) die "--policy '$POLICY' must be a slug (auto/ask/<id>)";; esac; fi
+
+# ---------- detectors (shared shape with orient / list-projects / workspace-status) ----------
+installed_version() {
+  local self="${BASH_SOURCE[0]}" d cand
+  while [ -L "$self" ]; do d="$(cd -P "$(dirname "$self")" && pwd)"; self="$(readlink "$self")"; case "$self" in /*) ;; *) self="$d/$self";; esac; done
+  d="$(cd -P "$(dirname "$self")" && pwd)"
+  for cand in "${ATELIER_PLUGIN_ROOT:-}" "$(dirname "$d")"; do
+    [ -n "$cand" ] || continue
+    [ -f "$cand/.claude-plugin/plugin.json" ] && { jq -r '.version // empty' "$cand/.claude-plugin/plugin.json" 2>/dev/null; return; }
+  done
+}
+older_than() {
+  [ -n "$1" ] && [ -n "$2" ] && [ "$1" != "$2" ] || return 1
+  local IFS='.' a b i x y; a=($1); b=($2)
+  for i in 0 1 2; do x="${a[$i]:-0}"; y="${b[$i]:-0}"; x="${x%%[!0-9]*}"; y="${y%%[!0-9]*}"
+    [ "${x:-0}" -lt "${y:-0}" ] && return 0; [ "${x:-0}" -gt "${y:-0}" ] && return 1; done
+  return 1
+}
+compute_status() {
+  [ -d "$1" ] || { printf 'missing-directory'; return; }
+  if [ -f "$1/.claude/settings.json" ] && [ -f "$1/.atelier.json" ]; then printf 'configured'
+  elif [ -f "$1/.claude/settings.json" ] || [ -f "$1/.atelier.json" ]; then printf 'partial'
+  else printf 'missing-files'; fi
+}
+roadmap_layout() {
+  [ -f "$1/ROADMAP.md" ] || { printf 'absent'; return; }
+  grep -Eq '^#{1,6}[^A-Za-z0-9]*P[012]([^A-Za-z0-9]|$)' "$1/ROADMAP.md" && { printf 'section5'; return; }
+  grep -Eq '^#{2,3}[[:space:]].*(High|Medium|Low)[[:space:]]+Priority' "$1/ROADMAP.md" && { printf 'highmedlow'; return; }
+  printf 'foreign'
+}
+inprogress_occupied() {
+  [ -f "$1/IN_PROGRESS.md" ] || return 1
+  grep -Eq '^[[:space:]]*-[[:space:]]+\[[ xX]\]' "$1/IN_PROGRESS.md" || grep -Eq '^#{2,3}[[:space:]]' "$1/IN_PROGRESS.md"
+}
+setup_version_of() { jq -r --arg p "$1" '.projects[$p].setupVersion // empty' "$PROJECTS_FILE" 2>/dev/null; }
+policy_default_of() { [ -f "$1/.atelier.json" ] && jq -r '.decisionPolicy.default // "?"' "$1/.atelier.json" 2>/dev/null || printf '?'; }
+ws_of() {
+  [ -f "$WORKSPACES_FILE" ] || return 0
+  jq -r --arg p "$1" '.workspaces // {} | to_entries[] | if .value.root==$p then "\(.key)\troot" elif any(.value.members[]?;.path==$p) then "\(.key)\tmember" else empty end' "$WORKSPACES_FILE" 2>/dev/null | head -n1
+}
+CURRENT_VERSION="$(installed_version || true)"
+
+# ---------- target set ----------
+PATHS=()
+if [ -n "$SLUG" ]; then
+  [ -f "$WORKSPACES_FILE" ] || die "no workspaces.json — cannot resolve slug '$SLUG'"
+  while IFS= read -r p; do [ -n "$p" ] && PATHS+=("$p"); done < <(jq -r --arg w "$SLUG" '.workspaces[$w].members[]?.path // empty' "$WORKSPACES_FILE")
+  [ "${#PATHS[@]}" -gt 0 ] || die "workspace '$SLUG' not found or has no members"
+else
+  while IFS= read -r p; do [ -n "$p" ] && PATHS+=("$p"); done < <(jq -r '.projects | keys[]' "$PROJECTS_FILE" 2>/dev/null)
+fi
+
+# needs_for PATH → space-separated tokens: resync policy adopt-section5 reset-inprogress restore unregister
+needs_for() {
+  local p="$1" st sv lay n=""
+  st="$(compute_status "$p")"
+  case "$st" in
+    missing-directory) printf 'unregister'; return ;;
+    partial|missing-files) printf 'restore'; return ;;
+  esac
+  sv="$(setup_version_of "$p")"; older_than "$sv" "$CURRENT_VERSION" && n="$n resync"
+  if [ -n "$POLICY" ] && [ "$(policy_default_of "$p")" != "$POLICY" ]; then n="$n policy"; fi
+  lay="$(roadmap_layout "$p")"; [ "$lay" = "foreign" ] && n="$n adopt-section5"
+  inprogress_occupied "$p" && [ "$lay" = "section5" ] && n="$n maybe-reset-inprogress"
+  printf '%s' "${n# }"
+}
+
+# ---------- JSON ----------
+if $JSON; then
+  for p in ${PATHS[@]+"${PATHS[@]}"}; do
+    ws="$(ws_of "$p")"
+    jq -n --arg path "$p" --arg ws "${ws%%$'\t'*}" --arg role "${ws##*$'\t'}" \
+          --arg status "$(compute_status "$p")" --arg sv "$(setup_version_of "$p")" \
+          --arg installed "$CURRENT_VERSION" --arg layout "$(roadmap_layout "$p")" \
+          --arg policy "$(policy_default_of "$p")" --arg needs "$(needs_for "$p")" \
+          '{path:$path, workspace:(if $ws=="" then null else $ws end), role:(if $role==$ws then null else $role end),
+            status:$status, setupVersion:$sv, installedVersion:$installed, roadmapLayout:$layout,
+            decisionPolicyDefault:$policy, needs:($needs|split(" ")|map(select(length>0)))}'
+  done | jq -s "{installedVersion:\"$CURRENT_VERSION\", projects:.}"
+  exit 0
+fi
+
+# ---------- human report (plan / apply) ----------
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'; C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'; C_CYAN=$'\033[36m'; C_GREEN=$'\033[32m'
+else C_RESET=''; C_BOLD=''; C_DIM=''; C_YELLOW=''; C_RED=''; C_CYAN=''; C_GREEN=''; fi
+
+printf '%satelier-align%s — %s (atelier %s installed)%s\n\n' "$C_BOLD" "$C_RESET" "$C_DIM" "${CURRENT_VERSION:-?}" "$C_RESET"
+[ -n "$POLICY" ] || printf '%s(no --policy given: policy alignment is only reported, not changed; pass --policy auto to include it)%s\n\n' "$C_DIM" "$C_RESET"
+
+n_resync=0; n_policy=0; n_adopt=0; n_restore=0; n_unreg=0; APPLIED=""
+for p in ${PATHS[@]+"${PATHS[@]}"}; do
+  needs="$(needs_for "$p")"
+  name="$(basename "$p")"; lay="$(roadmap_layout "$p")"; sv="$(setup_version_of "$p")"; pol="$(policy_default_of "$p")"
+  case " $needs " in
+    *" unregister "*|*" restore "*) glyph="${C_RED}!${C_RESET}" ;;
+    *) if [ -n "$needs" ]; then glyph="${C_YELLOW}•${C_RESET}"; else glyph="${C_GREEN}✓${C_RESET}"; fi ;;
+  esac
+  printf '  %s %s%-26s%s' "$glyph" "$C_BOLD" "$name" "$C_RESET"
+  [ -n "$needs" ] && printf '  %s%s%s' "$C_YELLOW" "$needs" "$C_RESET"
+  printf '\n'
+  printf '      %ssetup v%s · policy %s · roadmap %s%s\n' "$C_DIM" "${sv:-?}" "$pol" "$lay" "$C_RESET"
+  case " $needs " in *" resync "*) n_resync=$((n_resync+1));; esac
+  case " $needs " in *" policy "*) n_policy=$((n_policy+1));; esac
+  case " $needs " in *" adopt-section5 "*) n_adopt=$((n_adopt+1));; esac
+  case " $needs " in *" restore "*) n_restore=$((n_restore+1));; esac
+  case " $needs " in *" unregister "*) n_unreg=$((n_unreg+1));; esac
+
+  # ---------- apply Tier 1 ----------
+  if [ "$MODE" = "apply" ]; then
+    case " $needs " in *" resync "*)
+      if $YES; then
+        if atelier-setup-project "$p" --reconfigure --yes >/dev/null 2>&1; then printf '      %s↳ resynced settings to current template%s\n' "$C_GREEN" "$C_RESET"; APPLIED="$APPLIED $name"; else printf '      %s↳ resync failed (run atelier-setup-project %s --reconfigure manually)%s\n' "$C_RED" "$p" "$C_RESET"; fi
+      else printf '      %s↳ would resync (atelier-setup-project %s --reconfigure)%s\n' "$C_DIM" "$p" "$C_RESET"; fi ;;
+    esac
+    case " $needs " in *" policy "*)
+      if $YES; then
+        tmp="$(mktemp)"
+        if jq --arg v "$POLICY" '.decisionPolicy = ((.decisionPolicy // {}) + {default:$v})' "$p/.atelier.json" > "$tmp" 2>/dev/null; then mv "$tmp" "$p/.atelier.json"; printf '      %s↳ set decisionPolicy.default=%s%s\n' "$C_GREEN" "$POLICY" "$C_RESET"; APPLIED="$APPLIED $name"; else rm -f "$tmp"; printf '      %s↳ policy write failed%s\n' "$C_RED" "$C_RESET"; fi
+      else printf '      %s↳ would set decisionPolicy.default=%s%s\n' "$C_DIM" "$POLICY" "$C_RESET"; fi ;;
+    esac
+  fi
+done
+
+# ---------- summary + next steps ----------
+total="${#PATHS[@]}"
+printf '\n%sSummary:%s %d project(s) · %d ↻ resync · %d policy≠%s · %d non-§5 · %d partial · %d missing-dir\n' \
+  "$C_BOLD" "$C_RESET" "$total" "$n_resync" "$n_policy" "${POLICY:-?}" "$n_adopt" "$n_restore" "$n_unreg"
+
+if [ "$MODE" = "plan" ]; then
+  printf '\n%sNext:%s\n' "$C_BOLD" "$C_RESET"
+  printf '  %s•%s atelier-align%s --apply --policy auto --yes%s   %sTier 1: resync drift + set policy (working files)%s\n' "$C_CYAN" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET"
+  printf '  %s•%s /atelier:align%s   %sTier 2 (§5 adoption) + Tier 3 (one base PR per changed repo)%s\n' "$C_CYAN" "$C_RESET" "$C_RESET" "$C_DIM" "$C_RESET"
+elif $YES; then
+  printf '\n%s⚠ working files changed in:%s%s\n' "$C_YELLOW" "$C_RESET" "${APPLIED:- (none)}"
+  printf '  %scommit each to its base branch (one PR per repo) so the autonomous cycle honors it — /atelier:align opens them, or do it per repo.%s\n' "$C_DIM" "$C_RESET"
+else
+  printf '\n%s(dry-run — re-run with --yes to apply Tier 1)%s\n' "$C_DIM" "$C_RESET"
+fi
