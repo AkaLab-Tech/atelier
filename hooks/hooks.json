@@ -16,6 +16,14 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/daily-housekeeping.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/orient-session.sh"
+          }
+        ]
       }
     ],
     "Stop": [

@@ -63,6 +63,11 @@ jobs:
           bash hooks/tests/workspace-status-render.test.sh \
             || { echo "::error::workspace-status render regression failed"; exit 1; }
 
+      - name: orient decision tree (TASK_016)
+        run: |
+          bash hooks/tests/orient-decision-tree.test.sh \
+            || { echo "::error::atelier-orient decision-tree regression failed"; exit 1; }
+
       - name: python3 -m json.tool on JSON files
         run: |
           fail=0
