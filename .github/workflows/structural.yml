@@ -68,6 +68,11 @@ jobs:
           bash hooks/tests/orient-decision-tree.test.sh \
             || { echo "::error::atelier-orient decision-tree regression failed"; exit 1; }
 
+      - name: atelier() shellrc orient wiring (TASK_016)
+        run: |
+          bash hooks/tests/atelier-shellrc-orient.test.sh \
+            || { echo "::error::atelier() shellrc orient wiring regression failed"; exit 1; }
+
       - name: python3 -m json.tool on JSON files
         run: |
           fail=0
