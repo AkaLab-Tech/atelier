@@ -24,3 +24,16 @@ if [ ! -f "$RULES_FILE" ]; then
 fi
 
 cat "$RULES_FILE"
+
+# Operator chat language (atelier-set-language → $ATELIER_CONFIG_DIR/operator.json).
+# When set, append a directive so atelier addresses the operator in that language
+# for all chat / status / questions — independent of `.atelier.json`
+# deliverableLanguage (which governs commits / PRs / code / docs). Fail-open:
+# no jq or no setting → say nothing, the existing "mirror the operator" rule stands.
+_op_file="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}/operator.json"
+if [ -f "$_op_file" ] && command -v jq >/dev/null 2>&1; then
+  _op_lang="$(jq -r '.language // empty' "$_op_file" 2>/dev/null || true)"
+  if [ -n "${_op_lang:-}" ]; then
+    printf '\n## Operator chat language\n\nAddress the operator in **%s** for all chat, status, and question messages this session — regardless of the language of the project content, these rules, or any injected context. This does NOT change `deliverableLanguage`: commit messages, PR titles/descriptions, code comments, and generated docs/artifacts still follow the project'"'"'s deliverable language.\n' "$_op_lang"
+  fi
+fi

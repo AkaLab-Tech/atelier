@@ -1316,6 +1316,12 @@ phase_c_1_setup_project_helper() {
   # template changes, and by the /atelier:update slash command. Refuses
   # to apply permission changes without an interactive prompt.
   _phase_c_1_symlink_helper atelier-permission-diff
+  # TASK_016: atelier-orient prints a prioritized "what to do next" for a dir;
+  # backs the /atelier:orient command and the SessionStart orientation hook.
+  _phase_c_1_symlink_helper atelier-orient
+  # atelier-set-language persists the operator's chat language (how atelier
+  # addresses you) in $ATELIER_CONFIG_DIR/operator.json; backs /atelier:set-language.
+  _phase_c_1_symlink_helper atelier-set-language
   # M4.23 / M4.27 / M4.28: atelier-setup-{coolify,vercel,neon} install +
   # configure the optional integration plugins. Invoked by the Phase C.2 opt-in
   # prompts and by /atelier:setup-{coolify,vercel,neon}.
