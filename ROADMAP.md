@@ -26,6 +26,7 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 - [TASK_001 — M7.4 — Detect + migrate non-§5 task ids in a project's ROADMAP](roadmap/TASK_001_m7-4-migrate-non-s5-task-ids.md)
 - [TASK_002 — M9 — External task-manager backends: GitHub Projects](roadmap/TASK_002_m9-github-projects-backend.md)
+- [TASK_016 — Session orientation: context-aware next-steps when the operator opens atelier](roadmap/TASK_016_session-orientation.md)
 
 ---
 
