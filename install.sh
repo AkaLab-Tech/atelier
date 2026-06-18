@@ -1484,11 +1484,12 @@ task() {
 }
 # `atelier`: general-purpose entry point that opens a Claude Code session
 # under atelier's isolated config root, optionally with arbitrary arguments
-# passed through to `claude`. Unlike `task`, this does NOT auto-invoke a
-# slash command — operators use it for `atelier /atelier:setup-project
-# <path>` (M7.1 dogfood-3 first-project bootstrap), `atelier /atelier:doctor`
-# (health check), `atelier` (bare — interactive exploration under atelier
-# config), or any other slash command the plugin ships (M7.1.F13). Same
+# passed through to `claude`. With explicit args it passes them through —
+# `atelier /atelier:setup-project <path>` (M7.1 dogfood-3 first-project
+# bootstrap), `atelier /atelier:doctor` (health check), or any other slash
+# command the plugin ships (M7.1.F13). Bare `atelier` (no args) opens with
+# `/atelier:orient` as its first message — a prioritized next-step for the cwd
+# (TASK_016); `atelier --no-orient` opens a plain exploration session. Same
 # CLAUDE_CONFIG_DIR + GH_CONFIG_DIR + GIT_CONFIG_GLOBAL env chain as `task`
 # so the loaded plugin sees the atelier-managed marketplace and the right
 # identities — agents/skills/commands behave consistently across both
@@ -1512,6 +1513,14 @@ atelier() {
       return 1
     fi
     return 0
+  fi
+  # TASK_016: bare `atelier` (no args) opens the session with /atelier:orient as
+  # its first message — a prioritized "what to do next" for the cwd. `atelier
+  # --no-orient` opens a plain session; explicit args / slash commands pass through.
+  local _noorient=0
+  if [ "${1:-}" = "--no-orient" ]; then _noorient=1; shift; fi
+  if [ "$#" -eq 0 ] && [ "$_noorient" -eq 0 ]; then
+    set -- "/atelier:orient"
   fi
   CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" \
     GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" \

@@ -8,6 +8,18 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_016 — Session orientation: prioritized next-step when the operator opens atelier — 2026-06-18
+**PR:** [#196](https://github.com/AkaLab-Tech/atelier/pull/196) (Phase 1) · [#197](https://github.com/AkaLab-Tech/atelier/pull/197) (Phase 2) · **Plugin bump:** 0.28.0 → 0.29.0
+
+Opening atelier in a directory now greets the operator with a single, prioritized "what to do next" derived from the project's real state, instead of the operator having to remember which command applies.
+
+**Delivered:**
+- **Phase 1 (offline):** `scripts/atelier-orient <dir>` — cheap helper (filesystem + jq only; no `gh`, no remote `git`) implementing the priority decision tree (workspace-root / multi-repo-parent / not-a-repo / not-configured / partial / in-progress / ROADMAP layout `section5`→next-task|plan-task · `foreign`→adopt · `highmedlow`→manual, no §5 nag) + secondary notes (version drift `↻`, workspace membership). `hooks/orient-session.sh` (`SessionStart`) injects it into session context (fail-open, no network — matches `daily-housekeeping.sh`). Registered in `hooks.json`.
+- **Phase 2 (network + entry point):** `commands/orient.md` (`/atelier:orient`) layers open `task/*` PRs / in-progress / blocked via `/atelier:status` and reconciles to one headline, offering to run it (read-only; never auto-acts headless). `install.sh`: bare `atelier` opens with `/atelier:orient` as its first message; `atelier --no-orient` opens a plain session; explicit args still pass through.
+- Hermetic tests: `orient-decision-tree.test.sh` (11 cases) + `atelier-shellrc-orient.test.sh`, both in `structural.yml`.
+
+**Note:** the `atelier()` shellrc change requires the operator to re-run `install.sh` (or refresh the shellrc block); the hook + command ship via the v0.29.0 release.
+
 ### M7.1.F77 — `atelier-update` crashes on releases that touch no templates (`TEMPLATES[@]: unbound variable`) — 2026-06-12
 **PR:** [#179](https://github.com/AkaLab-Tech/atelier/pull/179) · **Plugin bump:** 0.26.1 → 0.26.2
 

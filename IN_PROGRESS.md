@@ -9,4 +9,3 @@ When a PR closes a task, the **same PR** must update both `IN_PROGRESS.md` (remo
 ---
 
 - [TASK_013 — M7.1 — Dogfood on a real (non-toy) project](roadmap/TASK_013_m7-1-dogfood-real-project.md)
-- [TASK_016 — Session orientation](roadmap/TASK_016_session-orientation.md) — Phase 1 (helper + hook + test) in PR; Phase 2 (command + shellrc) pending.
