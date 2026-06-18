@@ -33,7 +33,7 @@ PM="$TMP/proj-gone"
 jq -n --arg pa "$PA" --arg pm "$PM" '{
   projects: {
     ($pa): {name:"proj-a", setupVersion:"0.9.0", setupCompleted:"2026-01-02T03:04:05Z"},
-    ($pm): {name:"proj-gone", setupVersion:"0.27.0", setupCompleted:"2026-06-01T00:00:00Z"}
+    ($pm): {name:"proj-gone", setupVersion:"99.0.0", setupCompleted:"2026-06-01T00:00:00Z"}
   }
 }' > "$CFG/projects.json"
 
@@ -43,9 +43,12 @@ jq -n --arg pa "$PA" '{
 
 OUT="$(ATELIER_CONFIG_DIR="$CFG" NO_COLOR=1 bash "$SCRIPT" 2>&1)"
 
+# Derive the real installed version so the banner assertion is version-agnostic.
+VER="$(jq -r '.version // empty' "$REPO_ROOT/.claude-plugin/plugin.json" 2>/dev/null)"
+
 has "$OUT" "Workspaces: ws1 (1)"                         "workspaces overview line"
 has "$OUT" "workspace: ws1"                              "member labeled with its workspace"
-has "$OUT" "atelier 0.27.0 installed"                    "installed-version banner"
+has "$OUT" "atelier ${VER} installed"                    "installed-version banner"
 has "$OUT" "↻ set up with v0.9.0"                        "drift hint for old setupVersion"
 has "$OUT" "directory no longer exists"                  "missing-directory status"
 has "$OUT" "→ atelier-remove-project"                    "suggested fix for missing dir"

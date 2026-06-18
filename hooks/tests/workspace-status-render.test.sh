@@ -44,7 +44,7 @@ B="$TMP/spa"; mkmember "$B" "# Roadmap
 
 jq -n --arg a "$A" --arg b "$B" '{projects:{
   ($a):{name:"api", setupVersion:"0.9.0",  setupCompleted:"2026-01-01T00:00:00Z"},
-  ($b):{name:"spa", setupVersion:"0.27.0", setupCompleted:"2026-06-01T00:00:00Z"}
+  ($b):{name:"spa", setupVersion:"99.0.0", setupCompleted:"2026-06-01T00:00:00Z"}
 }}' > "$CFG/projects.json"
 
 jq -n --arg root "$TMP" --arg a "$A" --arg b "$B" '{workspaces:{ wstest:{
