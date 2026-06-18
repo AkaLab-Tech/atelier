@@ -1333,6 +1333,9 @@ phase_c_1_setup_project_helper() {
   # atelier-set-language persists the operator's chat language (how atelier
   # addresses you) in $ATELIER_CONFIG_DIR/operator.json; backs /atelier:set-language.
   _phase_c_1_symlink_helper atelier-set-language
+  # TASK_017: atelier-align surveys (and applies Tier-1 fixes to) every registered
+  # project/workspace so they converge to the installed atelier; backs /atelier:align.
+  _phase_c_1_symlink_helper atelier-align
   # M4.23 / M4.27 / M4.28: atelier-setup-{coolify,vercel,neon} install +
   # configure the optional integration plugins. Invoked by the Phase C.2 opt-in
   # prompts and by /atelier:setup-{coolify,vercel,neon}.
