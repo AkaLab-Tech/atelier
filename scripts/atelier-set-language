@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+#
+# atelier-set-language — set the OPERATOR's chat language: the language atelier
+# uses to address YOU in sessions (chat, status, questions). Stored once at
+# $ATELIER_CONFIG_DIR/operator.json and injected into every session by the
+# SessionStart hook (load-operator-rules.sh).
+#
+# This is SEPARATE from `.atelier.json` -> deliverableLanguage, which governs
+# repo deliverables (commit messages, PR text, code comments, generated docs)
+# and stays per-project. Setting your chat language does NOT change what language
+# commits / PRs / code are written in.
+#
+# Usage:
+#   atelier-set-language <language>     e.g. Spanish · English · "Brazilian Portuguese"
+#   atelier-set-language --show
+#   atelier-set-language --clear        (revert to: mirror your chat, default English)
+#   atelier-set-language --help
+#
+# Exit codes: 0 ok · 1 error (bad args / jq missing / write failed)
+
+set -euo pipefail
+
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+die() { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} — set the operator's chat language (how atelier addresses you in sessions).
+
+USAGE:
+  ${SCRIPT_NAME} <language>     e.g. Spanish · English · "Brazilian Portuguese"
+  ${SCRIPT_NAME} --show         print the current setting
+  ${SCRIPT_NAME} --clear        unset (atelier mirrors your chat; default English)
+  ${SCRIPT_NAME} --help
+
+Stored at \$ATELIER_CONFIG_DIR/operator.json and injected each session by the
+SessionStart hook. Separate from .atelier.json deliverableLanguage (commits /
+PRs / code / docs) — this only affects how atelier talks to you. Restart open
+Claude Code sessions to apply.
+EOF
+}
+
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+OP_FILE="$ATELIER_CONFIG_DIR/operator.json"
+
+command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+
+[ $# -ge 1 ] || { usage; exit 1; }
+
+case "$1" in
+  --help|-h) usage; exit 0 ;;
+  --show)
+    if [ -f "$OP_FILE" ]; then
+      lang="$(jq -r '.language // empty' "$OP_FILE" 2>/dev/null || true)"
+    else lang=""; fi
+    if [ -n "${lang:-}" ]; then
+      printf 'operator chat language: %s\n' "$lang"
+    else
+      printf 'operator chat language: (unset — atelier mirrors your chat; default English)\n'
+    fi
+    exit 0 ;;
+  --clear)
+    [ -f "$OP_FILE" ] || { printf 'OK: already unset.\n'; exit 0; }
+    tmp="$(mktemp)"
+    jq 'del(.language)' "$OP_FILE" > "$tmp" 2>/dev/null || { rm -f "$tmp"; die "failed to update $OP_FILE"; }
+    mv "$tmp" "$OP_FILE"
+    printf 'OK: operator chat language unset. Restart open sessions to apply.\n'
+    exit 0 ;;
+  --*) die "unknown flag: $1 (run --help for usage)" ;;
+esac
+
+LANG_NAME="$1"
+[ -n "$LANG_NAME" ] || die "language must not be empty"
+
+mkdir -p "$ATELIER_CONFIG_DIR"
+tmp="$(mktemp)"
+if [ -f "$OP_FILE" ]; then
+  jq --arg l "$LANG_NAME" '.language = $l' "$OP_FILE" > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; die "failed to merge $OP_FILE (invalid JSON?)"; }
+else
+  jq -n --arg l "$LANG_NAME" '{language: $l}' > "$tmp" \
+    || { rm -f "$tmp"; die "failed to create $OP_FILE"; }
+fi
+mv "$tmp" "$OP_FILE"
+
+printf 'OK: atelier will address you in %s in sessions.\n' "$LANG_NAME"
+printf '    (deliverables — commits / PRs / code / docs — are unaffected; see .atelier.json deliverableLanguage.)\n'
+printf '    Restart open Claude Code sessions to apply.\n'

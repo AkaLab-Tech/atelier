@@ -73,6 +73,11 @@ jobs:
           bash hooks/tests/atelier-shellrc-orient.test.sh \
             || { echo "::error::atelier() shellrc orient wiring regression failed"; exit 1; }
 
+      - name: operator chat language
+        run: |
+          bash hooks/tests/operator-language.test.sh \
+            || { echo "::error::operator-language regression failed"; exit 1; }
+
       - name: python3 -m json.tool on JSON files
         run: |
           fail=0
