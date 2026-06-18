@@ -134,6 +134,46 @@ roadmap_format() {
   fi
 }
 
+PROJECTS_FILE="$ATELIER_CONFIG_DIR/projects.json"
+
+# Installed atelier version (best-effort) for per-member setup-drift hints —
+# resolved from the plugin root this script lives in (via the symlink chain).
+installed_version() {
+  local self="${BASH_SOURCE[0]}" d cand
+  while [ -L "$self" ]; do
+    d="$(cd -P "$(dirname "$self")" && pwd)"; self="$(readlink "$self")"
+    case "$self" in /*) ;; *) self="$d/$self" ;; esac
+  done
+  d="$(cd -P "$(dirname "$self")" && pwd)"
+  for cand in "${ATELIER_PLUGIN_ROOT:-}" "$(dirname "$d")"; do
+    [ -n "$cand" ] || continue
+    if [ -f "$cand/.claude-plugin/plugin.json" ]; then
+      jq -r '.version // empty' "$cand/.claude-plugin/plugin.json" 2>/dev/null; return
+    fi
+  done
+}
+
+# setup_version_of PATH → the setupVersion recorded in projects.json, or ''.
+setup_version_of() {
+  [ -f "$PROJECTS_FILE" ] || return 0
+  jq -r --arg p "$1" '.projects[$p].setupVersion // empty' "$PROJECTS_FILE" 2>/dev/null
+}
+
+# older_than A B → true if semver A is strictly older than B (pure bash, no
+# `sort -V` so it stays portable to BSD/macOS).
+older_than() {
+  [ -n "$1" ] && [ -n "$2" ] && [ "$1" != "$2" ] || return 1
+  local IFS='.' a b i x y
+  a=($1); b=($2)
+  for i in 0 1 2; do
+    x="${a[$i]:-0}"; y="${b[$i]:-0}"; x="${x%%[!0-9]*}"; y="${y%%[!0-9]*}"
+    [ "${x:-0}" -lt "${y:-0}" ] && return 0
+    [ "${x:-0}" -gt "${y:-0}" ] && return 1
+  done
+  return 1
+}
+CURRENT_VERSION="$(installed_version || true)"
+
 # First active task in IN_PROGRESS.md (a `- [ ]`/`- [x]` line that is not an
 # HTML comment), trimmed; "—" when none.
 in_progress_task() {
@@ -212,8 +252,18 @@ if [ "$MODE" = "json" ]; then
 fi
 
 # Default human dashboard.
-printf 'Workspace: %s' "$SLUG"
-[ -n "$ROOT" ] && printf '  (root: %s)' "$ROOT"
+# Colours gated on a TTY + absence of NO_COLOR (repo convention). This branch is
+# only reached in default mode (--json / --quiet exit earlier), so the gate is
+# purely about the terminal.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+  C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'; C_CYAN=$'\033[36m'
+else
+  C_RESET=''; C_BOLD=''; C_DIM=''; C_GREEN=''; C_YELLOW=''; C_RED=''; C_CYAN=''
+fi
+
+printf '%sWorkspace: %s%s' "$C_BOLD" "$SLUG" "$C_RESET"
+[ -n "$ROOT" ] && printf '   %s·   root: %s   ·   %d member(s)%s' "$C_DIM" "$ROOT" "${#M_PATHS[@]}" "$C_RESET"
 printf '\n\n'
 
 if [ "${#M_PATHS[@]}" -eq 0 ]; then
@@ -221,36 +271,91 @@ if [ "${#M_PATHS[@]}" -eq 0 ]; then
   exit 0
 fi
 
-printf 'Members (%d):\n' "${#M_PATHS[@]}"
+# Footer accumulators (space-separated member tokens; counted with wc -w).
+S_NONSEC5=''; S_INPROG=''; S_DRIFT=''; S_PARTIAL=''
+
+printf '%sMembers%s\n' "$C_BOLD" "$C_RESET"
 for i in "${!M_PATHS[@]}"; do
   p="${M_PATHS[$i]}"; t="${M_TOKENS[$i]}"
   st="$(compute_status "$p")"; oc="$(open_count "$p")"; ip="$(in_progress_task "$p")"
   xb="$(printf '%s' "$XREPO_ROWS" | { grep -cE "^${t}	" || true; })"
+  rf="$(roadmap_format "$p")"
   case "$st" in
-    configured)        glyph='✓' ;;
-    partial|missing-files) glyph='⚠' ;;
-    missing-directory) glyph='✗' ;;
-    *)                 glyph='?' ;;
+    configured)            gcol="$C_GREEN";  glyph='✓' ;;
+    partial|missing-files) gcol="$C_YELLOW"; glyph='⚠' ;;
+    missing-directory)     gcol="$C_RED";    glyph='✗' ;;
+    *)                     gcol='';          glyph='?' ;;
   esac
-  # M7.1.F72: two lines per member. The first is fixed-width (name · status ·
-  # counts) so columns always align and the row never wraps; the in-progress
-  # title goes on its own indented line untruncated (UTF-8 safe).
-  printf '  %-22s %s %-14s  open: %-3s  x-repo-blocked: %s\n' \
-    "$t" "$glyph" "$st" "${oc:-0}" "${xb:-0}"
-  printf '      in-progress: %s\n' "$ip"
-  case "$(roadmap_format "$p")" in
-    non-conforming) printf '      roadmap §5: no — run /atelier:onboard-workspace (adopts to §5)\n' ;;
-    absent)         printf '      roadmap §5: no ROADMAP.md\n' ;;
+
+  # Line 1: fixed-width glyph + token + counts (never wraps — F72).
+  printf '  %s%s%s %s%-22s%s  open %-3s  x-repo-blocked %s\n' \
+    "$gcol" "$glyph" "$C_RESET" "$C_BOLD" "$t" "$C_RESET" "${oc:-0}" "${xb:-0}"
+
+  # in-progress (untruncated, own line) + a resume hint when occupied.
+  if [ "$ip" = "—" ]; then
+    printf '      %sin-progress: —%s\n' "$C_DIM" "$C_RESET"
+  else
+    printf '      in-progress: %s   %s→ /atelier:resume-task%s\n' "$ip" "$C_DIM" "$C_RESET"
+    S_INPROG="$S_INPROG $t"
+  fi
+
+  # roadmap §5 conformance + adoption hint.
+  case "$rf" in
+    non-conforming)
+      printf '      %sroadmap §5: no%s   %s→ /atelier:onboard-workspace %s%s\n' "$C_YELLOW" "$C_RESET" "$C_DIM" "$SLUG" "$C_RESET"
+      S_NONSEC5="$S_NONSEC5 $t" ;;
+    absent)
+      printf '      %sroadmap §5: no ROADMAP.md%s\n' "$C_YELLOW" "$C_RESET" ;;
+  esac
+
+  # version drift vs installed.
+  sv="$(setup_version_of "$p")"
+  if older_than "$sv" "$CURRENT_VERSION"; then
+    printf '      %s↻ set up with v%s, installed is v%s — /atelier:setup-project to resync%s\n' "$C_YELLOW" "$sv" "$CURRENT_VERSION" "$C_RESET"
+    S_DRIFT="$S_DRIFT $t"
+  fi
+
+  # partial / missing config fixes.
+  case "$st" in
+    partial|missing-files)
+      printf '      %s→ re-run /atelier:setup-project to restore atelier files%s\n' "$C_DIM" "$C_RESET"
+      S_PARTIAL="$S_PARTIAL $t" ;;
+    missing-directory)
+      printf "      %s→ atelier-remove-project '%s' to unregister%s\n" "$C_DIM" "$p" "$C_RESET" ;;
   esac
 done
 
+# Cross-repo blocked.
 blocked_n="$(printf '%s' "$XREPO_ROWS" | grep -cE '.' || true)"
-printf '\nCross-repo blocked (%s):\n' "${blocked_n:-0}"
+printf '\n%sCross-repo blocked (%s)%s\n' "$C_BOLD" "${blocked_n:-0}" "$C_RESET"
 if [ "${blocked_n:-0}" -eq 0 ]; then
-  printf '  (none — every cross-repo blocked_by is satisfied)\n'
+  printf '  %s(none — every cross-repo blocked_by is satisfied)%s\n' "$C_DIM" "$C_RESET"
 else
   while IFS=$'\t' read -r mtok task title blk verdict; do
     [ -n "$mtok" ] || continue
-    printf '  %s %s  %s  — blocked_by %s (%s)\n' "$mtok" "$task" "$title" "$blk" "$verdict"
+    printf '  %s%s %s  %s  %s— blocked_by %s (%s)%s\n' "$C_YELLOW" "$mtok" "$task" "$title" "$C_RESET" "$blk" "$verdict" "$C_RESET"
   done < <(printf '%s' "$XREPO_ROWS")
 fi
+
+# ---------- suggested next steps ----------
+list() { printf '%s' "${1# }" | sed 's/ /, /g'; }   # " a b" -> "a, b"
+cnt()  { printf '%s' "$1" | wc -w | tr -d ' '; }
+
+printf '\n%sSuggested next steps%s\n' "$C_BOLD" "$C_RESET"
+if [ -n "$S_PARTIAL" ]; then
+  printf '  %s•%s %s partially configured (%s) %s→ /atelier:setup-project%s\n' "$C_CYAN" "$C_RESET" "$(cnt "$S_PARTIAL")" "$(list "$S_PARTIAL")" "$C_DIM" "$C_RESET"
+fi
+if [ -n "$S_NONSEC5" ]; then
+  printf '  %s•%s %s member(s) not §5 (%s) %s→ /atelier:onboard-workspace %s%s\n' "$C_CYAN" "$C_RESET" "$(cnt "$S_NONSEC5")" "$(list "$S_NONSEC5")" "$C_DIM" "$SLUG" "$C_RESET"
+fi
+if [ -n "$S_DRIFT" ]; then
+  printf '  %s•%s %s on an older setup (%s) %s→ /atelier:setup-project to resync%s\n' "$C_CYAN" "$C_RESET" "$(cnt "$S_DRIFT")" "$(list "$S_DRIFT")" "$C_DIM" "$C_RESET"
+fi
+if [ "${blocked_n:-0}" -gt 0 ]; then
+  printf '  %s•%s %s cross-repo blocker(s) unsatisfied %s→ merge the blocking member first%s\n' "$C_CYAN" "$C_RESET" "${blocked_n}" "$C_DIM" "$C_RESET"
+fi
+if [ -n "$S_INPROG" ]; then
+  printf '  %s•%s %s with work in progress (%s) %s→ /atelier:resume-task in that member%s\n' "$C_CYAN" "$C_RESET" "$(cnt "$S_INPROG")" "$(list "$S_INPROG")" "$C_DIM" "$C_RESET"
+fi
+printf '  %s•%s claim / continue work %s→ task   (from this root; member picker)%s\n' "$C_CYAN" "$C_RESET" "$C_DIM" "$C_RESET"
+printf '  %s•%s full health %s→ atelier-doctor%s\n' "$C_CYAN" "$C_RESET" "$C_DIM" "$C_RESET"
