@@ -49,6 +49,10 @@ ATELIER_CONFIG_DIR_FLAG=""
 # Set by parse_args. true → preflight refuses (rather than prompts) when the
 # target directory has unrelated content.
 NONINTERACTIVE=false
+# When true (--refresh-shellrc), main() re-injects ONLY the shellrc hook block
+# and exits — used by atelier-update so shellrc changes (e.g. the atelier()
+# entry point) ship without a full install re-run.
+REFRESH_SHELLRC_ONLY=false
 
 # M4.23 / M4.27 / M4.28: set true by the phase_c_2_* opt-in steps when the
 # operator enables an optional integration, so print_first_steps can surface the
@@ -195,6 +199,11 @@ OPTIONS:
   --yes, -y             Non-interactive mode. The preflight collision
                         check refuses (rather than prompts) if the target
                         config dir already has unrelated content.
+  --refresh-shellrc     Re-inject ONLY the atelier shellrc hook block (the
+                        PATH / env exports + task() / atelier() functions)
+                        and exit — no deps, auth, or plugin work. Used by
+                        atelier-update so shellrc changes propagate without a
+                        full re-install. Idempotent (no-ops if up to date).
   --help, -h            Show this help and exit.
 EOF
 }
@@ -215,6 +224,8 @@ parse_args() {
         ATELIER_CONFIG_DIR_FLAG="${1#--config-dir=}"; shift ;;
       --yes|-y)
         NONINTERACTIVE=true; shift ;;
+      --refresh-shellrc)
+        REFRESH_SHELLRC_ONLY=true; shift ;;
       --help|-h)
         usage; exit 0 ;;
       *)
@@ -1381,7 +1392,7 @@ phase_c_1_shellrc_hooks() {
   # below. Existing operators' rc files carry their version inline; on
   # install.sh re-run, an older or missing version triggers a strip +
   # re-inject so the upgrade propagates automatically.
-  local current_version=5
+  local current_version=6
 
   # Heredoc is single-quoted: `$(fnm env --use-on-cd)`, `$*`, and the alias
   # body are written as literal text, expanded later when the shell sources
@@ -1389,7 +1400,7 @@ phase_c_1_shellrc_hooks() {
   local block
   block=$(cat <<'BLOCK'
 # >>> atelier hooks (managed by install.sh) >>>
-# atelier-hooks-version: 5
+# atelier-hooks-version: 6
 # (install.sh reads the version above; bump it when you edit anything between
 #  these sentinels so existing operators get the refreshed block on re-run.)
 # Ensure ~/.local/bin is on PATH so atelier-setup-project (and any future
@@ -2101,6 +2112,17 @@ main() {
   # injected by Phase C.1 sets the same convention inline on the `task()`
   # function so the operator's interactive sessions also land here.
   export CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"
+
+  # --refresh-shellrc: re-inject only the shellrc hook block and exit. No
+  # preflight / deps / auth / plugin work — phase_c_1_shellrc_hooks is
+  # self-contained (needs only $ATELIER_CONFIG_DIR + the log helpers). Lets
+  # atelier-update propagate shellrc changes without a full re-install.
+  if [ "$REFRESH_SHELLRC_ONLY" = true ]; then
+    log "atelier install.sh — refreshing shellrc hook block only"
+    sublog "atelier config dir: $ATELIER_CONFIG_DIR"
+    phase_c_1_shellrc_hooks
+    exit 0
+  fi
 
   log "atelier install.sh starting (os=$(detect_os), arch=$(uname -m))"
   sublog "atelier config dir: $ATELIER_CONFIG_DIR"
