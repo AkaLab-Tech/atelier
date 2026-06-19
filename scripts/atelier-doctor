@@ -769,6 +769,36 @@ CLAUDE_CONFIG_DIR=\"$ATELIER_CONFIG_DIR\" claude auth login"
   fi
 }
 
+# M7.4: flag registered projects whose §5-structured ROADMAP uses non-§5 task
+# ids (e.g. `RLS.2` instead of `#NN`) — those tasks are unplannable / unclaimable
+# until renumbered. Delegates per-project detection to atelier-migrate-task-ids
+# --check (exit 3 = non-§5 ids). Per-check-independence contract: never exits.
+check_roadmap_task_ids() {
+  local pf="$ATELIER_CONFIG_DIR/projects.json"
+  [ -f "$pf" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local mig; mig="$(command -v atelier-migrate-task-ids 2>/dev/null || true)"
+  [ -n "$mig" ] || mig="${CLAUDE_PLUGIN_ROOT:-}/scripts/atelier-migrate-task-ids"
+  if [ ! -x "$mig" ]; then
+    push_host "$SKIP ROADMAP §5 task-id check (atelier-migrate-task-ids not found)"
+    return 0
+  fi
+  local flagged=0 names="" p rc
+  while IFS= read -r p; do
+    [ -d "$p" ] || continue
+    bash "$mig" "$p" --check >/dev/null 2>&1; rc=$?
+    [ "$rc" -eq 3 ] && { flagged=$((flagged + 1)); names="$names $(basename "$p")"; }
+  done < <(jq -r '.projects | keys[]' "$pf" 2>/dev/null)
+  if [ "$flagged" -eq 0 ]; then
+    push_host "$OK no registered project uses non-§5 task ids"
+  else
+    push_host "$FAIL $flagged project(s) use non-§5 task ids:${names} — renumber so /plan-task & /next-task can claim them"
+    push_fix_manual "# for each flagged project, preview then apply:
+atelier-migrate-task-ids <project>          # dry-run: show the #NN mapping
+atelier-migrate-task-ids <project> --apply   # rewrite ROADMAP.md + IN_PROGRESS.md (review + commit to base)"
+  fi
+}
+
 # ---------- main ----------
 #
 # Args were parsed at the top of the script into $RUN_FIXES; --help also
@@ -783,6 +813,7 @@ check_personal_claudemd_leak
 check_git_wt_path
 check_shellrc_hooks
 check_project_npmrc
+check_roadmap_task_ids
 check_chrome
 check_docker_compose
 check_coolify

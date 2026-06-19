@@ -24,7 +24,6 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 2–5 — Single-project agent flow + robustness + multi-project foundation.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries — and when an operator can install / uninstall atelier without risking unrelated Claude state.
 
-- [TASK_001 — M7.4 — Detect + migrate non-§5 task ids in a project's ROADMAP](roadmap/TASK_001_m7-4-migrate-non-s5-task-ids.md)
 - [TASK_002 — M9 — External task-manager backends: GitHub Projects](roadmap/TASK_002_m9-github-projects-backend.md)
 
 ---
