@@ -24,7 +24,12 @@ Tasks are derived from the implementation plan in [PLAN.md §12](PLAN.md). Miles
 
 > **Phases 2–5 — Single-project agent flow + robustness + multi-project foundation.** Done when the toy-repo flow can pick a task, implement it, open a reviewed PR, auto-merge it, clean up, and survive failures with retries — and when an operator can install / uninstall atelier without risking unrelated Claude state.
 
-- [TASK_002 — M9 — External task-manager backends: GitHub Projects](roadmap/TASK_002_m9-github-projects-backend.md)
+- [TASK_002 — M9 — External task-manager backends: GitHub Projects](roadmap/TASK_002_m9-github-projects-backend.md) — **epic**, sliced:
+  - [TASK_018 — M9.1 wire task provider to RoadmapBackend (keystone)](roadmap/TASK_018_m9-1-wire-task-provider-backend.md)
+  - [TASK_019 — M9.2 GitHubProjectBackend in claude-roadmap-tools](roadmap/TASK_019_m9-2-github-project-backend.md)
+  - [TASK_020 — M9.3 setup-project + next-task + planning gate on Projects](roadmap/TASK_020_m9-3-setup-nexttask-on-projects.md)
+  - [TASK_021 — M9.4 two-way migration files ↔ github-project](roadmap/TASK_021_m9-4-two-way-migration.md)
+  - [TASK_022 — M9.5 workspaces + e2e](roadmap/TASK_022_m9-5-workspaces-e2e.md)
 
 ---
 

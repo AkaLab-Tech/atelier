@@ -1,7 +1,7 @@
 ---
 description: Pick the next task from `ROADMAP.md`, set up its worktree, and hand it to the `task-orchestrator` agent end-to-end.
 argument-hint: "[task-id] [--yes|-y]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git fetch:*), Bash(git ls-remote:*), Bash(git show:*), Bash(git wt:*), Bash(gh pr list:*), Bash(atelier-setup-project:*), Bash(atelier-resolve-dep:*), Bash(env:*), Skill, Task
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git fetch:*), Bash(git ls-remote:*), Bash(git show:*), Bash(git wt:*), Bash(gh pr list:*), Bash(atelier-setup-project:*), Bash(atelier-resolve-dep:*), Bash(atelier-task-backend:*), Bash(env:*), Skill, Task
 ---
 
 You are running the `/next-task` slash command. Drive the full pickup-to-PR flow for one task from the project's `ROADMAP.md`, exactly as [PLAN.md §7](PLAN.md) prescribes.
@@ -35,7 +35,18 @@ The task runs in an **isolated worktree cut from the remote base branch**, so th
 
 ### 2. Read the backlog and check concurrency — the task provider
 
-The **backlog source** and the **claim registry** are an abstraction (the *task provider*), so a future Linear backend can replace the file-/git-backed one below without touching any of the git/worktree mechanics in steps 3–8. Today both are git-backed:
+The **backlog source** and the **claim registry** are an abstraction (the *task provider*), so a non-files backend (Linear, GitHub Projects — M9) can replace the file-/git-backed backlog below without touching any of the git/worktree mechanics in steps 3–8.
+
+**Resolve the backlog backend first (M9.1):**
+
+```bash
+atelier-task-backend <project-root>   # → files | linear | github-project (absent .roadmap.json ⇒ files)
+```
+
+- `files` (the default) → the git-backed backlog below.
+- non-`files` → discover the backlog and drive the `ROADMAP → IN_PROGRESS → HISTORY` transitions through `claude-roadmap-tools`' `RoadmapBackend` for that backend (`listTasks` / `getTask` / `moveTask` / `appendHistoryEntry`; see `docs/RoadmapBackend.md`) instead of reading `origin/<base>:ROADMAP.md`. The **claim registry stays the open `task/*` PRs** regardless of backend (§16.4). The Linear backend is the first to validate this path; GitHub Projects lands in M9.2.
+
+**Files backend — the git-backed provider (unchanged):**
 
 - **Backlog** = `ROADMAP.md` as it exists on `origin/<base>`: read it with `git show origin/<base>:ROADMAP.md`. The local working copy is **not** the source of truth — a task the operator edited locally but has not merged is **not** eligible until it lands on `origin/<base>`.
 - **Claim registry** = the set of **open `task/*` PRs** on origin. Each open `task/<id>-<slug>` PR is one in-flight task. List them with `gh pr list --state open --json number,headRefName` and keep the `headRefName`s that start with `task/`; the `<id>` segment is the claimed task id.

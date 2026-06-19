@@ -8,4 +8,4 @@ When a PR closes a task, the **same PR** must update both `IN_PROGRESS.md` (remo
 
 ---
 
-(No task in progress.)
+- [TASK_018 — M9.1 wire task provider to RoadmapBackend](roadmap/TASK_018_m9-1-wire-task-provider-backend.md) — building: atelier-task-backend resolver + provider routing.
