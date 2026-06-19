@@ -1336,6 +1336,9 @@ phase_c_1_setup_project_helper() {
   # TASK_017: atelier-align surveys (and applies Tier-1 fixes to) every registered
   # project/workspace so they converge to the installed atelier; backs /atelier:align.
   _phase_c_1_symlink_helper atelier-align
+  # M7.4: atelier-migrate-task-ids renumbers a project's foreign task ids
+  # (RLS.2 -> #NN) to PLAN.md §5; backs the atelier-doctor §5-id check.
+  _phase_c_1_symlink_helper atelier-migrate-task-ids
   # M4.23 / M4.27 / M4.28: atelier-setup-{coolify,vercel,neon} install +
   # configure the optional integration plugins. Invoked by the Phase C.2 opt-in
   # prompts and by /atelier:setup-{coolify,vercel,neon}.

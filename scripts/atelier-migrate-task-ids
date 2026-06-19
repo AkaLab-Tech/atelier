@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+#
+# atelier-migrate-task-ids — detect (and migrate) non-§5 task ids in a project's
+# §5-structured ROADMAP (M7.4). PLAN.md §5 ids are numeric (`#NN` / `#NNa`); a
+# project may have drifted to a foreign scheme (`RLS.2`, `WEB.5g`,
+# `BUG-RESILIENCE.2`). The planning gate (plan-task / slice-task) only accepts
+# `#NN` / `#NNa`, so such tasks are unplannable/unclaimable until renumbered.
+#
+# Scope: this is for a ROADMAP that IS §5-structured (has P0/P1/P2 sections) but
+# whose task ids are foreign. A ROADMAP with no §5 sections at all is a different
+# case (foreign LAYOUT) — use /adopt-roadmap --format atelier (F74), not this.
+#
+# Usage:
+#   atelier-migrate-task-ids <project>            # plan (dry-run): show the id mapping
+#   atelier-migrate-task-ids <project> --apply     # rewrite ROADMAP.md + IN_PROGRESS.md
+#   atelier-migrate-task-ids <project> --check      # exit 3 if non-§5 ids found (for doctor)
+#   atelier-migrate-task-ids --help
+#
+# Resolved design (per TASK_001):
+#   - HISTORY.md is preserved (immutable log); the printed mapping is the record.
+#   - Open task/* branches & PRs are left as legacy (recorded in the mapping).
+#   - .plan/<old>.md is renamed to .plan/<new>.md so the planning gate stays consistent.
+# Idempotent: a ROADMAP already on §5 ids is a no-op.
+#
+# Exit: 0 ok / no-op · 1 error · 3 (--check only) non-§5 ids present.
+
+set -uo pipefail
+
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+die() { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+MODE="plan"; PROJECT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --apply) MODE="apply"; shift ;;
+    --check) MODE="check"; shift ;;
+    --help|-h) usage; exit 0 ;;
+    --*) die "unknown flag: $1 (run --help)" ;;
+    *) [ -z "$PROJECT" ] && PROJECT="$1" || die "unexpected arg: $1"; shift ;;
+  esac
+done
+[ -n "$PROJECT" ] || die "a project path is required (run --help)"
+PROJECT="$(cd "$PROJECT" 2>/dev/null && pwd -P)" || die "project path not found"
+RM="$PROJECT/ROADMAP.md"
+[ -f "$RM" ] || die "no ROADMAP.md at $PROJECT"
+command -v jq >/dev/null 2>&1 || true   # not needed here, but keep parity
+
+# §5-structured? (must have a P0/P1/P2 priority heading) — else out of scope.
+if ! grep -Eq '^#{1,6}[^A-Za-z0-9]*P[012]([^A-Za-z0-9]|$)' "$RM"; then
+  case "$MODE" in
+    check) exit 0 ;;  # not §5-structured → not an M7.4 case (F74 territory)
+    *) printf '%s is not §5-structured (no P0/P1/P2 sections).\n' "$RM"
+       printf 'This tool renumbers ids inside a §5 ROADMAP; for a foreign LAYOUT use /adopt-roadmap --format atelier.\n'
+       exit 0 ;;
+  esac
+fi
+
+# id_of <task-line> → the id token (no backticks), or empty. The id is the
+# backtick token that contains a digit and is not a `~estimate` (type tags like
+# feat/bug/chore have no digit; estimates start with ~). Handles `#12`, `RLS.2`,
+# `WEB.5g`, `12a`.
+id_of() {
+  printf '%s\n' "$1" | grep -oE '`[^`]+`' | tr -d '`' \
+    | grep -vE '^~' | grep -E '[0-9]' | grep -E '^#?[A-Za-z0-9][A-Za-z0-9._-]*$' | head -n1
+}
+is_section5_id() { printf '%s' "${1#\#}" | grep -Eq '^[0-9]+[a-z]?$'; }
+
+# ---------- scan task lines, build the foreign→new mapping ----------
+# Task line: a checkbox bullet `- [ ]`/`- [x]`. Each non-§5 id is renumbered to a
+# fresh sequential `#NN` in document order (flat — valid §5; sub-structure via
+# `#NNa` is NOT auto-inferred from foreign schemes, the operator can nest manually
+# after review). Existing §5 ids are left untouched (and so are their branches/refs).
+MAP_OLD=(); MAP_NEW=()
+maxnum=0
+# first pass: highest existing numeric §5 id, so new ids don't collide
+while IFS= read -r line; do
+  id="$(id_of "$line")"; [ -n "$id" ] || continue
+  if is_section5_id "$id"; then
+    n="${id#\#}"; n="${n%%[a-z]}"
+    case "$n" in ''|*[!0-9]*) ;; *) [ "$n" -gt "$maxnum" ] && maxnum="$n" ;; esac
+  fi
+done < <(grep -E '^[[:space:]]*-[[:space:]]+\[[ xX]\]' "$RM")
+
+next=$((maxnum + 1))
+while IFS= read -r line; do
+  id="$(id_of "$line")"; [ -n "$id" ] || continue
+  is_section5_id "$id" && continue   # already §5 — leave it (and its branches/refs) alone
+  MAP_OLD+=("$id"); MAP_NEW+=("#${next}")
+  next=$((next + 1))
+done < <(grep -E '^[[:space:]]*-[[:space:]]+\[[ xX]\]' "$RM")
+
+# ---------- no non-§5 ids → no-op ----------
+if [ "${#MAP_OLD[@]}" -eq 0 ]; then
+  case "$MODE" in
+    check) exit 0 ;;
+    *) printf 'OK: %s already uses §5 ids — nothing to migrate.\n' "$RM"; exit 0 ;;
+  esac
+fi
+
+if [ "$MODE" = "check" ]; then
+  printf '✗ %s has %d non-§5 task id(s) — run: atelier-migrate-task-ids %s --apply\n' "$RM" "${#MAP_OLD[@]}" "$PROJECT" >&2
+  exit 3
+fi
+
+# ---------- show mapping ----------
+printf 'Non-§5 task ids in %s — proposed mapping (%d):\n' "$(basename "$PROJECT")" "${#MAP_OLD[@]}"
+for i in "${!MAP_OLD[@]}"; do printf '  %-20s → %s\n' "${MAP_OLD[$i]}" "${MAP_NEW[$i]}"; done
+
+if [ "$MODE" = "plan" ]; then
+  printf '\n(dry-run) re-run with --apply to rewrite ROADMAP.md + IN_PROGRESS.md, update blocked_by:, rename .plan/<id>.md, and print the final mapping.\n'
+  printf 'HISTORY.md is left untouched (immutable); open task/* branches & PRs stay legacy (this mapping is the record).\n'
+  exit 0
+fi
+
+# ---------- apply: rewrite ROADMAP.md + IN_PROGRESS.md + .plan, update blocked_by ----------
+esc() { printf '%s' "$1" | sed -e 's/[.[\*^$/]/\\&/g'; }   # escape for sed regex
+rewrite_file() {
+  local f="$1" i old new
+  [ -f "$f" ] || return 0
+  for i in "${!MAP_OLD[@]}"; do
+    old="${MAP_OLD[$i]}"; new="${MAP_NEW[$i]}"
+    local old_e new_e; old_e="$(esc "$old")"; new_e="$(esc "$new")"
+    # backtick-wrapped id: `RLS.2` → `#5`
+    sed -i.bak -E "s/\`${old_e}\`/\`${new_e}\`/g" "$f"
+    # blocked_by:<old> (with or without #) → blocked_by:<new>
+    sed -i.bak -E "s/blocked_by:#?${old_e}([^A-Za-z0-9._-]|\$)/blocked_by:${new_e}\1/g" "$f"
+    rm -f "$f.bak"
+  done
+}
+rewrite_file "$RM"
+rewrite_file "$PROJECT/IN_PROGRESS.md"
+
+# rename .plan/<old>.md → .plan/<new>.md (strip leading # for filenames)
+renamed=0
+if [ -d "$PROJECT/.plan" ]; then
+  for i in "${!MAP_OLD[@]}"; do
+    o="${MAP_OLD[$i]#\#}"; nw="${MAP_NEW[$i]#\#}"
+    if [ -f "$PROJECT/.plan/$o.md" ]; then mv "$PROJECT/.plan/$o.md" "$PROJECT/.plan/$nw.md"; renamed=$((renamed+1)); fi
+  done
+fi
+
+printf '\nApplied — final mapping (%d):\n' "${#MAP_OLD[@]}"
+for i in "${!MAP_OLD[@]}"; do printf '  %-20s → %s\n' "${MAP_OLD[$i]}" "${MAP_NEW[$i]}"; done
+printf 'Rewrote: ROADMAP.md%s · blocked_by: updated · .plan files renamed: %d\n' \
+  "$([ -f "$PROJECT/IN_PROGRESS.md" ] && printf ' + IN_PROGRESS.md')" "$renamed"
+printf 'HISTORY.md left untouched (immutable). Open task/* branches & PRs stay legacy — this mapping is the record.\n'
+printf 'Next: review the diff, fill any remaining metadata, commit to the base branch.\n'
