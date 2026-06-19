@@ -8,6 +8,17 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_001 — M7.4: detect + migrate non-§5 task ids in a §5 ROADMAP — 2026-06-19
+**PR:** [#209](https://github.com/AkaLab-Tech/atelier/pull/209) · first of the post-M7.1 Medium backlog.
+
+A §5-structured ROADMAP whose task ids drifted to a foreign scheme (`RLS.2`, `WEB.5g`, `BUG-RESILIENCE.2`) is unplannable — `plan-task`/`slice-task` accept only `#NN`/`#NNa`.
+
+**Delivered:**
+- `scripts/atelier-migrate-task-ids <project> [--check|--apply]`: `--check` exits 3 when a §5 ROADMAP carries non-§5 ids (consumed by doctor); default = dry-run mapping; `--apply` renumbers ids to a fresh sequential `#NN` (after the max existing numeric id; **existing §5 ids untouched**) across `ROADMAP.md` + `IN_PROGRESS.md`, rewrites `blocked_by:`, renames `.plan/<old>.md → .plan/<new>.md`, prints the mapping. Idempotent.
+- Resolved design questions: HISTORY.md is preserved (immutable log — the mapping is the record); open `task/*` branches/PRs stay legacy; `.plan/<id>.md` is renamed to keep the planning gate consistent.
+- Scope guard: a non-§5 *layout* (no P0/P1/P2) is out of scope (exit 0) — that's F74 / `/adopt-roadmap --format atelier`.
+- `atelier-doctor` gains `check_roadmap_task_ids` (flags registered projects with non-§5 ids + fix command); `install.sh` symlinks the helper; hermetic test in `structural.yml`.
+
 ### TASK_013 — M7.1: full integrated dogfood on a real multi-repo project (deminut) — closed 2026-06-19
 **PRs:** the M7.1 cluster (#169–#205) · **Outcome:** atelier is now in production use.
 
