@@ -8,6 +8,14 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_013 — M7.1: full integrated dogfood on a real multi-repo project (deminut) — closed 2026-06-19
+**PRs:** the M7.1 cluster (#169–#205) · **Outcome:** atelier is now in production use.
+
+Closes the long-running M7.1 dogfood. Running atelier end-to-end on the real `deminut` workspace (and the operator's other projects) surfaced and fixed a large cluster of findings, and drove several features to completion:
+- **Onboarding / cycle findings** F63–F77: headless-safe setup + `--override` (#169), managed-settings detection (#169), headless reviewer-access grant (#170), the `next-task` task-provider decoupling from the operator checkout (#172), `/adopt-roadmap --format atelier` onboarding path (#173, crt #15), `deliverableLanguage` (#175), workspace-status/setupVersion fixes (#174), operator-guide refresh (#177), and F74 — flagging a non-§5 ROADMAP at onboarding (#187).
+- **Features delivered from the dogfood:** TASK_016 session orientation (#196/#197), TASK_017 `atelier-align` (#205), plus the operator chat-language setting and `atelier-update` shellrc-refresh.
+- **Outcome:** the autonomous cycle, onboarding, and multi-repo workspace flows are exercised on real projects. **atelier moves from dogfood to production**: ongoing work is operator-reported findings against real usage, fixed as they arise (no longer a single dogfood task).
+
 ### TASK_017 — `atelier-align`: one pass to converge every project/workspace to the installed atelier — 2026-06-18
 **PR:** [#205](https://github.com/AkaLab-Tech/atelier/pull/205) · **Plugin bump:** 0.30.1 → 0.31.0
 
