@@ -1339,6 +1339,9 @@ phase_c_1_setup_project_helper() {
   # M7.4: atelier-migrate-task-ids renumbers a project's foreign task ids
   # (RLS.2 -> #NN) to PLAN.md §5; backs the atelier-doctor §5-id check.
   _phase_c_1_symlink_helper atelier-migrate-task-ids
+  # M9.1: atelier-task-backend resolves a project's roadmap backend from
+  # .roadmap.json so the task provider (next-task) can drive non-files backends.
+  _phase_c_1_symlink_helper atelier-task-backend
   # M4.23 / M4.27 / M4.28: atelier-setup-{coolify,vercel,neon} install +
   # configure the optional integration plugins. Invoked by the Phase C.2 opt-in
   # prompts and by /atelier:setup-{coolify,vercel,neon}.

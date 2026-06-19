@@ -30,3 +30,15 @@
 - **Workspaces** — one backend per repo in v1; cross-repo `blocked_by` reads the sibling's state through its backend (§16.7).
 
 **Sub-phases (§16.8):** 9.1 wire the task provider to `RoadmapBackend` (keystone; validates with Linear) → 9.2 `GitHubProjectBackend` in crt → 9.3 `setup-project` selection + `next-task` + planning gate on Projects → 9.4 two-way migration → 9.5 workspaces + e2e.
+
+---
+
+## Sliced into sub-tasks (2026-06-19)
+
+This epic is decomposed into independently-shippable sub-tasks; build in order, 9.1 first (it validates the abstraction with Linear before any GitHub work):
+
+- [TASK_018 — M9.1 wire task provider to RoadmapBackend (keystone)](TASK_018_m9-1-wire-task-provider-backend.md)
+- [TASK_019 — M9.2 GitHubProjectBackend in claude-roadmap-tools](TASK_019_m9-2-github-project-backend.md)
+- [TASK_020 — M9.3 setup-project selection + next-task + planning gate on Projects](TASK_020_m9-3-setup-nexttask-on-projects.md)
+- [TASK_021 — M9.4 two-way migration files ↔ github-project](TASK_021_m9-4-two-way-migration.md)
+- [TASK_022 — M9.5 workspaces + e2e](TASK_022_m9-5-workspaces-e2e.md)

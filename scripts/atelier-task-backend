@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#
+# atelier-task-backend <project> — resolve a project's roadmap backend (M9.1).
+# Prints one of: files | linear | github-project | <other> (verbatim from
+# .roadmap.json). An absent .roadmap.json ⇒ `files` (the default markdown layout).
+#
+# The task provider (next-task / task-discovery) consults this to decide whether
+# to read the local ROADMAP.md (files) or drive crt's RoadmapBackend (non-files),
+# so any backend — Linear today, GitHub Projects (M9.2) next — drives the cycle.
+#
+# Usage: atelier-task-backend [<project>]   (default: $PWD)   ·   --help
+# Exit:  0 always (fail-open to `files`).
+set -uo pipefail
+case "${1:-}" in
+  --help|-h) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+DIR="${1:-$PWD}"
+DIR="$(cd "$DIR" 2>/dev/null && pwd -P)" || { printf 'files\n'; exit 0; }
+f="$DIR/.roadmap.json"
+{ [ -f "$f" ] && command -v jq >/dev/null 2>&1; } || { printf 'files\n'; exit 0; }
+b="$(jq -r '.backend // "files"' "$f" 2>/dev/null || printf 'files')"
+[ -n "$b" ] && [ "$b" != "null" ] || b="files"
+printf '%s\n' "$b"
