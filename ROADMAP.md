@@ -21,6 +21,12 @@ Indexed layout: each item links to its detail file under `roadmap/TASK_NNN_<slug
 
 ## 💭 P2 — Backlog
 
+> **Autonomous cycle hardening (2026-06-20).** Close the orchestrator loop end-to-end: wait for CI, iterate on review, babysit open PRs, and clean up on completion. Operator-requested after the cycle stopped short of merge on real tasks.
+
+- [ ] `feat` orchestrator waits for the CI cycle before the auto-merge gate `#23` `~TODO` — [detail](roadmap/TASK_023_orchestrator-ci-wait.md)
+- [ ] `feat` auto review-fix loop: re-dispatch implementer/tester on `request-changes`, bounded, then escalate `#24` `~TODO` — [detail](roadmap/TASK_024_review-fix-loop.md)
+- [ ] `feat` `/atelier:babysit-prs` — watch open `task/*` PRs and drive CI→review→merge `#25` `~TODO` — [detail](roadmap/TASK_025_babysit-prs.md)
+- [ ] `feat` auto post-merge cleanup completion: base pull + orphan branch sweep `#26` `~TODO` — [detail](roadmap/TASK_026_post-merge-cleanup-completion.md)
 - [ ] `feat` first-class High/Medium/Low ROADMAP layout for operator projects (M7.1.F68 option B) `#3` `~TODO` — [detail](roadmap/TASK_003_first-class-high-med-low-layout.md)
 - [ ] `feat` actionable "nothing planned" dead-end: surface plan candidates `#4` `~TODO` — [detail](roadmap/TASK_004_nothing-planned-dead-end.md)
 - [ ] `feat` /setup-project detects CI/CD and offers to scaffold it per stack `#5` `~TODO` — [detail](roadmap/TASK_005_setup-project-detects-cicd.md)
