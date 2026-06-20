@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_019 / TASK_019d — M9.2 epic COMPLETE: GitHubProjectBackend (+ offline-mirror parity, final slice) — 2026-06-20
+**PRs:** [crt#18](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/18) · [crt#19](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/19) · [crt#20](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/20) · [crt#21](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/21) (cross-repo: #19/#19a–d tracked in atelier-dev; deliverables in claude-roadmap-tools)
+
+**M9.2 epic (#19) complete** — `GitHubProjectBackend` is now a fully-specified third `RoadmapBackend` in claude-roadmap-tools, at parity with `LinearBackend`. Built on the M9.1 backend-aware provider (#18). Final slice #19d (crt#21, 66 lines): generalized `## Mirror auto-refresh on activation` to `github-project`, filled the deferred `offlineMirror` per-operation clauses in the Operations section, and documented the `backend: github-project` / `backendId: PVTI_…` frontmatter — full offline-mirror parity with Linear. Auth = hosted GitHub MCP (`https://api.githubcopilot.com/mcp/`, OAuth 2.1 + PKCE, Projects v2 toolset), never `gh` CLI. Slices #19a–#19c logged above. Next: M9.3 (#20) wires setup-project / next-task / planning gate onto Projects; a crt release makes the backend installable.
+
 ### TASK_019c — M9.2c: command extensions + routing — github-project in create/migrate + activation — 2026-06-20
 **PR:** [claude-roadmap-tools#20](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/20) (cross-repo: #19c tracked in atelier-dev; deliverable in claude-roadmap-tools)
 
