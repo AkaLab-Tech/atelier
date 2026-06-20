@@ -121,10 +121,25 @@ When the current project is a member of a workspace (see PLAN.md §15), a task m
 - **Multiple type tags on one line.** Keep the first one; warn about the extra.
 - **Tabs vs spaces, em-dash vs hyphen.** Be tolerant. Use a permissive parser, not a strict regex from hell.
 
+## Backend-aware backlog source (M9.1)
+
+The selection algorithm above is **backend-agnostic**: it operates on a list of tasks regardless of where that list originates. The source differs by backend:
+
+**Default `files` backend** — everything in this skill's "Selection algorithm" section applies as written. The backlog is `ROADMAP.md` as it exists on `origin/<base>` (read via `git show origin/<base>:ROADMAP.md` by `/next-task`). The indexed layout variant is also `FilesBackend` — `/next-task` expands the index links before passing the list to this skill.
+
+**Non-`files` backend** — resolved via `atelier-task-backend <project-root>` (see `scripts/atelier-task-backend`). When the result is not `files`:
+
+1. The caller (`/next-task`) obtains the backlog by calling `listTasks("roadmap")` per the `RoadmapBackend` contract (`docs/RoadmapBackend.md`). The returned list is passed to this skill in place of the ROADMAP.md content.
+2. This skill applies **the same selection rules** (P0→P1→P2 order, `blocked_by`, `[ready]`/plan gate, `[OVERSIZE]`/`[BLOCKED]` filters) to the returned list. The `priority` field on each task maps to P0/P1/P2 using the backend's declared priority convention (for `LinearBackend`: urgency `1` → P0, `2` → P0, `3` → P1, `4` → P2, `0` → P2; see `docs/RoadmapBackend.md`).
+3. After selection, the caller enriches the chosen task by calling `getTask(id)`, which returns the full `body`, `priority`, and backend-specific metadata. The enriched result is merged into this skill's standard output shape.
+4. The `roadmap-tracking-flow` skill is the execution layer for these calls; see that skill's SKILL.md for how `listTasks` and `getTask` are driven for each backend (especially `LinearBackend`'s Linear MCP path).
+
+The claim registry (open `task/*` PRs) and the collision-avoidance logic are **identical for all backends** — only the backlog source changes.
+
 ## How the caller should use the result
 
 The orchestrator (`task-orchestrator` agent) takes the returned record and:
-1. Moves the task block from `ROADMAP.md` to `IN_PROGRESS.md`.
+1. Moves the task block from `ROADMAP.md` to `IN_PROGRESS.md` (files backend) or calls `moveTask(id, "roadmap", "in_progress")` (non-files backend).
 2. Invokes `git-wt` with the `worktree` field to create the per-task worktree.
 3. Hands `acceptance` and `context` to `implementer` as the spec.
 

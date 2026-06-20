@@ -98,6 +98,11 @@ jobs:
           bash hooks/tests/task-backend.test.sh \
             || { echo "::error::task-backend regression failed"; exit 1; }
 
+      - name: task-provider backend routing (M9.1)
+        run: |
+          bash hooks/tests/task-provider-backend-routing.test.sh \
+            || { echo "::error::task-provider backend routing regression failed"; exit 1; }
+
       - name: python3 -m json.tool on JSON files
         run: |
           fail=0

@@ -8,6 +8,19 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_018 — M9.1: wire atelier's task provider to crt's RoadmapBackend — 2026-06-20
+**PR:** [#216](https://github.com/AkaLab-Tech/atelier/pull/216) · **Plugin bump:** pending reviewer.
+
+Makes atelier's task provider backend-aware. The second/final slice wires all non-`files` read/move operations through the `claude-roadmap-tools` `RoadmapBackend` contract; the `files` git-backed path is unchanged.
+
+**Delivered:**
+- `commands/next-task.md`: non-`files` backend routing — backlog read via `listTasks("roadmap")`, task enrichment via `getTask(id)`, claim move via `moveTask(id, "roadmap", "in_progress")`, close via `appendHistoryEntry(id, prMetadata)`. `files` path (git show origin/<base>:ROADMAP.md) preserved. Claim registry = open `task/*` PRs (§16.4) backend-agnostic.
+- `skills/task-discovery/SKILL.md`: new "Backend-aware backlog source" section documenting the routing contract for callers.
+- `hooks/tests/task-provider-backend-routing.test.sh`: 12 hermetic prose-invariant assertions (routing contract + files no-regression invariant), wired into `structural.yml`.
+- First slice (atelier-task-backend resolver + §2 routing hook) already merged; this slice completes M9.1.
+
+**Tests:** `task-provider-backend-routing.test.sh` (12 assertions, all pass); full existing hermetic suite green; `bash -n` clean. No UI surface — e2e skipped.
+
 ### TASK_001 — M7.4: detect + migrate non-§5 task ids in a §5 ROADMAP — 2026-06-19
 **PR:** [#209](https://github.com/AkaLab-Tech/atelier/pull/209) · first of the post-M7.1 Medium backlog.
 
