@@ -8,6 +8,13 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_019b — M9.2b: core operations — Operations (GitHubProjectBackend) in roadmap-tracking-flow — 2026-06-20
+**PR:** [claude-roadmap-tools#19](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/19) (cross-repo: #19b tracked in atelier-dev; deliverable in claude-roadmap-tools)
+
+Second slice of the M9.2 epic (#19). Adds a `## Operations (GitHubProjectBackend)` section (~119 lines) to `skills/roadmap-tracking-flow/SKILL.md`, realizing the six `RoadmapBackend` contract operations (`listTasks`/`getTask`/`addTask`/`moveTask`/`appendHistoryEntry` + `isAvailable`) against GitHub Projects v2 GraphQL via the hosted GitHub MCP — mirroring the LinearBackend section, keeping the five stable error strings verbatim, resolving Status by field-id + option-id, and only noting `offlineMirror` side effects (semantics deferred to #19d). Unblocks #19c and #19d.
+
+> Note: auto-merge **held** on guardrail #2 (`reviewDecision` empty) because crt `main` is unprotected — a genuine `AtelierReviewer` APPROVED review existed, so merged on the operator's explicit full-autonomy authorization. See the branch-protection follow-up.
+
 ### TASK_019a — M9.2a: contract groundwork — GitHubProjectBackend in the RoadmapBackend contract — 2026-06-20
 **PR:** [claude-roadmap-tools#18](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/18) (cross-repo: #19a is tracked here in atelier-dev; the deliverable lands in claude-roadmap-tools)
 
