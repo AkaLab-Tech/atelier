@@ -14,7 +14,12 @@ Indexed layout: each item links to its detail file under `roadmap/TASK_NNN_<slug
 
 > **M9 — External task-manager backends: GitHub Projects** (epic `#2`, sliced — [detail](roadmap/TASK_002_m9-github-projects-backend.md)). M9.1 (`#18`) is the keystone and is currently in progress (see [IN_PROGRESS.md](IN_PROGRESS.md)); the rest depend on it.
 
-- [ ] `feat` M9.2 GitHubProjectBackend in claude-roadmap-tools `#19` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_019_m9-2-github-project-backend.md)
+- [ ] `feat` Epic: M9.2 GitHubProjectBackend in claude-roadmap-tools `#19` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_019_m9-2-github-project-backend.md)
+  - Deliverable lands in `claude-roadmap-tools` (100%-markdown plugin), not atelier-dev; split mirrors the existing LinearBackend file-by-file so each PR is one reviewable prose slice under the 200-line budget.
+  - [ ] [ready] `feat` M9.2a Contract groundwork: docs/RoadmapBackend.md + GitHub MCP isAvailable pattern `#19a` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_019_m9-2-github-project-backend.md#19a)
+  - [ ] [ready] `feat` M9.2b Core operations: Operations (GitHubProjectBackend) section in SKILL.md `#19b` `~TODO` `blocked_by:#19a` — [detail](roadmap/TASK_019_m9-2-github-project-backend.md#19b)
+  - [ ] [ready] `feat` M9.2c Command extensions + routing: /create-roadmap + /migrate-roadmap + activation `#19c` `~TODO` `blocked_by:#19b` — [detail](roadmap/TASK_019_m9-2-github-project-backend.md#19c)
+  - [ ] [ready] `feat` M9.2d Optional offline mirror + backend/backendId frontmatter parity `#19d` `~TODO` `blocked_by:#19b` — [detail](roadmap/TASK_019_m9-2-github-project-backend.md#19d)
 - [ ] `feat` M9.3 setup-project + next-task + planning gate on Projects `#20` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_020_m9-3-setup-nexttask-on-projects.md)
 - [ ] `feat` M9.4 two-way migration files ↔ github-project `#21` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_021_m9-4-two-way-migration.md)
 - [ ] `feat` M9.5 workspaces + e2e `#22` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_022_m9-5-workspaces-e2e.md)
