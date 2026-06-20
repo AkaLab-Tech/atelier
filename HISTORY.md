@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_019c — M9.2c: command extensions + routing — github-project in create/migrate + activation — 2026-06-20
+**PR:** [claude-roadmap-tools#20](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/20) (cross-repo: #19c tracked in atelier-dev; deliverable in claude-roadmap-tools)
+
+Third slice of the M9.2 epic (#19). Wires the `github-project` backend into `commands/create-roadmap.md` (new step 5c — GitHub MCP registration `claude mcp add --transport http github https://api.githubcopilot.com/mcp/`, `projects` toolset + `project` scope, Project picker, `.roadmap.json` github-project template, `--backend github-project`/`--project`/`--mirror` args), `commands/migrate-roadmap.md` (`files → github-project` direction-matrix rows + `--to github-project` push branch with partial-failure safety), and the activation/routing in `skills/roadmap-tracking-flow/SKILL.md` (operation bodies + mirror-refresh body left untouched — those are #19b/#19d). 170 lines / 3 files; auto-merged cleanly (guardrail #2 satisfied via APPROVED review state on unprotected main). Unblocks the final slice #19d.
+
 ### TASK_019b — M9.2b: core operations — Operations (GitHubProjectBackend) in roadmap-tracking-flow — 2026-06-20
 **PR:** [claude-roadmap-tools#19](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/19) (cross-repo: #19b tracked in atelier-dev; deliverable in claude-roadmap-tools)
 
