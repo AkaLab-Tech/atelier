@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_019a — M9.2a: contract groundwork — GitHubProjectBackend in the RoadmapBackend contract — 2026-06-20
+**PR:** [claude-roadmap-tools#18](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/18) (cross-repo: #19a is tracked here in atelier-dev; the deliverable lands in claude-roadmap-tools)
+
+First slice of the M9.2 epic (#19). Documents **GitHub Projects v2 as a shipped third `RoadmapBackend`** in `docs/RoadmapBackend.md`, mirroring `LinearBackend`: Identity row (Projects v2 item node id `PVTI_…` / `TASK_NNN` human handle), Buckets column (`githubProject.stateMap` with proposed defaults), and a new `### GitHubProjectBackend` notes subsection — hosted GitHub MCP (`https://api.githubcopilot.com/mcp/`, OAuth 2.1 + PKCE, Projects v2 toolset `projects_list`/`projects_get`/`projects_write`), `[ready]` as a `Ready` field, `blocked_by` as text, custom fields for `#id`/type/estimate, and the no-API-call `isAvailable()` pattern. The earlier "unconfirmed GitHub-MCP endpoint" open question was resolved (confirmed GA hosted server; never `gh` CLI). Unblocks #19b.
+
 ### TASK_018 — M9.1: wire atelier's task provider to crt's RoadmapBackend — 2026-06-20
 **PR:** [#216](https://github.com/AkaLab-Tech/atelier/pull/216) · **Plugin bump:** pending reviewer.
 
