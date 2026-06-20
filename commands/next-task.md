@@ -64,11 +64,16 @@ Strip the `--yes` / `-y` flag from `$ARGUMENTS` before parsing the task id (so `
 
 Build the **claimed-id set** from step 2 (the open `task/*` PRs). **Never** pick or re-claim an id already in that set, whether auto-picked or explicitly named.
 
-If the remaining `$ARGUMENTS` is empty: invoke the `atelier:task-discovery` skill on the **`origin/<base>` ROADMAP content** read in step 2 (not the local file), excluding the claimed-id set. It returns the structured record (`id`, `title`, `type`, `priority`, `estimate`, `blocked_by`, `scope`, `worktree`, `acceptance`, `context`) per PLAN.md §5.
+**`files` backend:** if the remaining `$ARGUMENTS` is empty, invoke the `atelier:task-discovery` skill on the **`origin/<base>` ROADMAP content** read in step 2 (not the local file), excluding the claimed-id set. It returns the structured record (`id`, `title`, `type`, `priority`, `estimate`, `blocked_by`, `scope`, `worktree`, `acceptance`, `context`) per PLAN.md §5.
+
+**Non-`files` backend:** if the remaining `$ARGUMENTS` is empty, the backlog is obtained via `listTasks("roadmap")` per `docs/RoadmapBackend.md` (see `roadmap-tracking-flow` skill). Pass the returned task list to `atelier:task-discovery` — the same selection rules (P0→P1→P2 priority order, `blocked_by`, `[ready]`, `[OVERSIZE]`/`[BLOCKED]` filters; see `skills/task-discovery/SKILL.md` §§ "Selection algorithm" and "Backend-aware backlog source") apply to the list. After the selection algorithm picks an `id`, call `getTask(id)` to retrieve the full task record (`title`, `body`, `priority`, metadata) and merge it into the structured result.
 
 **Collision-avoidance (within-repo parallelism):** when other tasks are already in flight, prefer a candidate whose declared `scope:` / paths do **not** overlap theirs — overlapping work would only collide at merge time. Tasks in *different* workspace members never collide. If no `scope:` is declared, proceed optimistically: a residual conflict is caught by the auto-merge gate (the first PR merges; the others rebase + re-validate; a real conflict falls back to a human).
 
-If `$ARGUMENTS` names a specific id: find that block in the `origin/<base>` ROADMAP directly, parse it into the same shape, and **validate** it is unchecked, not already in the claimed-id set, carries the `[ready]` marker (with a committed `.plan/<id>.md`), and has no open `blocked_by` — surface the violation and stop if any fails.
+If `$ARGUMENTS` names a specific id:
+
+- **`files` backend:** find that block in the `origin/<base>` ROADMAP directly, parse it into the same shape, and **validate** it is unchecked, not already in the claimed-id set, carries the `[ready]` marker (with a committed `.plan/<id>.md`), and has no open `blocked_by` — surface the violation and stop if any fails.
+- **Non-`files` backend:** call `getTask(id)` to retrieve the task, then apply the same validations (not in claimed-id set, `[ready]`, no open `blocked_by`).
 
 The **`[ready]` validation** is absolute: a named-but-unplanned task is refused exactly like an auto-picked one. If the task lacks `[ready]` (or `.plan/<id>.md` is missing), **stop and refuse** in both interactive and non-interactive mode — never improvise a plan, never offer to plan it inline:
 
@@ -103,14 +108,25 @@ Display the chosen task in a short summary (`id`, `title`, `priority`, `estimate
 
 Invoke the `git-wt` skill (or `git wt switch <branch> --from origin/<base>` directly) to create the worktree for branch `task/<id-without-#>-<kebab-slug>` **cut from `origin/<base>`** — the ref fetched in step 1. The operator's local branches are left untouched. Capture the **absolute path** the skill prints on stdout — every subsequent step runs scoped to that path.
 
-### 6. Move `ROADMAP.md` → `IN_PROGRESS.md` inside the worktree
+### 6. Claim the task — tracking move
 
-Now that the worktree exists, make the tracking move **in the worktree, on the task branch** — **never** in the operator's main checkout:
+Now that the worktree exists, record the claim **before** handing off to the orchestrator. The mechanics differ by backend:
+
+**`files` backend** — make the tracking move **in the worktree, on the task branch** — **never** in the operator's main checkout:
 
 - Remove the task block from `<worktree>/ROADMAP.md`.
 - Paste it into `<worktree>/IN_PROGRESS.md` between the marker comments.
 
-This edit lives on the per-task branch and travels through the task's PR; the roadmap-tracking-flow convention says the same PR later moves it from `IN_PROGRESS.md` to `HISTORY.md` when the task closes. Because the claim lives only on the task branch, `origin/<base>`'s `ROADMAP.md` / `IN_PROGRESS.md` are unchanged until the PR merges — which is exactly why step 2 uses the open `task/*` PRs (not the base `IN_PROGRESS.md`) as the claim registry.
+This edit lives on the per-task branch and travels through the task's PR; the roadmap-tracking-flow convention says the same PR later moves it from `IN_PROGRESS.md` to `HISTORY.md` when the task closes.
+
+**Non-`files` backend** — drive the claim through the `RoadmapBackend` contract (see `docs/RoadmapBackend.md`) instead of editing local files:
+
+- Call `moveTask(id, "roadmap", "in_progress")` via the `roadmap-tracking-flow` skill. This is atomic: the task moves out of the backend's roadmap bucket and into its in-progress bucket in a single operation — no local `ROADMAP.md` / `IN_PROGRESS.md` edits are made.
+- If `moveTask` throws `task-not-in-from-bucket`, the task was already claimed by a concurrent actor — stop and report a race condition; do not proceed.
+
+**For both backends** — the claim lives only on the task branch (files) or in the remote backend (non-files), so `origin/<base>`'s `ROADMAP.md` / `IN_PROGRESS.MD` are unchanged until the PR merges — which is exactly why step 2 uses the open `task/*` PRs (not the base `IN_PROGRESS.md`) as the claim registry.
+
+> **Forward reference — closing the task (pr-author).** When the PR is ready to close, `pr-author` must update tracking in the same PR. For the `files` backend that means the `IN_PROGRESS.md` → `HISTORY.md` move already documented in `skills/pr-flow/SKILL.md` §4. For a non-`files` backend, `pr-author` calls `appendHistoryEntry(id, prMetadata)` (per `docs/RoadmapBackend.md`) instead of editing local files directly — `prMetadata` carries `{ number, url, title, deliveredBullets[], testsNote, followUps? }` from the PR that is about to merge.
 
 ### 7. Instantiate the per-task `.claude/settings.json`
 
