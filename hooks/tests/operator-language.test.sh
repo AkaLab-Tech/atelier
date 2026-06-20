@@ -46,6 +46,16 @@ printf '%s' "$H_SET" | grep -q 'Operator chat language' && pass "hook injects di
 printf '%s' "$H_SET" | grep -q 'Address the operator in \*\*English\*\*' && pass "directive names the language" || fail "directive missing language"
 printf '%s' "$H_SET" | grep -q 'does NOT change `deliverableLanguage`' && pass "directive excludes deliverableLanguage" || fail "directive missing deliverableLanguage carve-out"
 
+# --- hook: directive must survive stdout truncation ---
+# The harness truncates large hook stdout to a short head preview before it
+# enters the model context. operator-rules.md is ~26KB, so a directive emitted
+# AFTER the rules dump lands past the cutoff and never reaches the model. Assert
+# the directive sits in the first 2KB (front-loaded), independent of rules size.
+_off="$(printf '%s' "$H_SET" | grep -abo 'Operator chat language' | head -1 | cut -d: -f1)"
+{ [ -n "$_off" ] && [ "$_off" -lt 2048 ]; } \
+  && pass "directive within first 2KB — survives truncation (offset=$_off)" \
+  || fail "directive past truncation head (offset=${_off:-none}); must be emitted before the rules dump"
+
 # --- setter: clear ---
 set_lang --clear >/dev/null
 [ "$(jq -r '.language // "GONE"' "$CFG/operator.json")" = "GONE" ] && pass "--clear removes language" || fail "--clear left language"
