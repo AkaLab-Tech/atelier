@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_020a — M9.3a: setup-project backend selection (delegate to /create-roadmap --backend) — 2026-06-22
+**PR:** [#224](https://github.com/AkaLab-Tech/atelier/pull/224) (native atelier-dev; built on #18 M9.1 + #19 M9.2)
+
+First slice of the M9.3 epic (#20). `/atelier:setup-project` now offers a backend choice (`files` | `linear` | `github-project`) via an interactive prompt inserted after the project-name step. Non-`files` backends are **delegated** to `/create-roadmap --backend <choice>` — atelier never re-implements the `.roadmap.json` write or GitHub MCP registration. Headless mode safe-defaults to `files` (existing behaviour preserved). `atelier-setup-project` emits an `atelier-backend=` marker so callers can read the chosen backend without re-parsing `.roadmap.json`. The `files` path is byte-for-byte unchanged (6 no-regression assertions). New `hooks/tests/setup-project-backend-marker.test.sh` (12 assertions: files default / github-project / linear / fail-open / malformed JSON / files no-regression) wired into `structural.yml`. Note: `structural.yml` is modified — auto-merge guardrail #4 applies; manual operator merge required after reviewer approval. Unblocks #20b (next-task backend routing) and #20c (planning gate), both `blocked_by:#20a`.
+
 ### TASK_019 / TASK_019d — M9.2 epic COMPLETE: GitHubProjectBackend (+ offline-mirror parity, final slice) — 2026-06-20
 **PRs:** [crt#18](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/18) · [crt#19](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/19) · [crt#20](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/20) · [crt#21](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/21) (cross-repo: #19/#19a–d tracked in atelier-dev; deliverables in claude-roadmap-tools)
 
