@@ -43,6 +43,11 @@ jobs:
           bash hooks/tests/setup-project-roadmap-format-f74.test.sh \
             || { echo "::error::setup-project F74 ROADMAP-format regression failed"; exit 1; }
 
+      - name: setup-project backend marker (M9.3a)
+        run: |
+          bash hooks/tests/setup-project-backend-marker.test.sh \
+            || { echo "::error::setup-project M9.3a backend-marker regression failed"; exit 1; }
+
       - name: setup-workspace --policy member propagation
         run: |
           bash hooks/tests/setup-workspace-policy.test.sh \

@@ -111,6 +111,19 @@ OPTIONS:
 POSITIONAL:
   <project-path>         Project root to set up. Defaults to current dir.
 
+MARKER LINES (printed on stdout after setup completes):
+  atelier-detected-mode=<new|existing>
+  atelier-root-claude-md=<present|missing>
+  atelier-tracking-layout=<created|preserved-empty|preserved-nonempty>
+  atelier-roadmap-format=<absent|conforming|non-conforming>
+  atelier-backend=<files|linear|github-project|…>
+                         Resolved from an existing .roadmap.json (.backend
+                         field, via jq). Defaults to "files" when the file
+                         is absent, jq is unavailable, or the value is empty.
+                         The /setup-project slash command surfaces this marker
+                         and uses "files" vs non-"files" to decide whether to
+                         delegate to /create-roadmap --backend <choice>.
+
 EXIT CODES:
   0   success (created, updated, or preserved)
   1   unrecoverable error
@@ -371,6 +384,7 @@ DETECTED_MODE=""           # set by detect_project_mode (new|existing) — M4.19
 ROOT_CLAUDE_MD_STATUS=""   # set by step_root_claude_md_detect (missing|present) — M4.19
 TRACKING_LAYOUT_STATUS=""  # set by detect_tracking_layout (created|preserved-empty|preserved-nonempty) — M7.1.F50
 ROADMAP_FORMAT_STATUS=""   # set by detect_roadmap_format (absent|conforming|non-conforming) — M7.1.F74
+BACKEND_STATUS=""          # set by detect_backend_status (files|linear|github-project|…) — M9.3a
 
 # ---------- M4.19: detect project mode (new vs existing) ----------
 # Bash side does detection ONLY. Drafting the root CLAUDE.md (AI work)
@@ -540,6 +554,22 @@ detect_roadmap_format() {
   else
     printf 'non-conforming\n'
   fi
+}
+
+# ---------- M9.3a: detect roadmap backend from existing .roadmap.json ----------
+# Mirrors the resolver in scripts/atelier-task-backend:
+#   - read .backend from .roadmap.json via jq
+#   - fail-open to "files" when the file is absent, jq is unavailable, the
+#     value is empty, or the value is literal "null"
+# The helper is a detector/relay only — it never writes .roadmap.json.
+# Writing .roadmap.json is crt's job, delegated via /create-roadmap --backend.
+detect_backend_status() {
+  local f="$PROJECT/.roadmap.json"
+  { [ -f "$f" ] && command -v jq >/dev/null 2>&1; } || { printf 'files\n'; return; }
+  local b
+  b="$(jq -r '.backend // "files"' "$f" 2>/dev/null || printf 'files')"
+  [ -n "$b" ] && [ "$b" != "null" ] || b="files"
+  printf '%s\n' "$b"
 }
 
 # ---------- helpers used by step_settings_json (M7.1.F26 / M7.1.F64) ----------
@@ -1326,6 +1356,7 @@ DETECTED_MODE="$(detect_project_mode "$PROJECT")"
 ROOT_CLAUDE_MD_STATUS="$(detect_root_claude_md "$PROJECT")"
 TRACKING_LAYOUT_STATUS="$(detect_tracking_layout)"
 ROADMAP_FORMAT_STATUS="$(detect_roadmap_format)"
+BACKEND_STATUS="$(detect_backend_status)"
 
 # ---------- output ----------
 echo ""
@@ -1346,13 +1377,15 @@ sublog "$(printf '%s' "$CONFIG_FILE" | sed "s|^$HOME|~|"): $CONFIG_STATUS"
 sublog "setupCompleted:                 $SETUP_COMPLETED"
 sublog "setupVersion:                   $SETUP_VERSION"
 echo ""
-# M4.19: structured marker lines the /setup-project slash command parses
-# to decide whether to dispatch project-profiler (and in which mode).
+# M4.19 / M9.3a: structured marker lines the /setup-project slash command parses
+# to decide whether to dispatch project-profiler (and in which mode), and
+# whether to delegate to /create-roadmap --backend for non-files backends.
 # Format is `key=value` so the slash command can do a simple grep.
 printf 'atelier-detected-mode=%s\n' "$DETECTED_MODE"
 printf 'atelier-root-claude-md=%s\n' "$ROOT_CLAUDE_MD_STATUS"
 printf 'atelier-tracking-layout=%s\n' "$TRACKING_LAYOUT_STATUS"
 printf 'atelier-roadmap-format=%s\n' "$ROADMAP_FORMAT_STATUS"
+printf 'atelier-backend=%s\n' "$BACKEND_STATUS"
 echo ""
 if [ "$ROOT_CLAUDE_MD_STATUS" = "missing" ]; then
   sublog "Root CLAUDE.md is missing. The /setup-project slash command will dispatch"
