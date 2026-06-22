@@ -1,6 +1,6 @@
 ---
 description: Initialise a project so the operator can run atelier tasks in it — delegates to the `atelier-setup-project` bash helper installed by `install.sh`, then dispatches `project-profiler` to draft the root `CLAUDE.md`. Idempotent — re-running preserves all existing files. Typical usage is just `/atelier:setup-project` from inside the project directory; passing a path is only for the uncommon case of configuring a project from outside it.
-argument-hint: "[--yes|-y] [--mode=new|existing] [project-path-if-not-cwd]"
+argument-hint: "[--yes|-y] [--mode=new|existing] [--backend <files|linear|github-project>] [project-path-if-not-cwd]"
 allowed-tools: Read, Glob, Grep, Write, Bash(atelier-setup-project:*), AskUserQuestion, Task
 ---
 
@@ -28,11 +28,12 @@ That single command does **all** of the mechanical work:
 8. Creates or appends to `<path>/.gitignore` the four required entries (`.task-log/`, `.claude/settings.json`, `.claude/settings.local.json`, `.DS_Store`). `.claude/settings.json` is gitignored because the helper substitutes `<worktree>` with the operator's absolute path; committing it would propagate that path to every clone. Note `.atelier.json` is **not** gitignored — it's part of the project's source of truth (per-project size budget belongs in version control).
 9. Records the setup in `$ATELIER_CONFIG_DIR/projects.json` with `setupCompleted` and `setupVersion`.
 
-The helper also emits three `atelier-*=...` marker lines that Phase 2 and Phase 3 parse:
+The helper also emits four `atelier-*=...` marker lines that Phase 2, Phase 3, and Phase 4 parse:
 
 - `atelier-detected-mode=new|existing` — the heuristic result (or `--mode=...` override).
 - `atelier-root-claude-md=present|missing` — whether `<path>/CLAUDE.md` already exists.
 - `atelier-tracking-layout=created|preserved-empty|preserved-nonempty` — whether `IN_PROGRESS.md` was created fresh (canonical empty slot), pre-existed and is empty, or pre-existed with task-like content. `preserved-nonempty` triggers Phase 3.
+- `atelier-backend=files|linear|github-project|…` — the backend resolved from an existing `<path>/.roadmap.json` (`.backend` field via `jq`), defaulting to `files` when the file is absent or `jq` is unavailable. Phase 4 uses this to decide whether to delegate to `/create-roadmap --backend`.
 
 Relay the helper's stdout back to the operator verbatim. If the helper exits non-zero, surface the error and stop — do NOT run Phase 2.
 
@@ -109,6 +110,48 @@ Offer normalization — do not transform anything yourself (same delegation rule
 - **Interactive mode:** use `AskUserQuestion` — *"`ROADMAP.md` doesn't use atelier's §5 layout (no P0/P1/P2 priority sections), so `/atelier:next-task` can't claim any of its tasks. Normalize it now with `/adopt-roadmap --format atelier` (emits the `P0`/`P1`/`P2` + type-tag + `#id` layout with `TODO` placeholders; nothing is dropped)?"* — options: run `/adopt-roadmap --format atelier` now / skip for now. If the operator agrees and `claude-roadmap-tools` is installed, run it **with `--format atelier`**; the operator then fills any `` `TODO-type` `` / `` `~TODO` `` placeholders and runs `/atelier:plan-task <id>` per task. If the plugin is not installed, point them at it (`claude plugin install claude-roadmap-tools@akalab-tech`) and stop. Note: atelier's own repo and any project intentionally using the `High`/`Medium`/`Low` layout will also trip this — the operator simply declines.
 - **Non-interactive mode** (`--yes` / `-y` / `$ATELIER_AUTO`): **do not** run the adoption automatically. Print the recommendation (*"`ROADMAP.md` is not §5 (no P0/P1/P2 sections); run `/adopt-roadmap --format atelier` interactively to make its tasks claimable"*) and stop.
 
+## Phase 4 — backend selection (M9.3a)
+
+After Phases 1–3 complete, determine and apply the operator's chosen roadmap backend. Parse the helper's stdout for `atelier-backend=...` to learn what backend the project already has.
+
+### Step 4a — determine the chosen backend
+
+Evaluate in order:
+
+1. **Explicit flag (`--backend <value>` in `$ARGUMENTS`)**: parse `--backend` from `$ARGUMENTS`, mirroring the `--yes`/`-y`/`--mode=` parsing in Phase 1. Accept exactly `files`, `linear`, or `github-project`; for any other value print a usage error and stop:
+   > `Unknown --backend value: '<value>'. Valid options: files | linear | github-project`
+
+2. **Interactive (no `--backend` flag and not headless)**: use `AskUserQuestion` to offer the three options:
+   - `files` *(default — local markdown files; ROADMAP.md / IN_PROGRESS.md / HISTORY.md)*
+   - `linear` *(Linear.app — issues and projects via claude-roadmap-tools)*
+   - `github-project` *(GitHub Projects — board items via claude-roadmap-tools)*
+
+3. **Headless with no `--backend` flag** (`--yes`/`-y`/`$ATELIER_AUTO` and no explicit flag): **default to `files` silently.** A remote backend requires interactive OAuth (PLAN.md §16.4) that cannot auto-resolve; never silently select one. If a headless run *does* pass an explicit `--backend github-project` or `--backend linear`, print a clear note before delegating:
+   > `Note: crt's /create-roadmap --backend <choice> may still require interactive OAuth on the first backend call. Proceeding with delegation.`
+
+### Step 4b — idempotency check
+
+Compare the chosen backend against the `atelier-backend=` marker from the helper's stdout:
+
+- If `atelier-backend=<chosen>` already matches the chosen backend, **skip step 4c** (the project is already configured for that backend). Print: *"Backend already configured as `<chosen>` — nothing to do."*
+- If the chosen backend is `files` and no `.roadmap.json` exists (the normal fresh-files case): also **skip step 4c** — the `files` layout is already complete from Phase 1's `step_roadmap_files()`. Print: *"Backend: `files` — local markdown layout complete."*
+
+### Step 4c — delegate to `/create-roadmap --backend <choice>` (non-`files` only)
+
+When the chosen backend is `linear` or `github-project`:
+
+1. **Check `claude-roadmap-tools` is installed.** The `/create-roadmap` command must resolve. If it does not, print:
+   > `claude-roadmap-tools is not installed. Run: claude plugin install claude-roadmap-tools@akalab-tech`
+   Then stop — do **not** write `.roadmap.json` inline.
+
+2. **Invoke `/create-roadmap --backend <choice>`.** This is exactly the same delegation mechanism Phase 3 uses to invoke `/adopt-roadmap` — a prose-instruction invocation of the slash command, not a `Bash` or `Write` call. crt owns writing `.roadmap.json` and registering any MCP hooks; this slash command does neither inline.
+
+3. **Interactive vs headless**: mirror Phase 3's handling:
+   - *Interactive*: invoke `/create-roadmap --backend <choice>` and relay its output to the operator.
+   - *Headless (`--yes`/`-y`/`$ATELIER_AUTO`)* with explicit `--backend`: same invocation — print the headless-OAuth note first (Step 4a rule 3 above), then invoke.
+
+4. After the delegation completes (or is skipped), surface the final `atelier-backend=` value to the operator so they can see the configured state.
+
 ## Hard refusals
 
 These all live in the bash helper; documented here so the operator knows what to expect when reading the `/setup-project` contract:
@@ -122,6 +165,7 @@ These all live in the bash helper; documented here so the operator knows what to
 - **Never write `CLAUDE.md` without first dispatching `project-profiler`.** If the agent dispatch fails or returns a malformed report (no `## Drafted content` block when status is `drafted`), surface the failure and stop. Do not fabricate content to "rescue" the flow.
 - **Never invoke `Edit`, `mkdir`, `sed`, or `jq` directly from this slash command.** Phase 1's file work happens inside the bash helper. Phase 2's only allowed writes are: (a) `Write(<abs>/CLAUDE.md, <agent-returned-content>)` and (b) nothing else.
 - **Never dispatch `project-profiler` in `new` mode without an explicit operator answer.** The agent's prompt enforces this defensively but the slash command should refuse to even invoke it (the briefing would carry an empty `operator_answer` field).
+- **Never write `.roadmap.json` inline** — delegate the backend write to crt's `/create-roadmap --backend …`. atelier never re-implements the `.roadmap.json` write or any MCP registration that crt owns.
 
 ## Hard refusals
 
@@ -132,6 +176,7 @@ These all live in the bash helper; documented here so the operator knows what to
 - **Never reconfigure under `--yes` / `ATELIER_AUTO`**: re-running on a configured project in non-interactive mode exits with code 2.
 - **Never run `git init`** or any git write — `/setup-project` is for atelier scaffolding only.
 - **Never invoke `Write`, `Edit`, `mkdir`, `sed`, or `jq` directly from this slash command.** All file work happens inside the bash helper, which is the only tool allowed here.
+- **Never write `.roadmap.json` inline** — delegate the backend write to crt's `/create-roadmap --backend …`.
 
 ## Where to look if something breaks
 
