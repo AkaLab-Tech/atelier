@@ -33,80 +33,25 @@ jobs:
           done
           exit $fail
 
-      - name: safe-commit worktree/PM regression (M7.1.F57)
+      # Auto-discovered hermetic regression suite. Every hooks/tests/*.test.sh is
+      # run here, so ADDING A NEW TEST NO LONGER REQUIRES EDITING THIS WORKFLOW —
+      # which keeps routine test additions off the `.github/workflows/**`
+      # auto-merge guardrail (PLAN.md §6). Name a runnable test `<name>.test.sh`;
+      # put non-runnable helpers under any other name (they won't be picked up).
+      - name: hooks/tests regression suite (auto-discovered)
         run: |
-          bash hooks/tests/safe-commit-worktree.test.sh \
-            || { echo "::error::safe-commit F57 regression failed"; exit 1; }
-
-      - name: setup-project ROADMAP §5 detection (M7.1.F74)
-        run: |
-          bash hooks/tests/setup-project-roadmap-format-f74.test.sh \
-            || { echo "::error::setup-project F74 ROADMAP-format regression failed"; exit 1; }
-
-      - name: setup-project backend marker (M9.3a)
-        run: |
-          bash hooks/tests/setup-project-backend-marker.test.sh \
-            || { echo "::error::setup-project M9.3a backend-marker regression failed"; exit 1; }
-
-      - name: setup-workspace --policy member propagation
-        run: |
-          bash hooks/tests/setup-workspace-policy.test.sh \
-            || { echo "::error::setup-workspace --policy regression failed"; exit 1; }
-
-      - name: workspace-status ROADMAP §5 signal
-        run: |
-          bash hooks/tests/workspace-status-roadmap-format.test.sh \
-            || { echo "::error::workspace-status roadmap_format regression failed"; exit 1; }
-
-      - name: list-projects friendly render
-        run: |
-          bash hooks/tests/list-projects-render.test.sh \
-            || { echo "::error::list-projects render regression failed"; exit 1; }
-
-      - name: workspace-status friendly render
-        run: |
-          bash hooks/tests/workspace-status-render.test.sh \
-            || { echo "::error::workspace-status render regression failed"; exit 1; }
-
-      - name: orient decision tree (TASK_016)
-        run: |
-          bash hooks/tests/orient-decision-tree.test.sh \
-            || { echo "::error::atelier-orient decision-tree regression failed"; exit 1; }
-
-      - name: atelier() shellrc orient wiring (TASK_016)
-        run: |
-          bash hooks/tests/atelier-shellrc-orient.test.sh \
-            || { echo "::error::atelier() shellrc orient wiring regression failed"; exit 1; }
-
-      - name: operator chat language
-        run: |
-          bash hooks/tests/operator-language.test.sh \
-            || { echo "::error::operator-language regression failed"; exit 1; }
-
-      - name: install.sh --refresh-shellrc + atelier-update wiring
-        run: |
-          bash hooks/tests/refresh-shellrc.test.sh \
-            || { echo "::error::refresh-shellrc regression failed"; exit 1; }
-
-      - name: atelier-align survey (TASK_017)
-        run: |
-          bash hooks/tests/atelier-align-survey.test.sh \
-            || { echo "::error::atelier-align survey regression failed"; exit 1; }
-
-      - name: migrate-task-ids (M7.4)
-        run: |
-          bash hooks/tests/migrate-task-ids.test.sh \
-            || { echo "::error::migrate-task-ids regression failed"; exit 1; }
-
-      - name: task-backend resolver (M9.1)
-        run: |
-          bash hooks/tests/task-backend.test.sh \
-            || { echo "::error::task-backend regression failed"; exit 1; }
-
-      - name: task-provider backend routing (M9.1)
-        run: |
-          bash hooks/tests/task-provider-backend-routing.test.sh \
-            || { echo "::error::task-provider backend routing regression failed"; exit 1; }
+          shopt -s nullglob
+          tests=(hooks/tests/*.test.sh)
+          if [ ${#tests[@]} -eq 0 ]; then
+            echo "::error::no hooks/tests/*.test.sh found — expected a regression suite"
+            exit 1
+          fi
+          fail=0
+          for t in "${tests[@]}"; do
+            echo "▶ $t"
+            bash "$t" || { echo "::error file=$t::regression failed"; fail=1; }
+          done
+          exit $fail
 
       - name: python3 -m json.tool on JSON files
         run: |
