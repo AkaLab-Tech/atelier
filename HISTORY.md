@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_020c — M9.3c: plan-task planning gate backend-aware for GitHub Project Ready field — 2026-06-22
+**PR:** [#TBD](https://github.com/AkaLab-Tech/atelier/pull/TBD) (native atelier-dev; built on #20a M9.3a + #20b M9.3b + #18 M9.1 + #19 M9.2)
+
+Third and final slice of the M9.3 epic (#20). `commands/plan-task.md` planning gate is now backend-aware: for a `github-project` backend, approving a plan calls `RoadmapBackend.setReady(id, true)` (via the `roadmap-tracking-flow` skill) instead of editing a `ROADMAP.md` `[ready]` line; `.plan/<id>.md` stays a committed tracked repo file for both backends (PLAN.md §16.5). For the `files` backend the Phase 4 flow is byte-for-byte unchanged — `git add ROADMAP.md .plan/<id>.md`, no backend call. New `hooks/tests/plan-task-github-project-ready.test.sh` (23 assertions, auto-discovered by `structural.yml`) locks the #20c contract. Full 17-test suite green; `bash -n` + YAML frontmatter + JSON structural all pass. **Closes #20c; closes epic #20** (all three slices #20a/#20b/#20c merged).
+
 ### TASK_020a — M9.3a: setup-project backend selection (delegate to /create-roadmap --backend) — 2026-06-22
 **PR:** [#224](https://github.com/AkaLab-Tech/atelier/pull/224) (native atelier-dev; built on #18 M9.1 + #19 M9.2)
 

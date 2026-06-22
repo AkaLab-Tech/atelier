@@ -20,7 +20,7 @@ Indexed layout: each item links to its detail file under `roadmap/TASK_NNN_<slug
   - [x] `feat` M9.2b Core operations: Operations (GitHubProjectBackend) section in SKILL.md `#19b` `~TODO` `blocked_by:#19a` — [detail](roadmap/TASK_019_m9-2-github-project-backend.md#19b)
   - [x] `feat` M9.2c Command extensions + routing: /create-roadmap + /migrate-roadmap + activation `#19c` `~TODO` `blocked_by:#19b` — [detail](roadmap/TASK_019_m9-2-github-project-backend.md#19c)
   - [x] `feat` M9.2d Optional offline mirror + backend/backendId frontmatter parity `#19d` `~TODO` `blocked_by:#19b` — [detail](roadmap/TASK_019_m9-2-github-project-backend.md#19d)
-- [ ] `feat` Epic: M9.3 setup-project + next-task + planning gate on Projects `#20` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_020_m9-3-setup-nexttask-on-projects.md)
+- [x] `feat` Epic: M9.3 setup-project + next-task + planning gate on Projects `#20` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_020_m9-3-setup-nexttask-on-projects.md)
   - Three independently-shippable atelier-side integration slices (all native to atelier-dev, extending the #18 keystone); split file-by-command so each PR fits the 200-line/10-file budget, mirroring the #19 epic pattern.
 - [ ] `feat` M9.4 two-way migration files ↔ github-project `#21` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_021_m9-4-two-way-migration.md)
 - [ ] `feat` M9.5 workspaces + e2e `#22` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_022_m9-5-workspaces-e2e.md)
