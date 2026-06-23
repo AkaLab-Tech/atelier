@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_022a — M9.5a: backend-aware cross-repo blocked_by resolution in atelier-resolve-dep — 2026-06-23
+**PR:** [#TBD](https://github.com/AkaLab-Tech/atelier/pull/TBD) (native atelier-dev; built on #18 M9.1 backend-aware provider)
+
+First deliverable of the M9.5 epic (#22). `atelier-resolve-dep` is now backend-aware: for any sibling whose `.roadmap.json` declares a non-files backend (`linear` / `github-project`), the script emits `backend-deferred` on stdout and exits 6 — deferring authority to the AI layer (roadmap-tracking-flow skill) rather than attempting a local text scan. The files path (HISTORY.md / ROADMAP.md / IN_PROGRESS.md scan) is unchanged and byte-identical for absent-or-files backends. This realises the resolver-vs-driver seam from PLAN.md §15.4 + §16.7: bash decides which backend, the AI layer performs the authoritative read. `skills/task-discovery/SKILL.md` gains a "Cross-repo blocked_by resolution" section documenting the full exit-code contract (0 satisfied / 3 open / 4 unknown-token / 5 unknown-id / 6 backend-deferred). New `hooks/tests/resolve-dep-backend.test.sh` (7 assertions, hermetic, auto-discovered by structural.yml) locks the contract. Advances epic #22 / M9.5.
+
 ### TASK_021 / TASK_021c — M9.4 epic COMPLETE: two-way migration files ↔ github-project (+ linear → files) — 2026-06-23
 **PRs:** [crt#25](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/25) · [crt#26](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/26) · [crt#27](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/27) (cross-repo: #21/#21a–c tracked in atelier-dev; deliverables in claude-roadmap-tools)
 
