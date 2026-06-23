@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_021 / TASK_021c — M9.4 epic COMPLETE: two-way migration files ↔ github-project (+ linear → files) — 2026-06-23
+**PRs:** [crt#25](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/25) · [crt#26](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/26) · [crt#27](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/27) (cross-repo: #21/#21a–c tracked in atelier-dev; deliverables in claude-roadmap-tools)
+
+**M9.4 epic (#21) complete.** `/migrate-roadmap` now does `files ↔ github-project` in both directions, and the generalized `backend → files` reverse engine also unlocked `linear → files`. Final slice #21c (crt#27, 45 lines): flipped the `linear → files` matrix row to ✅ (routing into the #21a step-5d engine — no linear-specific engine change needed, the backend-agnostic path consumed Linear's `stateMap` + `Ready` label for free), narrowed the step-1 refusal, added the `linear → files` fidelity note + a documented round-trip validation walkthrough, and corrected a stale matrix label. The Direction matrix has no remaining `<remote> → files` ❌ rows; `linear ↔ github-project` stays out-of-scope by design (route via files). Slices #21a/#21b logged above. Next: M9.5 (#22) workspaces + real-OAuth e2e; a crt release makes the migration paths installable.
+
 ### TASK_021b — M9.4b: github-project ↔ files matrix flip + --to files wiring + fidelity contract — 2026-06-23
 **PR:** [claude-roadmap-tools#26](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/26) (cross-repo: #21b tracked in atelier-dev; deliverable in claude-roadmap-tools)
 
