@@ -25,7 +25,7 @@ Indexed layout: each item links to its detail file under `roadmap/TASK_NNN_<slug
 - [ ] `feat` Epic: M9.4 two-way migration files ↔ github-project `#21` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_021_m9-4-two-way-migration.md)
   - Reverse path is one mechanism (`backend → files` via `listTasks` across 3 buckets, parameterized by backend); split engine-vs-consumer so each PR is a single reviewable prose slice under the 200-line budget. Deliverables land in `claude-roadmap-tools`, not atelier-dev (mirrors #19).
   - [x] `feat` M9.4a Generalized `backend → files` reverse engine + RoadmapBackend reverse-read contract `#21a` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_021_m9-4-two-way-migration.md#21a--generalized-backend--files-reverse-engine--contract)
-  - [ ] [ready] `feat` M9.4b `github-project ↔ files` matrix flip + `--to files` wiring + round-trip fidelity contract `#21b` `~TODO` `blocked_by:#21a` — [detail](roadmap/TASK_021_m9-4-two-way-migration.md#21b--github-project--files-matrix--wiring)
+  - [x] `feat` M9.4b `github-project ↔ files` matrix flip + `--to files` wiring + round-trip fidelity contract `#21b` `~TODO` `blocked_by:#21a` — [detail](roadmap/TASK_021_m9-4-two-way-migration.md#21b--github-project--files-matrix--wiring)
   - [ ] [ready] `feat` M9.4c `linear → files` unlock + round-trip validation `#21c` `~TODO` `blocked_by:#21a` — [detail](roadmap/TASK_021_m9-4-two-way-migration.md#21c--linear--files-unlock--validation)
 - [ ] `feat` M9.5 workspaces + e2e `#22` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_022_m9-5-workspaces-e2e.md)
 

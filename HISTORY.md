@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_021b — M9.4b: github-project ↔ files matrix flip + --to files wiring + fidelity contract — 2026-06-23
+**PR:** [claude-roadmap-tools#26](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/26) (cross-repo: #21b tracked in atelier-dev; deliverable in claude-roadmap-tools)
+
+Second slice of the M9.4 epic (#21). Thin consumer of #21a's step-5d engine: flips the `github-project → files` Direction-matrix row to ✅ (routing into 5d), narrows the step-1 "refuse to migrate away from github-project" guard so `--to files` is allowed (only `github-project → github-project` no-op and `github-project → linear` cross-remote still refuse), wires `--to files` for a remote source, and documents the `files → github-project → files` fidelity contract (preserved: title/body/type/estimate/TASK_NNN/bucket/[ready]/blocked_by/history; lossy: PVTI_ node id, Project-native fields, assignees/comments; plus stateMap-multi-value + cosmetic-slug caveats). `linear ↔ github-project` stays ❌ (route via files). Unblocks the final slice #21c (linear → files).
+
 ### TASK_021a — M9.4a: generalized backend → files reverse engine + reverse-read contract — 2026-06-23
 **PR:** [claude-roadmap-tools#25](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/25) (cross-repo: #21a tracked in atelier-dev; deliverable in claude-roadmap-tools)
 
