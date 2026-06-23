@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_021a — M9.4a: generalized backend → files reverse engine + reverse-read contract — 2026-06-23
+**PR:** [claude-roadmap-tools#25](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/25) (cross-repo: #21a tracked in atelier-dev; deliverable in claude-roadmap-tools)
+
+First + keystone slice of the M9.4 epic (#21, two-way migration). Adds the single backend-agnostic `backend → files` reverse engine — a new `### 5d. <remote backend> → files (indexed)` step in `commands/migrate-roadmap.md` (drives reconstruction entirely via `listTasks`/`getTask`/`stateMap`-reverse-lookup, no backend-specific calls) + a `## Reverse reconstruction (remote → files)` contract section in `docs/RoadmapBackend.md`. Pulls all three buckets with `"all"` history semantics, rebuilds the indexed §5 layout, strips `backend`/`backendId` frontmatter (authority flip), removes `.roadmap.json` as the inverse atomic checkpoint, and is read-only against the remote on partial failure. Unblocks #21b (github-project↔files) and #21c (linear→files), which are thin consumers that only flip a Direction-matrix row into step 5d.
+
 ### TASK_020c — M9.3c: plan-task planning gate backend-aware for GitHub Project Ready field — 2026-06-22
 **PR:** [#TBD](https://github.com/AkaLab-Tech/atelier/pull/TBD) (native atelier-dev; built on #20a M9.3a + #20b M9.3b + #18 M9.1 + #19 M9.2)
 
