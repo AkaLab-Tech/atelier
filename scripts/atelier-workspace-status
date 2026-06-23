@@ -136,6 +136,12 @@ roadmap_format() {
 
 PROJECTS_FILE="$ATELIER_CONFIG_DIR/projects.json"
 
+# Resolve a member's task backend — mirrors the convention used in
+# atelier-resolve-dep: prefer the binary on PATH, fall back to the sibling
+# copy next to this script.
+_BACKEND_BIN="$(command -v atelier-task-backend 2>/dev/null || echo "$(dirname "${BASH_SOURCE[0]}")/atelier-task-backend")"
+member_backend() { "$_BACKEND_BIN" "$1"; }
+
 # Installed atelier version (best-effort) for per-member setup-drift hints —
 # resolved from the plugin root this script lives in (via the symlink chain).
 installed_version() {
@@ -192,6 +198,16 @@ in_progress_task() {
 # Emit cross-repo blockers for a member that are NOT satisfied, one per line:
 #   "<member-token>\t<task-id>\t<title>\t<blocker-token>#<id>\t<verdict>"
 # Parses unchecked ROADMAP lines carrying a `blocked_by:` with a token#id.
+#
+# Exit codes from atelier-resolve-dep and their handling here:
+#   0  satisfied   → skip (not blocked)
+#   3  open        → show with verdict "open"
+#   4  unknown-token → show with verdict "unknown-token"
+#   5  unknown-id  → show with verdict "unknown-id"
+#   6  backend-deferred → show with verdict "backend-deferred" and count as
+#      unsatisfied; the AI layer must resolve via RoadmapBackend.getTask/listTasks
+#      (see docs/RoadmapBackend.md). A deferred blocker is never silently dropped.
+# Only exit 0 is skipped. All other codes (3/4/5/6) are shown with their verdict.
 member_xrepo_blocked() {
   local mpath="$1" mtoken="$2" line bb task_id title blk btok bid verdict rc
   [ -f "$mpath/ROADMAP.md" ] || return 0
@@ -212,16 +228,30 @@ member_xrepo_blocked() {
       verdict="$(atelier-resolve-dep --from "$mpath" --token "$btok" --id "#$bid" 2>/dev/null)"; rc=$?
       set -e
       [ "$rc" -eq 0 ] && continue          # satisfied — not blocked
+      # rc 6 = backend-deferred: the sibling uses a non-files backend; the
+      # verdict string is already "backend-deferred" (captured above from stdout).
+      # It is shown and counted unsatisfied — the AI layer resolves it at runtime.
       printf '%s\t%s\t%s\t%s#%s\t%s\n' "$mtoken" "${task_id:-?}" "${title:-?}" "$btok" "$bid" "${verdict:-error}"
     done
   done < <(grep -E '^[[:space:]]*- \[ \].*blocked_by:' "$mpath/ROADMAP.md" 2>/dev/null)
 }
 
 # ---------- gather members ----------
-declare -a M_TOKENS=() M_PATHS=()
+# M_BACKENDS: parallel array to M_TOKENS/M_PATHS — each member's task backend
+# (files | linear | github-project | …). Detected once here so both the JSON
+# render branch and the human dashboard branch can read M_BACKENDS[$i].
+#
+# Mixed-backend degradation rules (non-files members):
+#   open_count     → "backend:<name>" (not counted offline; backlog lives remotely)
+#   roadmap_format → "<name>" (no local ROADMAP.md by design; not a drift signal)
+#   in_progress_task → reads IN_PROGRESS.md if present; falls back to "—" cleanly
+#   crossRepoBlocked → backend-deferred blockers (exit 6 from atelier-resolve-dep)
+#                      are shown and counted unsatisfied; the AI layer resolves them.
+declare -a M_TOKENS=() M_PATHS=() M_BACKENDS=()
 while IFS=$'\t' read -r tok path; do
   [ -n "$path" ] || continue
   M_TOKENS+=("$tok"); M_PATHS+=("$path")
+  M_BACKENDS+=("$(member_backend "$path")")
 done < <(jq -r --arg w "$SLUG" '.workspaces[$w].members[]? | "\(.token)\t\(.path)"' "$WORKSPACES_FILE")
 
 # Collect cross-repo-blocked rows once (used by both render modes).
@@ -235,14 +265,28 @@ done
 if [ "$MODE" = "json" ]; then
   members_json="$(
     for i in "${!M_PATHS[@]}"; do
-      p="${M_PATHS[$i]}"; t="${M_TOKENS[$i]}"
-      st="$(compute_status "$p")"; oc="$(open_count "$p")"
+      p="${M_PATHS[$i]}"; t="${M_TOKENS[$i]}"; bk="${M_BACKENDS[$i]}"
+      st="$(compute_status "$p")"
       xb="$(printf '%s' "$XREPO_ROWS" | { grep -cE "^${t}	" || true; })"
-      ip="$(in_progress_task "$p")"; rf="$(roadmap_format "$p")"
-      jq -n --arg token "$t" --arg path "$p" --arg status "$st" \
-            --arg inprogress "$ip" --arg roadmapfmt "$rf" \
-            --argjson open "${oc:-0}" --argjson xblocked "${xb:-0}" \
-            '{token:$token, path:$path, status:$status, inProgress:$inprogress, roadmapFormat:$roadmapfmt, openTasks:$open, crossRepoBlocked:$xblocked}'
+      ip="$(in_progress_task "$p")"
+      if [ "$bk" = "files" ]; then
+        # files backend: compute counts from local ROADMAP.md (existing behavior).
+        oc="$(open_count "$p")"; rf="$(roadmap_format "$p")"
+        # openTasks is numeric (0 when no open items). backend field added but
+        # does not change any other field — the one sanctioned additive change.
+        jq -n --arg token "$t" --arg path "$p" --arg status "$st" \
+              --arg inprogress "$ip" --arg roadmapfmt "$rf" --arg backend "$bk" \
+              --argjson open "${oc:-0}" --argjson xblocked "${xb:-0}" \
+              '{token:$token, path:$path, status:$status, inProgress:$inprogress, roadmapFormat:$roadmapfmt, openTasks:$open, crossRepoBlocked:$xblocked, backend:$backend}'
+      else
+        # Non-files backend: backlog lives remotely; openTasks is null (not
+        # counted offline — null is distinct from 0 so consumers can tell the
+        # difference). roadmapFormat shows the backend name instead of "absent".
+        jq -n --arg token "$t" --arg path "$p" --arg status "$st" \
+              --arg inprogress "$ip" --arg roadmapfmt "$bk" --arg backend "$bk" \
+              --argjson xblocked "${xb:-0}" \
+              '{token:$token, path:$path, status:$status, inProgress:$inprogress, roadmapFormat:$roadmapfmt, openTasks:null, crossRepoBlocked:$xblocked, backend:$backend}'
+      fi
     done | jq -s '.'
   )"
   blocked_json="$(printf '%s' "$XREPO_ROWS" | jq -R 'select(length>0) | split("\t") | {member:.[0], task:.[1], title:.[2], blocker:.[3], verdict:.[4]}' | jq -s '.')"
@@ -276,10 +320,9 @@ S_NONSEC5=''; S_INPROG=''; S_DRIFT=''; S_PARTIAL=''
 
 printf '%sMembers%s\n' "$C_BOLD" "$C_RESET"
 for i in "${!M_PATHS[@]}"; do
-  p="${M_PATHS[$i]}"; t="${M_TOKENS[$i]}"
-  st="$(compute_status "$p")"; oc="$(open_count "$p")"; ip="$(in_progress_task "$p")"
+  p="${M_PATHS[$i]}"; t="${M_TOKENS[$i]}"; bk="${M_BACKENDS[$i]}"
+  st="$(compute_status "$p")"; ip="$(in_progress_task "$p")"
   xb="$(printf '%s' "$XREPO_ROWS" | { grep -cE "^${t}	" || true; })"
-  rf="$(roadmap_format "$p")"
   case "$st" in
     configured)            gcol="$C_GREEN";  glyph='✓' ;;
     partial|missing-files) gcol="$C_YELLOW"; glyph='⚠' ;;
@@ -287,9 +330,17 @@ for i in "${!M_PATHS[@]}"; do
     *)                     gcol='';          glyph='?' ;;
   esac
 
-  # Line 1: fixed-width glyph + token + counts (never wraps — F72).
-  printf '  %s%s%s %s%-22s%s  open %-3s  x-repo-blocked %s\n' \
-    "$gcol" "$glyph" "$C_RESET" "$C_BOLD" "$t" "$C_RESET" "${oc:-0}" "${xb:-0}"
+  if [ "$bk" = "files" ]; then
+    oc="$(open_count "$p")"
+    # Line 1: fixed-width glyph + token + counts (never wraps — F72).
+    printf '  %s%s%s %s%-22s%s  open %-3s  x-repo-blocked %s\n' \
+      "$gcol" "$glyph" "$C_RESET" "$C_BOLD" "$t" "$C_RESET" "${oc:-0}" "${xb:-0}"
+  else
+    # Non-files backend: open count lives remotely, not computed offline.
+    # Show "backend:<name>" so the operator sees why there's no local count.
+    printf '  %s%s%s %s%-22s%s  open %-3s  x-repo-blocked %s\n' \
+      "$gcol" "$glyph" "$C_RESET" "$C_BOLD" "$t" "$C_RESET" "backend:${bk}" "${xb:-0}"
+  fi
 
   # in-progress (untruncated, own line) + a resume hint when occupied.
   if [ "$ip" = "—" ]; then
@@ -300,13 +351,21 @@ for i in "${!M_PATHS[@]}"; do
   fi
 
   # roadmap §5 conformance + adoption hint.
-  case "$rf" in
-    non-conforming)
-      printf '      %sroadmap §5: no%s   %s→ /atelier:onboard-workspace %s%s\n' "$C_YELLOW" "$C_RESET" "$C_DIM" "$SLUG" "$C_RESET"
-      S_NONSEC5="$S_NONSEC5 $t" ;;
-    absent)
-      printf '      %sroadmap §5: no ROADMAP.md%s\n' "$C_YELLOW" "$C_RESET" ;;
-  esac
+  # Non-files members have no local ROADMAP.md by design — they must NOT trip
+  # the S_NONSEC5 drift signal (false alarm). Their backend name is shown instead.
+  if [ "$bk" = "files" ]; then
+    rf="$(roadmap_format "$p")"
+    case "$rf" in
+      non-conforming)
+        printf '      %sroadmap §5: no%s   %s→ /atelier:onboard-workspace %s%s\n' "$C_YELLOW" "$C_RESET" "$C_DIM" "$SLUG" "$C_RESET"
+        S_NONSEC5="$S_NONSEC5 $t" ;;
+      absent)
+        printf '      %sroadmap §5: no ROADMAP.md%s\n' "$C_YELLOW" "$C_RESET" ;;
+    esac
+  else
+    # Backend-tracked member: roadmap lives in the remote backend, not locally.
+    printf '      %sroadmap §5: backend:%s%s\n' "$C_DIM" "$bk" "$C_RESET"
+  fi
 
   # version drift vs installed.
   sv="$(setup_version_of "$p")"
