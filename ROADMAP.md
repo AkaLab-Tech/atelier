@@ -30,8 +30,7 @@ Indexed layout: each item links to its detail file under `roadmap/TASK_NNN_<slug
 - [ ] `feat` Epic: M9.5 workspaces + e2e `#22` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_022_m9-5-workspaces-e2e.md)
   - Splits the real code change (backend-aware cross-repo `blocked_by` resolution, then mixed-backend workspace-status rendering) from the heavy real-OAuth end-to-end validation pass; each slice fits the 200-line/10-file budget independently. Acceptance from the parent task is covered across the three sub-tasks; #22c closes M9.
   - [x] `feat` M9.5a Backend-aware cross-repo `blocked_by` resolution in `atelier-resolve-dep` `#22a` `~2h` `blocked_by:#18` — [detail](roadmap/TASK_022_m9-5-workspaces-e2e.md) — done (PR #233)
-  - [ ] [ready] `feat` M9.5c End-to-end validation on a real `github-project`-backed member + mixed-backend workspace `#22c` `~3h` `blocked_by:#22b` — [detail](roadmap/TASK_022_m9-5-workspaces-e2e.md)
-    - Drive a full autonomous cycle (claim → implement → PR → merge → ROADMAP→IN_PROGRESS→HISTORY state move via the backend) on a `github-project` member, plus validate a 2–3 repo mixed-backend workspace aggregates status and resolves cross-repo `blocked_by`. Validation/runbook deliverable (docs/ + a validation log). **Closes M9.** Per PLAN.md §16.7.
+  - [x] `feat` M9.5b Mixed-backend workspace status aggregation in `atelier-workspace-status` `#22b` `~2h` `blocked_by:#22a` — [detail](roadmap/TASK_022_m9-5-workspaces-e2e.md) — done (PR #235)
 
 ## 💭 P2 — Backlog
 
