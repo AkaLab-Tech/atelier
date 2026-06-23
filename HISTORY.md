@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### TASK_022a — M9.5a: backend-aware cross-repo blocked_by resolution in atelier-resolve-dep — 2026-06-23
-**PR:** [#TBD](https://github.com/AkaLab-Tech/atelier/pull/TBD) (native atelier-dev; built on #18 M9.1 backend-aware provider)
+**PR:** [#233](https://github.com/AkaLab-Tech/atelier/pull/233) (native atelier-dev; built on #18 M9.1 backend-aware provider)
 
 First deliverable of the M9.5 epic (#22). `atelier-resolve-dep` is now backend-aware: for any sibling whose `.roadmap.json` declares a non-files backend (`linear` / `github-project`), the script emits `backend-deferred` on stdout and exits 6 — deferring authority to the AI layer (roadmap-tracking-flow skill) rather than attempting a local text scan. The files path (HISTORY.md / ROADMAP.md / IN_PROGRESS.md scan) is unchanged and byte-identical for absent-or-files backends. This realises the resolver-vs-driver seam from PLAN.md §15.4 + §16.7: bash decides which backend, the AI layer performs the authoritative read. `skills/task-discovery/SKILL.md` gains a "Cross-repo blocked_by resolution" section documenting the full exit-code contract (0 satisfied / 3 open / 4 unknown-token / 5 unknown-id / 6 backend-deferred). New `hooks/tests/resolve-dep-backend.test.sh` (7 assertions, hermetic, auto-discovered by structural.yml) locks the contract. Advances epic #22 / M9.5.
 
@@ -29,7 +29,7 @@ Second slice of the M9.4 epic (#21). Thin consumer of #21a's step-5d engine: fli
 First + keystone slice of the M9.4 epic (#21, two-way migration). Adds the single backend-agnostic `backend → files` reverse engine — a new `### 5d. <remote backend> → files (indexed)` step in `commands/migrate-roadmap.md` (drives reconstruction entirely via `listTasks`/`getTask`/`stateMap`-reverse-lookup, no backend-specific calls) + a `## Reverse reconstruction (remote → files)` contract section in `docs/RoadmapBackend.md`. Pulls all three buckets with `"all"` history semantics, rebuilds the indexed §5 layout, strips `backend`/`backendId` frontmatter (authority flip), removes `.roadmap.json` as the inverse atomic checkpoint, and is read-only against the remote on partial failure. Unblocks #21b (github-project↔files) and #21c (linear→files), which are thin consumers that only flip a Direction-matrix row into step 5d.
 
 ### TASK_020c — M9.3c: plan-task planning gate backend-aware for GitHub Project Ready field — 2026-06-22
-**PR:** [#TBD](https://github.com/AkaLab-Tech/atelier/pull/TBD) (native atelier-dev; built on #20a M9.3a + #20b M9.3b + #18 M9.1 + #19 M9.2)
+**PR:** [#233](https://github.com/AkaLab-Tech/atelier/pull/233) (native atelier-dev; built on #20a M9.3a + #20b M9.3b + #18 M9.1 + #19 M9.2)
 
 Third and final slice of the M9.3 epic (#20). `commands/plan-task.md` planning gate is now backend-aware: for a `github-project` backend, approving a plan calls `RoadmapBackend.setReady(id, true)` (via the `roadmap-tracking-flow` skill) instead of editing a `ROADMAP.md` `[ready]` line; `.plan/<id>.md` stays a committed tracked repo file for both backends (PLAN.md §16.5). For the `files` backend the Phase 4 flow is byte-for-byte unchanged — `git add ROADMAP.md .plan/<id>.md`, no backend call. New `hooks/tests/plan-task-github-project-ready.test.sh` (23 assertions, auto-discovered by `structural.yml`) locks the #20c contract. Full 17-test suite green; `bash -n` + YAML frontmatter + JSON structural all pass. **Closes #20c; closes epic #20** (all three slices #20a/#20b/#20c merged).
 
