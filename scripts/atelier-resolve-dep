@@ -24,14 +24,21 @@
 #   atelier-resolve-dep --help
 #
 # Exit codes:
-#   0  satisfied      (<id> is closed in <token>'s HISTORY.md)
+#   0  satisfied         (<id> is closed in <token>'s HISTORY.md)
 #   2  usage error / workspace not found
-#   3  open           (<token> resolves; <id> exists but is not closed)
-#   4  unknown-token  (<token> is not a member of the workspace)
-#   5  unknown-id     (<id> appears nowhere in <token>'s tracking — likely a typo)
+#   3  open              (<token> resolves; <id> exists but is not closed)
+#   4  unknown-token     (<token> is not a member of the workspace)
+#   5  unknown-id        (<id> appears nowhere in <token>'s tracking — likely a typo)
+#   6  backend-deferred  (<token>'s member uses a non-files backend; the AI layer
+#                         must resolve <id> via that backend's RoadmapBackend
+#                         getTask/listTasks per docs/RoadmapBackend.md)
+#
+# The offline HISTORY.md grep route is the `files` case (the default).
+# When <token>'s member declares a non-files backend (e.g. linear, github-project),
+# this helper cannot drive MCP and defers to the AI layer via exit 6.
 #
 # stdout: a single machine-readable verdict word —
-#   satisfied | open | unknown-token | unknown-id | error
+#   satisfied | open | unknown-token | unknown-id | error | backend-deferred
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -65,6 +72,8 @@ OPTIONS:
 
 EXIT CODES:
   0 satisfied · 2 usage/workspace-not-found · 3 open · 4 unknown-token · 5 unknown-id
+  6 backend-deferred (sibling uses non-files backend; AI layer resolves via RoadmapBackend)
+  The offline HISTORY.md grep route is the files case (the default).
 EOF
 }
 
@@ -134,6 +143,19 @@ if [ -z "$MEMBER_PATH" ]; then
   warn "token '$TOKEN' is not a member of workspace '$WS_SLUG'"
   printf 'unknown-token\n'
   exit 4
+fi
+
+# ---------- resolve the sibling's backend ----------
+# Prefer the binary already on PATH; fall back to the copy next to this script.
+BACKEND_BIN="$(command -v atelier-task-backend || echo "$(dirname "${BASH_SOURCE[0]}")/atelier-task-backend")"
+BACKEND="$("$BACKEND_BIN" "$MEMBER_PATH")"
+
+if [ -n "$BACKEND" ] && [ "$BACKEND" != "files" ]; then
+  # The sibling member uses a non-files backend (e.g. linear, github-project).
+  # This offline helper cannot drive MCP, so defer to the AI layer.
+  warn "sibling '$TOKEN' uses backend '$BACKEND'; deferring #${ID} resolution to AI layer (RoadmapBackend.getTask/listTasks per docs/RoadmapBackend.md)"
+  printf 'backend-deferred\n'
+  exit 6
 fi
 
 # ---------- classify the id against the member's tracking ----------
