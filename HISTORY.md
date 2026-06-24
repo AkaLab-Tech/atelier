@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_029 — fix: detach stdin on claude plugin mutations so atelier-update cache refresh doesn't hang — 2026-06-24
+**PR:** #245 (native atelier-dev; bug fix for indefinite hang at plugin-cache refresh step)
+
+Closes #29. `refresh_plugin_cache` in `atelier-update` issued `CLAUDE_CONFIG_DIR=... claude plugin update ...` with stderr redirected to `/dev/null` but stdin left attached to the terminal. `claude plugin update` emits an interactive confirmation prompt; with stderr suppressed the prompt was invisible, but the blocking read on stdin still happened — causing `atelier-update` to hang indefinitely at the final cache-refresh step. Fix: append `</dev/null` to both `claude plugin update` calls (L63/L68), mirroring the established precedent at `atelier-uninstall` L209. Sibling helpers hardened in the same PR: `atelier-setup-coolify`, `atelier-setup-neon`, and `atelier-setup-vercel` each gain `</dev/null` on their `claude plugin marketplace add` and `claude plugin install` calls. New `hooks/tests/atelier-update-plugin-stdin.test.sh` (22nd structural test) provides a static grep-scan regression guard: asserts every mutating `claude plugin (update|install|uninstall)` invocation under `scripts/atelier-*` carries `</dev/null`, with a false-positive guard for atelier-doctor suggestion literals and a positive-precedent check validating the atelier-uninstall call is correctly detected. Confirmed RED against the unfixed scripts, GREEN after the fix. Full 22/22 structural suite green.
+
 ### TASK_028 — fix: guard empty-array [@] expansion under set -u in atelier-pr-size-check — 2026-06-24
 **PR:** #241 (native atelier-dev; bug fix for false 0/0 size-gate reading surfaced by reviewer on PR #236)
 
