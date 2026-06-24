@@ -8,3 +8,5 @@ When a PR closes a task, the **same PR** must update both `IN_PROGRESS.md` (remo
 
 ---
 
+- [ ] `bug` `atelier-update` hangs at plugin-cache refresh (`claude plugin update` missing `</dev/null`, prompt hidden by `2>/dev/null`) `#29` `~TODO` — [detail](roadmap/TASK_029_atelier-update-plugin-cache-hang.md)
+
