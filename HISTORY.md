@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_028 — fix: guard empty-array [@] expansion under set -u in atelier-pr-size-check — 2026-06-24
+**PR:** #241 (native atelier-dev; bug fix for false 0/0 size-gate reading surfaced by reviewer on PR #236)
+
+Closes #28. In PR mode without `--repo`, `repo_flag` is an empty array. Under `set -u` (macOS system bash 3.2.57), `"${repo_flag[@]}"` on an empty array is treated as unbound — `gh pr view` aborts before fetching the diff, so the script exits with 0 lines / 0 files. This silently defeated the auto-merge size guardrail (PLAN.md §6) for any oversized PR reviewed without an explicit `--repo`. Fix: replace bare `"${repo_flag[@]}"` at L226 with the portable idiom `"${repo_flag[@]+"${repo_flag[@]}"}"` (expand to nothing when empty, expand to elements otherwise) — portable to bash 3.2+. Defensive guards at L154/L188 using the same idiom were already correct and are preserved. New hermetic regression test `hooks/tests/pr-size-check-empty-array.test.sh` stubs `gh` on PATH (no network), asserts no `unbound variable` on stderr and true non-zero counts (57 lines / 2 files) in both the no-`--repo` and `--repo` scenarios; confirmed RED on the unfixed script under macOS bash 3.2.57 and GREEN with the fix. Full structural suite 21/21 green.
+
 ### TASK_027 — fix: refuse to claim a [ready] task whose plan is not on origin/<base> — 2026-06-24
 **PR:** [#239](https://github.com/AkaLab-Tech/atelier/pull/239) (native atelier-dev; bug fix for dropped plan-commit scenario observed on #22 M9.5)
 
