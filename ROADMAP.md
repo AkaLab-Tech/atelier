@@ -37,7 +37,6 @@ Indexed layout: each item links to its detail file under `roadmap/TASK_NNN_<slug
 - [ ] `feat` auto review-fix loop: re-dispatch implementer/tester on `request-changes`, bounded, then escalate `#24` `~TODO` — [detail](roadmap/TASK_024_review-fix-loop.md)
 - [ ] `feat` `/atelier:babysit-prs` — watch open `task/*` PRs and drive CI→review→merge `#25` `~TODO` — [detail](roadmap/TASK_025_babysit-prs.md)
 - [ ] `feat` auto post-merge cleanup completion: base pull + orphan branch sweep `#26` `~TODO` — [detail](roadmap/TASK_026_post-merge-cleanup-completion.md)
-- [ ] [ready] `bug` `/plan-task` decomposition lost when unpushed (orchestrator worktree branches from origin/main) `#27` `~TODO` — [detail](roadmap/TASK_027_plan-commit-dropped-when-unpushed.md)
 - [ ] `bug` `atelier-pr-size-check` aborts under `set -u` (`repo_flag[@]` unbound) → counts 0/0 in PR mode `#28` `~TODO` — [detail](roadmap/TASK_028_pr-size-check-unbound-variable.md)
 - [ ] `feat` first-class High/Medium/Low ROADMAP layout for operator projects (M7.1.F68 option B) `#3` `~TODO` — [detail](roadmap/TASK_003_first-class-high-med-low-layout.md)
 - [ ] `feat` actionable "nothing planned" dead-end: surface plan candidates `#4` `~TODO` — [detail](roadmap/TASK_004_nothing-planned-dead-end.md)
