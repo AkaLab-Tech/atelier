@@ -8,4 +8,3 @@ When a PR closes a task, the **same PR** must update both `IN_PROGRESS.md` (remo
 
 ---
 
-- [ ] `bug` `/plan-task` decomposition lost when unpushed (orchestrator worktree branches from origin/main) `#27` `~TODO` — [detail](roadmap/TASK_027_plan-commit-dropped-when-unpushed.md)
