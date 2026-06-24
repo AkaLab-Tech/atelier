@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### TASK_027 — fix: refuse to claim a [ready] task whose plan is not on origin/<base> — 2026-06-24
-**PR:** [#TBD](https://github.com/AkaLab-Tech/atelier/pull/TBD) (native atelier-dev; bug fix for dropped plan-commit scenario observed on #22 M9.5)
+**PR:** [#239](https://github.com/AkaLab-Tech/atelier/pull/239) (native atelier-dev; bug fix for dropped plan-commit scenario observed on #22 M9.5)
 
 Closes the plan-commit-dropped bug (#27). When `/atelier:plan-task` decomposes an epic and commits the result locally (without pushing), `/atelier:next-task` branched its worktree from `origin/main` and silently dropped the decomposition — leaving `origin/main` inconsistent after merge (observed 2026-06-23 during #22 M9.5). Fix: (1) `commands/plan-task.md` gains a claimability contract stating a `[ready]` task is only claimable once the plan commit is on `origin/<base>`, and a "Next:" section instructing the operator to push/merge first; (2) `commands/next-task.md` gains a hard-refusal pre-worktree step that runs `git cat-file -e origin/<base>:.plan/<id>.md` and refuses with a clear message when the plan is missing on the remote base; frontmatter gains `Bash(git cat-file:*)`; Hard-refusals bullet covers the stale-ROADMAP / dropped-decomposition scenario; (3) `agents/task-orchestrator.md` gains a second-independent-backstop sentence noting the guard catches the condition before a worktree is created; (4) new `hooks/tests/plan-commit-on-base.test.sh` (13 assertions: prose contracts + behavioral probe simulating dropped-plan → non-zero / plan-on-base → zero) auto-discovered by structural.yml. No code dependencies added. Full 20-test hermetic suite green.
 
