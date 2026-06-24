@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_022c — M9.5c: manual-e2e runbook + findings log for mixed-backend workspaces — M9.5 epic + M9 COMPLETE — 2026-06-23
+**PR:** [#236](https://github.com/AkaLab-Tech/atelier/pull/236) (native atelier-dev; closing slice of epic #22, built on #22a PR #233 + #22b PR #235)
+
+Final slice of the M9.5 epic (#22) — the validation/runbook deliverable that **closes M9** (Phase 9: external task-manager backends). Per the operator's decision, shipped **docs-only**: the live OAuth/MCP pass is the operator's, so the runbook is authored against named-but-to-be-provisioned fixtures and the findings log is an explicit `RESULTS: PENDING LIVE RUN` skeleton. Adds `docs/manual-e2e-workspaces-backends.md` (operator-facing runbook in the established four-beat format — Stage A: full autonomous cycle on a real `github-project`-backed member, with expected Project-board state at each step; Stage B: a 2–3 repo mixed-backend workspace aggregating honest per-member status (#22b) and resolving cross-repo `blocked_by` in both directions incl. `backend-deferred` (#22a)) and `docs/manual-e2e-workspaces-backends-results.md` (findings-log skeleton — every Observed/Divergence/Pass-Fail cell a `— (pending live run)` placeholder). Documents the §16.7 v1 constraint (one backend per repo; shared-Project workspaces deferred). **M9 is functionally complete pending the operator's live-run sign-off** — divergences found during the live pass are recorded as new tasks, not closure blockers. Closes #22c; closes epic #22; closes M9.
+
 ### TASK_022a — M9.5a: backend-aware cross-repo blocked_by resolution in atelier-resolve-dep — 2026-06-23
 **PR:** [#233](https://github.com/AkaLab-Tech/atelier/pull/233) (native atelier-dev; built on #18 M9.1 backend-aware provider)
 

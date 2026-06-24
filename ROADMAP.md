@@ -27,10 +27,7 @@ Indexed layout: each item links to its detail file under `roadmap/TASK_NNN_<slug
   - [x] `feat` M9.4a Generalized `backend → files` reverse engine + RoadmapBackend reverse-read contract `#21a` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_021_m9-4-two-way-migration.md#21a--generalized-backend--files-reverse-engine--contract)
   - [x] `feat` M9.4b `github-project ↔ files` matrix flip + `--to files` wiring + round-trip fidelity contract `#21b` `~TODO` `blocked_by:#21a` — [detail](roadmap/TASK_021_m9-4-two-way-migration.md#21b--github-project--files-matrix--wiring)
   - [x] `feat` M9.4c `linear → files` unlock + round-trip validation `#21c` `~TODO` `blocked_by:#21a` — [detail](roadmap/TASK_021_m9-4-two-way-migration.md#21c--linear--files-unlock--validation)
-- [ ] `feat` Epic: M9.5 workspaces + e2e `#22` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_022_m9-5-workspaces-e2e.md)
-  - Splits the real code change (backend-aware cross-repo `blocked_by` resolution, then mixed-backend workspace-status rendering) from the heavy real-OAuth end-to-end validation pass; each slice fits the 200-line/10-file budget independently. Acceptance from the parent task is covered across the three sub-tasks; #22c closes M9.
-  - [x] `feat` M9.5a Backend-aware cross-repo `blocked_by` resolution in `atelier-resolve-dep` `#22a` `~2h` `blocked_by:#18` — [detail](roadmap/TASK_022_m9-5-workspaces-e2e.md) — done (PR #233)
-  - [x] `feat` M9.5b Mixed-backend workspace status aggregation in `atelier-workspace-status` `#22b` `~2h` `blocked_by:#22a` — [detail](roadmap/TASK_022_m9-5-workspaces-e2e.md) — done (PR #235)
+- [x] `feat` Epic: M9.5 workspaces + e2e `#22` — COMPLETE — [detail](roadmap/TASK_022_m9-5-workspaces-e2e.md)
 
 ## 💭 P2 — Backlog
 
