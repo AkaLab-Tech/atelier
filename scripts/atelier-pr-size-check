@@ -151,7 +151,7 @@ fi
 CONFIG_FILE="$PROJECT/.atelier.json"
 MAX_LINES="$DEFAULT_MAX_LINES"
 MAX_FILES="$DEFAULT_MAX_FILES"
-EXEMPT=("${DEFAULT_EXEMPT[@]}")
+EXEMPT=("${DEFAULT_EXEMPT[@]+"${DEFAULT_EXEMPT[@]}"}")
 
 if [ -f "$CONFIG_FILE" ]; then
   jq empty "$CONFIG_FILE" >/dev/null 2>&1 \
@@ -185,7 +185,7 @@ fi
 # add `*.test.*` to their .atelier.json explicitly.
 path_is_exempt() {
   local path="$1" pat pat_no_prefix
-  for pat in "${EXEMPT[@]}"; do
+  for pat in "${EXEMPT[@]+"${EXEMPT[@]}"}"; do
     # shellcheck disable=SC2254  # we intentionally use $pat as a glob pattern
     case "$path" in
       $pat) return 0 ;;
@@ -223,7 +223,11 @@ emit_diff_jsonl() {
   else
     local repo_flag=()
     [ -n "$REPO" ] && repo_flag=(--repo "$REPO")
-    gh pr view "$PR" "${repo_flag[@]}" --json files --jq '.files[]' \
+    # bash 3.2 (macOS system bash) treats an empty array's [@] expansion as
+    # "unbound" under set -u, aborting here when --repo is not passed. The
+    # "${arr[@]+"${arr[@]}"}" idiom expands to nothing when the array is
+    # empty/unset, and to the quoted elements otherwise — portable to 3.2+.
+    gh pr view "$PR" "${repo_flag[@]+"${repo_flag[@]}"}" --json files --jq '.files[]' \
       | jq -c '{path: .path, additions: .additions, deletions: .deletions}'
   fi
 }
