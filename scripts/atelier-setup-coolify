@@ -61,8 +61,8 @@ ensure_plugin() {
     return 0
   fi
   log "installing ${PLUGIN_ID}"
-  CLAUDE_CONFIG_DIR="$CONFIG_DIR" claude plugin marketplace add "$MARKETPLACE_SOURCE" >/dev/null 2>&1 || true
-  CLAUDE_CONFIG_DIR="$CONFIG_DIR" claude plugin install "$PLUGIN_ID" \
+  CLAUDE_CONFIG_DIR="$CONFIG_DIR" claude plugin marketplace add "$MARKETPLACE_SOURCE" </dev/null >/dev/null 2>&1 || true
+  CLAUDE_CONFIG_DIR="$CONFIG_DIR" claude plugin install "$PLUGIN_ID" </dev/null \
     || die "claude plugin install ${PLUGIN_ID} failed"
 }
 
