@@ -142,7 +142,7 @@ Planned:   <task_id> — <title>   (decomposed into <N> sub-tasks: <#ids>)   # d
 Plans:     .plan/<id>.md [, .plan/<id>.md ...]
 Ready:     <#ids flipped to [ready] / Ready field set>
 Commit:    <sha>
-Next:      run /atelier:next-task to claim <first ready id>
+Next:      push/merge this commit to origin/<base> first (a decomposition is only claimable once it is on origin/<base>); then run /atelier:next-task to claim <first ready id>
 ```
 
 On refusal / rejection, the output is the reason plus the suggested next action, and a line confirming nothing was committed.
@@ -152,6 +152,6 @@ On refusal / rejection, the output is the reason plus the suggested next action,
 - **Never** flip `[ready]` or set the Project's `Ready` field without explicit product-lead approval. In non-interactive mode, stop at the draft — for both `files` and `github-project` backends.
 - **Never** start the implement chain or invoke `task-orchestrator` / `implementer` from this command. `/plan-task` is planning-only.
 - **Never** run from a task worktree — the backlog and `.plan/` you'd edit are on the wrong branch (Phase 1 step 2).
-- **Never** push the commit. The plan commit lives on the current branch; the operator decides when to push (and never to a protected branch directly).
+- **Never** push the commit; never push to a protected branch directly. Landing happens via a normal PR to `origin/<base>` (squash-merge), not a direct push. For the decomposed case, the epic rewrite and every `.plan/<sub-id>.md` must land together in that one commit/PR — they are already one commit, so a partial landing cannot occur. **Claimability contract:** `/next-task` cuts the task worktree from `origin/<base>` and reads the merged ROADMAP from `origin/<base>` — a plan/decomposition committed locally but not yet on `origin/<base>` is invisible and is silently dropped. **The plan commit is not claimable until it is on `origin/<base>`.** Until then, running `/atelier:next-task` will refuse with a clear message pointing to the unmerged plan.
 - **Never** edit `IN_PROGRESS.md` or `HISTORY.md` — the task is not claimed yet, so there is no in-progress entry.
 - **Never** edit `ROADMAP.md` for a non-`files` backend — there is none; the `Ready` flip goes through the backend (`setReady`) only.

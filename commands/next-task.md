@@ -1,7 +1,7 @@
 ---
 description: Pick the next task from `ROADMAP.md`, set up its worktree, and hand it to the `task-orchestrator` agent end-to-end.
 argument-hint: "[task-id] [--yes|-y]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git fetch:*), Bash(git ls-remote:*), Bash(git show:*), Bash(git wt:*), Bash(gh pr list:*), Bash(atelier-setup-project:*), Bash(atelier-resolve-dep:*), Bash(atelier-task-backend:*), Bash(env:*), Skill, Task
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git fetch:*), Bash(git ls-remote:*), Bash(git show:*), Bash(git cat-file:*), Bash(git wt:*), Bash(gh pr list:*), Bash(atelier-setup-project:*), Bash(atelier-resolve-dep:*), Bash(atelier-task-backend:*), Bash(env:*), Skill, Task
 ---
 
 You are running the `/next-task` slash command. Drive the full pickup-to-PR flow for one task from the project's `ROADMAP.md`, exactly as [PLAN.md §7](PLAN.md) prescribes.
@@ -81,6 +81,23 @@ The **planning-gate validation** is absolute: a named-but-unplanned task is refu
 ✗ /next-task: task #<id> is not planned — run `/atelier:plan-task #<id>` first.
    A task is only claimable once a product lead has approved a plan and it carries [ready].
 ```
+
+**Plan-on-base guard (all backends):** Even when the planning gate passes (the task is `[ready]` and a `.plan/<id>.md` exists somewhere), verify the plan file is actually present on `origin/<base>` — the ref the worktree will be cut from. Use the existence probe:
+
+```bash
+git cat-file -e origin/<base>:.plan/<id>.md
+```
+
+This probe is backend-agnostic: `.plan/<id>.md` is always a tracked repo file (§16.5), regardless of whether the backlog lives in `ROADMAP.md` or a non-`files` backend. If the probe exits non-zero (file absent on `origin/<base>`), **stop and refuse** — the plan was committed locally by `/atelier:plan-task` but never landed on the base:
+
+```text
+✗ /next-task: task #<id> is marked [ready] but its plan/decomposition is not on origin/<base>.
+   The plan was committed locally by /atelier:plan-task but never landed.
+   A worktree cut from origin/<base> would silently operate on stale ROADMAP state.
+   resolve: push/merge the plan commit to origin/<base> (e.g. open a PR for it), then re-run.
+```
+
+For the **`files` backend with a decomposed epic**: if `origin/<base>:ROADMAP.md` still shows the undecomposed parent (no sub-task lines, no `.plan/<sub-id>.md` on `origin/<base>`) while a local-only decomposition exists, the same refusal fires — the orchestrator must never claim a sub-task whose epic rewrite has not reached `origin/<base>`.
 
 The `blocked_by` validation covers both forms:
 
@@ -182,3 +199,4 @@ Or, if any step aborted, report exactly which step and why — the operator deci
 - **Never** claim a task whose `blocked_by:` references an open item — including a cross-repo `<token>#id` whose target is not closed in that member's `HISTORY.md` (`atelier-resolve-dep` exits non-zero), or whose token/project is not a resolvable workspace member.
 - **Never** edit `settings.template.json` itself from this command — that file is the template, not the output. The helper writes the instantiated copy to `<worktree>/.claude/settings.json`; this command never touches either file directly.
 - **Never** push or open a PR from this command — that is `pr-author`'s job at the end of the chain.
+- **Never** claim a `[ready]` task whose `.plan/<id>.md` (or, for a decomposed epic, the sub-task rewrite) is not present on `origin/<base>` — refuse with a pointer to land the plan commit. A worktree cut from `origin/<base>` would otherwise operate on stale ROADMAP state and drop the decomposition.

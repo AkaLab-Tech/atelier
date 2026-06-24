@@ -8,4 +8,3 @@ When a PR closes a task, the **same PR** must update both `IN_PROGRESS.md` (remo
 
 ---
 
-_No active tasks._
