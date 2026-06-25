@@ -8,3 +8,5 @@ When a PR closes a task, the **same PR** must update both `IN_PROGRESS.md` (remo
 
 ---
 
+- [ ] `feat` orchestrator waits for the CI cycle before the auto-merge gate `#23` `~3h` — [detail](roadmap/TASK_023_orchestrator-ci-wait.md)
+
