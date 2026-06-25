@@ -1,3 +1,7 @@
+---
+backend: github-project
+backendId: PVTI_lADOCSHEDc4Bbr7mzgw4dms
+---
 # TASK_012 — v2 ideas (deferred)
 
 Per [PLAN.md §11](PLAN.md). Revisit only after v1 is stable.

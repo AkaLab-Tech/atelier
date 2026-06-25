@@ -1,3 +1,7 @@
+---
+backend: github-project
+backendId: PVTI_lADOCSHEDc4Bbr7mzgw4dkg
+---
 # TASK_009 — M4.15 — `Stop`-hook auto-reprompt on validation failure (exceptional path)
 
 `blocked_by: M4.14`

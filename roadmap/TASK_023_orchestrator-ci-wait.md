@@ -1,3 +1,7 @@
+---
+backend: github-project
+backendId: PVTI_lADOCSHEDc4Bbr7mzgw4dck
+---
 # TASK_023 — Orchestrator waits for the CI cycle before the auto-merge gate
 
 **Type:** `feat` · **Priority:** P2 · **Estimate:** `~TODO`

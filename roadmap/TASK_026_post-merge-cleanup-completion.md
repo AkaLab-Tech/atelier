@@ -1,3 +1,7 @@
+---
+backend: github-project
+backendId: PVTI_lADOCSHEDc4Bbr7mzgw4dfM
+---
 # TASK_026 — Auto post-merge cleanup completion (base pull + orphan sweep)
 
 **Type:** `feat` · **Priority:** P2 · **Estimate:** `~TODO`

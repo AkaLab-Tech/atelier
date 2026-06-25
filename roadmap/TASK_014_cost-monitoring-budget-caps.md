@@ -1,3 +1,7 @@
+---
+backend: github-project
+backendId: PVTI_lADOCSHEDc4Bbr7mzgw4dnw
+---
 # TASK_014 — Cost monitoring / per-task budget caps
 
 **Deferred to v2** (was PLAN.md §11 — out of scope for v1). Revisit after v1 is stable.

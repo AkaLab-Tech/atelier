@@ -1,3 +1,7 @@
+---
+backend: github-project
+backendId: PVTI_lADOCSHEDc4Bbr7mzgw4dog
+---
 # TASK_015 — Visual regression (baseline diff)
 
 **Deferred to v2** (was PLAN.md §11 — out of scope for v1; v1 uses raw screenshots). Revisit after v1 is stable.

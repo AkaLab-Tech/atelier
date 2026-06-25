@@ -2,3 +2,9 @@
 .claude/settings.local.json
 .DS_Store
 .task-log/
+
+# atelier roadmap tracking migrated to github-project backend (offline mirror)
+ROADMAP.md
+IN_PROGRESS.md
+HISTORY.md
+roadmap/
