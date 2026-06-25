@@ -69,6 +69,8 @@ If the array is empty (no checks configured), the skill treats it as **pass** �
 
 → `held: CI not green (<N> check(s) failed | <N> still running)`.
 
+Note: when the skill is invoked via `task-orchestrator`, pending CI has already been waited on by the orchestrator's pre-merge CI wait step before this skill is called. The skill remains evaluate-once; the bounded wait lives upstream. When the skill is invoked directly by the operator ("merge the PR"), pending CI still yields `held` here — re-invoke after CI completes, or use #25 babysit-prs for unattended monitoring.
+
 ### 4. No forbidden files in the diff
 
 ```bash
@@ -204,7 +206,7 @@ Next step:     human review required. Operator can:
 - **Never** ask the operator to confirm the merge after the six guardrails resolve to `merged`. The gate is the authorization — see § Authorization model. Per-PR opt-outs live in `/atelier:abort-auto`, `<project>/.atelier.json`, and the `task --policy` / `--ask-for` flags. An ad-hoc *"should I merge?"* prompt is a contract violation regardless of phrasing (*"confirm before touching main?"*, *"shall I land this?"*, *"OK to merge?"* are all the same violation).
 - **Never** merge when ANY guardrail fails. The whole point of the six is short-circuiting safety.
 - **Never** use `--merge` or `--rebase` strategies. Squash only.
-- **Never** retry on a transient guardrail failure (CI still running, comment pending). Report the held state and return — the operator decides when to re-invoke.
+- **Never** loop or retry within this skill on a transient guardrail state (CI still running, comment pending). The skill evaluates once and returns `held` — the orchestrator is responsible for waiting on pending CI and re-invoking this skill when CI completes (see pre-merge CI wait in `task-orchestrator`). A direct operator invocation ("merge the PR") that encounters pending CI yields `held` here and returns; re-invoke after CI resolves, or let #25 babysit-prs handle the unattended case. This refusal applies to the skill itself — the orchestrator's upstream wait is intentional and does not contradict it.
 - **Never** force-remove a dirty worktree post-merge. Something unexpected happened; surface it to the operator.
 - **Never** push `chore(roadmap): mark X done` directly to `main`. The static permissions matrix denies it. Surface the change as a follow-up.
 - **Never** mark a roadmap item `[x]` for a PR that was held. The auto-merge skill only modifies state on success.

@@ -135,7 +135,7 @@ The PR from step 2 was opened but never reviewed/merged. Confirm it is in a stat
    - `state` must be `OPEN` and `isDraft` false. If draft → stop and tell the operator to mark it ready first. If not open → stop (already merged/closed).
    - `headRefName` must be `task/<id>-<slug>`. If it is not a `task/*` branch, this is not an atelier task PR — stop.
 
-2. **CI must not be failing.** If `statusCheckRollup` contains any `conclusion: FAILURE` check, **stop** and surface them — a red PR is not finishable by re-running review; the implementer must fix it (a separate resume on a re-opened task). Pending checks are fine; the auto-merge skill re-evaluates them.
+2. **CI must not be failing.** If `statusCheckRollup` contains any `conclusion: FAILURE` check, **stop** and surface them — a red PR is not finishable by re-running review; the implementer must fix it (a separate resume on a re-opened task). Pending (`IN_PROGRESS`/`QUEUED`) checks are handled automatically: the orchestrator's pre-merge CI wait step blocks until they reach a terminal state before invoking `auto-merge` — no manual re-invoke needed when checks are still running.
 
 3. **Resolve the worktree.** Find it via `git wt list` (or `git worktree list`) matching `task/<id>-*`. If the worktree is gone (operator removed it), that is fine for PR-open-resume — the PR branch on origin is the source of truth; record `worktree_path: <none>` and note it. The `reviewer` reviews the PR via `gh`, not the local tree.
 

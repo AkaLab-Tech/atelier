@@ -359,6 +359,8 @@ Auto-merge when:
 1. CI green, **and**
 2. Independent `reviewer` agent (Opus, fresh context) approves per checklist.
 
+The orchestrator waits (bounded) for CI to complete before invoking the merge gate, so a still-running CI at chain-end does not require a manual re-invoke. Pending CI (`IN_PROGRESS`/`QUEUED`) is waited on; failed CI (`FAILURE`/`CANCELLED`/`TIMED_OUT`/`STARTUP_FAILURE`) is terminal and stops the chain without merging (CI failure recovery is task #24's scope). Wait budget defaults: `maxWaitSeconds: 900`, `pollIntervalSeconds: 15` — configurable per project via `ciWait` in `<project>/.atelier.json`. See `agents/task-orchestrator.md` § Pre-merge CI wait.
+
 **Never auto-merge** (falls back to human operator):
 - Changes to `package.json` / `pnpm-lock.yaml`.
 - Changes to `Dockerfile` / `docker-compose*`.

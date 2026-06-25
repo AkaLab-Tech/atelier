@@ -29,6 +29,11 @@
     "_comment": "How many tasks /atelier:next-task may have in flight at once for this repo (M7.1.F66). Each task runs in its own worktree cut from origin/<base>, so parallel tasks are isolated; the claim registry is the set of open `task/*` PRs on origin, not a single IN_PROGRESS.md slot. Raise `max` to parallelise non-colliding work — across workspace members it is always safe; within one repo, tasks with overlapping `scope:` may collide at merge time (the auto-merge gate resolves or escalates). Absent field is treated as `1`.",
     "max": 1
   },
+  "ciWait": {
+    "_comment": "Bounded wait for CI checks to reach a terminal state before the auto-merge gate (#23). After `reviewer` approves, the orchestrator waits up to `maxWaitSeconds` for any `IN_PROGRESS`/`QUEUED` checks to complete before invoking the auto-merge skill. `FAILURE`/`CANCELLED`/`TIMED_OUT`/`STARTUP_FAILURE` stops the chain immediately without merging. A timeout yields `held: CI still running after <maxWaitSeconds>s` and does not consume the 6-attempt retry budget. Repos with no CI (empty statusCheckRollup) are not waited on. Absent block → built-in defaults.",
+    "maxWaitSeconds": 900,
+    "pollIntervalSeconds": 15
+  },
   "deliverableLanguage": "English",
   "_deliverableLanguage_comment": "Language atelier writes repo deliverables in — commit messages, PR titles/descriptions, code comments, and generated docs/artifacts (.plan/<id>.md, drafted CLAUDE.md, ROADMAP/IN_PROGRESS/HISTORY entries) — regardless of the project's own content language or the operator's chat language (M7.1.F73). Set to any language name (e.g. \"Spanish\", \"French\"). Absent field is treated as \"English\". Does not affect operator-facing chat or the project's pre-existing content.",
   "semanticRiskJudge": {
