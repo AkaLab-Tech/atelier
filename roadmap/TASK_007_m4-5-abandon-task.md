@@ -1,3 +1,7 @@
+---
+backend: github-project
+backendId: PVTI_lADOCSHEDc4Bbr7mzgw4djY
+---
 # TASK_007 — M4.5 — `/abandon-task <id>`
 
 A slash command for the Camino C of the blocked-task lifecycle (operator decides the task will not be retried). Today this requires the operator to (a) close the GitHub `blocked` issue with a `wontfix` comment and (b) manually move the entry from `IN_PROGRESS.md` to `HISTORY.md` with an "abandoned" note. The command automates both steps:

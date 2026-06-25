@@ -1,3 +1,7 @@
+---
+backend: github-project
+backendId: PVTI_lADOCSHEDc4Bbr7mzgw4diw
+---
 # TASK_006 — M4.4 — Blocked-task visibility in `/status`
 
 Extend the existing `/status` command so it also lists tasks currently marked `[BLOCKED]` in `IN_PROGRESS.md`, with their issue URL and the count of attached `.task-log/*.md` entries. Today the operator only sees blocked tasks by filtering GitHub Issues by label `blocked` or by reading `IN_PROGRESS.md` manually — neither is discoverable from inside a Claude session.

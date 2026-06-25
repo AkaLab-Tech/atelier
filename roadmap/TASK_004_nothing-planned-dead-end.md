@@ -1,3 +1,7 @@
+---
+backend: github-project
+backendId: PVTI_lADOCSHEDc4Bbr7mzgw4dhU
+---
 # TASK_004 — Idea — actionable "nothing planned" dead-end: surface plan candidates
 
 Surfaced finishing M7.1: when `/atelier:next-task` finds no `[ready]` task it stops with a bare "run `/atelier:plan-task` first" error. Instead, make the dead-end **actionable** — hand the operator a ranked shortlist of what to plan next, so `task` always returns something useful (either a started task or a precise "plan one of these").

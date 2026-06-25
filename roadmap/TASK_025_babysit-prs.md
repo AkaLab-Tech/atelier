@@ -1,3 +1,7 @@
+---
+backend: github-project
+backendId: PVTI_lADOCSHEDc4Bbr7mzgw4deo
+---
 # TASK_025 — `/atelier:babysit-prs` — watch open `task/*` PRs and drive them to merge
 
 **Type:** `feat` · **Priority:** P2 · **Estimate:** `~TODO`
