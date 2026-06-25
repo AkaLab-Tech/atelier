@@ -12,7 +12,7 @@ Indexed layout: each item links to its detail file under `roadmap/TASK_NNN_<slug
 
 ## 🎯 P1 — Next
 
-> **M9 — External task-manager backends: GitHub Projects** (epic `#2`, sliced — [detail](roadmap/TASK_002_m9-github-projects-backend.md)). M9.1 (`#18`) is the keystone and is currently in progress (see [IN_PROGRESS.md](IN_PROGRESS.md)); the rest depend on it.
+> **M9 — External task-manager backends: GitHub Projects** (epic `#2`, sliced — [detail](roadmap/TASK_002_m9-github-projects-backend.md)) is **complete**: the keystone M9.1 (`#18`) merged 2026-06-20 and every sub-epic (#19–#22) is closed — see [HISTORY.md](HISTORY.md). The only remaining step is the operator's live OAuth/MCP end-to-end run (runbook: [docs/manual-e2e-workspaces-backends.md](docs/manual-e2e-workspaces-backends.md)); divergences found there become new tasks, not closure blockers. No active P1 work — the next actionable backlog is the autonomous-cycle hardening block in P2 (#23–#26).
 
 - [x] `feat` Epic: M9.2 GitHubProjectBackend in claude-roadmap-tools `#19` `~TODO` `blocked_by:#18` — [detail](roadmap/TASK_019_m9-2-github-project-backend.md)
   - Deliverable lands in `claude-roadmap-tools` (100%-markdown plugin), not atelier-dev; split mirrors the existing LinearBackend file-by-file so each PR is one reviewable prose slice under the 200-line budget.
