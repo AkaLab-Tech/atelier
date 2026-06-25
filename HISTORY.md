@@ -8,6 +8,11 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_023 — feat: orchestrator waits for the CI cycle before the auto-merge gate — 2026-06-25
+**PR:** [#250](https://github.com/AkaLab-Tech/atelier/pull/250) (native atelier-dev; feat adding bounded CI wait before the auto-merge gate)
+
+Closes #23. Adds a bounded, fail-fast pre-merge CI wait step to the `task-orchestrator` chain — between `reviewer` approval and `auto-merge` skill invocation. Previously, a still-running CI at chain-end required a manual `/atelier:resume-task` re-invoke; the orchestrator now blocks until checks reach a terminal state (or the `maxWaitSeconds` budget exhausts). Fail-fast on `FAILURE`/`CANCELLED`/`TIMED_OUT`/`STARTUP_FAILURE` — chain stops, does not redispatch `implementer`/`tester` (CI failure recovery is task #24's scope). Timeout yields `held: CI still running after <maxWaitSeconds>s` and does NOT consume the 6-attempt `retry-with-logs` budget. `auto-merge` skill stays evaluate-once; wait logic lives upstream in the orchestrator. New `ciWait` block in `.atelier.json` + `templates/atelier.template.json` (`maxWaitSeconds: 900`, `pollIntervalSeconds: 15`); absent block uses built-in defaults. `PLAN.md §6` updated with bounded-wait description and budget-exemption note. `commands/resume-task.md` step 2: pending checks now handled automatically — no manual re-invoke needed. `skills/auto-merge/SKILL.md`: `never retry` refactored to `never loop within the skill` with a clear pointer to the orchestrator's upstream wait. Pure prompt-layer + JSON config change; no new regression test warranted. Full 22/22 structural suite green.
+
 ### TASK_029 — fix: detach stdin on claude plugin mutations so atelier-update cache refresh doesn't hang — 2026-06-24
 **PR:** #245 (native atelier-dev; bug fix for indefinite hang at plugin-cache refresh step)
 
