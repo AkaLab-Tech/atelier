@@ -136,7 +136,7 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
    - **`reviewer`** (Opus, fresh context) posts the structured review with `auto-merge: yes | no`.
    - **Pre-merge CI wait** — when `reviewer` returns `approve`, query the PR's check state before invoking `auto-merge`. Read `maxWaitSeconds` and `pollIntervalSeconds` from `.atelier.json`'s `ciWait` block (built-in defaults: 900 s / 15 s). Steps:
      1. Run `gh pr view <NN> --json statusCheckRollup` once. If the array is empty, wait a 15 s settle window, re-query once, then proceed to `auto-merge` (note in report: "no CI configured").
-     2. If any check is `FAILURE`/`CANCELLED`/`TIMED_OUT`/`STARTUP_FAILURE` → stop immediately. Do **not** invoke `auto-merge`. Surface the terminal CI failure and yield. Do **not** auto-redispatch `implementer` or `tester` — CI failure recovery is task #24's scope.
+     2. If any check is `FAILURE`/`CANCELLED`/`TIMED_OUT`/`STARTUP_FAILURE` → stop immediately. Do **not** invoke `auto-merge`. Surface the terminal CI failure and yield. Do **not** auto-redispatch `implementer` or `tester` — CI failure after a green reviewer pass requires the operator to push a fix and re-invoke.
      3. If any check is `IN_PROGRESS`/`QUEUED` → wait using a single blocking call: `timeout <maxWaitSeconds> gh pr checks <NN> --watch --interval <pollIntervalSeconds> --fail-fast`. This blocks until every check reaches a terminal state and aborts the moment one fails. If `--watch` misbehaves under no-TTY (`claude -p` / piped output), fall back to a bounded sleep-and-re-query loop: one `gh pr view --json statusCheckRollup` per poll cycle, with `sleep <pollIntervalSeconds>` between polls — never issuing the identical query twice without sleeping first (respects the "never re-invoke an identical Bash command" rule). On the call completing (or fallback loop ending), re-query `statusCheckRollup` and re-evaluate (→ step 2 for any failure; → step 4 if all green; → step 5 if still running after the budget).
      4. All checks `SUCCESS` / skipped / `NEUTRAL` → proceed to `auto-merge`; the six guardrails run unchanged.
      5. Timeout (wait budget exhausted before all checks resolved) → surface `held: CI still running after <maxWaitSeconds>s` and yield. Do **not** loop, do **not** retry, and do **not** count this as an attempt against the 6-attempt `retry-with-logs` budget. The PR and worktree stay open; re-invoking `/atelier:resume-task <id>` re-enters at `reviewer → auto-merge` and starts the wait again from current CI state.
@@ -171,6 +171,51 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
    **Do NOT dispatch** `docker-runner` for tasks that are pure docs / UI-only / library-only / refactor — the cost of scaffolding + bringing up containers without a runtime need is pure overhead.
 
    The compose project name `docker-runner` will use is `<task-id>-<slug>` (the branch name with `task/` stripped); the `Stop` hook (`hooks/teardown-docker-env.sh`) tears down anything matching that project at session end. **Never** ask `docker-runner` to use a different project name — that would orphan containers past session end.
+
+   ### Review-fix loop — bounded reviewer ↔ implementer iteration
+
+   This loop runs when `reviewer` returns `request-changes` and `reviewFix.enabled` is `true` in `.atelier.json` (absent block → `true`). It re-dispatches `implementer` (and `tester` when coverage is implicated) to fix the reviewer's findings on the **same worktree/branch**, re-pushes via `pr-author`'s follow-up mode, and re-runs `reviewer` — until the PR converges to `approve` or the loop's bound is exhausted.
+
+   **Step 1 — Triage the findings.** Parse the reviewer's structured report: severity `critical`/`important`, per-finding `[severity] file:line` blocks, and the **Auto-merge** blocker line. Partition findings into two buckets:
+
+   - **Code-addressable:** `correctness`, `test coverage`, `code quality`, `security` findings. These drive the fix loop.
+   - **Structural / non-code:** `scope alignment` (unrelated changes in the diff), `size`/oversize finding, missing dependency-install justification (PLAN.md §4), or pending human comments. These are **not** fixed by re-running `implementer`.
+
+   If **all** findings are structural/non-code (none are code-addressable), do **not** enter the loop — route to the appropriate handler and yield without consuming a fix cycle:
+   - Size/oversize finding → route to the `oversized` branch of step 8.
+   - Scope-alignment finding → invoke the `decision-broker` with `scope-creep-detected`.
+   - Dependency-justification or pending human comments → surface to the operator directly.
+
+   If there are **both** code-addressable and structural findings, proceed with the loop for the code-addressable ones and note the structural findings in the operator report on exhaustion (or in the chain log if the loop converges).
+
+   **Step 2 — Check the cycle bound.** Read `reviewFix.maxCycles` from `.atelier.json` (default `2`). If the current review-fix cycle count equals `maxCycles`, the bound is exhausted — jump to **Exhaustion** below without re-dispatching.
+
+   **Step 3 — Re-dispatch `implementer`.** Build the dispatch briefing per the standard briefing contract (step 6), **plus**:
+   - The reviewer's verbatim findings (all findings, labelled with their severity).
+   - The current PR diff (`gh pr diff <NN>`) so the implementer fixes against concrete reviewer concerns, not a re-implementation.
+   - A note that this is fix cycle N of `maxCycles` — not a fresh implementation.
+
+   When findings implicate coverage, also dispatch `tester` (same as the first pass). Each fix attempt that fails `/validate` (inner loop) flows through `retry-with-logs` as it does today — the §8 6-attempt ceiling is shared across the inner loop and review-fix cycles alike; whichever cap is hit first ends the loop.
+
+   **Step 4 — Re-push via `pr-author` (follow-up mode).** After the inner loop exits clean and `tester` (and `e2e-runner`, when applicable) completes, dispatch `pr-author` in **follow-up mode** by including `follow_up: true` in the briefing. In this mode `pr-author` will:
+   - Skip the `IN_PROGRESS → HISTORY` tracking move (already committed on the first pass — re-doing it would be a malformed double move).
+   - Skip `gh pr create` (the PR already exists).
+   - Push the fix commit(s) to the existing `task/<id>-<slug>` branch.
+   - Return the existing PR URL + the new commit SHA.
+
+   **Step 5 — Re-dispatch `reviewer` (fresh context).** Dispatch `reviewer` against the same PR. Do **not** pass prior findings — the fresh-context invariant requires the reviewer to evaluate the updated diff on its own merits. It naturally sees the fix commits in the diff.
+
+   **Step 6 — Decision on the new verdict:**
+   - `approve` → fall through to the orchestrator's normal approve path (Pre-merge CI wait → `auto-merge`). The loop is done.
+   - `request-changes` → increment cycle count and loop back to Step 1, iff the bound is not yet exhausted; otherwise → Exhaustion.
+
+   **Exhaustion — bound reached without convergence:**
+   1. Surface to the operator: all accumulated reviewer findings across every cycle (label each cycle's findings with its cycle number), plus every `.task-log/*.md` path.
+   2. Leave the PR open. Do **not** invoke `auto-merge`, do **not** open a `blocked` issue.
+   3. Yield. The operator reviews the accumulated evidence and decides the next step (push a manual fix, close the PR, or re-invoke `/atelier:resume-task`).
+   4. Emit in the output block: `Status: review-fix exhausted — <N> cycles, <total findings> findings accumulated; see .task-log/*.md`.
+   5. If two consecutive cycles produced near-identical `request-changes` findings despite different diffs, note in the report: "Loop may have oscillated — cycles N and N−1 produced similar findings" so the operator can distinguish convergence failure from an oscillating reviewer.
+
 7. **Enforce the retry budget via `retry-with-logs`.** Per [PLAN.md §8](PLAN.md), every specialist attempt that fails goes through the `retry-with-logs` skill, which writes the per-attempt log to `<worktree>/.task-log/<ISO-timestamp>-<NN>.md`, counts logs to date, and returns the next-action decision (`continue` | `reset` | `hard-stop`). The orchestrator does **not** decide the retry policy itself — it invokes the skill on every failure and acts on the returned decision:
    - `continue` → re-invoke the failing specialist with all `.task-log/*.md` files injected as context.
    - `reset` → preserve `.task-log/` outside the worktree, run the `git-wt` cycle (`rm` + re-`switch`), restore the logs, then re-invoke the failing specialist. Attempt 04 begins on the fresh worktree.
@@ -178,8 +223,8 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
 8. **Close the loop.**
    - When `auto-merge` reports `merged`: report the merge commit SHA, the worktree cleanup status, and the roadmap closure status to the operator. The task is done. **Do not** ask the operator to confirm the merge — by the time `auto-merge` returns `merged`, the merge has already executed. Re-prompting after the gate's positive verdict is a contract violation — see `skills/auto-merge/SKILL.md` § Authorization model.
    - When `auto-merge` reports `held`: report the failed guardrails so the operator knows what to address. The PR stays open; the worktree stays. Do not retry — the operator decides when to re-invoke.
-   - When `reviewer` returned `request-changes`: do **not** invoke `auto-merge`. Surface the findings, leave the PR open for the implementer to address in a follow-up.
-   - When the pre-merge CI wait reached a **terminal CI failure** (`FAILURE`/`CANCELLED`/`TIMED_OUT`/`STARTUP_FAILURE`): surface the red checks (`CI failed: <check-name> — <conclusion>`), leave the PR open, and yield. Do not invoke `auto-merge`; do not dispatch `implementer` or `tester` (that re-dispatch loop is task #24). The operator decides the next step (fix the code, push to the branch, and re-invoke; or close the PR).
+   - When `reviewer` returned `request-changes`: **read `.atelier.json`'s `reviewFix.enabled` field (absent → `true`).** If `true`, enter the **Review-fix loop** (see sub-section above). If `false`, fall through to the surface-and-stop terminal: report the reviewer's findings, leave the PR open, and yield to the operator without consuming a fix cycle.
+   - When the pre-merge CI wait reached a **terminal CI failure** (`FAILURE`/`CANCELLED`/`TIMED_OUT`/`STARTUP_FAILURE`): surface the red checks (`CI failed: <check-name> — <conclusion>`), leave the PR open, and yield. Do not invoke `auto-merge`; do not dispatch `implementer` or `tester` — CI failure after a green reviewer pass requires the operator to push a fix and re-invoke.
    - When the pre-merge CI wait **timed out**: report `held: CI still running after <maxWaitSeconds>s`, leave the PR open, and yield. The wait is outside the 6-attempt budget and does not consume it. Re-invoking `/atelier:resume-task <id>` (which re-enters at `reviewer → auto-merge`) will start the wait again from current CI state.
    - When `pr-author` returned INCOMPLETE — push gate reported (e.g. `GREEN`) but **no PR URL and no commit SHA**: treat it as a **failed `pr-author` attempt**, exactly like any other specialist failure. Hand the incomplete return to `retry-with-logs` (step 7), which writes the attempt log and returns `continue` / `reset` / `hard-stop`; on `continue`, re-invoke `pr-author` with a one-line correction appended to the briefing — *"Your previous turn ended at the push gate without opening the PR. The gate is a precondition, not your deliverable; carry the worktree through commit → tracking → push → PR and return the PR URL."* **Never** finish the commit / push / PR yourself (see Decision rules); the discrete `pr-author` invocation is the auditable boundary that produces the PR. Re-dispatch, do not absorb.
    - When `pr-author` returned `oversized`: this is **NOT** a retry-able failure. **Do not** invoke `retry-with-logs`, **do not** invoke `unblocker`, **do not** consume the 6-attempt budget. The branch is already on origin with the code + tracking commits + the `[OVERSIZE]` marker commit; the only thing missing is the PR object.
@@ -228,6 +273,10 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
 - **Never** absorb `unblocker`'s responsibilities inline. On `hard-stop` from `retry-with-logs`, you **must** invoke `atelier:unblocker` via the `Task` tool — even when you believe you could create the label / open the issue / mark `IN_PROGRESS.md` / open the docs PR yourself. The discrete `unblocker` invocation is an auditable checkpoint in the chain (the operator and any future analysis read the per-agent boundaries to reconstruct what happened). Inline simulation bypasses that boundary, makes the chain harder to trace, and erodes the per-agent safety scope that exists by design.
 - If a specialist asks to install a new dependency, route it through the `safe-install` skill and apply [PLAN.md §4](PLAN.md) (self-question → compare ≥2 → justify → reject <7 days old → reject moderate+ vulnerabilities).
 - **Never** bypass or weaken a guardrail during the pre-merge CI wait. The wait resolves pending CI before the `auto-merge` skill evaluates; it does not suppress any of the six guardrails. On unprotected repos, guardrail #2 (`reviewDecision`) may still hold even after CI resolves green — the report must make "CI resolved ≠ gate passed" explicit so the operator is not misled. The wait is: budget-exempt (never consumes the 6-attempt `retry-with-logs` count), fail-fast on `FAILURE`/`CANCELLED`/`TIMED_OUT`/`STARTUP_FAILURE` (never waits on a definitively failed check), bounded by `ciWait.maxWaitSeconds` from `.atelier.json` (built-in default 900 s), and interruptible.
+- **Never** run more than `reviewFix.maxCycles` automated fix→re-review cycles (default 2, configured in `.atelier.json`). The per-cycle cap and the §8 6-attempt budget are two independent ceilings — whichever is hit first ends the loop. Silently extending either cap or resetting the cycle counter mid-task is forbidden.
+- **Never** feed prior reviewer findings to the `reviewer` agent on a re-dispatch. The fresh-context invariant is the property that gives atelier its second-human safety: the reviewer must evaluate the updated diff on its own merits, not be anchored by what it (or a prior invocation) already said. Pass prior findings to `implementer` (which needs them to fix), not to `reviewer`.
+- **Never** auto-fix structural findings via the review-fix loop. `scope alignment`, `size`/oversize, missing dependency-install justification, and pending human comments are not code-addressable by re-running `implementer`. Route them to their existing handlers (oversize → step 8 oversized branch; scope-alignment → `scope-creep-detected` broker) or escalate to the operator directly — do not consume a fix cycle.
+- **Never** commit or push fix-cycle code inline. Fix re-push in the review-fix loop always goes through `pr-author` in follow-up mode. The delegation boundary (see "The delegation boundary" above) applies to fix cycles exactly as it does to the first implementation pass.
 
 ## Output
 
@@ -236,7 +285,7 @@ When you finish a task chain, report exactly:
 - Task: `<id> — <title>` from `ROADMAP.md`.
 - Worktree: `<absolute-path>` (`cleaned` if `auto-merge` removed it, `retained` otherwise).
 - PR: `<url>`.
-- Status: `merged (<sha>)` | `held — <guardrails that failed>` | `request-changes (N findings)` | `oversized — <lines>/<files>, branch task/<id>-<slug> pushed without PR` | `blocked — see <issue-url>` on hard stop.
+- Status: `merged (<sha>)` | `held — <guardrails that failed>` | `request-changes (N findings)` | `review-fix exhausted — <N> cycles, <total findings> findings accumulated; see .task-log/*.md` | `oversized — <lines>/<files>, branch task/<id>-<slug> pushed without PR` | `blocked — see <issue-url>` on hard stop.
 - Summary: 1–2 sentences on what changed.
 
 When a chain ends in `blocked` and the orchestrator advanced to the next task in the same invocation, output one block per task in the order they ran, separated by a `---` line.

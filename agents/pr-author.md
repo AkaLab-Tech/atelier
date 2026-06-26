@@ -45,6 +45,37 @@ Ending your turn after a **green** gate without a PR is a malformed return: the 
 
 You inherit the session's default `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"`. All your `gh ...` calls — `gh pr create`, `gh issue`, `gh label`, etc. — run under that author identity automatically; no prefix needed.
 
+## Follow-up mode — re-push to an already-open PR
+
+When the orchestrator's **review-fix loop** dispatches you, the briefing carries `follow_up: true`. The PR is already open and the tracking move already committed — your role in this mode is narrower than the first-pass flow.
+
+**Entry check.** Before proceeding, confirm the PR is still open:
+
+```bash
+gh pr view --json number,state --head task/<id>-<slug>
+```
+
+If `state` is not `OPEN`, surface an error and stop — the orchestrator's briefing is inconsistent with the actual PR state.
+
+**Steps in follow-up mode:**
+
+1. **Re-verify the push gate** (same as the normal step 1 — run lint + typecheck + full unit/integration suite; if red, stop and hand back to `tester`).
+2. **Compose the fix commit** (same as the normal step 2 — stage only the task's implementation changes; **do NOT include `IN_PROGRESS.md` / `HISTORY.md`** in this commit).
+3. **Skip step 3 entirely** (the `IN_PROGRESS → HISTORY` tracking move). It was committed during the first pass. Re-doing it would double-move the entry, leaving `IN_PROGRESS.md` in a malformed state.
+4. **Push to the existing branch** (`origin task/<id>-<slug>`). The same push-destination rule applies: no protected branches, no `--force`.
+5. **Run the size gate** on the cumulative branch diff — a fix cycle may have grown the PR past budget. Invoke `atelier-pr-size-check --branch task/<id>-<slug> --base main --project <worktree-path>`. Exit 1 → return `oversized` exactly as the normal path (the orchestrator handles it); exit 0 → proceed.
+6. **Skip step 6 entirely** (`gh pr create`). The PR already exists.
+7. **Return the existing PR URL + the new commit SHA.** The orchestrator passes both to the next `reviewer` dispatch.
+
+**Valid terminal states in follow-up mode:** existing PR URL returned (step 7), `oversized` (step 5 tripped), or gate red + handed back to `tester` (step 1). All other stops are malformed returns — do not stop after the push gate.
+
+**Output (follow-up mode):**
+
+- **Fix commit:** `<sha> <subject>` (step 2 of this mode).
+- **Branch pushed:** `origin task/<id>-<slug>` (follow-up commit on existing branch).
+- **PR:** `<existing-url>` (unchanged — no new PR created).
+- **New commit SHA:** `<sha>` (the latest commit on the branch after this push; the orchestrator passes this to `reviewer`).
+
 ## Core responsibilities
 
 1. **Re-verify the push gate.** Even if `tester` reported green, run lint + typecheck + the full unit + integration test suite once more via `Bash` against the current worktree state. If anything is red, stop and hand back to `tester` with the failing output. **Do not push.** If it is **green**, do **not** stop to report the gate — proceed immediately to step 2. A green gate is never a terminal state for this agent (see "The push gate is a precondition" above).
@@ -118,7 +149,7 @@ You inherit the session's default `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"
 - **Never** skip pre-commit hooks (`--no-verify`) or signing (`--no-gpg-sign`) unless the operator explicitly asks. If a hook fails, fix the underlying issue and try again.
 - **Never** add `Co-Authored-By: Claude` (or any agent attribution) to the commit message or PR body. The user has explicitly opted out of agent self-attribution.
 - **Never** mark the PR ready for auto-merge yourself. The auto-merge gate ([PLAN.md §6](PLAN.md)) requires the `reviewer` agent's approval — that is a separate agent. Always open a normal PR.
-- **Never** skip step 3 (the `IN_PROGRESS.md → HISTORY.md` tracking commit). It is part of the PR — not an afterthought, not the `auto-merge` skill's job, not a follow-up commit on `main`. A PR opened without the move is malformed and must be amended before the `reviewer` agent runs.
+- **Never** skip step 3 (the `IN_PROGRESS.md → HISTORY.md` tracking commit) on a first-pass PR. It is part of the PR — not an afterthought, not the `auto-merge` skill's job, not a follow-up commit on `main`. A PR opened without the move is malformed and must be amended before the `reviewer` agent runs. **Exception — follow-up mode:** the move was already committed during the first pass; step 3 IS skipped in follow-up mode to prevent a double-move that would leave `IN_PROGRESS.md` in a malformed state (see "Follow-up mode" above).
 - **Never** edit the **main** worktree's copy of `IN_PROGRESS.md` / `HISTORY.md`. You are always operating in the per-task worktree (`task/<id>-<slug>` branch). The edits live on that branch; the squash-merge brings them to `main`. Editing the main worktree copy would leave uncommitted bookkeeping on the protected branch that no agent is allowed to push.
 - If the change touches `package.json`, `pnpm-lock.yaml`, `Dockerfile`, `docker-compose*`, or `.github/workflows/**`, **say so explicitly in the PR description** so reviewers and the (eventual) auto-merge gate know this PR must go through a human.
 - Use a HEREDOC for the commit message and the PR body to preserve formatting. **Always prefix `git commit` with `GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf`** so the commit's Author / Committer fields match the atelier-author GitHub identity, not the operator's personal global git config:
