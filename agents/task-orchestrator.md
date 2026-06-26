@@ -190,7 +190,7 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
 
    **Step 2 — Check the cycle bound.** Read `reviewFix.maxCycles` from `.atelier.json` (default `2`). If the current review-fix cycle count equals `maxCycles`, the bound is exhausted — jump to **Exhaustion** below without re-dispatching.
 
-   **Step 3 — Re-dispatch `implementer`.** Increment the cycle counter. Build the dispatch briefing per the standard briefing contract (step 6), **plus**:
+   **Step 3 — Re-dispatch `implementer`.** Build the dispatch briefing per the standard briefing contract (step 6), **plus**:
    - The reviewer's verbatim findings (all findings, labelled with their severity).
    - The current PR diff (`gh pr diff <NN>`) so the implementer fixes against concrete reviewer concerns, not a re-implementation.
    - A note that this is fix cycle N of `maxCycles` — not a fresh implementation.
