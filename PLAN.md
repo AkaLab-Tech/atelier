@@ -359,7 +359,7 @@ Auto-merge when:
 1. CI green, **and**
 2. Independent `reviewer` agent (Opus, fresh context) approves per checklist.
 
-The orchestrator waits (bounded) for CI to complete before invoking the merge gate, so a still-running CI at chain-end does not require a manual re-invoke. Pending CI (`IN_PROGRESS`/`QUEUED`) is waited on; failed CI (`FAILURE`/`CANCELLED`/`TIMED_OUT`/`STARTUP_FAILURE`) is terminal and stops the chain without merging (CI failure recovery is task #24's scope). Wait budget defaults: `maxWaitSeconds: 900`, `pollIntervalSeconds: 15` — configurable per project via `ciWait` in `<project>/.atelier.json`. See `agents/task-orchestrator.md` § Pre-merge CI wait.
+The orchestrator waits (bounded) for CI to complete before invoking the merge gate, so a still-running CI at chain-end does not require a manual re-invoke. Pending CI (`IN_PROGRESS`/`QUEUED`) is waited on; failed CI (`FAILURE`/`CANCELLED`/`TIMED_OUT`/`STARTUP_FAILURE`) is terminal and stops the chain without merging (CI failure after a green reviewer pass requires the operator to push a fix and re-invoke). Wait budget defaults: `maxWaitSeconds: 900`, `pollIntervalSeconds: 15` — configurable per project via `ciWait` in `<project>/.atelier.json`. See `agents/task-orchestrator.md` § Pre-merge CI wait.
 
 **Never auto-merge** (falls back to human operator):
 - Changes to `package.json` / `pnpm-lock.yaml`.
@@ -367,7 +367,7 @@ The orchestrator waits (bounded) for CI to complete before invoking the merge ga
 - Changes to `.github/workflows/**`.
 - PR exceeds the per-project size budget. Default: `>200 lines` **AND** `>10 files`, post-exemptions for tests / lockfiles / migrations (see `scripts/atelier-pr-size-check`). The AND-gate means either dimension alone (a tightly-scoped long diff, or a broad refactor that stays small) is fine; only PRs that breach both axes fall back to human review. Per-project override via `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`.
 - Human comments pending on PR.
-- Reviewer marks `request-changes`.
+- Reviewer marks `request-changes` with structural findings (scope alignment, oversize, missing dependency justification, or pending human comments) that the review-fix loop does not auto-fix, OR `reviewFix.enabled` is `false` in `<project>/.atelier.json`. When `reviewFix.enabled` is `true` (default), a `request-changes` verdict with **code-addressable** findings (correctness / test coverage / code quality / security) triggers a bounded automated fix→re-review loop (up to `reviewFix.maxCycles` cycles, default 2) before falling back to human; a converged `approve` re-enters the normal merge gate. See `agents/task-orchestrator.md` § Review-fix loop and `agents/pr-author.md` § Follow-up mode.
 
 **Merge strategy:** squash.
 **Post-merge:** delete remote branch, remove local worktree, mark roadmap item `[x]`.
@@ -443,6 +443,8 @@ Declared in `.mcp.json` at the plugin root and auto-loaded when atelier is activ
 4. If 6 total attempts fail → **hard stop**: open a `blocked` issue on GitHub with all logs, notify operator, move to next task.
 
 On successful merge, logs are attached to the PR as an artifact.
+
+**Review-fix loop:** when `reviewer` returns `request-changes` with code-addressable findings and `reviewFix.enabled` is `true` in `<project>/.atelier.json` (default), the orchestrator automatically re-dispatches `implementer` (and `tester` when coverage is implicated) for up to `reviewFix.maxCycles` fix→re-review cycles (default 2, configurable per project). Each fix attempt is logged through the same `.task-log/` mechanism above — the 6-attempt ceiling is **shared** across the inner implementer↔`/validate` loop and review-fix cycles, so the loop cannot spin past the §8 budget regardless of which cap is hit first. On exhaustion (no convergence to `approve` within the cycle bound or the attempt budget), the orchestrator surfaces accumulated findings and `.task-log/` paths and leaves the PR open for the operator. See `agents/task-orchestrator.md` § Review-fix loop.
 
 ---
 

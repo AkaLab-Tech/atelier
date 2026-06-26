@@ -34,6 +34,11 @@
     "maxWaitSeconds": 900,
     "pollIntervalSeconds": 15
   },
+  "reviewFix": {
+    "_comment": "Bounded automated review-fix loop (#24). When `enabled: true`, a `reviewer` → `request-changes` verdict automatically re-dispatches `implementer` (and `tester` when coverage is implicated) on the same worktree/branch, re-pushes, and re-runs `reviewer` — up to `maxCycles` times — before escalating to the operator. Set `enabled: false` to revert to today's surface-and-stop terminal: findings are surfaced immediately and the PR is left open for manual follow-up. Only code-addressable findings (correctness / test coverage / code quality / security) drive the loop; structural findings (scope alignment, oversize, missing dependency justification, pending human comments) route to their existing handlers or escalate directly without consuming a cycle. Absent block → built-in defaults (`enabled: true`, `maxCycles: 2`).",
+    "enabled": true,
+    "maxCycles": 2
+  },
   "deliverableLanguage": "English",
   "_deliverableLanguage_comment": "Language atelier writes repo deliverables in — commit messages, PR titles/descriptions, code comments, and generated docs/artifacts (.plan/<id>.md, drafted CLAUDE.md, ROADMAP/IN_PROGRESS/HISTORY entries) — regardless of the project's own content language or the operator's chat language (M7.1.F73). Set to any language name (e.g. \"Spanish\", \"French\"). Absent field is treated as \"English\". Does not affect operator-facing chat or the project's pre-existing content.",
   "semanticRiskJudge": {
