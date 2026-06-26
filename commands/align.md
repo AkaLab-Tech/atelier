@@ -1,17 +1,22 @@
 ---
-description: Align every registered atelier project/workspace to the installed atelier in one pass — version-drift resync + decision policy (Tier 1, applied by atelier-align), §5 ROADMAP adoption + legacy IN_PROGRESS reset (Tier 2, via /adopt-roadmap), and one commit-to-base PR per changed repo (Tier 3). Surveys read-only first; applies nothing without confirmation.
+description: Align every registered atelier project/workspace to the installed atelier in one pass — version-drift resync + decision policy (Tier 1, applied by atelier-align), §5 ROADMAP adoption + legacy IN_PROGRESS reset (Tier 2, via /adopt-roadmap), and one commit-to-base PR per changed repo (Tier 3). Surveys read-only first; applies nothing without confirmation (or pre-consent via `auto` policy).
 argument-hint: "[<workspace-slug>] [--policy <auto|ask>]"
 allowed-tools: Bash(atelier-align:*), Bash(atelier-setup-project:*), Bash(git:*), Bash(gh:*), Read, AskUserQuestion, SlashCommand
 ---
 
 You are running `/atelier:align` — the one-pass project/workspace aligner. It
 converges every registered project to the installed atelier across three tiers.
-Survey first; never apply without confirmation; never push to a base branch.
+Survey first; under `ask` policy never apply without a confirmation gate; under
+`auto` policy run autonomously per pre-consent; never push directly to a base
+branch.
 
 ## Interaction mode
 
 **Non-interactive** if `$ARGUMENTS` has `--yes`/`-y` or `$ATELIER_AUTO` is set:
 print the plan and stop — apply nothing (Tier 1/2/3 all touch files or remotes).
+This headless flag is a **dry-run / preview** path and is **orthogonal** to
+`decisionPolicy.default`. `ATELIER_AUTO + align` always previews and applies
+nothing, regardless of each member's policy setting.
 
 ## Step 1 — survey (read-only)
 
@@ -25,9 +30,40 @@ registered project.) Relay the report. It lists each project's needs: `resync`
 ROADMAP), `maybe-reset-inprogress`, `restore` (partial config), `unregister`
 (missing dir). Note: the sanctioned High/Med/Low layout is **not** flagged for §5.
 
+## Step 1b — resolve effective policy per member
+
+Before applying anything, determine the **effective policy** for each member. This
+governs whether confirmation gates fire in Step 2 and Step 4.
+
+- Read `decisionPolicyDefault` from `atelier-align --json` output (field
+  `decisionPolicyDefault` per project), or from the `policy <pol>` line in the
+  human plan output.
+- **Post-Tier-1 override:** if this same run passes `--policy auto` in
+  `$ARGUMENTS`, members being set to `auto` are governed by `auto` for Tier 2/3 of
+  this same run — they do not yet have `auto` in their `.atelier.json`, but this
+  run's intent already authorizes autonomous behaviour for them.
+- Effective policy is **per-member**: a mixed-policy workspace keeps `ask` members
+  interactive and runs `auto` members autonomously. Never collapse per-member
+  policies to a single global value — gate each member on its own effective policy.
+
+Effective policy values:
+- **`auto`** — operator has pre-consented via `decisionPolicy.default=auto`; skip
+  confirmation gates for this member.
+- **`ask`** (or any other value, or unknown/`?`) — use the interactive confirmation
+  gates below, exactly as today.
+
+If `$ATELIER_AUTO` is set or `--yes`/`-y` is in `$ARGUMENTS`, this step is moot —
+stop after Step 1 (headless preview; nothing will be applied).
+
 ## Step 2 — Tier 1: mechanical (resync drift + policy)
 
-Confirm with `AskUserQuestion` (apply Tier 1 now? include policy=auto?). On yes:
+**Under `ask` policy:** confirm with `AskUserQuestion` (apply Tier 1 now? include
+policy=auto?) before applying. **Under `auto` policy:** skip the confirmation gate
+— the operator has pre-consented.
+
+In a mixed-policy workspace, ask before processing any member whose effective
+policy is `ask`; proceed without asking for members whose effective policy is
+`auto`.
 
 ```bash
 atelier-align $ARGUMENTS --apply --policy <auto|ask> --yes
@@ -52,7 +88,7 @@ tracker (Phase 3a classification). Never rewrite tracking files yourself.
 Tier 1/2 changed **working files**; they only take effect once committed to each
 repo's base branch (`next-task` reads `origin/<base>`; the broker reads
 `.atelier.json` from the per-task worktree). For each repo with pending changes,
-**offer** (via `AskUserQuestion`) to open one PR per repo:
+open one PR per repo:
 
 - Resolve the base branch (prefer `dev` if `origin/dev` exists, else the default
   branch). Use a **temporary worktree** so the operator's checkout is untouched:
@@ -60,20 +96,69 @@ repo's base branch (`next-task` reads `origin/<base>`; the broker reads
   the changed `.atelier.json` / settings / adopted tracking, commit (Conventional
   Commits, **no AI attribution**), push the branch, `gh pr create --base <base>`,
   then remove the worktree.
-- Do **not** push to the base branch directly; do **not** merge — the operator
-  merges. If the operator declines, print the exact per-repo commands instead.
+
+Then, **per the member's effective policy**:
+
+### Tier 3 under `ask` (interactive)
+
+**Offer** (via `AskUserQuestion`) to open the PR for each repo. Do **not** merge —
+the operator merges on their own timeline. If the operator declines, print the
+exact per-repo commands instead. Do **not** push directly to the base branch.
+
+### Tier 3 under `auto` (autonomous)
+
+Open the PR without a confirmation gate. Then drive each base PR through the
+guardrailed merge path — **in this order, per repo**:
+
+1. **Review:** invoke the `reviewer` agent (via `SlashCommand`) against the PR.
+   The reviewer checks the commit content and posts an approval or requests changes.
+2. **Merge:** invoke `/atelier:auto-merge` against the PR. The skill evaluates the
+   six PLAN.md §6 guardrails and, when all pass, runs
+   `gh pr merge --squash --delete-branch`. Do **not** ask the operator to confirm
+   the merge — the guardrails ARE the authorization (see `skills/auto-merge`
+   § "Authorization model — the gate IS the consent"). If `auto-merge` returns
+   `held`, surface the held reason and stop waiting; do **not** bypass the
+   guardrail, do **not** call `gh pr merge` directly, and do **not** prompt the
+   operator to merge manually.
+3. **Fast-forward the operator's local checkout:** after the PR merges, run
+   `git -C <repo> pull --ff-only` on the operator's checkout of the base branch.
+   Tier 3 used a throwaway worktree, leaving the operator's local checkout behind
+   `origin/<base>`; this pull brings it up to date. This is a **local pull only** —
+   do **not** push to the base branch.
 
 ## Step 5 — report
 
-Summarize per project: resynced / policy-set / adopted / PR-opened / skipped, and
-what still needs the operator (merge the base PRs, fill `TODO` placeholders in
-adopted roadmaps). Remind: restart open sessions / `exec zsh` if shellrc changed.
+Summarize per project: resynced / policy-set / adopted / PR-opened / PR-merged
+(auto) / local-pulled (auto) / skipped. Under `auto`: confirm each base PR was
+merged and the operator's local checkout fast-forwarded — no manual merge chore
+remains. Under `ask`: remind the operator to merge the offered base PRs. In both
+cases: remind about restarting open sessions / `exec zsh` if shellrc changed, and
+filling `TODO` placeholders in adopted roadmaps.
 
 ## Hard rules
 
-- **Survey before apply; confirm before any write.** Headless prints the plan only.
+- **Survey before apply; headless (`--yes` / `$ATELIER_AUTO`) prints the plan
+  only.** The headless flag is a dry-run axis independent of `decisionPolicy`.
+  `ATELIER_AUTO + align` always previews and applies nothing, even when every
+  member's policy is `auto`.
 - **Never** rewrite tracking files inline (that is `/adopt-roadmap`'s job), never
-  push to or merge a base branch, never nag the sanctioned High/Med/Low layout.
+  nag the sanctioned High/Med/Low layout.
 - **No AI attribution** in commits/PRs (atelier convention).
-- Reuse `atelier-align` (survey + Tier 1), `/adopt-roadmap` / `/atelier:onboard-workspace`
-  (Tier 2), and the temp-worktree PR flow (Tier 3) — do not reimplement them.
+- Reuse `atelier-align` (survey + Tier 1), `/adopt-roadmap` /
+  `/atelier:onboard-workspace` (Tier 2), and the temp-worktree PR flow (Tier 3) —
+  do not reimplement them.
+- **Under `ask`: never push to or merge a base branch.** The operator merges on
+  their own timeline; print exact per-repo commands if they decline the PR offer.
+- **Under `auto`: Tier 3 base PRs merge only through `/atelier:auto-merge`** (the
+  six PLAN.md §6 guardrails + `gh pr merge --squash --delete-branch`). Never push
+  directly to the base branch. Never call `gh pr merge` outside of the `auto-merge`
+  skill. If `auto-merge` holds, surface the held reason and stop — do not bypass it.
+- **Never suggest adding a `gh pr merge` permission rule.** `Bash(gh:*)` is already
+  granted in align's `allowed-tools` frontmatter — the merge command is permitted
+  by design. Raising a permission question here is a false signal that wastes the
+  operator's attention.
+- **Under `auto`, never emit an off-spec `AskUserQuestion` about reviewing or
+  merging a base PR.** Reviewing is the `reviewer` agent's job; merging is the
+  `auto-merge` skill's job. Any `AskUserQuestion` gate about these under `auto` is
+  a contract violation regardless of phrasing ("shall I merge?", "confirm before
+  main?", "OK to land this?" are all the same violation).
