@@ -684,6 +684,96 @@ env GH_CONFIG_DIR=\"$author_dir\" gh api -X PUT \"repos/$owner_repo/collaborator
 inv=\$(env GH_CONFIG_DIR=\"$reviewer_dir\" gh api user/repository_invitations --jq '.[] | select(.repository.full_name==\"$owner_repo\") | .id' | head -1) && env GH_CONFIG_DIR=\"$reviewer_dir\" gh api -X PATCH \"user/repository_invitations/\$inv\""
 }
 
+check_branch_protection() {
+  # M7.1.F31 — without a rule requiring at least 1 approving review, GitHub
+  # never computes reviewDecision; auto-merge guardrail #2 holds forever even
+  # after a real APPROVED review. Classify and surface a runnable fix (when
+  # the author identity has admin) or a manual instruction (when it does not).
+  local author_dir="$ATELIER_CONFIG_DIR/gh/author"
+
+  if ! command -v gh >/dev/null 2>&1; then
+    push_host "$SKIP branch protection check (gh not on PATH)"
+    return
+  fi
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    push_host "$SKIP branch protection check (not inside a git repo)"
+    return
+  fi
+  if [ ! -d "$author_dir" ]; then
+    push_host "$SKIP branch protection check (author identity not configured at $author_dir)"
+    return
+  fi
+
+  local owner_repo default_branch
+  owner_repo="$(env GH_CONFIG_DIR="$author_dir" \
+    gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+  default_branch="$(env GH_CONFIG_DIR="$author_dir" \
+    gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null || true)"
+  if [ -z "$owner_repo" ] || [ -z "$default_branch" ]; then
+    push_host "$SKIP branch protection check (no GitHub remote resolved for current repo)"
+    return
+  fi
+
+  # Inline classifier (same logic as classify_branch_protection in atelier-setup-project)
+  local class out rc err_file err_msg
+  err_file="$(mktemp)"
+  out="$(env GH_CONFIG_DIR="$author_dir" \
+    gh api "repos/$owner_repo/branches/$default_branch/protection" 2>"$err_file")" && rc=0 || rc=$?
+  err_msg="$(<"$err_file")"
+  rm -f "$err_file"
+  if [ "$rc" -eq 0 ]; then
+    local count
+    count="$(printf '%s' "$out" | \
+      jq -r '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null || printf '0')"
+    count="${count:-0}"
+    if [ "$count" -ge 1 ]; then
+      class="protected-sufficient"
+    else
+      class="protected-insufficient"
+    fi
+  else
+    case "$err_msg" in
+      *"Branch not protected"*|*"HTTP 404"*) class="unprotected" ;;
+      *"Must have admin"*|*"Resource not accessible"*|*"HTTP 403"*) class="no-admin" ;;
+      *) class="skip:$(printf '%s' "$err_msg" | head -1 2>/dev/null)" ;;
+    esac
+  fi
+
+  case "$class" in
+    protected-sufficient)
+      push_host "$OK branch protection: $owner_repo/$default_branch requires approving reviews (reviewDecision computed)"
+      return
+      ;;
+    no-admin)
+      push_host "$SKIP branch protection check: $owner_repo/$default_branch (token lacks repo-admin to read protection)"
+      return
+      ;;
+    skip:*)
+      push_host "$SKIP branch protection check: ${class#skip:}"
+      return
+      ;;
+  esac
+
+  # protected-insufficient or unprotected
+  push_host "$FAIL branch protection: $owner_repo/$default_branch has no required approving reviews — auto-merge guardrail #2 (reviewDecision == APPROVED) holds forever"
+
+  local min_payload='{"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null}'
+
+  local perm
+  perm="$(env GH_CONFIG_DIR="$author_dir" \
+    gh repo view --json viewerPermission --jq .viewerPermission 2>/dev/null || true)"
+  if [ "$perm" = "ADMIN" ]; then
+    push_fix_auto "printf '%s\n' '$min_payload' | env GH_CONFIG_DIR=\"$author_dir\" gh api -X PUT \"repos/$owner_repo/branches/$default_branch/protection\" --input -"
+  else
+    push_fix_manual "# Branch protection: $owner_repo/$default_branch is missing required approving reviews.
+# Auto-merge guardrail #2 (reviewDecision == APPROVED) will hold forever without it.
+# Apply as a repo admin (the author identity at $author_dir lacks admin rights):
+printf '%s\n' '$min_payload' | \\
+  gh api -X PUT \"repos/$owner_repo/branches/$default_branch/protection\" --input -
+# Use GH_CONFIG_DIR or GH_TOKEN pointing to a repo-admin token."
+  fi
+}
+
 check_atelier_auto_mode() {
   # M2.8 — verify $ATELIER_CONFIG_DIR/settings.json has
   # permissions.defaultMode == "auto" so atelier-launched sessions get
@@ -824,6 +914,7 @@ check_atelier_config_dir
 check_atelier_claude_auth
 check_git_identity
 check_reviewer_repo_access
+check_branch_protection
 check_atelier_auto_mode
 
 # ---------- emit the report ----------

@@ -8,6 +8,18 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_031 — feat: setup-project detects missing branch protection and offers autonomous fix — 2026-06-26
+**PR:** [#256](https://github.com/AkaLab-Tech/atelier/pull/256) (native atelier-dev; feat resolving empty-reviewDecision / auto-merge guardrail-#2 hold on unprotected repos)
+
+Closes #31. Root cause of the repeated human-merge interventions on AkaLab-Tech member repos: without a branch-protection rule requiring approving reviews, GitHub never computes `reviewDecision`, so guardrail #2 (`reviewDecision == APPROVED`) holds forever even after a real `APPROVED` review — observed on PRs #246/#247/#251/#252/#255.
+
+Delivered:
+- `classify_branch_protection()` in `atelier-setup-project`: probes `gh api repos/{owner}/{repo}/branches/{branch}/protection`; classifies as protected-sufficient / protected-insufficient / unprotected / no-admin (403/404 paths handled separately).
+- `step_branch_protection()`: explains the guardrail-#2 link, applies minimal rule via `gh api -X PUT` (`required_approving_review_count=1`, `enforce_admins=false`, no invented status checks, `restrictions=null`). Idempotent; never weakens a stronger existing rule. Decision-broker policy (`auto` / `ask`) honoured.
+- `check_branch_protection()` host check in `atelier-doctor`: registers `fix_auto` (admin path) or prints exact `gh` command (no-admin path). No-admin case does not abort setup.
+- `--apply-branch-protection` flag + Phase-1 step in `commands/setup-project.md`; branch-protection row in `commands/doctor.md`.
+- Tests: 2 new hermetic test files with `gh` stub (14 + 10 assertions); 25/25 full regression suite green.
+
 ### TASK_030 — fix: honor decisionPolicy.default=auto in /atelier:align Tier 3 — 2026-06-26
 **PR:** [#257](https://github.com/AkaLab-Tech/atelier/pull/257) (native atelier-dev; bug fix — align was unconditionally interactive even under full-autonomy policy)
 
