@@ -70,6 +70,9 @@ Host checks
     ✓ docker compose v<version> detected
     ✓ atelier config dir <path> (installStatus: complete)
     ✓ atelier-author git identity captured: <name> <<email>>
+    ✓ reviewer can access <owner>/<repo> (auto-merge review path available)
+    ✓ branch protection: <owner>/<repo>/<branch> requires approving reviews (reviewDecision computed)
+    ✓ auto-mode enabled (permissions.defaultMode = "auto" in <path>)
 
 All checks passed. atelier is up to date.
 ```

@@ -1,6 +1,6 @@
 ---
 description: Initialise a project so the operator can run atelier tasks in it — delegates to the `atelier-setup-project` bash helper installed by `install.sh`, then dispatches `project-profiler` to draft the root `CLAUDE.md`. Idempotent — re-running preserves all existing files. Typical usage is just `/atelier:setup-project` from inside the project directory; passing a path is only for the uncommon case of configuring a project from outside it.
-argument-hint: "[--yes|-y] [--mode=new|existing] [--backend <files|linear|github-project>] [project-path-if-not-cwd]"
+argument-hint: "[--yes|-y] [--mode=new|existing] [--apply-branch-protection] [--backend <files|linear|github-project>] [project-path-if-not-cwd]"
 allowed-tools: Read, Glob, Grep, Write, Bash(atelier-setup-project:*), AskUserQuestion, Task
 ---
 
@@ -27,6 +27,7 @@ That single command does **all** of the mechanical work:
 7. Creates or appends to `<path>/.npmrc` the three PLAN.md §4 guardrails (`ignore-scripts=true`, `minimum-release-age=10080`, `audit-level=moderate`); never weakens existing values.
 8. Creates or appends to `<path>/.gitignore` the four required entries (`.task-log/`, `.claude/settings.json`, `.claude/settings.local.json`, `.DS_Store`). `.claude/settings.json` is gitignored because the helper substitutes `<worktree>` with the operator's absolute path; committing it would propagate that path to every clone. Note `.atelier.json` is **not** gitignored — it's part of the project's source of truth (per-project size budget belongs in version control).
 9. Records the setup in `$ATELIER_CONFIG_DIR/projects.json` with `setupCompleted` and `setupVersion`.
+10. Probes the default branch's protection rule via `gh api repos/{owner}/{repo}/branches/{branch}/protection` (M7.1.F31) and classifies it: `protected-sufficient` (≥1 required approving review — auto-merge ready), `protected-insufficient` (rule exists but no required reviews — auto-merge guardrail #2 holds forever), `unprotected` (no rule), or `no-admin` (token lacks repo-admin; cannot read). On a gap, explains the guardrail-#2 link (empty `reviewDecision`) and offers to apply an idempotent minimal rule (`required_approving_review_count=1`, `enforce_admins=false`, `restrictions=null`). Decision policy: applies autonomously when `decisionPolicy["branch-protection"] == "auto"` in `.atelier.json`, or when `--apply-branch-protection` is passed; otherwise prompts interactively. On `no-admin`, prints the exact `gh api -X PUT` command the operator can run manually. Never fails setup.
 
 The helper also emits four `atelier-*=...` marker lines that Phase 2, Phase 3, and Phase 4 parse:
 
