@@ -20,6 +20,20 @@ Delivered:
 - `--apply-branch-protection` flag + Phase-1 step in `commands/setup-project.md`; branch-protection row in `commands/doctor.md`.
 - Tests: 2 new hermetic test files with `gh` stub (14 + 10 assertions); 25/25 full regression suite green.
 
+### TASK_030 — fix: honor decisionPolicy.default=auto in /atelier:align Tier 3 — 2026-06-26
+**PR:** [#257](https://github.com/AkaLab-Tech/atelier/pull/257) (native atelier-dev; bug fix — align was unconditionally interactive even under full-autonomy policy)
+
+Closes #30. `/atelier:align` Step 2/4 hard-coded `AskUserQuestion` gates and Hard rules said "the operator merges", overriding `decisionPolicy.default=auto` regardless of the workspace's actual policy — causing align to stop and ask, and improvise an off-spec reviewer prompt + a spurious `gh pr merge` permission deflection, even when all member repos were configured as `auto`. Fix makes align policy-aware: Step 1b resolves each member's effective `decisionPolicy.default` from the survey output (Step 1b), gates the confirmations on `ask`, and under `auto` drives Tier 3 base PRs through `reviewer → /atelier:auto-merge → local base-pull (git pull --ff-only)`. New Hard rules eliminate the improvisation surface. The `--yes`/`$ATELIER_AUTO` headless flag remains an orthogonal dry-run/preview path. New hermetic regression test (26 assertions, full suite 24/24 green).
+
+**Delivered:**
+- `commands/align.md`: policy-aware Step 1b, conditional Step 2/4 gates, forked Step 4 ask vs auto paths, new Hard rules killing improvisation surface
+- `hooks/tests/align-auto-policy.test.sh`: 26 hermetic prose assertions — auto path encoded, ask path preserved, permission deflection prohibited
+
+**Tests:** `bash hooks/tests/align-auto-policy.test.sh` 26/26 pass; full suite 24 files / 0 failures; `bash -n` clean
+
+**Follow-ups:**
+- Task #31: unprotected-member-repo branch-protection gap (auto-merge guardrail #2 holds on empty `reviewDecision`); deliberately separate
+
 ### TASK_023 — feat: orchestrator waits for the CI cycle before the auto-merge gate — 2026-06-25
 **PR:** [#250](https://github.com/AkaLab-Tech/atelier/pull/250) (native atelier-dev; feat adding bounded CI wait before the auto-merge gate)
 
