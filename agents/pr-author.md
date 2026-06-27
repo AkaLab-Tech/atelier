@@ -62,7 +62,7 @@ If `state` is not `OPEN`, surface an error and stop — the orchestrator's brief
 1. **Re-verify the push gate** (same as the normal step 1 — run lint + typecheck + full unit/integration suite; if red, stop and hand back to `tester`).
 2. **Compose the fix commit** (same as the normal step 2 — stage only the task's implementation changes; **do NOT include `IN_PROGRESS.md` / `HISTORY.md`** in this commit).
 3. **Skip step 3 entirely** (the `IN_PROGRESS → HISTORY` tracking move). It was committed during the first pass. Re-doing it would double-move the entry, leaving `IN_PROGRESS.md` in a malformed state.
-4. **Push to the existing branch** (`origin task/<id>-<slug>`). The same push-destination rule applies: no protected branches, no `--force`.
+4. **Push to the existing branch** (`origin task/<id>-<slug>`). The same push-destination rule applies: no protected branches, no hard `--force`, no remote-branch deletion. The follow-up commit normally fast-forwards; if the push is rejected as non-fast-forward (the branch was rebased), reconcile with `git push --force-with-lease origin task/<id>-<slug>` — **never** delete-then-re-push.
 5. **Run the size gate** on the cumulative branch diff — a fix cycle may have grown the PR past budget. Invoke `atelier-pr-size-check --branch task/<id>-<slug> --base main --project <worktree-path>`. Exit 1 → return `oversized` exactly as the normal path (the orchestrator handles it); exit 0 → proceed.
 6. **Skip step 6 entirely** (`gh pr create`). The PR already exists.
 7. **Return the existing PR URL + the new commit SHA.** The orchestrator passes both to the next `reviewer` dispatch.
@@ -102,6 +102,8 @@ If `state` is not `OPEN`, surface an error and stop — the orchestrator's brief
 
    If any check fails, **stop and fix** before pushing. A tracking move pushed in a follow-up commit on the protected branch (or in a separate PR opened later) splits the bookkeeping and violates the convention.
 4. **Push to the right place.** Push the branch to `origin task/<id>-<slug>` only. Pushing to `main`, `master`, `develop`, `staging`, or any other branch is denied — surface a clear error if the current branch does not match `task/*`. By this point the branch carries both the code commit and the tracking commit.
+
+   **Diverged remote branch (non-fast-forward).** If the push is rejected as non-fast-forward — the remote `task/<id>-<slug>` already exists from a prior run and has diverged from your clean local branch — reconcile it with **`git push --force-with-lease origin task/<id>-<slug>`**. The lease-guarded force rewrites *your own* task branch to the clean local history, refuses if anyone else pushed in the meantime, and **preserves any open PR** on that branch. Do **NOT** delete the remote branch to re-push: `git push origin --delete task/<id>-<slug>` (and the `git push origin :task/<id>-<slug>` colon form) is **forbidden** — it is a destructive remote operation the auto-mode classifier blocks mid-chain, it orphans the open PR, and it stalls the whole task. A plain hard `--force` is likewise denied; `--force-with-lease` on the `task/*` branch is the only permitted reconciliation.
 5. **Size gate — run `atelier-pr-size-check` BEFORE `gh pr create`**. Invoke it in local-mode against the branch you just pushed, scoped to the per-task worktree:
 
    ```bash
@@ -145,7 +147,8 @@ If `state` is not `OPEN`, surface an error and stop — the orchestrator's brief
 ## Decision rules
 
 - **Never** end your turn after the push gate. The gate is step 1 of 7; a green gate (`safe-commit` → `GREEN — commit allowed`) authorises the commit but does not perform it. Reporting the gate and stopping returns no PR URL and no SHA — a malformed return that forces the orchestrator to re-dispatch you. Your only valid terminal states are: PR URL returned, `oversized`, or gate red + handed back to `tester`.
-- **Never** push with `--force` and **never** push to a protected branch (`main`, `master`, `develop`, `staging`). The deny list in [PLAN.md §3](PLAN.md) is absolute.
+- **Never** push with a hard `--force` and **never** push to a protected branch (`main`, `master`, `develop`, `staging`). The deny list in [PLAN.md §3](PLAN.md) is absolute. To reconcile a **diverged `task/*` branch**, the one permitted force variant is `git push --force-with-lease origin task/<id>-<slug>` (lease-guarded, task branches only — it preserves the open PR).
+- **Never** delete a remote branch to re-push (`git push origin --delete …` or the `git push origin :…` colon form). It is destructive, orphans the open PR, and the auto-mode classifier blocks it mid-chain — stalling the task. Reconcile a diverged task branch with `--force-with-lease` instead.
 - **Never** skip pre-commit hooks (`--no-verify`) or signing (`--no-gpg-sign`) unless the operator explicitly asks. If a hook fails, fix the underlying issue and try again.
 - **Never** add `Co-Authored-By: Claude` (or any agent attribution) to the commit message or PR body. The user has explicitly opted out of agent self-attribution.
 - **Never** mark the PR ready for auto-merge yourself. The auto-merge gate ([PLAN.md §6](PLAN.md)) requires the `reviewer` agent's approval — that is a separate agent. Always open a normal PR.

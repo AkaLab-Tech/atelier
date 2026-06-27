@@ -136,7 +136,7 @@ Lives in `settings.template.json`. `/next-task` instantiates a per-task `setting
 - Edit / Write: restricted to the current task's worktree (including docs).
 - Git read: `status`, `diff`, `log`, `show`, `branch`, `blame`, `fetch`, `ls-files`.
 - Git write: `add`, `commit`, `checkout -b`, `switch`, `worktree`, `stash`.
-- Git push: `git push origin task/*` **only**. Deny everything else.
+- Git push: `git push origin task/*` **only** — plus `git push --force-with-lease origin task/*` to reconcile a diverged task branch (lease-guarded; never a hard `--force`, never a remote-branch delete, never a protected branch). Deny everything else.
 - GitHub CLI: `gh issue *`, `gh pr create/view/list/comment`, `gh pr merge` (only under §6 conditions), `gh project *`, `gh repo clone/view`, `gh auth status` (read-only identity check). Also `Bash(GH_CONFIG_DIR=* gh ...)` for the reviewer's atelier-isolated identity override (M5.0.1): `gh auth status`, `gh api user`, `gh pr view/list/diff/review/comment`.
 - pnpm: `install`, `add`, `remove`, `update`, `run *`, `test`, `exec *`, `audit`, `view`.
 - Tests / lint / types: `vitest`, `jest`, `pytest`, `playwright test`, `eslint`, `prettier`, `tsc`, `biome`.
@@ -146,7 +146,8 @@ Lives in `settings.template.json`. `/next-task` instantiates a per-task `setting
 ### 🔴 Deny (absolute)
 - `Bash(rm -rf:*)` and variants touching `/`, `~`, `*`.
 - `Bash(sudo:*)`.
-- `Bash(git push --force*)`, `git push -f*`.
+- `Bash(git push --force)`, `Bash(git push --force *)`, `git push -f*` — hard force is denied. **Exception:** `git push --force-with-lease origin task/*` is allowed (the safe, lease-guarded way to reconcile a diverged task branch; refuses if the remote moved unexpectedly, and preserves the open PR). The lease form is *not* a hard `--force` and is the only force variant `pr-author` may use.
+- `Bash(git push * --delete *)`, `git push * -d *`, `git push origin :*` — deleting a remote branch is denied. A diverged `task/*` branch is reconciled with `--force-with-lease`, **never** by delete-then-re-push (destructive, orphans the open PR, and the auto-mode classifier blocks it mid-chain).
 - `Bash(git push * main)`, `* master`, `* develop`, `* staging`.
 - `Bash(git reset --hard*)` on non-task branches.
 - `Bash(git config --global*)`.
