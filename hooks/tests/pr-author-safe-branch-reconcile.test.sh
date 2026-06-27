@@ -98,6 +98,7 @@ if jq -e . "$SETTINGS" >/dev/null 2>&1; then
     'Bash(git push --force *)' \
     'Bash(git push -f*)' \
     'Bash(git push * --delete *)' \
+    'Bash(git push * -d *)' \
     'Bash(git push origin :*)'; do
     if jq -e --arg e "$entry" '.permissions.deny | index($e)' "$SETTINGS" >/dev/null 2>&1; then
       pass "settings.template.json: deny contains '$entry'"
