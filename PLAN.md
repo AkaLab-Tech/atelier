@@ -373,6 +373,8 @@ The orchestrator waits (bounded) for CI to complete before invoking the merge ga
 **Merge strategy:** squash.
 **Post-merge:** delete remote branch, remove local worktree, mark roadmap item `[x]`.
 
+**Unattended watcher:** `/atelier:babysit-prs` (§7) drives open `task/*` PRs that are not yet reviewed or merged — re-entering at the `reviewer → auto-merge` segment — without any manual re-invocation. Loop it with `/loop <interval> /atelier:babysit-prs`; it runs one idempotent pass per invocation and reports the per-PR verdict.
+
 ---
 
 ## 7. Agents, skills, slash commands ✅
@@ -426,6 +428,7 @@ Declared in `.mcp.json` at the plugin root and auto-loaded when atelier is activ
 - `/status` — what's in progress, blocked, awaiting review.
 - `/setup-project <path>` — initialize a new project with `.claude/settings.json`, `ROADMAP.md`, `.npmrc` (pnpm guardrails — see §4), `.gitignore` entries. **Idempotent**: writes `~/.claude/.atelier-config.json` with `setupCompleted` (ISO timestamp) + `setupVersion`. Re-running on a configured project skips the wizard and offers a "reconfigure" flow instead. Pattern borrowed from [`omc-setup`](https://github.com/Yeachan-Heo/oh-my-claudecode/blob/main/skills/omc-setup/SKILL.md).
 - `/doctor` — health check. Verifies: update status for the three artefacts the operator depends on — `atelier` and `claude-roadmap-tools` via local `plugin.json:version` vs latest release/tag (both live in the shared `akalab-tech` marketplace, so a single `/plugin marketplace update akalab-tech` followed by `/plugin update <name>@akalab-tech` refreshes whichever is stale), and `git-wt` via locally installed SHA (recorded by `install.sh` Phase C.1) vs `gh api repos/AkaLab-Tech/git-wt/commits/main` (re-run external `install.sh --skill-for=claude` to apply, since `git-wt` is **not** a native plugin); no legacy hooks leaking into `~/.claude/settings.json`; `git-wt` binary present; `fnm` hook active in shellrc; current project's `.npmrc` guardrails in place; per-project `.atelier-config.json` consistency. When an update is available, `/doctor` prints the exact command for the operator to apply it — it does **not** apply updates automatically. Borrowed from [`omc-doctor`](https://github.com/Yeachan-Heo/oh-my-claudecode/tree/main/skills/omc-doctor).
+- `/babysit-prs [--workspace] [--yes|-y]` — unattended watcher: one idempotent pass over every open `task/*` PR — triage each against the `auto-merge` six guardrails (read-only), drive eligible PRs to merge via `task-orchestrator` `pr-open` dispatch, report per-PR status (`merged` / `waiting (CI)` / `needs fix` / `held — <reason>` / `skipped`). Designed to be looped: `/loop 10m /atelier:babysit-prs`. Composes with the CI-wait (#23) and review-fix (#24) features when present; degrades gracefully without them. See `commands/babysit-prs.md`.
 
 ---
 
