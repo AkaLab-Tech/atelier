@@ -43,6 +43,11 @@
     "_comment": "Per-pass bounds for /atelier:babysit-prs (#25). `maxPrsPerPass` caps how many task/* PRs are dispatched to the orchestrator in a single pass — PRs beyond the cap are deferred to the next pass. This is about per-pass scope, not a poll interval or loop count; the recurring cadence is delegated to the Claude Code built-in /loop command. Absent block → built-in defaults.",
     "maxPrsPerPass": 10
   },
+  "postMergeCleanup": {
+    "_comment": "Automatic cleanup steps that run after every successful squash-merge (#26). `fastForwardBase` fast-forwards the local base branch (dev or main) so the operator's local ref reflects the just-merged commit without a manual pull — guarded: a dirty main worktree or diverged base causes the step to skip with a surfaced note, never a force-update. `sweepOrphans` delegates to atelier-housekeeping --yes --no-stamp to clean local + remote task/* debris left by prior cycles — the binary enforces every safety rail (protected branches, open PRs, dirty worktrees, active tasks, no --force push). Both steps only run on a successful merge, never on a held PR. Absent block or absent key → treated as true.",
+    "fastForwardBase": true,
+    "sweepOrphans": true
+  },
   "deliverableLanguage": "English",
   "_deliverableLanguage_comment": "Language atelier writes repo deliverables in — commit messages, PR titles/descriptions, code comments, and generated docs/artifacts (.plan/<id>.md, drafted CLAUDE.md, ROADMAP/IN_PROGRESS/HISTORY entries) — regardless of the project's own content language or the operator's chat language (M7.1.F73). Set to any language name (e.g. \"Spanish\", \"French\"). Absent field is treated as \"English\". Does not affect operator-facing chat or the project's pre-existing content.",
   "semanticRiskJudge": {

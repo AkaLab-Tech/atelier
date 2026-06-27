@@ -151,6 +151,17 @@ Capture the merge commit SHA from the command output (it prints `Merged pull req
 
 Once the merge succeeds:
 
+Read `postMergeCleanup` from `<project>/.atelier.json` before running steps 4 and 5. The block and its defaults:
+
+```jsonc
+"postMergeCleanup": {
+  "fastForwardBase": true,   // fast-forward the local base branch after merge
+  "sweepOrphans":    true    // sweep merged task/* branches via atelier-housekeeping
+}
+```
+
+Absent block or absent key → treat as `true`. Setting a key to `false` disables that step.
+
 1. **Local worktree removal**. Resolve the branch name from `gh pr view <NN> --json headRefName --jq .headRefName`. Then:
    ```bash
    git wt rm <branch>
@@ -166,6 +177,40 @@ Once the merge succeeds:
      Push directly to `main` for this single-line bookkeeping commit is **not** allowed by the static permissions matrix. The operator must do this commit themselves; the skill surfaces the change as a `gh pr` follow-up or asks the operator to land it in the next task's PR.
 
 3. **Local branch cleanup** (if it remains). `git wt rm` removes both the worktree and the branch in most cases; verify with `git branch --list task/*` and report any orphan task branches.
+
+4. **Fast-forward the local base branch** (when `postMergeCleanup.fastForwardBase` is `true`). The squash commit now lives on `origin/<base>`; this step closes the gap so the operator's local ref is current without a manual pull.
+
+   - **Resolve `<base>`**: run `git -C <project_root> ls-remote --heads origin dev`. Non-empty → `<base>` is `dev`; empty → `<base>` is `main`. (Same policy as `/next-task` step 1 and `git-wt`.)
+   - **Refresh the remote-tracking ref**: `git -C <project_root> fetch origin <base>`. Safe and unconditional — updates `origin/<base>` only.
+   - **Bring the local ref forward** — branch on the main worktree's checkout state:
+     - If `<base>` is the branch currently checked out in the main worktree **and** `git -C <project_root> status --porcelain` is empty:
+       ```bash
+       git -C <project_root> merge --ff-only origin/<base>
+       ```
+       If `merge --ff-only` exits non-zero (diverged) → **skip and surface**: `base <base> not fast-forwarded: local ref has diverged from origin/<base>`.
+     - If `<base>` is **not** checked out in any worktree:
+       ```bash
+       git -C <project_root> fetch origin <base>:<base>
+       ```
+       (The refspec form is fast-forward-only by construction; it exits non-zero if ff is impossible, which is also a skip-and-surface case.)
+     - If the main worktree is **dirty** (non-empty `status --porcelain`) → **skip and surface**: `base <base> not fast-forwarded: main worktree is dirty`.
+   - An already-current base is a no-op success (both commands exit 0 with `Already up to date.`).
+
+   Note: this step always targets the **main worktree** (`<project_root>`), never the task worktree — which `auto-merge` has already removed in step 1.
+
+5. **Orphan `task/*` sweep** (when `postMergeCleanup.sweepOrphans` is `true`). Delegates entirely to the existing `atelier-housekeeping` binary — do not hand-roll the enumeration, classification, or deletion:
+
+   ```bash
+   atelier-housekeeping --project <project_root> --yes --no-stamp
+   ```
+
+   - `--yes` non-interactively applies the sweep; this is justified by the auto-merge "the gate is the consent" authorization model (§ Authorization model above).
+   - `--no-stamp` prevents the per-task sweep from silencing the operator's daily `/atelier:housekeeping` nudge (`housekeeping-last-check`).
+   - No `--include-unmerged` — unmerged orphans are reported but never deleted.
+   - The binary already enforces every safety rail: protected branches, open PRs, dirty worktrees, active/`[BLOCKED]`/`[OVERSIZE]` tasks (via `IN_PROGRESS.md`), unmerged-work skip, no `--force`/non-ff push.
+   - The merge deleted *this* task's remote branch via `--delete-branch`; the sweep mops up **prior cycles'** local + remote `task/*` debris.
+   - Capture stdout and fold counts into the structured report (§ Structured output — `Swept:` line).
+   - Idempotent: re-running enumerates fresh and exits `OK: nothing to clean up`.
 
 ## Structured output
 
@@ -192,6 +237,8 @@ Decision: merged | held — <comma-separated failed guardrails>
 Merge commit:  <sha>
 Worktree:      <removed | retained at <path>>
 Roadmap:       <found in HISTORY.md | marked [x] | manual follow-up needed>
+Base:          <fast-forwarded origin/<base> → <sha> | skipped — <reason> | disabled>
+Swept:         <N local + M remote task/* branches removed | nothing to clean up | disabled>
 </if>
 
 <if held>
@@ -212,4 +259,6 @@ Next step:     human review required. Operator can:
 - **Never** mark a roadmap item `[x]` for a PR that was held. The auto-merge skill only modifies state on success.
 - **Never** override `reviewDecision`. If GitHub says `CHANGES_REQUESTED`, that is final until a new review supersedes it.
 - **Never** silently widen the size budget. The threshold is the AND-gate from `atelier-pr-size-check`, configurable per-project via `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`. If a project legitimately needs a higher ceiling, the operator updates that file (version-controlled, reviewable) — the skill never raises the gate at runtime.
+- **Never** force-update, `reset --hard`, or stash the operator's working tree during the base fast-forward (step 4). A dirty main worktree, a diverged base, or a non-zero exit from `merge --ff-only` must skip and surface — never mutate the operator's checked-out state.
+- **Never** hand-roll the orphan sweep (step 5). The only permitted deletion path is `atelier-housekeeping --project <root> --yes --no-stamp`. Do not call `git branch -d`, `git push --delete`, or `git wt rm` for branches other than the just-merged task branch — those are the binary's responsibility, not the skill's.
 
