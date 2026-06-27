@@ -25,12 +25,12 @@ set_lang() { ATELIER_CONFIG_DIR="$CFG" bash "$SETTER" "$@" 2>&1; }
 hook_out() { CLAUDE_PLUGIN_ROOT="$REPO_ROOT" ATELIER_CONFIG_DIR="$CFG" bash "$HOOK" 2>/dev/null; }
 
 # --- setter: unset -> show ---
-printf '%s' "$(set_lang --show)" | grep -q 'unset' && pass "--show reports unset initially" || fail "--show unset"
+grep -q 'unset' <<<"$(set_lang --show)" && pass "--show reports unset initially" || fail "--show unset"
 
 # --- setter: set + persists ---
 set_lang Spanish >/dev/null
 [ "$(jq -r '.language' "$CFG/operator.json")" = "Spanish" ] && pass "set writes language" || fail "set did not persist"
-printf '%s' "$(set_lang --show)" | grep -q 'Spanish' && pass "--show reports the language" || fail "--show set"
+grep -q 'Spanish' <<<"$(set_lang --show)" && pass "--show reports the language" || fail "--show set"
 
 # --- setter: preserves other keys ---
 tmp="$(mktemp)"; jq '. + {keep:"me"}' "$CFG/operator.json" > "$tmp" && mv "$tmp" "$CFG/operator.json"
@@ -42,9 +42,9 @@ set_lang English >/dev/null
 # Capture once (piping the hook directly into `grep -q` trips pipefail via SIGPIPE
 # because the hook emits ~26KB and grep -q closes the pipe early).
 H_SET="$(hook_out)"
-printf '%s' "$H_SET" | grep -q 'Operator chat language' && pass "hook injects directive when set" || fail "hook did not inject"
-printf '%s' "$H_SET" | grep -q 'Address the operator in \*\*English\*\*' && pass "directive names the language" || fail "directive missing language"
-printf '%s' "$H_SET" | grep -q 'does NOT change `deliverableLanguage`' && pass "directive excludes deliverableLanguage" || fail "directive missing deliverableLanguage carve-out"
+grep -q 'Operator chat language' <<<"$H_SET" && pass "hook injects directive when set" || fail "hook did not inject"
+grep -q 'Address the operator in \*\*English\*\*' <<<"$H_SET" && pass "directive names the language" || fail "directive missing language"
+grep -q 'does NOT change `deliverableLanguage`' <<<"$H_SET" && pass "directive excludes deliverableLanguage" || fail "directive missing deliverableLanguage carve-out"
 
 # --- hook: directive must survive stdout truncation ---
 # The harness truncates large hook stdout to a short head preview before it
