@@ -15,8 +15,12 @@
       "Bash(find * -exec rm *)",
       "Bash(find * -exec rm -rf *)",
 
-      "Bash(git push --force*)",
+      "Bash(git push --force)",
+      "Bash(git push --force *)",
       "Bash(git push -f*)",
+      "Bash(git push * --delete *)",
+      "Bash(git push * -d *)",
+      "Bash(git push origin :*)",
       "Bash(git push * main)",
       "Bash(git push * master)",
       "Bash(git push * develop)",
@@ -138,6 +142,7 @@
       "Bash(git push origin task/*)",
       "Bash(git push -u origin task/*)",
       "Bash(git push --set-upstream origin task/*)",
+      "Bash(git push --force-with-lease origin task/*)",
 
       "Bash(gh auth status*)",
       "Bash(gh issue *)",
