@@ -39,6 +39,10 @@
     "enabled": true,
     "maxCycles": 2
   },
+  "babysitPrs": {
+    "_comment": "Per-pass bounds for /atelier:babysit-prs (#25). `maxPrsPerPass` caps how many task/* PRs are dispatched to the orchestrator in a single pass — PRs beyond the cap are deferred to the next pass. This is about per-pass scope, not a poll interval or loop count; the recurring cadence is delegated to the Claude Code built-in /loop command. Absent block → built-in defaults.",
+    "maxPrsPerPass": 10
+  },
   "deliverableLanguage": "English",
   "_deliverableLanguage_comment": "Language atelier writes repo deliverables in — commit messages, PR titles/descriptions, code comments, and generated docs/artifacts (.plan/<id>.md, drafted CLAUDE.md, ROADMAP/IN_PROGRESS/HISTORY entries) — regardless of the project's own content language or the operator's chat language (M7.1.F73). Set to any language name (e.g. \"Spanish\", \"French\"). Absent field is treated as \"English\". Does not affect operator-facing chat or the project's pre-existing content.",
   "semanticRiskJudge": {
