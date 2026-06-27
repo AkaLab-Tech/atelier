@@ -8,6 +8,10 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-06
 
+### TASK_033 — fix: pr-author reconciles a diverged remote task branch with --force-with-lease, never by deleting it — 2026-06-27
+Closes #33. `pr-author` had no guidance for a non-fast-forward push to an already-existing remote `task/*` branch while forbidding all `--force`, so when a prior run left a diverged remote branch the agent improvised `git push origin --delete task/<id>-<slug>` to "clean" it — a destructive remote operation the auto-mode classifier blocks mid-chain (observed in deminut #28: 3 consecutive blocked actions, chain stalled). Fix: `agents/pr-author.md` now prescribes `git push --force-with-lease origin task/<id>-<slug>` for the diverged-branch case (lease-guarded, preserves the open PR) in both first-pass and follow-up modes, and explicitly forbids the destructive `push origin --delete` / colon-ref delete. The static matrix is brought in line: `templates/settings.template.json` narrows the over-broad `Bash(git push --force*)` deny (which also blocked the lease form) to hard-force-only (`--force` bare + space forms, plus `-f*`), denies remote-branch deletion (`--delete` / colon), and allows `--force-with-lease origin task/*`. `PLAN.md §3` documents the carve-out. New hermetic test `hooks/tests/pr-author-safe-branch-reconcile.test.sh` (14 assertions); full structural suite 27/27 green.
+**PR:** native atelier-dev; autonomy fix for the pr-author chain stalling on a pre-existing/diverged remote task branch.
+
 ### TASK_031 — feat: setup-project detects missing branch protection and offers autonomous fix — 2026-06-26
 **PR:** [#256](https://github.com/AkaLab-Tech/atelier/pull/256) (native atelier-dev; feat resolving empty-reviewDecision / auto-merge guardrail-#2 hold on unprotected repos)
 
