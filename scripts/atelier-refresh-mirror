@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# atelier-refresh-mirror — surface a one-line instruction telling the session
+# to run crt's EXISTING "Mirror auto-refresh on activation" procedure for
+# non-`files` repos with offlineMirror: true. Called from SessionStart hook
+# hooks/refresh-mirror.sh. Cheap and fail-open: filesystem+jq only; no
+# git/gh/origin reads; no GitHub MCP/OAuth; no /migrate-roadmap reference.
+#
+# Usage:   atelier-refresh-mirror [<dir>]
+#          (defaults to $CLAUDE_PROJECT_DIR or $PWD)
+#          atelier-refresh-mirror --help
+# Exit:    0 always (fail-open on any missing prereq).
+set -uo pipefail
+case "${1:-}" in
+  --help|-h) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+# Bash / AI split
+# ─────────────────────────────────────────────────────────────────────────────
+# BASH HALF (this script + hooks/refresh-mirror.sh):
+#   Gate cheaply (filesystem + jq only) and — when due — print a one-line
+#   instruction. NEVER drives the GitHub MCP/OAuth, NEVER runs git fetch or
+#   any origin read, NEVER performs a board read, NEVER references
+#   /migrate-roadmap. The bash hook is the surfacer only; it is never
+#   autonomous over the board.
+#
+# AI HALF (the session that receives the surfaced instruction):
+#   Activates the `roadmap-tracking-flow` skill and runs its "Mirror
+#   auto-refresh on activation" procedure — listTasks across the roadmap /
+#   in_progress / history buckets via the GitHub MCP/OAuth — regenerating
+#   ROADMAP.md / IN_PROGRESS.md / HISTORY.md from the board WITHOUT removing
+#   .roadmap.json or flipping the backend away from github-project. If the
+#   MCP is unavailable, crt falls back gracefully to the existing snapshot
+#   (SKILL.md §"Mirror auto-refresh on activation", steps 2–3).
+# ─────────────────────────────────────────────────────────────────────────────
+
+DIR="${1:-${CLAUDE_PROJECT_DIR:-$PWD}}"
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+
+# Fail-open: without a config dir atelier is not installed for this session.
+[ -d "$ATELIER_CONFIG_DIR" ] || exit 0
+
+command -v jq >/dev/null 2>&1 || exit 0
+DIR="$(cd "$DIR" 2>/dev/null && pwd -P)" || exit 0
+
+# Worktree guard: a linked worktree has .git as a file (gitdir pointer); the
+# main checkout has .git as a directory. The mirror is a main-checkout
+# concern — a mid-task linked worktree must not surface a refresh for it.
+[ -e "$DIR/.git" ] || exit 0   # not a git repo → no-op
+[ -f "$DIR/.git" ] && exit 0   # linked worktree (.git is a file) → no-op
+
+# Backend gate: resolve via the existing atelier-task-backend helper.
+tb="$(command -v atelier-task-backend 2>/dev/null || true)"
+[ -n "$tb" ] || tb="${CLAUDE_PLUGIN_ROOT:-}/scripts/atelier-task-backend"
+[ -x "$tb" ] || exit 0
+
+backend="$("$tb" "$DIR" 2>/dev/null || printf 'files')"
+[ "$backend" = "files" ] && exit 0   # files backend never needs a mirror refresh
+
+# offlineMirror gate: read the field from .roadmap.json; no-op if absent or false.
+f="$DIR/.roadmap.json"
+[ -f "$f" ] || exit 0
+mirror="$(jq -r '.offlineMirror // false' "$f" 2>/dev/null || printf 'false')"
+[ "$mirror" = "true" ] || exit 0
+
+# Once-per-day stamp (mirrors daily-housekeeping.sh stamp discipline).
+STAMP_FILE="$ATELIER_CONFIG_DIR/mirror-refresh-last-check"
+TODAY="$(date +%F 2>/dev/null || true)"
+[ -n "$TODAY" ] || exit 0
+
+LAST=""
+[ -f "$STAMP_FILE" ] && LAST="$(head -n1 "$STAMP_FILE" 2>/dev/null || true)"
+[ "$LAST" = "$TODAY" ] && exit 0
+
+# Stamp today so the instruction fires at most once per calendar day.
+printf '%s\n' "$TODAY" > "$STAMP_FILE" 2>/dev/null || true
+
+# Per the SessionStart contract, this stdout becomes session context. The
+# model acts on the instruction before answering the operator's first prompt.
+printf '[atelier] Offline mirror may be stale: activate the `roadmap-tracking-flow` skill now to run its "Mirror auto-refresh on activation" procedure and regenerate ROADMAP.md / IN_PROGRESS.md / HISTORY.md from the board before continuing.\n'

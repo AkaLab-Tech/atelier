@@ -24,6 +24,14 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/orient-session.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/refresh-mirror.sh"
+          }
+        ]
       }
     ],
     "Stop": [

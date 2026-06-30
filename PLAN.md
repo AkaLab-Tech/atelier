@@ -780,3 +780,18 @@ The operator asked to switch backends "at any time, in either direction." crt's 
 ### 16.8 Sequencing
 
 `9.1` (wire the abstraction; validate with Linear) → `9.2` (`GitHubProjectBackend` in crt) → `9.3` (`setup-project` selection + `next-task` + planning gate on Projects) → `9.4` (two-way migration) → `9.5` (workspaces + e2e). 9.1 is the keystone and ships standalone value (any remote backend starts driving the cycle); everything after it layers on a now-real seam.
+
+### 16.9 SessionStart offline-mirror refresh ✅
+
+**Problem.** crt's "Mirror auto-refresh on activation" procedure (SKILL.md §"Mirror auto-refresh on activation") only fires when the `roadmap-tracking-flow` skill activates — i.e. when the prompt touches tracking. Sessions that never mention tracking keep a stale mirror for the whole session; the orientation surface (`orient-session.sh`, `/atelier:status`) drifts from the board.
+
+**Fix (TASK_034).** A fourth `SessionStart` hook (`hooks/refresh-mirror.sh` → `scripts/atelier-refresh-mirror`) surfaces a one-line instruction telling the session to run crt's **EXISTING** mirror auto-refresh **before** answering the operator's first prompt, without requiring the prompt to mention tracking.
+
+**Bash / AI split (the load-bearing design decision).** The board read needs the GitHub MCP/OAuth, which a bash `SessionStart` hook cannot drive — the existing hooks deliberately touch no `gh` / remote `git`. So the work is split:
+
+- **Bash half** (`scripts/atelier-refresh-mirror`): cheap gating (filesystem + `jq` only) + a one-line surfaced instruction when due. NEVER calls `git fetch`, reads `origin`, drives the GitHub MCP/OAuth, performs board reads, or references `/migrate-roadmap`. Fail-open (exit 0 always).
+- **AI half**: acting on the surfaced instruction, the session activates `roadmap-tracking-flow` and runs its existing auto-refresh — `listTasks` across the `roadmap` / `in_progress` / `history` buckets via the GitHub MCP/OAuth — regenerating the local mirror **without** removing `.roadmap.json` or flipping the backend.
+
+**Gating.** The helper resolves the backend via `scripts/atelier-task-backend` and reads `.offlineMirror` from `.roadmap.json` with `jq`. It is a silent no-op (no output, exit 0) for the `files` backend, for `offlineMirror: false` / absent, and for linked worktrees (`.git` is a file gitdir-pointer). A once-per-day stamp under `$ATELIER_CONFIG_DIR` bounds the cost to at most one refresh instruction per calendar day.
+
+**What this is NOT.** This never drives `/migrate-roadmap --to files` (crt step 5d — the authority-flipping, `.roadmap.json`-removing reverse path). The `github-project` backend stays the source of truth; only the read-only mirror files are regenerated from the board by crt's existing engine.
