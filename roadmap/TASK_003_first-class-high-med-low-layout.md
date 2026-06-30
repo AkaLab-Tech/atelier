@@ -1,7 +1,0 @@
----
-backend: github-project
-backendId: PVTI_lADOCSHEDc4Bbr7mzgw4dgU
----
-# TASK_003 — Idea — first-class `High`/`Medium`/`Low` ROADMAP layout for operator projects (M7.1.F68 option B)
-
-Surfaced designing the F68 fix. Today operator projects must use the PLAN.md §5 layout (`P0`/`P1`/`P2` + backtick type tags + `#id` + `~estimate` + `[ready]`) for `task-discovery` / `/atelier:next-task`; real teams' roadmaps use simpler `High`/`Medium`/`Low` + checkboxes (which `/adopt-roadmap`'s default and `claude-roadmap-tools` produce). **Option B** was to make atelier's `task-discovery` accept the `High`/`Med`/`Low` layout natively for operator projects too — applying the `[ready]` planning gate there and treating `type`/`estimate` as optional — instead of requiring the §5 conversion (option A, shipped in claude-roadmap-tools #15). It would cut onboarding friction (no §5 rewrite) and meet teams where they are, but it **changes a decided spec (PLAN.md §5)**, so it is a product-design conversation, not a quick fix. Revisit once the §5 + `--format atelier` path has real mileage and we can judge whether the §5 metadata (type/estimate/priority granularity) earns its onboarding cost.
