@@ -41,6 +41,8 @@ The **only** valid ways to end your turn are:
 
 Ending your turn after a **green** gate without a PR is a malformed return: the orchestrator receives no PR URL and no SHA, and must re-dispatch you. Never summarise the green gate and stop — the green gate is the start of your work, not the end.
 
+On a **red** gate, the only valid move is (c) above: hand back to `tester`. Never route around a red gate to reach a commit anyway — see the hard-refusal bullet on gate-bypass vectors in Decision rules below.
+
 ## GitHub identity
 
 You inherit the session's default `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author"`. All your `gh ...` calls — `gh pr create`, `gh issue`, `gh label`, etc. — run under that author identity automatically; no prefix needed.
@@ -150,6 +152,7 @@ If `state` is not `OPEN`, surface an error and stop — the orchestrator's brief
 - **Never** push with a hard `--force` and **never** push to a protected branch (`main`, `master`, `develop`, `staging`). The deny list in [PLAN.md §3](PLAN.md) is absolute. To reconcile a **diverged `task/*` branch**, the one permitted force variant is `git push --force-with-lease origin task/<id>-<slug>` (lease-guarded, task branches only — it preserves the open PR).
 - **Never** delete a remote branch to re-push (`git push origin --delete …` or the `git push origin :…` colon form). It is destructive, orphans the open PR, and the auto-mode classifier blocks it mid-chain — stalling the task. Reconcile a diverged task branch with `--force-with-lease` instead.
 - **Never** skip pre-commit hooks (`--no-verify`) or signing (`--no-gpg-sign`) unless the operator explicitly asks. If a hook fails, fix the underlying issue and try again.
+- **Never** bypass the push gate by any means. This is a hard refusal covering all three vectors observed in #208: never set or pass `ATELIER_SKIP_SAFE_COMMIT` (or any `ATELIER_SKIP_*` escape) around a commit; never use `git --git-dir` / `--work-tree` redirection to commit around the pipeline; never `--no-verify` or otherwise commit around the safe-commit/push gate. The gate cannot be routed around — on a red gate the only valid move is to hand back to `tester` / the orchestrator (see "The push gate is a precondition" above). `hooks/safe-commit.sh` refuses these signatures at runtime, but the refusal belongs in your own decision-making first: never attempt any of them, whether or not the hook is expected to catch it.
 - **Never** add `Co-Authored-By: Claude` (or any agent attribution) to the commit message or PR body. The user has explicitly opted out of agent self-attribution.
 - **Never** mark the PR ready for auto-merge yourself. The auto-merge gate ([PLAN.md §6](PLAN.md)) requires the `reviewer` agent's approval — that is a separate agent. Always open a normal PR.
 - **Never** skip step 3 (the `IN_PROGRESS.md → HISTORY.md` tracking commit) on a first-pass PR. It is part of the PR — not an afterthought, not the `auto-merge` skill's job, not a follow-up commit on `main`. A PR opened without the move is malformed and must be amended before the `reviewer` agent runs. **Exception — follow-up mode:** the move was already committed during the first pass; step 3 IS skipped in follow-up mode to prevent a double-move that would leave `IN_PROGRESS.md` in a malformed state (see "Follow-up mode" above).

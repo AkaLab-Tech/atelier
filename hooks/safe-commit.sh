@@ -40,8 +40,15 @@ source "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT must be set by Claude Code}/hoo
 
 HOOK_NAME="safe-commit"
 
-# Escape hatch — operator has decided the gate is N/A for this session.
-# Logged so a post-mortem can show every skip event.
+# Escape hatch — operator-only, out-of-band affordance. This checks the
+# hook's *environment* (a var the operator exported before invoking
+# Claude Code, or set for a single shell session — see the header
+# comment). It is NOT a substitute for the in-command bypass-signature
+# refusal below: an inline `ATELIER_SKIP_SAFE_COMMIT=1 git commit …` never
+# reaches this check (the hook runs as a separate process and receives
+# the command as JSON on stdin — the Bash-tool shell's env does not
+# persist into the hook), so an agent cannot smuggle the flag through
+# here. Logged so a post-mortem can show every skip event.
 if [ "${ATELIER_SKIP_SAFE_COMMIT:-0}" = "1" ]; then
   log_decision "$HOOK_NAME" "?" "" "allow" "skipped via ATELIER_SKIP_SAFE_COMMIT=1"
   exit 0
@@ -75,10 +82,22 @@ fi
 # for committing inside a task worktree. Without this the gate never
 # fired on the real per-task commit pattern (the `-C <path>` token sits
 # between `git` and `commit`, so the plain substring above misses it).
+#
+# #277 — also match `git --git-dir=…`/`--work-tree=…` commit forms. A
+# `git --git-dir=… --work-tree=… commit` matched NEITHER arm above and
+# fell through to the `exit 0` default (silent allow) — exactly the
+# gate-bypass vector observed in #208. These forms are refused outright
+# by the bypass-signature check below (they are not a legitimate way to
+# address a task worktree — `git -C <path>` is), so intercepting them
+# here only ensures they reach that refusal instead of slipping past.
 case "$command_str" in
   *"git commit "*|*"git commit"|*"git commit;"*|*"git commit&"*)
     ;;
   *"git -C "*"commit "*|*"git -C "*"commit"|*"git -C "*"commit;"*|*"git -C "*"commit&"*)
+    ;;
+  *"--git-dir"*"commit "*|*"--git-dir"*"commit"|*"--git-dir"*"commit;"*|*"--git-dir"*"commit&"*)
+    ;;
+  *"--work-tree"*"commit "*|*"--work-tree"*"commit"|*"--work-tree"*"commit;"*|*"--work-tree"*"commit&"*)
     ;;
   *)
     exit 0
@@ -99,6 +118,18 @@ if printf '%s' "$command_str" | grep -qE 'git[[:space:]]+(-[a-zA-Z]+[[:space:]]+
   # `git -C <path> ... commit` — the atelier convention.
   c_path="$(printf '%s' "$command_str" | sed -nE "s/.*git[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-C[[:space:]]+(\"([^\"]+)\"|'([^']+)'|([^[:space:]]+)).*/\3\4\5/p")"
   [ -n "$c_path" ] && target_dir="$c_path"
+elif printf '%s' "$command_str" | grep -qE -- '--work-tree(=|[[:space:]])'; then
+  # #277 — `git --work-tree=<path> ... commit`. The bypass-signature check
+  # below refuses this form on a commit; resolving it here keeps the
+  # refusal message pointed at the tree the agent was trying to redirect
+  # to (both `--flag=value` and `--flag value` forms).
+  wt_path="$(printf '%s' "$command_str" | sed -nE "s/.*--work-tree(=|[[:space:]]+)(\"([^\"]+)\"|'([^']+)'|([^[:space:]]+)).*/\3\4\5/p")"
+  [ -n "$wt_path" ] && target_dir="$wt_path"
+elif printf '%s' "$command_str" | grep -qE -- '--git-dir(=|[[:space:]])'; then
+  # #277 — `git --git-dir=<path> ... commit`. Same redirection family and
+  # same refusal treatment as `--work-tree` above.
+  gd_path="$(printf '%s' "$command_str" | sed -nE "s/.*--git-dir(=|[[:space:]]+)(\"([^\"]+)\"|'([^']+)'|([^[:space:]]+)).*/\3\4\5/p")"
+  [ -n "$gd_path" ] && target_dir="$gd_path"
 elif printf '%s' "$command_str" | grep -qE '^[[:space:]]*cd[[:space:]]'; then
   # `cd <path> && git commit …` prefix.
   cd_path="$(printf '%s' "$command_str" | sed -nE "s/^[[:space:]]*cd[[:space:]]+(\"([^\"]+)\"|'([^']+)'|([^[:space:]&;|]+)).*/\2\3\4/p")"
@@ -110,6 +141,88 @@ if [ -d "$target_dir" ]; then
   target_dir="$(cd "$target_dir" 2>/dev/null && pwd)" || target_dir="$PWD"
 else
   target_dir="$PWD"
+fi
+
+# #277 review-fix cycle 1 — strip the commit-message PAYLOAD before the
+# signature scan below. The scan must run on command SHAPE (option
+# tokens), not on arbitrary text a developer typed into `-m`/`--message`
+# (or `-F`/`--file`): a message like `-m "explain --git-dir redirection"`
+# is legitimate content, not an attempt to redirect the commit. Without
+# this, the grep-over-the-whole-string scan false-blocked any commit
+# whose message happened to mention a bypass-flag spelling.
+#
+# `strip_message_payload` removes only the flag+value pair for -m /
+# --message / -F / --file, requiring a real separator (`=`, whitespace,
+# or a directly-attached quote — i.e. `-m"msg"` / `-m'msg'`) right after
+# the flag so an unrelated option that merely starts with the same
+# letters (e.g. a hypothetical `-max`) is never mistaken for `-m`. This
+# deliberately does NOT touch `-c`/`-C` reuse-message forms on the
+# `commit` subcommand — that flag spelling collides with the top-level
+# `git -C <path>` worktree-selection flag resolved above, and
+# disambiguating the two positionally is not worth the risk of breaking
+# that resolution for this fix.
+strip_message_payload() {
+  local s="$1" sq out pat prev_len
+  sq=$'\047'
+  local value_any="(\"[^\"]*\"|${sq}[^${sq}]*${sq}|[^[:space:]]*)"
+  local value_quoted="(\"[^\"]*\"|${sq}[^${sq}]*${sq})"
+  out="$s"
+  for flag_pair in '-m|--message' '-F|--file'; do
+    pat="(^|[[:space:]])(${flag_pair})(=${value_any}|[[:space:]]+${value_any}|${value_quoted})"
+    while [[ "$out" =~ $pat ]]; do
+      prev_len=${#out}
+      # #277 cycle 2 — quote BASH_REMATCH[0] so the pattern operand of
+      # ${var/pat/repl} is a literal string, not a glob. Unquoted, any
+      # matched text containing glob metacharacters (`[core]`, `*`, `?`,
+      # parens) fails to match as a glob, so `out` never shrinks and the
+      # loop spins forever. Quoting forces literal substring replacement,
+      # which always removes the matched text.
+      out="${out/"${BASH_REMATCH[0]}"/ }"
+      # Belt-and-braces anti-hang guard: bail if an iteration ever fails
+      # to shrink $out, so no future non-progress bug in this loop can
+      # hang the hook regardless of input.
+      if [ "${#out}" -ge "$prev_len" ]; then
+        break
+      fi
+    done
+  done
+  printf '%s' "$out"
+}
+scan_str="$(strip_message_payload "$command_str")"
+
+# gate-bypass signature refusal, placed BEFORE every green-path allow
+# below (including the F48 docs-only and no-package-json N/A
+# short-circuits). The bypass check runs on command SHAPE, not content:
+# an agent smuggling a skip flag, a redirected git-dir/work-tree, or
+# `--no-verify` into the commit command itself must never reach a path
+# that reports N/A or green — those checks are orthogonal and must stay
+# unaffected for legitimate commits. This is distinct from the
+# operator's out-of-band `ATELIER_SKIP_SAFE_COMMIT=1` escape hatch above
+# (set in the hook's *environment*, never inside the command).
+bypass_signature=""
+if printf '%s' "$scan_str" | grep -qE '(^|[;&|[:space:]])ATELIER_SKIP_SAFE_COMMIT[[:space:]]*='; then
+  bypass_signature="inline ATELIER_SKIP_SAFE_COMMIT= assignment"
+elif printf '%s' "$scan_str" | grep -qE -- '--git-dir(=|[[:space:]])'; then
+  bypass_signature="--git-dir"
+elif printf '%s' "$scan_str" | grep -qE -- '--work-tree(=|[[:space:]])'; then
+  bypass_signature="--work-tree"
+elif printf '%s' "$scan_str" | grep -qE -- '(^|[[:space:]])--no-verify([[:space:]]|;|&|$)'; then
+  bypass_signature="--no-verify"
+fi
+
+if [ -n "$bypass_signature" ]; then
+  cat >&2 <<MSG
+🚫 atelier:safe-commit BLOCKED
+   Tool:   Bash(git commit)
+   Reason: gate-bypass attempt refused — the push gate cannot be routed around; fix the red gate or hand back to tester
+   Signature: $bypass_signature
+   Target: $target_dir
+   Rule:   PLAN.md §6 push gate — lint + typecheck + tests must pass before every commit; this signature would route the commit around that gate.
+   Action: fix the underlying red check, or hand back to tester. The operator's out-of-band ATELIER_SKIP_SAFE_COMMIT=1 escape hatch must be set in the shell environment — never inline it in the commit command.
+MSG
+
+  log_decision "$HOOK_NAME" "Bash" "bypass-attempt" "block" "gate-bypass signature: $bypass_signature"
+  exit 2
 fi
 
 # M7.1.F48 — docs-only short-circuit.
