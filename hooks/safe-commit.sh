@@ -162,7 +162,7 @@ fi
 # disambiguating the two positionally is not worth the risk of breaking
 # that resolution for this fix.
 strip_message_payload() {
-  local s="$1" sq out pat
+  local s="$1" sq out pat prev_len
   sq=$'\047'
   local value_any="(\"[^\"]*\"|${sq}[^${sq}]*${sq}|[^[:space:]]*)"
   local value_quoted="(\"[^\"]*\"|${sq}[^${sq}]*${sq})"
@@ -170,7 +170,20 @@ strip_message_payload() {
   for flag_pair in '-m|--message' '-F|--file'; do
     pat="(^|[[:space:]])(${flag_pair})(=${value_any}|[[:space:]]+${value_any}|${value_quoted})"
     while [[ "$out" =~ $pat ]]; do
-      out="${out/${BASH_REMATCH[0]}/ }"
+      prev_len=${#out}
+      # #277 cycle 2 — quote BASH_REMATCH[0] so the pattern operand of
+      # ${var/pat/repl} is a literal string, not a glob. Unquoted, any
+      # matched text containing glob metacharacters (`[core]`, `*`, `?`,
+      # parens) fails to match as a glob, so `out` never shrinks and the
+      # loop spins forever. Quoting forces literal substring replacement,
+      # which always removes the matched text.
+      out="${out/"${BASH_REMATCH[0]}"/ }"
+      # Belt-and-braces anti-hang guard: bail if an iteration ever fails
+      # to shrink $out, so no future non-progress bug in this loop can
+      # hang the hook regardless of input.
+      if [ "${#out}" -ge "$prev_len" ]; then
+        break
+      fi
     done
   done
   printf '%s' "$out"

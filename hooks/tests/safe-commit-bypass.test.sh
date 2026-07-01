@@ -27,6 +27,15 @@
 #        - a plain green `git commit -m ...` → exit 0
 #        - a legitimate `git -C <worktree> commit -m ...` (M7.1.F57
 #          form, no bypass flags) → exit 0
+#   5. #277 review-fix cycle 2 — commit messages containing bracket /
+#      glob-metachar text (`[core]`, `[PLAN.md]`, markdown links, `*`,
+#      `?`, parens) must be ALLOWED and must NOT HANG. These pin the fix
+#      to strip_message_payload()'s unquoted `${var/pat/repl}` glob-operand
+#      bug: every case in this group runs under a hard `timeout` so a
+#      regression is caught as a FAILED assertion (exit 124), never as a
+#      silently-hanging test run. A combined case also proves the fix
+#      didn't weaken the bypass refusal: brackets in the message plus a
+#      real `--git-dir` flag still BLOCKS (exit 2), bounded the same way.
 #
 # Hermetic: builds throwaway git repos + a linked worktree under a temp
 # dir and drives hooks/safe-commit.sh directly. No network, no real
@@ -101,6 +110,53 @@ run_hook_env_skip() {
       bash "$HOOK" <<<"$payload" >/dev/null 2>&1
   )
   echo "$?"
+}
+
+# Like run_hook, but wraps the actual hook invocation in a hard `timeout`
+# so that if strip_message_payload's anti-hang guard ever regresses (the
+# #277 cycle-2 bug: an unquoted glob operand in ${var/pat/repl} spins
+# forever on bracket/glob-metachar commit messages), the ASSERTION fails
+# fast with a distinguishable exit 124 instead of hanging this whole test
+# file (and, transitively, the outer `timeout 120` in the run instructions
+# / CI). Every case in section 5 below uses this instead of run_hook.
+run_hook_bounded() {
+  local pwd_dir="$1" command_str="$2"
+  local payload
+  payload="$(jq -cn --arg c "$command_str" '{tool_name:"Bash", tool_input:{command:$c}}')"
+  (
+    cd "$pwd_dir" || exit 99
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
+    CLAUDE_PROJECT_DIR="$TMP/logs" \
+      timeout 8 bash "$HOOK" <<<"$payload" >/dev/null 2>&1
+  )
+  echo "$?"
+}
+
+# Asserts a run_hook_bounded result is exit 0 (allowed) and explicitly
+# distinguishes a hang (exit 124) from any other unexpected exit code, so
+# a future regression shows up as "HUNG" in the report, not as a generic
+# exit-code mismatch.
+assert_allowed_no_hang() {
+  local desc="$1" code="$2"
+  if [ "$code" = "124" ]; then
+    fail "$desc — HUNG (timeout 8s exceeded, exit 124) instead of completing"
+  elif [ "$code" = "0" ]; then
+    pass "$desc"
+  else
+    fail "$desc expected exit 0 (allowed), got $code"
+  fi
+}
+
+# Same, but for a case that must BLOCK (exit 2) without hanging.
+assert_blocked_no_hang() {
+  local desc="$1" code="$2"
+  if [ "$code" = "124" ]; then
+    fail "$desc — HUNG (timeout 8s exceeded, exit 124) instead of completing"
+  elif [ "$code" = "2" ]; then
+    pass "$desc"
+  else
+    fail "$desc expected exit 2 (blocked), got $code"
+  fi
 }
 
 # Echoes the hook's combined stderr (the block message) instead of the
@@ -268,6 +324,36 @@ code="$(run_hook "$S/main" "git commit -m x")"
 code="$(run_hook "$S/main" "git -C $WT commit -m x")"
 [ "$code" = "0" ] && pass "git -C <worktree> commit (no bypass flags) → allowed (exit 0)" \
                    || fail "git -C <worktree> commit expected exit 0, got $code"
+
+# === 5. Bracket / glob-metachar messages do not hang and are allowed ======
+# #277 review-fix cycle 2 — strip_message_payload() used an unquoted glob
+# operand in `${var/pat/repl}`: a matched -m payload containing `[`, `*`,
+# `?`, or parens failed to match as a glob pattern, so `out` never shrank
+# and the while-loop spun forever. The fix quotes the operand (literal
+# replacement) plus adds a length-shrink anti-hang guard. Every case here
+# runs through run_hook_bounded (hard `timeout 8`) so a regression is a
+# FAILED assertion, never a hung test run. Same green-gate fixture ($S/wt)
+# as section 3/4, so exit 0 is unambiguous.
+
+code="$(run_hook_bounded "$S/main" "git -C $WT commit -m \"fix [core]: handle thing per [PLAN.md]\"")"
+assert_allowed_no_hang "commit message with '[core]'/'[PLAN.md]' brackets → allowed (exit 0), no hang" "$code"
+
+code="$(run_hook_bounded "$S/main" "git -C $WT commit -m \"docs: see [guide](x) for details\"")"
+assert_allowed_no_hang "commit message with markdown link '[guide](x)' → allowed (exit 0), no hang" "$code"
+
+code="$(run_hook_bounded "$S/main" "git -C $WT commit -m \"chore: [skip ci] wildcard * and ? and (paren)\"")"
+assert_allowed_no_hang "commit message with '[skip ci]' + glob metachars '*'/'?'/parens → allowed (exit 0), no hang" "$code"
+
+# Control case: a plain message (no glob metacharacters at all) must also
+# pass through this same bounded path, confirming the timeout guard isn't
+# itself masking a slow-but-not-hanging default.
+code="$(run_hook_bounded "$S/main" "git -C $WT commit -m \"fix: plain message\"")"
+assert_allowed_no_hang "control: plain message (no brackets/globs) → allowed (exit 0), no hang" "$code"
+
+# --- combined guard: brackets in the message do not weaken the real ------
+# --- bypass refusal — a genuine --git-dir redirection still BLOCKS -------
+code="$(run_hook_bounded "$S/main" "git --git-dir=$GITDIR commit -m \"fix [core]: something\"")"
+assert_blocked_no_hang "bracket message + real --git-dir redirection → still blocked (exit 2), no hang (fix did not weaken the bypass refusal)" "$code"
 
 echo
 if [ "$fails" -eq 0 ]; then
