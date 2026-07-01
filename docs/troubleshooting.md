@@ -87,11 +87,22 @@ Issues that come up while running a task.
 
 1. **The roadmap (or your latest edit) was never pushed/merged to the base branch.** Local-only edits don't exist as far as task selection is concerned — this includes the onboarding PR from `/atelier:setup-project`, which must be merged first.
 2. **The item isn't in the atelier format** (no backtick type tag, no `` `#id` ``, sections not `P0`/`P1`/`P2`) — common on projects with a pre-existing roadmap. Normalize it with **`/adopt-roadmap --format atelier`** (from the `claude-roadmap-tools` plugin; `claude plugin install claude-roadmap-tools@akalab-tech` if missing). Nothing is dropped; legacy ids are preserved.
-3. **The item was never planned.** Unplanned tasks (no `[ready]` marker / no committed `.plan/<id>.md`) are silently skipped by design — run `/atelier:plan-task <id>`, approve the plan, and land the commit on the base branch.
+3. **The item was never planned.** Unplanned tasks (no `[ready]` marker / no `.plan/<id>.md`) are silently skipped by design — run `/atelier:plan-task <id>`, approve the plan, and land the commit on the base branch. (Under `planStorage: "local"` the `.plan/<id>.md` is a gitignored file read from your main checkout, so it does **not** need to land on the base — but the `[ready]` flip in `ROADMAP.md` still does. If `task` refuses with "not planned" under local mode, check that `.plan/<id>.md` actually exists in your main checkout and that `.plan/` is gitignored so the write wasn't blocked.)
 4. **The concurrency limit is reached.** atelier counts its open `task/...` PRs against `.atelier.json → taskConcurrency.max`; close or merge one, or raise the limit.
 5. **The item is blocked** (`blocked_by:#id` or `blocked_by:<repo>#id` not yet merged). The picker's report names exactly what it's waiting for.
 
 **Fix:** the picker's "no eligible task" report lists what it saw and why each candidate was skipped — read it bottom-up and address the first reason that applies, in the order above.
+
+### `task` refuses: "marked `[ready]` but its plan is not on `origin/<base>`"
+
+**Symptom:** you planned and approved a task, but `task` / `/next-task` refuses to claim it, saying the plan (or decomposition) was committed locally by `/atelier:plan-task` but never landed on the base branch.
+
+**Cause:** this is the default `planStorage: "committed"` contract. The task worktree is cut from `origin/<base>`, so the approved `.plan/<id>.md` has to be on `origin/<base>` for the worker to see it — a plan committed only in your local checkout is invisible.
+
+**Fix — pick one:**
+
+1. **Land the plan commit** (the default path): push or open a small PR to get the `/atelier:plan-task` commit onto your base branch, then re-run `task`. This keeps the plan in the task PR as an audit trail.
+2. **Switch to local plans** if you'd rather not commit/push plans at all: set `"planStorage": "local"` in `.atelier.json` and gitignore `.plan/`. Then the plan is read from your main checkout and carried to the worker inline — nothing to push for the plan itself. Trade-off: the plan won't appear in the task PR (see the operator guide, "keep plans local"). Note that for the file-backed layout the `[ready]` flip in `ROADMAP.md` still has to reach `origin/<base>`.
 
 ### `atelier --help` prints nothing / "atelier-help.txt: No such file"
 

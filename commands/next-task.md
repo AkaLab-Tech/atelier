@@ -1,7 +1,7 @@
 ---
 description: Pick the next task from `ROADMAP.md`, set up its worktree, and hand it to the `task-orchestrator` agent end-to-end.
 argument-hint: "[task-id] [--yes|-y]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git fetch:*), Bash(git ls-remote:*), Bash(git show:*), Bash(git cat-file:*), Bash(git wt:*), Bash(gh pr list:*), Bash(atelier-setup-project:*), Bash(atelier-resolve-dep:*), Bash(atelier-task-backend:*), Bash(env:*), Skill, Task
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git fetch:*), Bash(git ls-remote:*), Bash(git show:*), Bash(git cat-file:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(gh pr list:*), Bash(atelier-setup-project:*), Bash(atelier-resolve-dep:*), Bash(atelier-task-backend:*), Bash(jq:*), Bash(env:*), Bash(test:*), Skill, Task
 ---
 
 You are running the `/next-task` slash command. Drive the full pickup-to-PR flow for one task from the project's `ROADMAP.md`, exactly as [PLAN.md §7](PLAN.md) prescribes.
@@ -30,6 +30,12 @@ The task runs in an **isolated worktree cut from the remote base branch**, so th
 
 - Resolve the **base branch**: `dev` if `origin/dev` exists, else `main` (the same policy the `git-wt` skill uses). Probe with `git ls-remote --heads origin dev`.
 - `git fetch origin <base>` so everything downstream reads the freshest **merged** backlog — a recently-merged PR may have added or reprioritised tasks. Every later step reads `origin/<base>`, never the local working copy.
+- **Capture the operator main-checkout root and the plan-storage mode (TASK_027).** This command runs in the operator's main checkout, which is where a `planStorage=local` plan physically lives — the task worktree (cut from `origin/<base>`) will **not** contain it, because `git worktree add` does a clean checkout of the tree and never copies gitignored/untracked files. Capture both now:
+  ```bash
+  MAIN_ROOT="$(git rev-parse --show-toplevel)"
+  PLAN_STORAGE="$(jq -r '.planStorage // "committed"' "$MAIN_ROOT/.atelier.json" 2>/dev/null || echo committed)"
+  ```
+  `MAIN_ROOT` is the **plan source root** for `planStorage=local` — the worktree created in step 5 is *not*. `PLAN_STORAGE` is `committed` (default) or `local`; it governs the planning gate's `.plan` check (step 3) and the briefing (step 8).
 
 (If the operator is mid-work on a feature branch with uncommitted changes, that is fine and expected — say nothing about it.)
 
@@ -75,20 +81,27 @@ If `$ARGUMENTS` names a specific id:
 - **`files` backend:** find that block in the `origin/<base>` ROADMAP directly, parse it into the same shape, and **validate** it is unchecked, not already in the claimed-id set, carries the `[ready]` marker (with a committed `.plan/<id>.md`), and has no open `blocked_by` — surface the violation and stop if any fails.
 - **Non-`files` backend:** call `getTask(id)` to retrieve the task (the returned record includes the **Ready** field value — no extra call needed; see `docs/RoadmapBackend.md` line 198), then apply the same validations: not in claimed-id set; `Ready` field is set; `.plan/<id>.md` is committed; no open `blocked_by`.
 
-The **planning-gate validation** is absolute: a named-but-unplanned task is refused exactly like an auto-picked one. For the **`files` backend**, the gate requires the `[ready]` marker on the line plus a committed `.plan/<id>.md`. For a **non-`files` backend**, the gate requires the backend's `Ready` field to be set (carried in the `getTask` record) plus a committed `.plan/<id>.md` — the `.plan` file check is identical across backends (it is always a tracked repo file, §16.5). If the task fails the planning gate (missing `Ready` / missing `[ready]`, or `.plan/<id>.md` absent), **stop and refuse** in both interactive and non-interactive mode — never improvise a plan, never offer to plan it inline:
+The **planning-gate validation** is absolute: a named-but-unplanned task is refused exactly like an auto-picked one. For the **`files` backend**, the gate requires the `[ready]` marker on the line plus a `.plan/<id>.md`. For a **non-`files` backend**, the gate requires the backend's `Ready` field to be set (carried in the `getTask` record) plus a `.plan/<id>.md`.
+
+**The `.plan` file check depends on `PLAN_STORAGE` (step 1):**
+
+- **`committed`** (default) — the plan is a tracked repo file present on `origin/<base>` (§16.5). The plan-on-base guard just below is the authoritative existence check.
+- **`local`** (TASK_027) — the plan is a **gitignored file in the main checkout**, so validate it there instead: `test -r "$MAIN_ROOT/.plan/<id>.md"` (id without `#`). It is never on `origin/<base>` by design, and the plan-on-base guard below is **skipped** for this mode.
+
+If the task fails the planning gate (missing `Ready` / missing `[ready]`, or the mode-appropriate `.plan/<id>.md` is absent/unreadable), **stop and refuse** in both interactive and non-interactive mode — never improvise a plan, never offer to plan it inline:
 
 ```text
 ✗ /next-task: task #<id> is not planned — run `/atelier:plan-task #<id>` first.
    A task is only claimable once a product lead has approved a plan and it carries [ready].
 ```
 
-**Plan-on-base guard (all backends):** Even when the planning gate passes (the task is `[ready]` and a `.plan/<id>.md` exists somewhere), verify the plan file is actually present on `origin/<base>` — the ref the worktree will be cut from. Use the existence probe:
+**Plan-on-base guard (`PLAN_STORAGE=committed` only — all backends):** Even when the planning gate passes (the task is `[ready]` and a `.plan/<id>.md` exists somewhere), verify the plan file is actually present on `origin/<base>` — the ref the worktree will be cut from. Use the existence probe:
 
 ```bash
 git cat-file -e origin/<base>:.plan/<id>.md
 ```
 
-This probe is backend-agnostic: `.plan/<id>.md` is always a tracked repo file (§16.5), regardless of whether the backlog lives in `ROADMAP.md` or a non-`files` backend. If the probe exits non-zero (file absent on `origin/<base>`), **stop and refuse** — the plan was committed locally by `/atelier:plan-task` but never landed on the base:
+This probe is backend-agnostic: for `planStorage=committed`, `.plan/<id>.md` is always a tracked repo file (§16.5), regardless of whether the backlog lives in `ROADMAP.md` or a non-`files` backend. If the probe exits non-zero (file absent on `origin/<base>`), **stop and refuse** — the plan was committed locally by `/atelier:plan-task` but never landed on the base:
 
 ```text
 ✗ /next-task: task #<id> is marked [ready] but its plan/decomposition is not on origin/<base>.
@@ -97,7 +110,9 @@ This probe is backend-agnostic: `.plan/<id>.md` is always a tracked repo file (�
    resolve: push/merge the plan commit to origin/<base> (e.g. open a PR for it), then re-run.
 ```
 
-For the **`files` backend with a decomposed epic**: if `origin/<base>:ROADMAP.md` still shows the undecomposed parent (no sub-task lines, no `.plan/<sub-id>.md` on `origin/<base>`) while a local-only decomposition exists, the same refusal fires — the orchestrator must never claim a sub-task whose epic rewrite has not reached `origin/<base>`.
+For the **`files` backend with a decomposed epic**: if `origin/<base>:ROADMAP.md` still shows the undecomposed parent (no sub-task lines) while a local-only decomposition exists, the same refusal fires — the orchestrator must never claim a sub-task whose epic rewrite has not reached `origin/<base>`. This `ROADMAP.md`-on-base check is about the **backlog/decomposition**, which is committed under *both* storage modes, so it applies to `planStorage=local` too; only the `.plan/<sub-id>.md` file half is exempt under `local`.
+
+**Under `PLAN_STORAGE=local`, skip the plan-on-base guard entirely** — the plan lives in the main checkout by design and is never expected on `origin/<base>`. Its existence was already confirmed by the mode-appropriate planning-gate check above (`test -r "$MAIN_ROOT/.plan/<id>.md"`). The worktree will not receive the file; step 8 carries the plan contents inline to the orchestrator instead.
 
 The `blocked_by` validation covers both forms:
 
@@ -172,6 +187,9 @@ Launch the `atelier:task-orchestrator` agent (Opus) via the `Task` tool. The bri
 
 - **`worktree_path`** — absolute path to the per-task worktree from step 5.
 - **task record** — structured fields from step 3 (`id`, `title`, `type`, `priority`, `estimate`, `worktree`, `acceptance`, `context`).
+- **plan-storage mode + plan source (TASK_027)** — always pass `plan_storage: <committed|local>` (the `PLAN_STORAGE` from step 1) and `main_checkout_root: <MAIN_ROOT>`.
+  - Under **`committed`**, the plan is on `origin/<base>` and therefore already checked out at `<worktree>/.plan/<id>.md`; the orchestrator Reads it there as today — nothing extra to carry.
+  - Under **`local`**, the worktree does **not** have the file. **Read `<MAIN_ROOT>/.plan/<id>.md` now** (it is on disk here in the main checkout) and pass its **Approach**, **Affected areas**, and **Acceptance criteria** **inline** in the briefing, so the orchestrator builds against the approved plan without touching the worktree copy. Also pass `main_checkout_root` so the orchestrator can re-read the absolute `<MAIN_ROOT>/.plan/<id>.md` if needed. **Never** point the orchestrator at `<worktree>/.plan/<id>.md` in this mode — the file is absent there by design.
 - **interaction mode** — when non-interactive, pass `interactive: false` (or equivalent prose) so the orchestrator's Step 1 standard-mode branch skips its own confirmation prompt (Step 1 also reads `ATELIER_AUTO` as a fallback, but the briefing is the authoritative signal when set).
 - **cwd reminder** — the explicit one-liner: *"Your `Bash` cwd is the cwd this `/next-task` invocation inherited, NOT `<worktree_path>`. Every `Bash` call targeting the worktree must use `git -C <worktree_path>`, `pnpm --dir <worktree_path>`, `gh --repo <owner/name>`, or `cd <worktree_path> && ...` prefix. Read/Edit/Write on absolute paths are fine. See `operator-rules.md` § Operating against the task worktree."* The orchestrator's own system prompt repeats this rule (defense in depth), but the briefing is the authoritative carrier — if `SessionStart` did not fire for the subagent dispatch, the briefing is the only place the rule reaches the orchestrator.
 
@@ -199,4 +217,5 @@ Or, if any step aborted, report exactly which step and why — the operator deci
 - **Never** claim a task whose `blocked_by:` references an open item — including a cross-repo `<token>#id` whose target is not closed in that member's `HISTORY.md` (`atelier-resolve-dep` exits non-zero), or whose token/project is not a resolvable workspace member.
 - **Never** edit `settings.template.json` itself from this command — that file is the template, not the output. The helper writes the instantiated copy to `<worktree>/.claude/settings.json`; this command never touches either file directly.
 - **Never** push or open a PR from this command — that is `pr-author`'s job at the end of the chain.
-- **Never** claim a `[ready]` task whose `.plan/<id>.md` (or, for a decomposed epic, the sub-task rewrite) is not present on `origin/<base>` — refuse with a pointer to land the plan commit. A worktree cut from `origin/<base>` would otherwise operate on stale ROADMAP state and drop the decomposition.
+- **Never** claim a `[ready]` task whose `.plan/<id>.md` (or, for a decomposed epic, the sub-task rewrite) is not present on `origin/<base>` — refuse with a pointer to land the plan commit. A worktree cut from `origin/<base>` would otherwise operate on stale ROADMAP state and drop the decomposition. **(This applies to `planStorage=committed`.)** Under `planStorage=local` the plan file is deliberately never on `origin/<base>`: validate it in the main checkout (`test -r "$MAIN_ROOT/.plan/<id>.md"`) and carry its contents inline (step 8) instead — but the `ROADMAP.md` decomposition-on-base check still applies, since the backlog is committed under both modes.
+- **Never** look for a `planStorage=local` plan in the task worktree — `git worktree add` never copies the gitignored file, so `<worktree>/.plan/<id>.md` is always absent under `local` mode. The only source is `<MAIN_ROOT>/.plan/<id>.md` in the operator's main checkout.

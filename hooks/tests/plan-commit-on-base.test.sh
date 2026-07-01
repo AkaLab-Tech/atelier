@@ -166,6 +166,114 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Group 5: planStorage=local contract (TASK_027) — prose invariants
+# ---------------------------------------------------------------------------
+#
+# The committed-mode invariants above must stay intact (Groups 1–3); the local
+# mode ADDS a second contract in which the plan is a gitignored file carried
+# inline, and the plan-on-base guard is dropped.
+
+chk_prose "$PLAN_TASK" 'never `git add`/commit `.plan/<id>.md`' \
+  "plan-task: local mode never commits the plan file"
+
+chk_prose "$PLAN_TASK" 'gitignored, never-committed' \
+  "plan-task: local plan described as gitignored, never-committed"
+
+chk_prose "$NEXT_TASK" 'Under `PLAN_STORAGE=local`, skip the plan-on-base guard entirely' \
+  "next-task: local mode drops the plan-on-base guard"
+
+chk_prose "$NEXT_TASK" 'git rev-parse --show-toplevel' \
+  "next-task: captures the main-checkout root via git rev-parse --show-toplevel"
+
+chk_prose "$NEXT_TASK" 'never copies gitignored/untracked files' \
+  "next-task: documents the root cause (worktree add drops ignored files)"
+
+chk_prose "$NEXT_TASK" 'planStorage=committed' \
+  "next-task: no-regression — committed mode still named as the default path"
+
+chk_prose "$TASK_ORCH" 'absent from the worktree by design' \
+  "task-orchestrator: local plan is absent from the worktree by design"
+
+chk_prose "$TASK_ORCH" 'committed-mode abort above **must not fire** here' \
+  "task-orchestrator: committed-mode abort suppressed under local mode"
+
+RESUME_TASK="$REPO_ROOT/commands/resume-task.md"
+chk_prose "$RESUME_TASK" 'the inline copy is the only plan source on a `local`-mode resume' \
+  "resume-task: local mode carries the plan inline"
+
+# ---------------------------------------------------------------------------
+# Group 6: behavioral — gitignored local plan + worktree isolation (TASK_027)
+# ---------------------------------------------------------------------------
+#
+# Proves the whole reason planStorage=local needs the carry-inline contract:
+# a gitignored plan physically persists ONLY in the main checkout; `git
+# worktree add` does a clean checkout of the tree and does NOT copy it. So the
+# committed-mode plan-on-base probe would (correctly) fail for a valid local
+# plan — which is exactly why the guard is dropped and the plan is read locally.
+
+_main="$_tmpdir/main"          # nested under $_tmpdir so the EXIT trap cleans it
+_bare2="$_tmpdir/origin2.git"
+
+git init --bare "$_bare2" -q
+git clone --quiet "$_bare2" "$_main" 2>/dev/null
+git -C "$_main" config user.email "test@atelier.local"
+git -C "$_main" config user.name "Atelier Test"
+
+# Base commit: .gitignore ignores .plan/, plus a README so origin/main exists.
+printf '.plan/\n' > "$_main/.gitignore"
+printf 'initial\n' > "$_main/README.md"
+git -C "$_main" add .gitignore README.md
+git -C "$_main" commit -q -m "chore: initial"
+git -C "$_main" push -q origin HEAD:main
+
+# Operator writes a gitignored, never-committed plan in the main checkout.
+mkdir -p "$_main/.plan"
+printf '# Plan 42\nApproach: local-only\n' > "$_main/.plan/42.md"
+
+# It is readable at the main-checkout root (the plan source under local mode).
+if [ -r "$_main/.plan/42.md" ]; then
+  pass "behavioral(local): plan readable at main-checkout root"
+else
+  fail "behavioral(local): plan must be readable at main-checkout root"
+fi
+
+# It is gitignored — `git status --porcelain .plan` reports nothing for it.
+if [ -z "$(git -C "$_main" status --porcelain .plan)" ]; then
+  pass "behavioral(local): plan is gitignored (absent from git status)"
+else
+  fail "behavioral(local): plan must be gitignored (git status should be silent)"
+fi
+
+# Committed-mode probe FAILS (the plan is not on origin) — this is why local
+# mode drops the plan-on-base guard rather than refusing a valid plan.
+if git -C "$_main" cat-file -e origin/main:.plan/42.md 2>/dev/null; then
+  fail "behavioral(local): committed probe unexpectedly found the local plan on origin"
+else
+  pass "behavioral(local): committed probe fails for a local plan — guard correctly dropped"
+fi
+
+# Cut a worktree from origin/main (as /next-task does).
+git -C "$_main" worktree add -q --detach "$_tmpdir/wt" origin/main 2>/dev/null
+
+# ROOT CAUSE: the gitignored plan is NOT copied into the worktree.
+if [ -e "$_tmpdir/wt/.plan/42.md" ]; then
+  fail "behavioral(local): worktree unexpectedly contains the gitignored plan"
+else
+  pass "behavioral(local): worktree does NOT contain the gitignored plan — root cause confirmed"
+fi
+
+# The carry-the-local-plan contract: the main-root copy still reads fine, so
+# the chain can carry it inline in the orchestrator briefing.
+if [ -r "$_main/.plan/42.md" ]; then
+  pass "behavioral(local): main-root plan still readable — carry-inline path viable"
+else
+  fail "behavioral(local): main-root plan must remain readable for carry-inline"
+fi
+
+# Detach the worktree so the EXIT trap's rm -rf does not leave a registered ref.
+git -C "$_main" worktree remove --force "$_tmpdir/wt" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
 # Result
 # ---------------------------------------------------------------------------
 echo ""

@@ -223,6 +223,18 @@ Two things to know about this step:
 - **Approval is always a human decision.** atelier never approves a plan by itself — not even in unattended mode (it stops after drafting and waits for you to run `/atelier:plan-task` interactively).
 - **atelier doesn't push that commit.** Getting it onto your base branch on GitHub is yours to do, the way you normally would (push, or a small PR). Until it lands there, the task isn't visible to the next step. Tasks without `[ready]` are silently skipped — that's the gate working as intended.
 
+### Optional: keep plans local (`planStorage: "local"`)
+
+By default the plan file is committed (that's the `.plan/1.md` commit above). If you'd rather **not** commit plans — for example to keep planning notes out of your history — set `planStorage` to `"local"` in your project's `.atelier.json` and add `.plan/` to `.gitignore`:
+
+```json
+{ "planStorage": "local" }
+```
+
+In this mode atelier still writes `.plan/<id>.md` and still marks the task `[ready]` (or sets the `Ready` field), but the plan file stays a gitignored, never-committed artifact in your main checkout. `task` / `resume-task` read it from there and pass it straight to the worker — you don't push anything for the plan itself (for the file-backed layout you still land the `[ready]` flip in `ROADMAP.md`).
+
+**One trade-off to accept before you switch:** a local plan **does not appear in the task's pull request.** With committed plans, a reviewer opening the PR can see exactly what was approved; with local plans, that record isn't in the PR. If the "what was approved" audit trail matters for your review process, keep the default (`"committed"`). The default is `"committed"` — you only get local plans if you opt in.
+
 ---
 
 ## Step 7 — Run the task

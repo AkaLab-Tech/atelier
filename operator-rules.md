@@ -303,12 +303,34 @@ it. Planning is a separate step that happens *before* the orchestrator:
   `/plan-task`, never inside a running task. (This is the same boundary
   as M7.1.F52/F53: planning is owned by the product lead, not invented
   by the orchestrator.)
-- `.plan/` is committed — the approved plan is the implementer's spec
-  and a record of what was agreed.
+- `.plan/` is committed by default — the approved plan is the
+  implementer's spec and a record of what was agreed. It rides the task
+  worktree and shows up in the task PR.
 
 If a task is oversize, the planner decomposes it (into an epic with
 sub-tasks) during `/plan-task` and plans each sub-task; you approve the
 split as part of approving the plan.
+
+### Plan storage — committed vs local (`planStorage`)
+
+`.atelier.json` → `planStorage` chooses where the approved plan lives:
+
+- **`committed`** (default): `/plan-task` commits `.plan/<id>.md` to the
+  base branch alongside the `[ready]` flip / `Ready` field, so it lands
+  on `origin/<base>`, is checked out into every task worktree, and
+  appears in the task PR.
+- **`local`**: `.plan/<id>.md` is a **gitignored, never-committed**
+  artifact in your main checkout. `/plan-task` writes it but never
+  commits it; `/next-task` and `/resume-task` read it locally from the
+  main checkout and hand its contents to the orchestrator inline, so the
+  task worktree (cut from `origin/<base>`) never needs the file. The
+  plan-on-base guard is dropped for this mode. Requires `.plan/` to be
+  gitignored. **Trade-off:** a local plan does **not** appear in the task
+  PR, so reviewers lose the "what was approved" audit trail — surface it
+  out-of-band if you need that record. The `files`-backend `[ready]` flip
+  (and any epic decomposition in `ROADMAP.md`) still must reach
+  `origin/<base>`; only the `.plan` file stays local. Absent field →
+  `committed`.
 
 ## Epic + sub-tasks
 
