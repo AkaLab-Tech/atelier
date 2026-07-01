@@ -143,8 +143,42 @@ else
   target_dir="$PWD"
 fi
 
-# #277 — gate-bypass signature refusal, placed BEFORE every green-path
-# allow below (including the F48 docs-only and no-package-json N/A
+# #277 review-fix cycle 1 — strip the commit-message PAYLOAD before the
+# signature scan below. The scan must run on command SHAPE (option
+# tokens), not on arbitrary text a developer typed into `-m`/`--message`
+# (or `-F`/`--file`): a message like `-m "explain --git-dir redirection"`
+# is legitimate content, not an attempt to redirect the commit. Without
+# this, the grep-over-the-whole-string scan false-blocked any commit
+# whose message happened to mention a bypass-flag spelling.
+#
+# `strip_message_payload` removes only the flag+value pair for -m /
+# --message / -F / --file, requiring a real separator (`=`, whitespace,
+# or a directly-attached quote — i.e. `-m"msg"` / `-m'msg'`) right after
+# the flag so an unrelated option that merely starts with the same
+# letters (e.g. a hypothetical `-max`) is never mistaken for `-m`. This
+# deliberately does NOT touch `-c`/`-C` reuse-message forms on the
+# `commit` subcommand — that flag spelling collides with the top-level
+# `git -C <path>` worktree-selection flag resolved above, and
+# disambiguating the two positionally is not worth the risk of breaking
+# that resolution for this fix.
+strip_message_payload() {
+  local s="$1" sq out pat
+  sq=$'\047'
+  local value_any="(\"[^\"]*\"|${sq}[^${sq}]*${sq}|[^[:space:]]*)"
+  local value_quoted="(\"[^\"]*\"|${sq}[^${sq}]*${sq})"
+  out="$s"
+  for flag_pair in '-m|--message' '-F|--file'; do
+    pat="(^|[[:space:]])(${flag_pair})(=${value_any}|[[:space:]]+${value_any}|${value_quoted})"
+    while [[ "$out" =~ $pat ]]; do
+      out="${out/${BASH_REMATCH[0]}/ }"
+    done
+  done
+  printf '%s' "$out"
+}
+scan_str="$(strip_message_payload "$command_str")"
+
+# gate-bypass signature refusal, placed BEFORE every green-path allow
+# below (including the F48 docs-only and no-package-json N/A
 # short-circuits). The bypass check runs on command SHAPE, not content:
 # an agent smuggling a skip flag, a redirected git-dir/work-tree, or
 # `--no-verify` into the commit command itself must never reach a path
@@ -153,13 +187,13 @@ fi
 # operator's out-of-band `ATELIER_SKIP_SAFE_COMMIT=1` escape hatch above
 # (set in the hook's *environment*, never inside the command).
 bypass_signature=""
-if printf '%s' "$command_str" | grep -qE '(^|[;&|[:space:]])ATELIER_SKIP_SAFE_COMMIT[[:space:]]*='; then
+if printf '%s' "$scan_str" | grep -qE '(^|[;&|[:space:]])ATELIER_SKIP_SAFE_COMMIT[[:space:]]*='; then
   bypass_signature="inline ATELIER_SKIP_SAFE_COMMIT= assignment"
-elif printf '%s' "$command_str" | grep -qE -- '--git-dir(=|[[:space:]])'; then
+elif printf '%s' "$scan_str" | grep -qE -- '--git-dir(=|[[:space:]])'; then
   bypass_signature="--git-dir"
-elif printf '%s' "$command_str" | grep -qE -- '--work-tree(=|[[:space:]])'; then
+elif printf '%s' "$scan_str" | grep -qE -- '--work-tree(=|[[:space:]])'; then
   bypass_signature="--work-tree"
-elif printf '%s' "$command_str" | grep -qE -- '(^|[[:space:]])--no-verify([[:space:]]|;|&|$)'; then
+elif printf '%s' "$scan_str" | grep -qE -- '(^|[[:space:]])--no-verify([[:space:]]|;|&|$)'; then
   bypass_signature="--no-verify"
 fi
 

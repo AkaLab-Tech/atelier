@@ -14,7 +14,13 @@
 #        - `--git-dir=<path>` / `--git-dir <path>` (both spacing forms)
 #        - `--work-tree=<path>` / `--work-tree <path>` (both spacing forms)
 #        - `--no-verify`
-#   3. Legitimate flows are NOT over-blocked:
+#   3. Legitimate flag-mentioning commit MESSAGES are NOT over-blocked
+#      (#277 review-fix cycle 1 — the bypass scan runs on command SHAPE,
+#      not on `-m`/`--message` payload content):
+#        - `-m "... --git-dir ..."` / `-m "... --work-tree ..."` /
+#          `-m "... --no-verify ..."` / `-m "... ATELIER_SKIP_SAFE_COMMIT= ..."`
+#          → exit 0, quoted and attached-quote (`-m'msg'`) forms
+#   4. Legitimate flows are NOT over-blocked:
 #        - the operator's out-of-band `ATELIER_SKIP_SAFE_COMMIT=1`
 #          escape hatch, set in the hook's *environment* (never inline
 #          in the command) → exit 0
@@ -213,7 +219,37 @@ echo "$stderr" | grep -q 'gate-bypass attempt refused' \
   && pass "blocked bypass reports 'gate-bypass attempt refused' on stderr" \
   || fail "expected 'gate-bypass attempt refused' on stderr, got: $(echo "$stderr" | tr '\n' ' ')"
 
-# === 3. Legitimate flows still pass (guard against over-blocking) =========
+# === 3. Legitimate flag-mentioning commit MESSAGES are not over-blocked ===
+# #277 review-fix cycle 1 — the bypass-signature scan must run on command
+# SHAPE, not on the text inside `-m`/`--message`/`-F`/`--file`. A commit
+# whose *message* happens to mention a bypass-flag spelling (documenting
+# or testing the flag itself, or the escape-hatch var name) must still be
+# allowed — exit 0, never exit 2. Same green-gate fixture ($S/wt) as the
+# legitimate-flow cases above, so exit 0 is unambiguous.
+
+code="$(run_hook "$S/main" "git -C $WT commit -m \"fix: handle --git-dir redirection in parser\"")"
+[ "$code" = "0" ] && pass "commit message mentioning --git-dir (quoted -m) → allowed (exit 0), not blocked" \
+                   || fail "commit message mentioning --git-dir (quoted -m) expected exit 0, got $code"
+
+code="$(run_hook "$S/main" "git -C $WT commit -m \"docs: explain --work-tree behaviour\"")"
+[ "$code" = "0" ] && pass "commit message mentioning --work-tree (quoted -m) → allowed (exit 0), not blocked" \
+                   || fail "commit message mentioning --work-tree (quoted -m) expected exit 0, got $code"
+
+code="$(run_hook "$S/main" "git -C $WT commit -m \"test: cover --no-verify path\"")"
+[ "$code" = "0" ] && pass "commit message mentioning --no-verify (quoted -m) → allowed (exit 0), not blocked" \
+                   || fail "commit message mentioning --no-verify (quoted -m) expected exit 0, got $code"
+
+code="$(run_hook "$S/main" "git -C $WT commit -m \"chore: document ATELIER_SKIP_SAFE_COMMIT= escape hatch\"")"
+[ "$code" = "0" ] && pass "commit message mentioning ATELIER_SKIP_SAFE_COMMIT= (quoted -m) → allowed (exit 0), not blocked" \
+                   || fail "commit message mentioning ATELIER_SKIP_SAFE_COMMIT= (quoted -m) expected exit 0, got $code"
+
+# Attached-quote form -m'msg' (no space between flag and quote) — same
+# stripping must apply to this spelling too.
+code="$(run_hook "$S/main" "git -C $WT commit -m'fix: handle --git-dir redirection in parser'")"
+[ "$code" = "0" ] && pass "commit message mentioning --git-dir (attached -m'msg') → allowed (exit 0), not blocked" \
+                   || fail "commit message mentioning --git-dir (attached -m'msg') expected exit 0, got $code"
+
+# === 4. Legitimate flows still pass (guard against over-blocking) =========
 
 # (a) Operator out-of-band escape hatch: ATELIER_SKIP_SAFE_COMMIT=1 set in
 # the hook's ENVIRONMENT (not inside the command string) with a plain
