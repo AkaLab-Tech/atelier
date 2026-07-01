@@ -130,6 +130,32 @@ push_fix_manual() {
 # Strip leading "v" from a version tag if present.
 strip_v() { printf '%s' "${1#v}"; }
 
+# version_cmp <a> <b> — three-way numeric compare of two dot-separated versions.
+# Echoes -1 when a<b, 0 when a==b, 1 when a>b. Pre-release/build metadata
+# (anything from the first "-" or "+") is dropped; missing or non-numeric
+# segments count as 0. Pure bash, macOS 3.2 compatible (no `sort -V`, which is
+# GNU-only and absent on stock macOS). Used by check_plugin_drift() to tell
+# "behind published" from "ahead of published" — string equality alone cannot,
+# so an unreleased local build (local > published) was misreported as drift and
+# offered a downgrade "fix" (#281).
+version_cmp() {
+  local a="${1%%-*}" b="${2%%-*}"
+  a="${a%%+*}"; b="${b%%+*}"
+  local -a av bv
+  IFS=. read -ra av <<<"$a"
+  IFS=. read -ra bv <<<"$b"
+  local n=${#av[@]} i x y
+  [ "${#bv[@]}" -gt "$n" ] && n=${#bv[@]}
+  for ((i = 0; i < n; i++)); do
+    x=${av[i]:-0}; y=${bv[i]:-0}
+    x=${x//[!0-9]/}; y=${y//[!0-9]/}
+    x=$((10#${x:-0})); y=$((10#${y:-0}))
+    if [ "$x" -gt "$y" ]; then printf '1';  return; fi
+    if [ "$x" -lt "$y" ]; then printf -- '-1'; return; fi
+  done
+  printf '0'
+}
+
 # ---------- checks ----------
 #
 # CONTRACT (M7.1.F15): every check function below MUST be independent.
@@ -206,6 +232,13 @@ check_plugin_drift() {
 
   if [ "$local_v" = "$upstream_v" ]; then
     push_plugin "$OK $plugin_id $local_v (up to date)"
+  elif [ "$(version_cmp "$local_v" "$upstream_v")" -gt 0 ]; then
+    # Local build is NEWER than the latest published release/tag — a dev /
+    # self-dev host running an unreleased build. This is NOT drift: report it
+    # clean and register NO fix. The old string-equality branch fell through to
+    # the FAIL path here and offered `claude plugin update`, which would
+    # DOWNGRADE the operator's plugin (#281).
+    push_plugin "$OK $plugin_id $local_v (ahead of published $upstream_v)"
   else
     push_plugin "$FAIL $plugin_id $local_v → $upstream_v"
     push_fix_auto "CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin marketplace update akalab-tech"
