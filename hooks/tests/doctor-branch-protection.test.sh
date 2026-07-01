@@ -88,6 +88,14 @@ case "$*" in
   *"viewerPermission"*)
     printf 'ADMIN\n'
     ;;
+  *".protected"*)
+    # No-admin-safe branch-detail endpoint the doctor consults to disambiguate
+    # a 404 from the protection endpoint. Driven by $BRANCH_PROTECTED.
+    case "${BRANCH_PROTECTED:-false}" in
+      true) printf 'true\n' ;;
+      *)    printf 'false\n' ;;
+    esac
+    ;;
   *"protection"*)
     case "$PROTECT_RESPONSE" in
       200-sufficient)
@@ -176,11 +184,11 @@ else
 fi
 
 # =============================================================================
-# C2 — unprotected (404): FAIL row + fix_auto registered (admin path)
+# C2 — unprotected (404 + branch NOT protected): FAIL row + fix_auto (admin path)
 # =============================================================================
 
 reset_capture
-export PROTECT_RESPONSE="404"
+export PROTECT_RESPONSE="404" BRANCH_PROTECTED="false"
 run_check
 
 if [ -f "$HOST_OUT" ] && grep -q "no required approving reviews" "$HOST_OUT"; then
@@ -240,6 +248,35 @@ if [ -f "$FIX_AUTO_OUT" ]; then
   pass "C4: protected-insufficient → fix_auto registered (admin path)"
 else
   fail "C4: protected-insufficient → expected fix_auto to be registered but it was not"
+fi
+
+# =============================================================================
+# C5 — protected-noadmin (404 from protection endpoint, but branch IS protected):
+#      the disambiguation fix. GitHub returns 404 (not 403) to a non-admin token
+#      even when the branch is protected; the doctor must consult the no-admin
+#      .protected flag and report OK, NOT a false ✗ with an unrunnable fix.
+# =============================================================================
+
+reset_capture
+export PROTECT_RESPONSE="404" BRANCH_PROTECTED="true"
+run_check
+
+if [ -f "$HOST_OUT" ] && grep -q "is protected" "$HOST_OUT"; then
+  pass "C5: 404 + protected → host row reports 'is protected' (no false ✗)"
+else
+  fail "C5: 404 + protected → expected 'is protected' in host output (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+if [ -f "$HOST_OUT" ] && grep -q "no required approving reviews" "$HOST_OUT"; then
+  fail "C5: 404 + protected → must NOT report the '✗ no required approving reviews' failure"
+else
+  pass "C5: 404 + protected → does not report the false failure row"
+fi
+
+if [ ! -f "$FIX_AUTO_OUT" ]; then
+  pass "C5: 404 + protected → no fix_auto (nothing to fix; would be unrunnable)"
+else
+  fail "C5: 404 + protected → unexpected fix_auto: $(cat "$FIX_AUTO_OUT")"
 fi
 
 # =============================================================================

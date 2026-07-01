@@ -766,8 +766,27 @@ check_branch_protection() {
     fi
   else
     case "$err_msg" in
-      *"Branch not protected"*|*"HTTP 404"*) class="unprotected" ;;
-      *"Must have admin"*|*"Resource not accessible"*|*"HTTP 403"*) class="no-admin" ;;
+      *"Must have admin"*|*"Resource not accessible"*|*"HTTP 403"*)
+        class="no-admin"
+        ;;
+      *"Branch not protected"*|*"HTTP 404"*|*"Not Found"*)
+        # A 404 from the protection endpoint is AMBIGUOUS: the branch may be
+        # genuinely unprotected, OR it may be protected while this (non-admin)
+        # token simply lacks the access to read the protection detail — GitHub
+        # returns 404, not 403, in that second case. Disambiguate via the
+        # no-admin-safe branch endpoint, whose `.protected` flag every
+        # collaborator can read. Without this, a repo the operator had just
+        # protected still reported "✗ … no required approving reviews" and
+        # offered a fix the author (bot) identity cannot even run.
+        local protected_flag
+        protected_flag="$(env GH_CONFIG_DIR="$author_dir" \
+          gh api "repos/$owner_repo/branches/$default_branch" --jq '.protected' 2>/dev/null)"
+        if [ "$protected_flag" = "true" ]; then
+          class="protected-noadmin"
+        else
+          class="unprotected"
+        fi
+        ;;
       *) class="skip:$(printf '%s' "$err_msg" | head -1 2>/dev/null)" ;;
     esac
   fi
@@ -775,6 +794,16 @@ check_branch_protection() {
   case "$class" in
     protected-sufficient)
       push_host "$OK branch protection: $owner_repo/$default_branch requires approving reviews (reviewDecision computed)"
+      return
+      ;;
+    protected-noadmin)
+      # Branch IS protected (confirmed via the no-admin .protected flag) but the
+      # author token can't read the protection detail, so we can't verify the
+      # exact required-review count. Report clean — NOT a ✗ — and emit no fix:
+      # the branch is protected and reviewDecision computes; over-claiming a
+      # false failure here (the pre-fix behaviour) also proposed a PUT the bot
+      # identity can't run.
+      push_host "$OK branch protection: $owner_repo/$default_branch is protected (admin token needed to verify the ≥1-review requirement)"
       return
       ;;
     no-admin)
