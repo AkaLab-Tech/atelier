@@ -1,7 +1,7 @@
 ---
 description: Continue a task after interruption or unblocking. Auto-detects the resume mode from `IN_PROGRESS.md` state — "interrupted" (active entry, partial progress) vs "blocked-resumed" (entry has the `[BLOCKED]` marker and the GitHub issue has been closed by the operator). Runs the mode-specific cleanup, then hands off to `task-orchestrator`.
 argument-hint: "<task-id> [--yes|-y]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git wt:*), Bash(git add:*), Bash(git commit:*), Bash(git push:*), Bash(git checkout:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(env:*), Bash(gh issue view:*), Bash(gh pr create:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Skill, Task
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(git add:*), Bash(git commit:*), Bash(git push:*), Bash(git checkout:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(env:*), Bash(jq:*), Bash(test:*), Bash(gh issue view:*), Bash(gh pr create:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Skill, Task
 ---
 
 You are running the `/resume-task` slash command. Three distinct entry points lead here — all end with the same orchestrator hand-off, but they require different pre-flight cleanup:
@@ -30,7 +30,14 @@ Otherwise you are **interactive**. In non-interactive mode, never use `AskUserQu
 
 ### 1. Sanity-check the worktree
 
-Run `git status --short` and `git branch --show-current` in the main worktree.
+Run `git status --short` and `git branch --show-current` in the main worktree. While here, **capture the main-checkout root and the plan-storage mode (TASK_027)** — this command runs in the operator's main checkout, which is where a `planStorage=local` plan physically lives (the task worktree never received it):
+
+```bash
+MAIN_ROOT="$(git rev-parse --show-toplevel)"
+PLAN_STORAGE="$(jq -r '.planStorage // "committed"' "$MAIN_ROOT/.atelier.json" 2>/dev/null || echo committed)"
+```
+
+`PLAN_STORAGE` governs how step 5 supplies the plan to the orchestrator.
 
 - **Working tree clean** → proceed to step 2.
 - **Working tree dirty, interactive mode** → surface the state and ask the operator to stash or commit before proceeding. The resume flow needs to commit a 1-line bookkeeping change to `IN_PROGRESS.md` (blocked-resume) and an unrelated dirty tree corrupts the audit trail.
@@ -153,6 +160,10 @@ Launch the `atelier:task-orchestrator` agent with these inputs:
   - `pr-open` → **skips the entire specialist chain** (implementer / tester / e2e-runner / pr-author) and re-enters at the `reviewer → auto-merge` segment for the supplied PR. No code, test, or PR step re-runs; the open PR on origin is the source of truth.
 - **`pr_number`** + **`pr_url`**: include for PR-open-resume so the orchestrator reviews/merges the existing PR instead of expecting `pr-author` to produce one.
 - **`interactive`**: `true` | `false` — propagate the interaction mode from the section above. The orchestrator has no confirmation step in resume mode, but specialists inherit the flag.
+- **plan-storage mode + plan source (TASK_027)** — always pass `plan_storage: <PLAN_STORAGE>` and `main_checkout_root: <MAIN_ROOT>` (from step 1). This matters for the **interrupted** and **blocked** modes, where the orchestrator re-dispatches the specialist chain (starting at `implementer`) and therefore needs the plan:
+  - Under **`committed`**, the plan is committed in the task worktree (`<wt>/.plan/<id>.md`), so the orchestrator reads it there exactly as on the original run — the resume-mode "skip the plan-load; the worktree state is the source of truth" behaviour is unchanged. Nothing extra to carry.
+  - Under **`local`**, the task worktree **never carried** the plan (it was never committed), so the orchestrator cannot re-read it from the worktree on resume. **Read `<MAIN_ROOT>/.plan/<id>.md` now** and pass its **Approach**, **Affected areas**, and **Acceptance criteria** **inline** in the orchestrator prompt — the inline copy is the only plan source on a `local`-mode resume. If `<MAIN_ROOT>/.plan/<id>.md` is unreadable, **stop** and tell the operator the local plan is missing from the main checkout (re-plan via `/atelier:plan-task <id>`).
+  - **PR-open-resume** needs no plan (no specialist runs) — pass the mode for completeness but skip the local read.
 
 For **blocked-resume**, also tell the orchestrator that `.task-log/` was wiped and the budget is a fresh 6.
 

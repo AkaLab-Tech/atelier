@@ -166,6 +166,23 @@ chk_prose "$PLAN_TASK" 'git add ROADMAP.md .plan' \
   "no-regression: files Phase 4 still does git add ROADMAP.md .plan"
 
 # ---------------------------------------------------------------------------
+# Group 8: planStorage=local (TASK_027) — Ready set without a plan commit
+# ---------------------------------------------------------------------------
+#
+# Under planStorage=local, the github-project backend still flips the Ready
+# field but commits NOTHING (the plan file is gitignored, and there is no
+# ROADMAP.md). Asserts the local-mode branch documents that split.
+
+chk_prose "$PLAN_TASK" 'planStorage=local' \
+  "local mode: planStorage=local branch present"
+
+chk_prose "$PLAN_TASK" '`github-project` backend, `local`:' \
+  "local mode: github-project local sub-case documented"
+
+chk_prose "$PLAN_TASK" 'make **no commit at all**' \
+  "local mode: github-project sets Ready but makes no commit"
+
+# ---------------------------------------------------------------------------
 # Result
 # ---------------------------------------------------------------------------
 echo ""

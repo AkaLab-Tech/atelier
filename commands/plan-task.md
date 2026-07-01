@@ -41,6 +41,14 @@ Never flip `[ready]` or set the Project's `Ready` field without a human approval
 3. **Verify the relevant paths are clean.**
    - **`files` backend:** `git status --porcelain ROADMAP.md .plan`. If `ROADMAP.md` or `.plan/` has uncommitted changes, refuse — the planner's writes would mix with the operator's pending edits and the commit would be malformed. Surface: *"ROADMAP.md / .plan have uncommitted changes; commit or stash them first."*
    - **non-`files` backend:** `git status --porcelain .plan` only — there is no `ROADMAP.md` to guard. If `.plan/` has uncommitted changes, refuse with the same message (omitting `ROADMAP.md` from the text).
+   - **Under `planStorage=local` (step 4 below):** `.plan/` is gitignored, so `git status --porcelain .plan` reports nothing for it — the plan file never enters the working-tree-clean accounting. The `ROADMAP.md` half of the check still applies for the `files` backend (the `[ready]` flip is still committed).
+
+4. **Resolve the plan-storage mode (TASK_027).** Read `planStorage` from `<project-root>/.atelier.json` — default `committed` when the field or the file is absent:
+   ```bash
+   jq -r '.planStorage // "committed"' .atelier.json 2>/dev/null || echo committed
+   ```
+   - **`committed`** (default) — the plan file is committed to the base branch alongside the readiness flip (Phase 4, unchanged). It lands on `origin/<base>`, is checked out into every task worktree, and appears in the task PR.
+   - **`local`** — the plan file is a **gitignored, never-committed** artifact in this main checkout. You still write it and still set readiness, but you **never** `git add`/commit `.plan/<id>.md`. `/atelier:next-task` and `/atelier:resume-task` read it locally from here and carry its contents inline in the orchestrator briefing (PLAN.md §16.5, TASK_027). This mode requires `.plan/` to be gitignored in the repo. Known trade-off: the plan does **not** appear in the task PR, so reviewers lose the "what was approved" audit trail.
 
 ## Phase 2 — Dispatch the planner
 
@@ -73,7 +81,14 @@ If the planner returned `refused-*` / `error`, skip to Phase 5 (nothing to commi
 
 Only after explicit approval:
 
-### `files` backend (unchanged)
+**Plan-storage mode (from Phase 1 step 4).** The backend sub-sections below describe the default `planStorage=committed` path. Under `planStorage=local`, apply the **same steps except never `git add`/commit `.plan/<id>.md`** — it stays a gitignored local artifact. Concretely:
+
+- **`files` backend, `local`:** still flip `[ready]` in `ROADMAP.md` (and, if decomposed, still commit the epic rewrite), and still commit that `ROADMAP.md` change (`git add ROADMAP.md` — **omit `.plan`**), because the `[ready]` marker must still reach `origin/<base>` for `/next-task` to see it. The `.plan/<id>.md` file(s) stay local and uncommitted.
+- **`github-project` backend, `local`:** set the Project's `Ready` field (`setReady(id, true)`) exactly as below, and make **no commit at all** — there is no `ROADMAP.md`, and `.plan/<id>.md` stays local.
+
+In both `local` cases, still flip the draft plan's `Status:` line to `ready (approved — product lead)` inside the local `.plan/<id>.md` (a working-tree edit that is simply never staged). Everything else in Phase 4 below is the `committed`-mode path.
+
+### `files` backend (unchanged — `planStorage=committed`)
 
 1. **Flip `[ready]`** on each id the planner returned in `ready_to_mark` (units with no open `blocked_by` are marked first; a unit gated by an unmet `blocked_by` is still planned and gets `[ready]` too — the orchestrator's `blocked_by` filter keeps it from being claimed early). Edit the item line in `ROADMAP.md`, inserting the literal token `[ready]` immediately after the checkbox:
    ```text
@@ -145,6 +160,8 @@ Commit:    <sha>
 Next:      push/merge this commit to origin/<base> first (a decomposition is only claimable once it is on origin/<base>); then run /atelier:next-task to claim <first ready id>
 ```
 
+Under `planStorage=local`, adjust the tail lines: annotate `Plans:` with `(local — gitignored, not committed)`; for the `files` backend `Commit:` shows only the `ROADMAP.md` `[ready]`/epic-rewrite commit (the plan is not in it), and for the `github-project` backend the `Commit:` line is omitted entirely (nothing was committed). The `Next:` line still requires the `files` backend's `ROADMAP.md` `[ready]`/decomposition to reach `origin/<base>`, but **drops the "land the plan commit" precondition for the plan file itself** — `/next-task` reads the plan locally from this main checkout.
+
 On refusal / rejection, the output is the reason plus the suggested next action, and a line confirming nothing was committed.
 
 ## Hard refusals
@@ -152,6 +169,6 @@ On refusal / rejection, the output is the reason plus the suggested next action,
 - **Never** flip `[ready]` or set the Project's `Ready` field without explicit product-lead approval. In non-interactive mode, stop at the draft — for both `files` and `github-project` backends.
 - **Never** start the implement chain or invoke `task-orchestrator` / `implementer` from this command. `/plan-task` is planning-only.
 - **Never** run from a task worktree — the backlog and `.plan/` you'd edit are on the wrong branch (Phase 1 step 2).
-- **Never** push the commit; never push to a protected branch directly. Landing happens via a normal PR to `origin/<base>` (squash-merge), not a direct push. For the decomposed case, the epic rewrite and every `.plan/<sub-id>.md` must land together in that one commit/PR — they are already one commit, so a partial landing cannot occur. **Claimability contract:** `/next-task` cuts the task worktree from `origin/<base>` and reads the merged ROADMAP from `origin/<base>` — a plan/decomposition committed locally but not yet on `origin/<base>` is invisible and is silently dropped. **The plan commit is not claimable until it is on `origin/<base>`.** Until then, running `/atelier:next-task` will refuse with a clear message pointing to the unmerged plan.
+- **Never** push the commit; never push to a protected branch directly. Landing happens via a normal PR to `origin/<base>` (squash-merge), not a direct push. For the decomposed case, the epic rewrite and every `.plan/<sub-id>.md` must land together in that one commit/PR — they are already one commit, so a partial landing cannot occur. **Claimability contract (`planStorage=committed`):** `/next-task` cuts the task worktree from `origin/<base>` and reads the merged ROADMAP from `origin/<base>` — a plan/decomposition committed locally but not yet on `origin/<base>` is invisible and is silently dropped. **The plan commit is not claimable until it is on `origin/<base>`.** Until then, running `/atelier:next-task` will refuse with a clear message pointing to the unmerged plan. **Under `planStorage=local` this claimability precondition does not apply to the plan *file*** — the plan is read from the main checkout and is never expected on `origin/<base>` (for the `files` backend, the `[ready]`/epic-rewrite in `ROADMAP.md` must still land, exactly as above).
 - **Never** edit `IN_PROGRESS.md` or `HISTORY.md` — the task is not claimed yet, so there is no in-progress entry.
 - **Never** edit `ROADMAP.md` for a non-`files` backend — there is none; the `Ready` flip goes through the backend (`setReady`) only.

@@ -101,7 +101,7 @@ chk_prose "$NEXT_TASK" 'Ready` rides along in the returned record, no dedicated 
 chk_prose "$NEXT_TASK" 'Ready` field is set; `.plan/<id>.md` is committed' \
   "next-task step 3: non-files gate = Ready set AND .plan committed"
 
-chk_prose "$NEXT_TASK" 'the gate requires the backend'"'"'s `Ready` field to be set (carried in the `getTask` record) plus a committed `.plan/<id>.md`' \
+chk_prose "$NEXT_TASK" 'the gate requires the backend'"'"'s `Ready` field to be set (carried in the `getTask` record) plus a `.plan/<id>.md`' \
   "next-task step 3: planning-gate validation spelled out for non-files backend"
 
 chk_prose "$NEXT_TASK" '.plan/<id>.md' \
