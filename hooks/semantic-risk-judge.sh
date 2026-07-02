@@ -50,10 +50,12 @@ fi
 
 # --- Fail-soft dependency guards (same shape as the other M2.4 hooks) -------
 if ! command -v jq >/dev/null 2>&1; then
+  printf '⚠️  atelier:%s — jq missing; hook safety layer degraded, failing open (allow)\n' "$HOOK_NAME" >&2
   log_decision "$HOOK_NAME" "?" "" "allow" "jq missing — hook degraded to allow"
   exit 0
 fi
 if [ ! -f "$PATTERNS_FILE" ]; then
+  printf '⚠️  atelier:%s — patterns file missing at %s; hook safety layer degraded, failing open (allow)\n' "$HOOK_NAME" "$PATTERNS_FILE" >&2
   log_decision "$HOOK_NAME" "?" "" "allow" "patterns file missing — hook degraded to allow"
   exit 0
 fi
@@ -149,6 +151,7 @@ Respond with ONLY a single-line JSON object, no prose, no code fences:
 # sentinel + config dir reach `claude` whether or not `timeout` wraps it.
 # Prefer `timeout`/`gtimeout`; otherwise rely on --max-turns 1 to bound it.
 if ! command -v claude >/dev/null 2>&1; then
+  printf '⚠️  atelier:%s — claude CLI missing; hook safety layer degraded, failing open (allow) on %s\n' "$HOOK_NAME" "$matched_name" >&2
   log_decision "$HOOK_NAME" "Bash" "$matched_class" "allow" "claude CLI missing — fail-open on $matched_name"
   exit 0
 fi

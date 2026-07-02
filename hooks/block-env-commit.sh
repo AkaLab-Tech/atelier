@@ -39,6 +39,7 @@ if ! command -v jq >/dev/null 2>&1; then
   # jq missing is an install bug, but allow the call rather than block
   # everything. install.sh Phase A guarantees jq, so this branch is
   # mostly defensive.
+  printf '⚠️  atelier:%s — jq missing; hook safety layer degraded, failing open (allow)\n' "$HOOK_NAME" >&2
   log_decision "$HOOK_NAME" "?" "" "allow" "jq missing — hook degraded to allow"
   exit 0
 fi

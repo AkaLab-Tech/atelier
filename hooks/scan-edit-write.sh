@@ -29,11 +29,13 @@ PATTERNS_FILE="${CLAUDE_PLUGIN_ROOT}/hooks/patterns/scan-edit-write.json"
 # through than to lock the operator out of every Edit when the plugin
 # is partially installed.
 if [ ! -f "$PATTERNS_FILE" ]; then
+  printf '⚠️  atelier:%s — patterns file missing at %s; hook safety layer degraded, failing open (allow)\n' "$HOOK_NAME" "$PATTERNS_FILE" >&2
   log_decision "$HOOK_NAME" "?" "" "allow" "patterns file missing at $PATTERNS_FILE — hook degraded"
   exit 0
 fi
 
 if ! command -v jq >/dev/null 2>&1; then
+  printf '⚠️  atelier:%s — jq missing; hook safety layer degraded, failing open (allow)\n' "$HOOK_NAME" >&2
   log_decision "$HOOK_NAME" "?" "" "allow" "jq missing — hook degraded"
   exit 0
 fi
