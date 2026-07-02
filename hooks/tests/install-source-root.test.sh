@@ -12,8 +12,10 @@
 #     (this is what lets this suite exercise phase functions hermetically).
 #
 # atelier-update side:
-#   - managed root (under the versioned runtime dir) → clean stub: exit 0 +
-#     "managed install detected" message (the real managed update is #39 F4).
+#   - managed root (under the versioned runtime dir) → routed into the F4
+#     managed path (cache-driven update); with no installed_plugins.json it
+#     dies with a clear message instead of silently exiting 0. The full
+#     managed flow is covered by hooks/tests/atelier-update-managed.test.sh.
 #   - clone root → EXACTLY today's git path (proved by reaching the
 #     "no 'origin' remote" die on a remote-less throwaway repo).
 #   - --plugin-root / non-git non-managed roots keep their hard failures.
@@ -140,9 +142,9 @@ printf '%s' "$help_out" | grep -q -- '--from-cache' \
   && pass "--help documents --from-cache" || fail "--help missing --from-cache"
 
 # ---------------------------------------------------------------------------
-# atelier-update: managed-mode stub + clone path unchanged
+# atelier-update: managed-mode routing (#39 F4) + clone path unchanged
 # ---------------------------------------------------------------------------
-echo "atelier-update managed/clone mode (#39 F1)"
+echo "atelier-update managed/clone mode routing (#39 F1/F4)"
 
 # Fake managed runtime dir: <base>/<version>/{scripts/atelier-update,install.sh},
 # current -> <version>, bin symlink routed through current (as install.sh F2
@@ -156,17 +158,25 @@ ln -s "0.0.1" "$RT/current"
 mkdir -p "$TMP/bin"
 ln -s "$RT/current/scripts/atelier-update" "$TMP/bin/atelier-update"
 
-managed_out="$(ATELIER_RUNTIME_DIR="$RT" "$TMP/bin/atelier-update" 2>&1)"
+# Scratch config/home + a no-op claude shim so the managed path never touches
+# the developer's real ~/.claude-work or invokes the real claude CLI.
+MHOME="$TMP/mhome"; MCFG="$TMP/mcfg"
+mkdir -p "$MHOME" "$MCFG" "$TMP/fakebin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/fakebin/claude"
+chmod +x "$TMP/fakebin/claude"
+
+managed_out="$(HOME="$MHOME" ATELIER_CONFIG_DIR="$MCFG" ATELIER_RUNTIME_DIR="$RT" \
+  PATH="$TMP/fakebin:$PATH" "$TMP/bin/atelier-update" 2>&1)"
 managed_rc=$?
-[ "$managed_rc" -eq 0 ] \
-  && pass "managed root: exits 0" \
-  || fail "managed root: expected exit 0, got $managed_rc (out: $managed_out)"
-printf '%s' "$managed_out" | grep -q 'managed install detected' \
-  && pass "managed root: prints the managed-install stub message" \
-  || fail "managed root: stub message missing (out: $managed_out)"
-printf '%s' "$managed_out" | grep -q -- '--plugin-root' \
-  && pass "managed root: points at --plugin-root for the legacy flow" \
-  || fail "managed root: legacy-flow hint missing"
+printf '%s' "$managed_out" | grep -q 'managed install' \
+  && pass "managed root: routed into the managed (cache-driven) path" \
+  || fail "managed root: managed-path banner missing (out: $managed_out)"
+[ "$managed_rc" -ne 0 ] \
+  && pass "managed root without a plugin-cache manifest: non-zero exit (F4 — no silent stub)" \
+  || fail "managed root: expected non-zero without installed_plugins.json, got 0 (out: $managed_out)"
+printf '%s' "$managed_out" | grep -q 'no record of the atelier plugin' \
+  && pass "managed root: die message points at the missing plugin-cache record" \
+  || fail "managed root: unexpected error message (out: $managed_out)"
 
 # Clone mode still reaches the git path: a throwaway git repo with no origin
 # remote must die with today's "no 'origin' remote" error — proof the mode
