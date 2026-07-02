@@ -1127,6 +1127,17 @@ phase_b() {
 # the recorded git-wt SHA from here to detect drift against upstream.
 ATELIER_STATE_DIR="${HOME}/.local/state/atelier"
 
+# Versioned managed runtime dir (#39 F2). Phase C.1 copies scripts/ +
+# templates/ (+ install.sh + .claude-plugin/plugin.json for version
+# introspection) from $ATELIER_SOURCE_ROOT into
+# $ATELIER_RUNTIME_BASE/<version>/ and atomically swaps the `current`
+# symlink. The ~/.local/bin helper symlinks target current/scripts/* so the
+# helpers keep working when the source (clone OR plugin cache) moves or is
+# deleted, and a version bump is a single symlink swap with the previous
+# version retained for rollback. Override the base with $ATELIER_RUNTIME_DIR
+# (tests use a scratch HOME).
+ATELIER_RUNTIME_BASE="${ATELIER_RUNTIME_DIR:-${HOME}/.local/share/atelier}"
+
 phase_c_1_instantiate_templates() {
   # Atelier ships `templates/` with placeholders that depend on where atelier
   # is installed:
@@ -1326,18 +1337,135 @@ phase_c_1_git_identity() {
   sublog "git identity set: $new_name <$new_email>"
 }
 
+# ---------- versioned runtime dir (#39 F2) ----------
+
+# Read the atelier version shipped by the source tree from its plugin
+# manifest. Echoes the version string; dies when the manifest is missing or
+# carries no version (the runtime dir is keyed by it).
+runtime_source_version() {
+  local manifest="$ATELIER_SOURCE_ROOT/.claude-plugin/plugin.json"
+  [ -f "$manifest" ] \
+    || die "cannot version the runtime dir: $manifest not found (is --source-root pointing at an atelier tree?)"
+  local version
+  version="$(jq -r '.version // empty' "$manifest" 2>/dev/null || true)"
+  [ -n "$version" ] \
+    || die "cannot version the runtime dir: no .version in $manifest"
+  printf '%s\n' "$version"
+}
+
+# Copy the runtime payload from source root $1 into dir $2, preserving the
+# scripts/ + templates/ layout. The layout invariant matters: helpers resolve
+# their plugin root as dirname(realpath(self))/.. — from
+# <runtime>/<version>/scripts/<helper> that lands on <runtime>/<version>/,
+# which therefore must carry templates/ and .claude-plugin/plugin.json just
+# like the clone did. install.sh itself rides along so a managed install can
+# re-run phases (e.g. --refresh-shellrc) without any clone on disk.
+_runtime_copy_payload() {
+  local src="$1" dest="$2"
+  mkdir -p "$dest/.claude-plugin"
+  # -p preserves modes (helper exec bits) and timestamps; -R recurses.
+  cp -pR "$src/scripts" "$dest/scripts"
+  cp -pR "$src/templates" "$dest/templates"
+  cp -p "$src/.claude-plugin/plugin.json" "$dest/.claude-plugin/plugin.json"
+  if [ -f "$src/install.sh" ]; then
+    cp -p "$src/install.sh" "$dest/install.sh"
+  fi
+  # #39 F2 layout audit: atelier-setup-project's decision-policy step reads
+  # agents/decision-broker/catalog.json relative to the plugin root it
+  # derives from its own realpath. Without this one agent asset the policy
+  # prompts would silently skip ("catalog missing") on terminal-run
+  # setup-project once helpers resolve into the runtime dir.
+  if [ -f "$src/agents/decision-broker/catalog.json" ]; then
+    mkdir -p "$dest/agents/decision-broker"
+    cp -p "$src/agents/decision-broker/catalog.json" "$dest/agents/decision-broker/catalog.json"
+  fi
+}
+
+# Keep at most the 2 most recent version dirs under $ATELIER_RUNTIME_BASE
+# (current + one rollback candidate). NEVER prunes the dir `current` points
+# to, even if it somehow isn't among the newest two. Staging leftovers
+# (.staging-*) are dot-prefixed so `ls` never lists them here.
+_runtime_prune_old_versions() {
+  local current_target name dir count=0
+  current_target="$(readlink "$ATELIER_RUNTIME_BASE/current" 2>/dev/null || true)"
+  # Version dir names are jq-read semver strings (no newlines/controls);
+  # `ls -1t` gives the mtime ordering we key off.
+  # shellcheck disable=SC2012
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    [ "$name" = "current" ] && continue
+    dir="$ATELIER_RUNTIME_BASE/$name"
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+    count=$((count + 1))
+    [ "$count" -le 2 ] && continue
+    [ "$name" = "$current_target" ] && continue
+    rm -rf "$dir"
+    sublog "pruned old runtime version $name"
+  done < <(ls -1t "$ATELIER_RUNTIME_BASE" 2>/dev/null)
+}
+
+# Phase C.1 (#39 F2): materialize $ATELIER_RUNTIME_BASE/<version>/ from
+# $ATELIER_SOURCE_ROOT and swap the `current` symlink. Copy is atomic-ish:
+# build into a .staging-<version>.$$ sibling, then a single mv into place.
+# Idempotent: when <version>/ already exists with identical content
+# (diff -rq), nothing is touched; when it exists but differs (e.g. a dev
+# clone re-installed without a version bump), it is replaced via staging+mv.
+# Runs in BOTH clone and snapshot mode — the clone is just another source,
+# so existing installs migrate transparently on their next install.sh run.
+phase_c_1_runtime_dir() {
+  local version version_dir staging
+  version="$(runtime_source_version)"
+  version_dir="$ATELIER_RUNTIME_BASE/$version"
+  mkdir -p "$ATELIER_RUNTIME_BASE"
+
+  staging="$ATELIER_RUNTIME_BASE/.staging-${version}.$$"
+  rm -rf "$staging"
+  _runtime_copy_payload "$ATELIER_SOURCE_ROOT" "$staging"
+
+  if [ -d "$version_dir" ] && diff -rq "$version_dir" "$staging" >/dev/null 2>&1; then
+    rm -rf "$staging"
+    step_skip "runtime $version already in place ($version_dir)"
+  elif [ -d "$version_dir" ]; then
+    # Same version, different content — replace atomically: move the stale
+    # dir aside first (mv onto an existing dir would nest instead of swap).
+    local stale="$ATELIER_RUNTIME_BASE/.stale-${version}.$$"
+    mv "$version_dir" "$stale"
+    mv "$staging" "$version_dir"
+    rm -rf "$stale"
+    sublog "replaced runtime $version (content changed without a version bump)"
+  else
+    mv "$staging" "$version_dir"
+    sublog "installed runtime $version -> $version_dir"
+  fi
+
+  # Atomic swap. Relative target so the whole runtime base can be relocated
+  # (or mounted elsewhere) without dangling; -n replaces an existing
+  # `current` symlink instead of descending into it.
+  ln -sfn "$version" "$ATELIER_RUNTIME_BASE/current"
+  step_ok "runtime current -> $version"
+
+  _runtime_prune_old_versions
+}
+
 _phase_c_1_symlink_helper() {
   # Helper that symlinks one of atelier's bin scripts into ~/.local/bin.
   # Idempotent: re-link if the existing symlink points elsewhere; leave
   # plain files alone (operator may have pinned a manual copy).
+  #
+  # #39 F2: the link target is the managed runtime dir
+  # ($ATELIER_RUNTIME_BASE/current/scripts/<helper>), NOT the source tree.
+  # Routing through `current` means a version bump swaps every helper at
+  # once with zero bin-dir edits — and pre-#39 installs whose links still
+  # point at the clone are migrated automatically by the "points elsewhere
+  # → re-link" branch below.
   local helper_name="$1"
-  local src="$ATELIER_SOURCE_ROOT/scripts/$helper_name"
+  local src="$ATELIER_RUNTIME_BASE/current/scripts/$helper_name"
   local bin_dir="${HOME}/.local/bin"
   local dest="$bin_dir/$helper_name"
 
   if [ ! -f "$src" ]; then
     warn "expected $src — skipping $helper_name install"
-    warn "this likely means install.sh is being run from outside the atelier checkout"
+    warn "this likely means the runtime-dir phase did not run, or the source tree at $ATELIER_SOURCE_ROOT does not ship this helper"
     return
   fi
   if [ ! -x "$src" ]; then
@@ -1373,11 +1501,12 @@ phase_c_1_setup_project_helper() {
   #   - the operator can run either binary directly from any terminal
   #     (notably `atelier-uninstall` to decommission atelier — see M5.0.3).
   #
-  # Why a symlink and not a copy: the operator already has the atelier
-  # checkout (from `git clone`), and `install.sh` is re-run when atelier is
-  # updated. A symlink ensures every script change is picked up without a
-  # separate "copy step". The link target is absolute so it survives the
-  # operator's cwd changing between install runs.
+  # Why a symlink and not a copy: the helpers live in the managed runtime
+  # dir ($ATELIER_RUNTIME_BASE/current/scripts/ — #39 F2), and `current` is
+  # an atomically swapped symlink. Linking through it means a version bump
+  # updates every helper at once without touching ~/.local/bin. The link
+  # target is absolute so it survives the operator's cwd changing between
+  # install runs.
   local bin_dir="${HOME}/.local/bin"
   mkdir -p "$bin_dir"
 
@@ -1926,6 +2055,9 @@ phase_c_1() {
   phase_c_1_git_wt
   phase_c_1_env_excludes
   phase_c_1_git_identity
+  # #39 F2: materialize the versioned runtime dir BEFORE the helper
+  # symlinks — they target $ATELIER_RUNTIME_BASE/current/scripts/.
+  phase_c_1_runtime_dir
   phase_c_1_setup_project_helper
   phase_c_1_atelier_help_file
   phase_c_1_atelier_auto_mode
