@@ -6,7 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repo is **atelier** — an AI-operated workstation distributed as a Claude Code native plugin. It targets a non-technical operator who delivers software by talking to Claude (no manual branching, testing, or PR work).
 
-The repo is currently **pre-implementation**: the only authoritative artifact is [PLAN.md](PLAN.md). There is no source code, no `install.sh`, no `.claude-plugin/`, no `agents/` / `skills/` / `commands/` / `hooks/` directories yet. Do not invent build/lint/test commands — none exist. When asked to implement something, **start by reading PLAN.md** and align with the phase being worked on (see PLAN.md §12).
+The repo is **implemented and shipping** (currently v0.37.x — see `.claude-plugin/plugin.json`). What exists today:
+
+- `install.sh` — the single entry-point installer (~2150 LOC, phased: 0 / A / B / C.1 / C.2).
+- `.claude-plugin/` — plugin + marketplace manifests.
+- `scripts/` — 26 `atelier-*` helper binaries (doctor, setup-project, task backends, etc.).
+- `hooks/` — 11 hook scripts + `hooks.json` manifest + pattern catalogues in `hooks/patterns/`, with a hermetic regression suite (34 `*.test.sh`) in `hooks/tests/`.
+- `agents/` — 14 agent definitions; `skills/` — 9 skills; `commands/` — 29 slash commands.
+- `docs/` (operator guide, quickstart, troubleshooting, research notes) and `templates/` (settings, project CLAUDE.md, `.atelier.json`).
+- CI: `.github/workflows/structural.yml` runs `bash -n` on all shell, the `hooks/tests/*.test.sh` suite, JSON validation, YAML-frontmatter parsing, and an `atelier-setup-project --help` smoke.
+
+When asked to implement something, **start by reading PLAN.md** and align with the phase being worked on (see PLAN.md §12).
 
 ## Source of truth & decision log
 
@@ -15,11 +25,9 @@ The repo is currently **pre-implementation**: the only authoritative artifact is
 
 ## Tracking flow
 
-This repo uses the **indexed** layout for [ROADMAP.md](ROADMAP.md) → [IN_PROGRESS.md](IN_PROGRESS.md) → [HISTORY.md](HISTORY.md): `ROADMAP.md` / `IN_PROGRESS.md` carry one-line links and each task's detail lives in `roadmap/TASK_NNN_<slug>.md` (progress updates go in the task file, not in `IN_PROGRESS.md`). The `roadmap-tracking-flow` skill activates automatically. When a PR closes a task, the **same PR** must remove the link from `IN_PROGRESS.md` and add the entry to `HISTORY.md` — never split that across commits.
+This repo tracks its own roadmap in a **GitHub Project** (backend `github-project` in [.roadmap.json](.roadmap.json): AkaLab-Tech project #1, with Todo / In Progress / Done mapped to roadmap / in-progress / history). There are **no local `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` files at the repo root** — do not create them. Task plans live as `.plan/<id><letter>.md` files, and PRs reference their board item (`#NN`) in the title/description; state moves on the board, not in tracked files.
 
-Note: the `ROADMAP.md` at this repo's root now uses the **operator-facing** PLAN.md §5 layout (P0/P1/P2 with `bug`/`feat`/`chore` tags, `#id`, `~estimate`, `blocked_by:`) — the same format atelier writes into *target projects* the operator manages — adopted via `/atelier:onboard-workspace`. Because the layout is **indexed**, each §5 item links to its `roadmap/TASK_NNN_<slug>.md` detail file. (It previously used the simpler high/medium/low layout from the `roadmap-tracking-flow` skill.)
-
-## Architecture (planned, per PLAN.md §1)
+## Architecture (per PLAN.md §1)
 
 Three layers, each with a different delivery mechanism:
 
@@ -40,12 +48,12 @@ These are binding rules an implementer must respect:
 - **Git push** is restricted to `origin task/<id>-<slug>`. Pushing to `main`/`master`/`develop`/`staging` or any `--force` push is in the absolute deny list (PLAN.md §3).
 - **`package.json` and `pnpm-lock.yaml`** are not edited directly — always go through `pnpm add/remove/update`.
 - **Workflows under `.github/workflows/**`** are not edited by agents.
-- **Secrets**: `.env*` is in git's global excludes; a `PreToolUse` hook (to be implemented) blocks any commit that touches `.env*`.
+- **Secrets**: `.env*` is in git's global excludes; the `PreToolUse` hook `hooks/block-env-commit.sh` blocks any add/commit that touches `.env*`, and `hooks/scan-git-add.sh` / `hooks/scan-edit-write.sh` scan content against the catalogues in `hooks/patterns/`.
 - **Commits**: Conventional Commits style. Merges are squash-only. Post-merge: delete remote branch, remove worktree, mark roadmap item `[x]`.
 
 ## Permissions model (PLAN.md §3)
 
-The full allow/deny/ask matrix lives in PLAN.md §3 and will be materialized as `settings.template.json` (Phase 1, milestone M1.4). When extending permissions:
+The full allow/deny/ask matrix lives in PLAN.md §3 and is materialized as [templates/settings.template.json](templates/settings.template.json) (instantiated per project by `/atelier:setup-project`). When extending permissions:
 - Default mode is `acceptEdits`.
 - Network access is **allowlist-based, grown organically** — do not add broad network grants speculatively.
 - Add new entries to the template, not directly to per-task `settings.json` (that file is regenerated each task).
@@ -71,5 +79,6 @@ Per PLAN.md §11: multi-repo tasks, deployment/release management, cost monitori
 
 ## Working with this repo right now
 
-- The active branch is typically a `docs/*` or `setup/*` branch — design changes happen in PRs against `main`.
-- Until Phase 1 lands, "build" tasks are documentation tasks. Do not fabricate scripts or commands; if PLAN.md says a piece will exist, treat it as TBD and propose where it should live.
+- Work happens on `task/<id>-<slug>` (or `fix/*` / `docs/*` / `chore/*`) branches in PRs against `main` — never commit to `main` directly.
+- There is no compile step. Validate changes the way CI does (`.github/workflows/structural.yml`): `bash -n` every touched shell file, run the hermetic suite (`for t in hooks/tests/*.test.sh; do bash "$t"; done`), and check touched JSON with `jq .` / `python3 -m json.tool`. Run `shellcheck` on modified scripts when available.
+- New hook behaviour needs a matching hermetic test in `hooks/tests/*.test.sh` — the suite is auto-discovered by CI, so adding a test never requires editing the workflow.
