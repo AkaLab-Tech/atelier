@@ -363,6 +363,115 @@ check_shellrc_hooks() {
   fi
 }
 
+# Hooks liveness (fail-open visibility). Every PreToolUse hook in
+# hooks/hooks.json FAILS OPEN by design: when jq, python3, the pattern
+# catalogues, or the claude CLI are missing, the scanning layer silently
+# degrades to allow-everything (see hooks/*.sh dependency guards). That is
+# the right runtime posture — a broken hook must not lock the operator out
+# of every tool call — but it means a degraded install is invisible unless
+# something checks the dependencies explicitly. This is that check.
+# Emits one status line per dependency so the report shows exactly which
+# leg of the safety layer is down.
+check_hooks_liveness() {
+  local degraded=0
+
+  # (a) jq — every hook parses its stdin JSON with jq; without it they all
+  # exit 0 immediately.
+  if command -v jq >/dev/null 2>&1; then
+    push_host "$OK hook deps: jq present"
+  else
+    push_host "$FAIL hook deps: jq not on PATH — hook safety layer degraded, hooks fail open"
+    degraded=1
+  fi
+
+  # (b) python3 — scan-git-add's high-entropy secret detection runs in
+  # python3; without it entropy hits silently never match.
+  if command -v python3 >/dev/null 2>&1; then
+    push_host "$OK hook deps: python3 present (entropy scanning)"
+  else
+    push_host "$FAIL hook deps: python3 not on PATH — entropy scanning degraded, hooks fail open"
+    degraded=1
+  fi
+
+  # (e) claude CLI — semantic-risk-judge fails open without it.
+  if command -v claude >/dev/null 2>&1; then
+    push_host "$OK hook deps: claude CLI resolvable (semantic-risk-judge)"
+  else
+    push_host "$FAIL hook deps: claude CLI not on PATH — semantic-risk-judge fails open"
+    degraded=1
+  fi
+
+  # Resolve the plugin root that carries hooks/hooks.json. Inside a Claude
+  # session $CLAUDE_PLUGIN_ROOT is authoritative; from a terminal, fall back
+  # to this script's own checkout (scripts/ sits one level under the root).
+  local plugin_root="${CLAUDE_PLUGIN_ROOT:-}"
+  if [ -z "$plugin_root" ] || [ ! -f "$plugin_root/hooks/hooks.json" ]; then
+    plugin_root="$(cd -P "$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/.." 2>/dev/null && pwd)"
+  fi
+  if [ -z "$plugin_root" ] || [ ! -f "$plugin_root/hooks/hooks.json" ]; then
+    push_host "$SKIP hook manifest check (hooks/hooks.json not found — set \$CLAUDE_PLUGIN_ROOT or run from the atelier checkout)"
+  elif ! command -v jq >/dev/null 2>&1; then
+    push_host "$SKIP hook manifest + pattern checks (jq unavailable — cannot parse JSON)"
+  else
+    # (c) hooks.json parses and every referenced hook script exists + is executable.
+    local manifest="$plugin_root/hooks/hooks.json"
+    if ! jq empty "$manifest" >/dev/null 2>&1; then
+      push_host "$FAIL hooks/hooks.json is not valid JSON — hook safety layer degraded, hooks fail open"
+      degraded=1
+    else
+      local missing=() cmd script
+      while IFS= read -r cmd; do
+        [ -n "$cmd" ] || continue
+        # Manifest commands look like "${CLAUDE_PLUGIN_ROOT}"/hooks/x.sh —
+        # strip the quoting and substitute the resolved root.
+        script="${cmd//\"/}"
+        script="${script//\$\{CLAUDE_PLUGIN_ROOT\}/$plugin_root}"
+        if [ ! -f "$script" ] || [ ! -x "$script" ]; then
+          missing+=("$(basename "$script")")
+        fi
+      done < <(jq -r '.hooks | to_entries[].value[].hooks[]?.command // empty' "$manifest" 2>/dev/null)
+      if [ ${#missing[@]} -eq 0 ]; then
+        push_host "$OK hooks/hooks.json valid; all referenced hook scripts present + executable"
+      else
+        push_host "$FAIL hook scripts missing or not executable: ${missing[*]} — hook safety layer degraded, hooks fail open"
+        degraded=1
+      fi
+    fi
+
+    # (d) every pattern catalogue parses. A corrupt catalogue makes its hook
+    # scan nothing (jq errors are swallowed with 2>/dev/null in the hooks).
+    local pattern_dir="$plugin_root/hooks/patterns"
+    if [ ! -d "$pattern_dir" ]; then
+      push_host "$FAIL hooks/patterns/ directory missing — hook safety layer degraded, hooks fail open"
+      degraded=1
+    else
+      local bad=() pf found=0
+      for pf in "$pattern_dir"/*.json; do
+        [ -f "$pf" ] || continue
+        found=1
+        jq empty "$pf" >/dev/null 2>&1 || bad+=("$(basename "$pf")")
+      done
+      if [ "$found" -eq 0 ]; then
+        push_host "$FAIL hooks/patterns/ has no catalogues — hook safety layer degraded, hooks fail open"
+        degraded=1
+      elif [ ${#bad[@]} -eq 0 ]; then
+        push_host "$OK hooks/patterns/ catalogues all parse as valid JSON"
+      else
+        push_host "$FAIL hooks/patterns/ invalid JSON: ${bad[*]} — hook safety layer degraded, hooks fail open"
+        degraded=1
+      fi
+    fi
+  fi
+
+  if [ "$degraded" -eq 1 ]; then
+    push_fix_manual "# HOOK SAFETY LAYER DEGRADED — every PreToolUse hook FAILS OPEN, so the
+# secret/content scanning above is silently disabled until this is fixed.
+# Re-run install.sh (Phase A installs jq/python3/claude; Phase C.2 reinstalls
+# the plugin with its hooks + pattern catalogues):
+/path/to/atelier/install.sh"
+  fi
+}
+
 check_project_npmrc() {
   local npmrc=""
   if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -f "$CLAUDE_PROJECT_DIR/.npmrc" ]; then
@@ -964,6 +1073,7 @@ check_legacy_hooks
 check_personal_claudemd_leak
 check_git_wt_path
 check_shellrc_hooks
+check_hooks_liveness
 check_project_npmrc
 check_roadmap_task_ids
 check_chrome
