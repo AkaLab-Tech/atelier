@@ -1106,6 +1106,18 @@ phase_c_1_claude_config_dir() {
 phase_c_1_git_wt() {
   local sha_file="$ATELIER_STATE_DIR/git-wt.sha"
 
+  # Supply-chain pin: the git-wt bootstrap clones an EXTERNAL repo and
+  # executes its install.sh on this host. Running whatever upstream HEAD
+  # happens to be at install time would let a compromised upstream execute
+  # arbitrary code here, so we pin to a reviewed commit and verify the
+  # checkout BEFORE executing anything from the clone. Bump this SHA
+  # deliberately when adopting a new git-wt release. Maintainers can
+  # override with ATELIER_GWT_REF=<sha-or-ref> to test unreleased git-wt
+  # builds; the default is always the pin.
+  local GWT_PINNED_SHA="f25e81f7170a4be3a8e8021a712a31fd62158ff8"
+  local gwt_ref="${ATELIER_GWT_REF:-$GWT_PINNED_SHA}"
+  local gwt_want gwt_head
+
   # Fully provisioned: git-wt on PATH and a SHA is on file. Skip clone +
   # install + re-record.
   if has git-wt && [ -s "$sha_file" ]; then
@@ -1114,16 +1126,29 @@ phase_c_1_git_wt() {
   fi
 
   # Either git-wt is missing, or the SHA file is missing (operator may have
-  # installed git-wt manually before atelier started tracking it). Clone the
-  # current upstream HEAD; install only when git-wt is not on PATH; always
-  # record the SHA. /doctor (M1.6) compares this value against
-  # `gh api repos/AkaLab-Tech/git-wt/commits/main`. When recording on a
-  # backfill (git-wt was already installed), the recorded SHA reflects
-  # upstream HEAD at install.sh runtime — close enough for v1 drift
-  # detection; the next install.sh run will refresh it.
-  sublog "cloning AkaLab-Tech/git-wt into /tmp/git-wt"
+  # installed git-wt manually before atelier started tracking it). Clone,
+  # detach onto the pinned ref, verify, THEN install (only when git-wt is
+  # not on PATH); always record the SHA. /doctor (M1.6) compares this value
+  # against `gh api repos/AkaLab-Tech/git-wt/commits/main` — with a pin, a
+  # drift report means "upstream moved past the pin", which is the cue to
+  # review upstream and bump GWT_PINNED_SHA.
+  # Full clone (not --depth 1): a shallow clone of upstream HEAD does not
+  # contain the pinned commit once upstream advances past it.
+  sublog "cloning AkaLab-Tech/git-wt into /tmp/git-wt (pinned ref: $gwt_ref)"
   rm -rf /tmp/git-wt
-  git clone --depth 1 https://github.com/AkaLab-Tech/git-wt.git /tmp/git-wt
+  git clone https://github.com/AkaLab-Tech/git-wt.git /tmp/git-wt
+
+  if ! git -C /tmp/git-wt checkout --detach --quiet "$gwt_ref" 2>/dev/null; then
+    rm -rf /tmp/git-wt
+    die "git-wt: pinned ref '$gwt_ref' not found in the clone — upstream history may have been rewritten. Refusing to execute an unpinned installer. (Maintainers: override with ATELIER_GWT_REF=<ref>.)"
+  fi
+  gwt_want="$(git -C /tmp/git-wt rev-parse --verify --quiet "${gwt_ref}^{commit}" || true)"
+  gwt_head="$(git -C /tmp/git-wt rev-parse HEAD)"
+  if [ -z "$gwt_want" ] || [ "$gwt_head" != "$gwt_want" ]; then
+    rm -rf /tmp/git-wt
+    die "git-wt: checkout verification failed — HEAD is ${gwt_head:-unknown}, expected ${gwt_want:-unresolvable} (ref '$gwt_ref'). Refusing to execute its install.sh."
+  fi
+  sublog "verified git-wt checkout at pinned SHA ${gwt_head:0:12}"
 
   if ! has git-wt; then
     sublog "running git-wt installer (--skill-for=claude)"
