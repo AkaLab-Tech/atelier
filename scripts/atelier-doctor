@@ -81,6 +81,11 @@ done
 
 ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
 
+# Versioned managed runtime dir (#39 F2/F5) — where install.sh copies
+# scripts/ + templates/ and swaps the `current` symlink. Same override
+# convention as install.sh / atelier-update (tests use a scratch HOME).
+ATELIER_RUNTIME_BASE="${ATELIER_RUNTIME_DIR:-$HOME/.local/share/atelier}"
+
 # ---------- output formatting ----------
 
 OK="✓"
@@ -363,6 +368,156 @@ check_shellrc_hooks() {
   fi
 }
 
+# Install mode & runtime coherence (#39 F5). The atelier-* helpers in
+# ~/.local/bin can be delivered two ways:
+#   managed — symlinks resolve into the versioned runtime dir
+#             ($ATELIER_RUNTIME_BASE/current/ -> <version>/), populated from
+#             the plugin cache (bootstrap.sh flow) or from a clone by
+#             install.sh's F2 phase.
+#   clone   — symlinks resolve into a git clone (pre-#39 installs / dev).
+# A MIX of the two means a partially-migrated install: helpers can skew
+# across versions, so it is reported as degraded with a converge fix.
+# Managed installs additionally get coherence checks: `current` symlink
+# integrity, runtime-vs-cache VERSION drift (fix: atelier-update), and
+# same-version CONTENT drift on scripts/ + templates/ (diff -rq against the
+# cache installPath) — the drift dimension version comparison alone cannot
+# see (a cache refresh without a version bump leaves the runtime stale
+# while every version string still matches).
+check_install_mode() {
+  local bin_dir="$HOME/.local/bin"
+  # Physical (symlink-free) twins of the two anchor paths — readlink -f
+  # canonicalizes targets, so the prefix compare needs both spellings
+  # (e.g. /var vs /private/var on macOS).
+  local base_physical cfg_physical
+  base_physical="$(cd -P "$ATELIER_RUNTIME_BASE" 2>/dev/null && pwd || printf '%s' "$ATELIER_RUNTIME_BASE")"
+  cfg_physical="$(cd -P "$ATELIER_CONFIG_DIR" 2>/dev/null && pwd || printf '%s' "$ATELIER_CONFIG_DIR")"
+
+  # -- classify every atelier-* helper symlink by where it resolves --
+  # Links into $ATELIER_CONFIG_DIR/plugins/ are EXCLUDED from the calculus:
+  # the optional integration helpers (atelier-coolify / -vercel / -neon)
+  # are served straight from their OWN plugin's cache in every install
+  # mode, so counting them would misreport a healthy managed install as
+  # "mixed" whenever an integration is enabled.
+  local managed=0 clone=0 other=0 dangling=0 total=0 clone_root="" link target target_dir
+  for link in "$bin_dir"/atelier-*; do
+    [ -L "$link" ] || continue
+    target="$(readlink -f "$link" 2>/dev/null || readlink "$link")"
+    case "$target" in
+      "$ATELIER_CONFIG_DIR"/plugins/*|"$cfg_physical"/plugins/*) continue ;;
+    esac
+    total=$((total + 1))
+    # Runtime-dir prefix beats the existence probe: a dangling link INTO
+    # the runtime dir is a managed install with a broken `current`, which
+    # the coherence checks below diagnose more precisely than "dangling".
+    case "$target" in
+      "$ATELIER_RUNTIME_BASE"/*|"$base_physical"/*)
+        managed=$((managed + 1)); continue ;;
+    esac
+    if [ ! -e "$target" ]; then
+      dangling=$((dangling + 1)); continue
+    fi
+    target_dir="$(dirname "$target")"
+    if git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
+      clone=$((clone + 1))
+      [ -z "$clone_root" ] \
+        && clone_root="$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$target_dir")"
+    else
+      other=$((other + 1))
+    fi
+  done
+
+  if [ "$total" -eq 0 ]; then
+    push_host "$FAIL install mode: no atelier-* helper symlinks in $bin_dir"
+    push_fix_manual "# no helper symlinks found — (re-)run the installer:
+curl -fsSL https://raw.githubusercontent.com/AkaLab-Tech/atelier/main/bootstrap.sh | bash
+# (or ./install.sh from your clone if you installed from git)"
+    return
+  fi
+
+  if [ "$managed" -gt 0 ] && [ $((clone + other + dangling)) -gt 0 ]; then
+    push_host "$FAIL install mode: mixed ($managed helper(s) via the managed runtime dir, $clone via a clone, $dangling dangling, $other elsewhere) — helpers can skew across versions"
+    push_fix_manual "# converge every helper symlink on \$ATELIER_RUNTIME_BASE/current/scripts/:
+atelier-update
+# (or re-run install.sh — both migrate stale symlinks automatically)"
+    return
+  fi
+
+  if [ "$managed" -eq 0 ]; then
+    if [ "$clone" -gt 0 ] && [ $((other + dangling)) -eq 0 ]; then
+      # Pure clone-mode install — supported, with a gentle migration hint.
+      # Not a failure: no fix registered.
+      push_host "$OK install mode: clone ($clone helper(s) resolve into the git clone at ${clone_root:-unknown})"
+      push_host "$SKIP managed-runtime migration (optional): re-run install.sh from the clone once — it moves the helpers onto $ATELIER_RUNTIME_BASE/current/ automatically (repo-less installs use bootstrap.sh instead)"
+    elif [ "$dangling" -gt 0 ] && [ $((clone + other)) -eq 0 ]; then
+      push_host "$FAIL install mode: broken ($dangling dangling helper symlink(s) — the install source was moved or deleted)"
+      push_fix_manual "# every helper symlink is dangling (the clone/runtime they pointed at is
+# gone) — re-run the installer; it relinks them through the managed runtime dir:
+curl -fsSL https://raw.githubusercontent.com/AkaLab-Tech/atelier/main/bootstrap.sh | bash
+# (or ./install.sh from a clone if you keep one)"
+    else
+      push_host "$FAIL install mode: unknown ($clone helper(s) via a clone, $dangling dangling, $other elsewhere — none via the managed runtime dir)"
+      push_fix_manual "# helper symlinks point somewhere unexpected — re-run the installer:
+curl -fsSL https://raw.githubusercontent.com/AkaLab-Tech/atelier/main/bootstrap.sh | bash"
+    fi
+    return
+  fi
+
+  # -- managed mode: coherence checks --
+  local current_link="$ATELIER_RUNTIME_BASE/current" current_target
+  current_target="$(readlink "$current_link" 2>/dev/null || true)"
+  if [ -z "$current_target" ]; then
+    push_host "$FAIL install mode: managed, but $current_link is missing — every helper symlink is dangling"
+    push_fix_manual "atelier-update   # re-materializes the runtime dir and the current symlink"
+    return
+  fi
+  if [ ! -d "$current_link/" ]; then
+    push_host "$FAIL install mode: managed, but current -> $current_target is dangling (version dir missing)"
+    push_fix_manual "atelier-update   # re-materializes the runtime dir and the current symlink"
+    return
+  fi
+  push_host "$OK install mode: managed ($managed helper(s) via $ATELIER_RUNTIME_BASE/current -> $current_target)"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    push_host "$SKIP runtime/cache coherence (jq unavailable — cannot read the version manifests)"
+    return
+  fi
+
+  local runtime_v manifest cache_v install_path
+  runtime_v="$(jq -r '.version // empty' "$current_link/.claude-plugin/plugin.json" 2>/dev/null)"
+  manifest="$ATELIER_CONFIG_DIR/plugins/installed_plugins.json"
+  cache_v="$(jq -r '.plugins["atelier@akalab-tech"][0].version // empty' "$manifest" 2>/dev/null)"
+  install_path="$(jq -r '.plugins["atelier@akalab-tech"][0].installPath // empty' "$manifest" 2>/dev/null)"
+  install_path="${install_path/#\~/$HOME}"
+
+  if [ -z "$cache_v" ] && [ -z "$install_path" ]; then
+    push_host "$SKIP runtime/cache coherence (no atelier@akalab-tech entry in $manifest)"
+    return
+  fi
+  if [ -n "$cache_v" ] && [ "$runtime_v" != "$cache_v" ]; then
+    push_host "$FAIL runtime version ${runtime_v:-unknown} != plugin cache $cache_v — sessions and terminal helpers run different code"
+    push_fix_manual "atelier-update   # copies the cached version into the runtime dir and swaps current"
+    return
+  fi
+  if [ -z "$install_path" ] || [ ! -d "$install_path" ]; then
+    push_host "$SKIP runtime content-drift check (plugin cache dir '${install_path:-unrecorded}' not found)"
+    return
+  fi
+  # Same version on both sides — compare the payload content itself.
+  local drift="" sub
+  for sub in scripts templates; do
+    [ -d "$install_path/$sub" ] || continue
+    diff -rq "$current_link/$sub" "$install_path/$sub" >/dev/null 2>&1 \
+      || drift="$drift $sub/"
+  done
+  if [ -z "$drift" ]; then
+    push_host "$OK runtime ${runtime_v:-unknown} matches the plugin cache (version + scripts/ + templates/ content)"
+  else
+    push_host "$FAIL runtime ${runtime_v:-unknown} content drifted from the plugin cache (differs:${drift}) — same version, different payload"
+    push_fix_manual "# same-version content drift — re-materialize the runtime dir from the cache:
+bash \"$install_path/install.sh\" --from-cache"
+  fi
+}
+
 # Hooks liveness (fail-open visibility). Every PreToolUse hook in
 # hooks/hooks.json FAILS OPEN by design: when jq, python3, the pattern
 # catalogues, or the claude CLI are missing, the scanning layer silently
@@ -408,8 +563,23 @@ check_hooks_liveness() {
   if [ -z "$plugin_root" ] || [ ! -f "$plugin_root/hooks/hooks.json" ]; then
     plugin_root="$(cd -P "$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/.." 2>/dev/null && pwd)"
   fi
+  # #39 F5: in a managed install this script resolves into the versioned
+  # runtime dir, whose payload intentionally omits hooks/ (sessions load
+  # hooks from the plugin cache, not the runtime dir). Fall back to the
+  # cache installPath recorded in Claude Code's own pointer file so the
+  # manifest + pattern checks keep working without a clone on disk.
+  if { [ -z "$plugin_root" ] || [ ! -f "$plugin_root/hooks/hooks.json" ]; } \
+     && command -v jq >/dev/null 2>&1; then
+    local cache_root
+    cache_root="$(jq -r '.plugins["atelier@akalab-tech"][0].installPath // empty' \
+      "$ATELIER_CONFIG_DIR/plugins/installed_plugins.json" 2>/dev/null)"
+    cache_root="${cache_root/#\~/$HOME}"
+    if [ -n "$cache_root" ] && [ -f "$cache_root/hooks/hooks.json" ]; then
+      plugin_root="$cache_root"
+    fi
+  fi
   if [ -z "$plugin_root" ] || [ ! -f "$plugin_root/hooks/hooks.json" ]; then
-    push_host "$SKIP hook manifest check (hooks/hooks.json not found — set \$CLAUDE_PLUGIN_ROOT or run from the atelier checkout)"
+    push_host "$SKIP hook manifest check (hooks/hooks.json not found in \$CLAUDE_PLUGIN_ROOT, this checkout, or the plugin cache)"
   elif ! command -v jq >/dev/null 2>&1; then
     push_host "$SKIP hook manifest + pattern checks (jq unavailable — cannot parse JSON)"
   else
@@ -1073,6 +1243,7 @@ check_legacy_hooks
 check_personal_claudemd_leak
 check_git_wt_path
 check_shellrc_hooks
+check_install_mode
 check_hooks_liveness
 check_project_npmrc
 check_roadmap_task_ids
