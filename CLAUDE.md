@@ -8,7 +8,8 @@ This repo is **atelier** — an AI-operated workstation distributed as a Claude 
 
 The repo is **implemented and shipping** (currently v0.37.x — see `.claude-plugin/plugin.json`). What exists today:
 
-- `install.sh` — the single entry-point installer (~2150 LOC, phased: 0 / A / B / C.1 / C.2).
+- `install.sh` — the phased installer (~2400 LOC, phased: 0 / A / B / C.1 / C.2). Runs from a git clone OR a plugin-cache snapshot (`--from-cache`, #39).
+- `bootstrap.sh` — the repo-less one-line entry point (#39): installs Claude Code, registers the marketplace, installs the atelier plugin, then delegates to the cached `install.sh --from-cache`. The only curl|bash artifact; keep it small and auditable.
 - `.claude-plugin/` — plugin + marketplace manifests.
 - `scripts/` — 26 `atelier-*` helper binaries (doctor, setup-project, task backends, etc.).
 - `hooks/` — 11 hook scripts + `hooks.json` manifest + pattern catalogues in `hooks/patterns/`, with a hermetic regression suite (34 `*.test.sh`) in `hooks/tests/`.
@@ -32,7 +33,7 @@ This repo tracks its own roadmap in a **GitHub Project** (backend `github-projec
 Three layers, each with a different delivery mechanism:
 
 1. **Plugin layer** — the bulk of atelier ships as a Claude Code native plugin (`.claude-plugin/plugin.json` + `marketplace.json`). Claude Code auto-discovers `agents/`, `skills/`, `commands/`, `hooks/`, `CLAUDE.md` from the plugin root. **Plugin scripts and hooks must reference paths via `$CLAUDE_PLUGIN_ROOT`** — never hardcode absolute paths or assume `~/.claude/...`.
-2. **Host-OS layer** — `install.sh` Phase C.1 handles what cannot live inside a plugin: base deps, Claude Code itself, GitHub HTTPS auth, the external `git-wt` package, `.env*` in git's global excludes, `fnm` shellrc hooks, git identity. (Note: pnpm supply-chain guardrails live in each project's `.npmrc`, not in `~/.npmrc` — see §3.)
+2. **Host-OS layer** — `install.sh` Phase C.1 handles what cannot live inside a plugin: base deps, Claude Code itself, GitHub HTTPS auth, the external `git-wt` package, `.env*` in git's global excludes, `fnm` shellrc hooks, git identity. The 26 `atelier-*` helpers are copied into a versioned runtime dir (`~/.local/share/atelier/<version>/`, `current` symlink swapped atomically, previous version kept for rollback — #39 F2) and symlinked from `~/.local/bin` through `current/`; `atelier-update` swaps versions from the plugin cache with no git operations (managed mode), while clone installs keep the git-pull flow. (Note: pnpm supply-chain guardrails live in each project's `.npmrc`, not in `~/.npmrc` — see §3.)
 3. **Per-project layer** — `/setup-project <path>` creates `.claude/settings.json` (instantiated from `settings.template.json` with the worktree path injected), project `ROADMAP.md`, project `.claude/CLAUDE.md`, project `.npmrc` (pnpm guardrails from PLAN.md §4).
 
 Isolation: every task runs inside its own git worktree (managed via the external `git-wt` skill, sourced from [AkaLab-Tech/git-wt](https://github.com/AkaLab-Tech/git-wt) — **not** maintained here). `Edit`/`Write` permissions are scoped to that worktree per task.
