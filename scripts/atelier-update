@@ -209,13 +209,17 @@ USAGE:
   ${SCRIPT_NAME} [OPTIONS]
 
 OPTIONS:
-  --plugin-root <path>   Path to the atelier clone. Resolution order:
-                         this flag, then \$ATELIER_PLUGIN_ROOT, then the
-                         clone this script lives inside (resolved via
-                         readlink on the symlink, then dirname). The
-                         final path must be a git repository with an
-                         \`origin\` remote pointing at AkaLab-Tech/atelier
-                         (or a fork thereof).
+  --plugin-root <path>   Path to the atelier clone (legacy/dev flow).
+                         Resolution order: this flag, then
+                         \$ATELIER_PLUGIN_ROOT, then the source root this
+                         script lives inside (resolved via readlink on the
+                         symlink, then dirname). Flag/env paths must be a
+                         git repository with an \`origin\` remote pointing
+                         at AkaLab-Tech/atelier (or a fork thereof). When
+                         the discovered root is the managed runtime dir
+                         (#39 — no git clone on disk), this script reports
+                         that the managed update path lands in a later
+                         phase and exits 0.
   --dry-run              Pull + classify + report, but do not re-instantiate
                          templates or invoke \`claude plugin update\`.
                          Useful to see what would change.
@@ -253,16 +257,25 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# ---------- resolve plugin root ----------
+# ---------- resolve source root (#39 F1) ----------
+# Shared concept with install.sh's ATELIER_SOURCE_ROOT: the tree the
+# installed helpers were sourced from. Two delivery modes exist —
+#   clone   : a git repo (legacy/dev flow) → the git fetch/merge path below.
+#   managed : the versioned runtime dir install.sh Phase C.1 populates
+#             ($ATELIER_RUNTIME_DIR, default ~/.local/share/atelier), a
+#             plain tree with no git metadata.
+RUNTIME_BASE="${ATELIER_RUNTIME_DIR:-$HOME/.local/share/atelier}"
+
 resolve_plugin_root() {
-  # 1) explicit flag wins
+  # 1) explicit flag wins — legacy/dev clone flow, unchanged (#39 keeps
+  #    --plugin-root as the explicit clone escape hatch).
   if [ -n "$PLUGIN_ROOT_FLAG" ]; then
     [ -d "$PLUGIN_ROOT_FLAG/.git" ] || die "--plugin-root '$PLUGIN_ROOT_FLAG' is not a git repo"
     printf '%s\n' "$PLUGIN_ROOT_FLAG"
     return
   fi
 
-  # 2) env var
+  # 2) env var — unchanged
   if [ -n "${ATELIER_PLUGIN_ROOT:-}" ]; then
     [ -d "$ATELIER_PLUGIN_ROOT/.git" ] || die "\$ATELIER_PLUGIN_ROOT '$ATELIER_PLUGIN_ROOT' is not a git repo"
     printf '%s\n' "$ATELIER_PLUGIN_ROOT"
@@ -270,7 +283,10 @@ resolve_plugin_root() {
   fi
 
   # 3) script-relative discovery: this script is symlinked from ~/.local/bin/
-  #    to <clone>/scripts/atelier-update. Resolve the symlink, then dirname twice.
+  #    to <root>/scripts/atelier-update (where <root> is the clone pre-#39,
+  #    or $RUNTIME_BASE/current/ → $RUNTIME_BASE/<version>/ post-#39).
+  #    Resolve the symlink, then dirname twice. No .git requirement here —
+  #    detect_update_mode() decides clone vs managed afterwards.
   local self real_path
   self="${BASH_SOURCE[0]}"
   if [ -L "$self" ]; then
@@ -278,14 +294,35 @@ resolve_plugin_root() {
   else
     real_path="$self"
   fi
-  # real_path is now <clone>/scripts/atelier-update; dirname × 2 → <clone>
+  # real_path is now <root>/scripts/atelier-update; dirname × 2 → <root>
   local candidate; candidate="$(cd -P "$(dirname "$real_path")/.." && pwd)"
-  if [ -d "$candidate/.git" ] && [ -f "$candidate/install.sh" ]; then
+  if [ -f "$candidate/install.sh" ]; then
     printf '%s\n' "$candidate"
     return
   fi
 
-  die "could not resolve atelier clone root (try --plugin-root <path> or set \$ATELIER_PLUGIN_ROOT)"
+  die "could not resolve atelier source root (try --plugin-root <path> or set \$ATELIER_PLUGIN_ROOT)"
+}
+
+# detect_update_mode <root> — echo "clone" when the root is a git repo
+# (covers worktrees too), "managed" when it is a plain tree under the
+# versioned runtime dir, "unknown" otherwise. Compares against both the
+# literal and the physical $RUNTIME_BASE path because <root> comes back
+# symlink-resolved from resolve_plugin_root.
+detect_update_mode() {
+  local root="$1"
+  if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'clone\n'
+    return
+  fi
+  local base_physical
+  base_physical="$(cd -P "$RUNTIME_BASE" 2>/dev/null && pwd || printf '%s' "$RUNTIME_BASE")"
+  case "$root" in
+    "$RUNTIME_BASE"|"$RUNTIME_BASE"/*|"$base_physical"|"$base_physical"/*)
+      printf 'managed\n'
+      return ;;
+  esac
+  printf 'unknown\n'
 }
 
 # ---------- dependency check ----------
@@ -299,6 +336,20 @@ log "atelier-update ${VERSION}"
 
 PLUGIN_ROOT="$(resolve_plugin_root)"
 sublog "plugin-root: $PLUGIN_ROOT"
+
+UPDATE_MODE="$(detect_update_mode "$PLUGIN_ROOT")"
+if [ "$UPDATE_MODE" = "managed" ]; then
+  # #39 F1 stub — the cache-driven managed update (claude plugin update →
+  # copy to <new-version>/ → swap current) lands in F4. Exit 0: a managed
+  # install being told "not yet" is not an error state.
+  log "managed install detected — update path lands in a later phase of #39; use --plugin-root <clone> for the legacy flow"
+  exit 0
+fi
+if [ "$UPDATE_MODE" != "clone" ]; then
+  die "resolved root '$PLUGIN_ROOT' is neither a git clone nor a managed runtime dir under $RUNTIME_BASE (use --plugin-root <clone> or \$ATELIER_PLUGIN_ROOT)"
+fi
+
+# ---------- clone mode (legacy/dev) — unchanged below ----------
 
 # Confirm remote points at the atelier repo (or a fork thereof). We accept
 # any URL that ends with `atelier.git`, `atelier`, or `/atelier-*` — covers
