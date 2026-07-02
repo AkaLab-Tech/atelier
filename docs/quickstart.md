@@ -14,8 +14,10 @@ setup(-project | -workspace)  →  onboard-workspace / adopt-roadmap  →  commi
 Two delivery channels matter when updating:
 
 - **Helpers** (`atelier-*` CLIs: `list-projects`, `workspace-status`,
-  `setup-project`, …) update via the `git pull` inside `atelier-update`.
-  No release needed.
+  `setup-project`, …) live in the versioned runtime dir
+  (`~/.local/share/atelier/current/scripts/`) and update via
+  `atelier-update` — from the plugin cache on a managed install, or via
+  `git pull` on a clone install (where pure helper changes need no release).
 - **Plugin commands** (`/atelier:*`, agents, skills) are served from the
   marketplace, which resolves the repo's latest **GitHub release**. They need a
   version bump + tag (see [§4](#4-cut-a-release-plugin-command-changes-only)),
@@ -26,7 +28,8 @@ Two delivery channels matter when updating:
 ## 0. Update atelier locally
 
 ```bash
-atelier-update        # git pull origin/main + refresh templates + `claude plugin update`
+atelier-update        # plugin-cache update + runtime-dir swap (managed) or git pull (clone),
+                      # then refresh templates + helper symlinks
 atelier-doctor        # expect: ✓ atelier@akalab-tech <version> (up to date)
 ```
 

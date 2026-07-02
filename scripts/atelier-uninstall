@@ -6,7 +6,12 @@
 # Default mode (conservative):
 #   - Strip the atelier hooks block from ~/.zshrc and/or ~/.bashrc
 #     (sed between sentinel comments, inclusive).
-#   - Remove ~/.local/bin/atelier-setup-project and ~/.local/bin/atelier-uninstall.
+#   - Remove every ~/.local/bin/atelier-* symlink (they resolve into the
+#     managed runtime dir — or a clone on pre-#39 installs).
+#   - Remove the managed runtime dir ($ATELIER_RUNTIME_DIR, default
+#     ~/.local/share/atelier — all version dirs + the `current` symlink).
+#     Pure derived payload copied from the source at install time (#39 F2);
+#     never holds operator data.
 #   - Remove ~/.local/state/atelier/ (git-wt.sha and friends — pure state).
 #   - Uninstall atelier@akalab-tech and claude-roadmap-tools@akalab-tech
 #     under $ATELIER_CONFIG_DIR.
@@ -98,9 +103,14 @@ done
 # Same convention as atelier-setup-project: respect env, fall back to default.
 ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
 
+# ---------- managed runtime dir resolution (#39 F2/F5) ----------
+# Same convention as install.sh / atelier-update / atelier-doctor.
+ATELIER_RUNTIME_BASE="${ATELIER_RUNTIME_DIR:-$HOME/.local/share/atelier}"
+
 # ---------- step status (one var per step for the final summary) ----------
 SHELLRC_STATUS=""
 BIN_STATUS=""
+RUNTIME_STATUS=""
 STATE_STATUS=""
 PLUGINS_STATUS=""
 CONFIG_DIR_STATUS=""
@@ -155,12 +165,21 @@ step_local_bin() {
   local removed=()
   local kept=()
 
-  for name in atelier-setup-project atelier-uninstall; do
-    local link="$bin_dir/$name"
+  # Remove every atelier-* SYMLINK — install.sh (and atelier-update's
+  # auto-discovering resync) links each shipped helper here, so a fixed name
+  # list would orphan any helper added after this script was written. The
+  # links resolve into $ATELIER_RUNTIME_BASE/current/scripts/ on managed
+  # installs (or a clone on pre-#39 ones); either way `rm` only unlinks the
+  # symlink itself, never the target — and step 3 removes the runtime dir
+  # right after, so no dangling links are left behind.
+  local link name
+  for link in "$bin_dir"/atelier-*; do
+    [ -e "$link" ] || [ -L "$link" ] || continue   # unmatched glob literal
+    name="$(basename "$link")"
     if [ -L "$link" ]; then
       rm -f "$link"
       removed+=("$name")
-    elif [ -e "$link" ]; then
+    else
       # Regular file, not a symlink: operator may have pinned a manual copy.
       # Do not clobber.
       warn "$link exists but is not a symlink — leaving it alone"
@@ -178,7 +197,23 @@ step_local_bin() {
   fi
 }
 
-# ---------- step 3: ~/.local/state/atelier ----------
+# ---------- step 3: managed runtime dir (#39 F5) ----------
+# $ATELIER_RUNTIME_BASE holds versioned COPIES of scripts/ + templates/
+# (plus the `current` symlink) that install.sh materialized from the source
+# tree — pure derived payload, no operator data (chat history, sessions,
+# plans all live under $ATELIER_CONFIG_DIR, untouched here). Removed in
+# default mode alongside ~/.local/state/atelier for the same reason: leaving
+# it would strand the whole reason the bin symlinks were removed.
+step_runtime_dir() {
+  if [ ! -d "$ATELIER_RUNTIME_BASE" ] && [ ! -L "$ATELIER_RUNTIME_BASE" ]; then
+    RUNTIME_STATUS="nothing to remove"
+    return
+  fi
+  rm -rf "$ATELIER_RUNTIME_BASE"
+  RUNTIME_STATUS="removed: $ATELIER_RUNTIME_BASE"
+}
+
+# ---------- step 4: ~/.local/state/atelier ----------
 step_local_state() {
   local state_dir="${HOME}/.local/state/atelier"
   if [ ! -d "$state_dir" ]; then
@@ -189,7 +224,7 @@ step_local_state() {
   STATE_STATUS="removed: $state_dir"
 }
 
-# ---------- step 4: plugin uninstalls under $ATELIER_CONFIG_DIR ----------
+# ---------- step 5: plugin uninstalls under $ATELIER_CONFIG_DIR ----------
 step_plugin_uninstall() {
   if ! command -v claude >/dev/null 2>&1; then
     PLUGINS_STATUS="skipped: claude CLI not on PATH"
@@ -216,7 +251,7 @@ step_plugin_uninstall() {
   PLUGINS_STATUS="$(IFS=,; echo "${results[*]}")"
 }
 
-# ---------- step 5: purge $ATELIER_CONFIG_DIR (--purge only) ----------
+# ---------- step 6: purge $ATELIER_CONFIG_DIR (--purge only) ----------
 step_purge_config_dir() {
   if ! $PURGE; then
     CONFIG_DIR_STATUS="preserved (use --purge to remove)"
@@ -258,6 +293,7 @@ sublog "ATELIER_CONFIG_DIR: $ATELIER_CONFIG_DIR"
 
 step_shellrc_hooks
 step_local_bin
+step_runtime_dir
 step_local_state
 step_plugin_uninstall
 step_purge_config_dir
@@ -266,7 +302,11 @@ step_purge_config_dir
 echo ""
 ok "atelier uninstall complete"
 sublog "shellrc hooks:           $SHELLRC_STATUS"
+# The literal tildes below are display labels, not paths to expand.
+# shellcheck disable=SC2088
 sublog "~/.local/bin symlinks:   $BIN_STATUS"
+sublog "runtime dir:             $RUNTIME_STATUS"
+# shellcheck disable=SC2088
 sublog "~/.local/state/atelier:  $STATE_STATUS"
 sublog "plugins:                 $PLUGINS_STATUS"
 sublog "\$ATELIER_CONFIG_DIR:     $CONFIG_DIR_STATUS"
@@ -276,7 +316,8 @@ if ! $PURGE; then
   sublog "Chat history, sessions, plans, and backups remain at:"
   sublog "  $ATELIER_CONFIG_DIR"
   sublog "Access later via 'CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR claude'."
-  sublog "Re-install atelier with install.sh; auth tokens persist."
+  sublog "Re-install atelier with the bootstrap one-liner (or install.sh from"
+  sublog "a clone); auth tokens persist."
   echo ""
   sublog "To wipe everything, re-run: ${SCRIPT_NAME} --purge"
 fi

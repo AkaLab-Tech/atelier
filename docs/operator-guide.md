@@ -34,41 +34,42 @@ Creating a second GitHub account is free. A common pattern is to use your main a
 
 ---
 
-## Step 1 — Download atelier
+## Step 1 — Install atelier
 
-Open a terminal and run:
+Open a terminal and run this one line:
 
 ```bash
-git clone https://github.com/AkaLab-Tech/atelier ~/atelier
-cd ~/atelier
+curl -fsSL https://raw.githubusercontent.com/AkaLab-Tech/atelier/main/bootstrap.sh | bash
 ```
 
-This copies atelier's code to a folder called `atelier` inside your home directory. The `cd` moves you into it.
+That's the whole download step — there is nothing to clone or unpack. The line fetches a small bootstrap script that installs Claude Code, registers atelier's plugin catalog, and then hands over to atelier's full installer.
 
-You should see `install.sh` and `README.md` if you run `ls`.
+> **Prefer to look before you run?** Download the script first, read it, then run it — it's about 130 lines and this is the only piped-to-shell step atelier ever asks for:
+>
+> ```bash
+> curl -fsSLO https://raw.githubusercontent.com/AkaLab-Tech/atelier/main/bootstrap.sh
+> less bootstrap.sh    # inspect it
+> bash bootstrap.sh
+> ```
+
+> **Developing atelier itself?** Maintainers and contributors still clone the repo (`git clone https://github.com/AkaLab-Tech/atelier`) and run `./install.sh` from the checkout — that clone-based flow remains fully supported. Everyone else doesn't need a copy of the source: updates arrive through `atelier-update` (see [Keep atelier up to date](#keep-atelier-up-to-date)).
 
 ---
 
-## Step 2 — Run the installer
+## Step 2 — Follow the installer prompts
 
-From inside the `~/atelier` folder, run:
-
-```bash
-./install.sh
-```
-
-Here's what will happen, in order:
+The bootstrap hands over to atelier's phased installer. Here's what will happen, in order:
 
 1. **System tools** — atelier installs anything it needs (Homebrew packages on Mac, apt packages on Linux). You may see lots of output; this is normal.
-2. **Claude Code** — installs the Claude Code command-line tool.
+2. **Claude Code** — installs the Claude Code command-line tool (the bootstrap does this first if it's missing).
 3. **Log in to Claude** — your browser opens a tab. Sign in with your Claude account, then come back to the terminal.
 4. **Log in to GitHub (first account, the "author")** — browser opens again. Sign in with your **primary** GitHub account.
 5. **Log in to GitHub (second account, the "reviewer")** — browser opens again. Sign in with your **second** GitHub account. atelier will complain if it's the same account as step 4.
-6. **Plugin install** — atelier configures Claude Code with the atelier plugin.
+6. **Plugin install** — atelier configures Claude Code with the atelier plugin, and copies the helper commands into a small versioned folder under `~/.local/share/atelier/` (so they keep working and can be updated atomically).
 
 When it's done, you'll see a section titled `Install complete` followed by `Next steps:`. The terminal will print copy-pasteable commands for the next steps below.
 
-If something fails partway through, atelier remembers where it stopped. You can re-run `./install.sh` and it will pick up where it left off.
+If something fails partway through, atelier remembers where it stopped. You can re-run the one-liner from Step 1 and it will pick up where it left off.
 
 ---
 
@@ -459,7 +460,7 @@ Every PR atelier opens carries a `## Autonomous decisions taken` section in its 
 
 ## Keep atelier up to date
 
-atelier ships fixes and new helpers regularly. To pull the latest release without touching `install.sh`:
+atelier ships fixes and new helpers regularly. To get the latest release:
 
 ```bash
 atelier-update
@@ -467,10 +468,12 @@ atelier-update
 
 What it does:
 
-1. Pulls the latest tag from the atelier git clone (`~/atelier` by default).
-2. Refreshes the templates under `$ATELIER_CONFIG_DIR/templates/` so new projects pick up the latest settings.
-3. Runs `claude plugin update atelier@akalab-tech` under atelier's config root.
+1. Runs `claude plugin update atelier@akalab-tech` under atelier's config root, which downloads the latest release into Claude Code's plugin cache.
+2. Copies the new version into the managed runtime folder (`~/.local/share/atelier/<version>/`) and switches the `current` pointer to it — every `atelier-*` command updates at once, and the previous version stays on disk as a rollback.
+3. Refreshes the templates under `$ATELIER_CONFIG_DIR/templates/` so new projects pick up the latest settings.
 4. Reports the version delta and any new commands / agents / skills you now have.
+
+(If you installed from a git clone — the maintainer/developer flow — `atelier-update` instead pulls the clone's `origin/main` first, then performs the same refresh steps from it.)
 
 If you're inside a Claude session, `/atelier:update` does the same thing. After updating, run `atelier-doctor` to confirm everything lines up.
 
@@ -520,7 +523,7 @@ If you're still stuck:
 
 - Look in `HISTORY.md` — the most recent entry tells you what was last working.
 - Check GitHub for issues with the `blocked` label — atelier creates those when it can't finish.
-- Re-run the installer: `cd ~/atelier && ./install.sh`. It's safe to re-run; it picks up where it left off.
+- Re-run the installer: the one-liner from [Step 1](#step-1--install-atelier). It's safe to re-run; it picks up where it left off. (Clone-based installs: `cd <your-clone> && ./install.sh`.)
 
 For symptom-indexed common problems (`task: command not found`, a hook blocked an edit, auto-merge skipped a PR, reviewer's approval shows as a comment, etc.) see [troubleshooting.md](troubleshooting.md).
 
@@ -534,7 +537,7 @@ If you decide atelier isn't for you:
 atelier-uninstall
 ```
 
-This removes the atelier plugin and the shell shortcuts but **keeps your chat history**.
+This removes the atelier plugin, the helper commands (including the managed runtime folder under `~/.local/share/atelier/`), and the shell shortcuts but **keeps your chat history**.
 
 To also wipe atelier's saved settings (browser logins, configuration):
 

@@ -246,11 +246,15 @@ Atelier ships as a Claude Code plugin **plus** a host-OS layer (the
 `atelier-*` helpers symlinked into `~/.local/bin/` by `install.sh`).
 Both have to be refreshed when upstream releases a new version:
 
-- `atelier-update` (terminal command): pulls `origin/main` on the
-  clone, refreshes the instantiated templates in `$ATELIER_CONFIG_DIR/templates/`,
-  and triggers `claude plugin update` for the agents/skills/commands
-  Claude Code loads at session start. Refuses dirty trees and
-  non-`main` branches.
+- `atelier-update` (terminal command): fetches the latest release —
+  on a managed (repo-less) install via `claude plugin update` + an
+  atomic swap of the versioned runtime dir
+  (`~/.local/share/atelier/current`), on a clone install via
+  `git pull origin/main` (refuses dirty trees and non-`main`
+  branches) — then refreshes the instantiated templates in
+  `$ATELIER_CONFIG_DIR/templates/` and the `~/.local/bin` helper
+  symlinks. In both modes the plugin cache ends up on the new version
+  for the agents/skills/commands Claude Code loads at session start.
 - `/atelier:update` (slash command): wraps the helper so the
   permission-diff prompt resolves through Claude Code's I/O. Use this
   whenever the upstream release touches `settings.template.json` — the
@@ -274,10 +278,12 @@ When `settings.template.json` changes, the prompt shows:
 - An impact summary so you can read what changes about your
   day-to-day before deciding.
 
-If you decline (`N`): the clone has the new template but
-`$ATELIER_CONFIG_DIR/templates/settings.template.json` keeps the old
-permissions. Re-run from an interactive shell when you're ready to
-accept.
+If you decline (`N`): the source (clone or runtime dir) has the new
+template but `$ATELIER_CONFIG_DIR/templates/settings.template.json`
+keeps the old permissions. Re-run from an interactive shell when
+you're ready to accept. (The interactive permission-diff prompt is a
+clone-mode feature; managed mode backs up the previous instantiated
+template instead.)
 
 After any successful update, **restart open Claude Code sessions** —
 the plugin cache is refreshed but each session loads its agents /

@@ -28,12 +28,34 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-# Absolute path of the atelier checkout this install.sh lives in. Phase C.1
-# symlinks scripts/atelier-setup-project from here into ~/.local/bin so the
-# slash command can call it from inside Claude (and the operator from their
-# terminal). Computed once at script load; doesn't follow symlinks because
-# the operator's clone is the canonical source.
-ATELIER_REPO_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Absolute path of the directory this install.sh lives in (git clone, plugin
+# cache, or unpacked tarball — install.sh no longer assumes a clone, #39 F1).
+# Computed once at script load; doesn't follow symlinks because the tree the
+# operator invoked is the canonical source. resolve_source_root() turns this
+# into $ATELIER_SOURCE_ROOT unless the --source-root flag or the
+# ATELIER_SOURCE_ROOT env var override it.
+_ATELIER_SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The tree atelier is installed FROM (#39 F1). Resolved by
+# resolve_source_root(): --source-root flag > $ATELIER_SOURCE_ROOT env >
+# the directory install.sh lives in. Every phase that used to read from
+# "the clone" ($ATELIER_REPO_ROOT pre-#39) reads from here instead.
+# NOTE: intentionally not clobbered at load — same rationale as
+# $ATELIER_CONFIG_DIR below (the env var is a documented override).
+
+# Set by parse_args. Empty unless --source-root was given on the command line.
+ATELIER_SOURCE_ROOT_FLAG=""
+
+# Set by parse_args (--from-cache). Sugar for "the source tree is a plugin-
+# cache snapshot": forces SOURCE_MODE=snapshot. Nothing else is skipped —
+# every phase runs exactly as in a clone-sourced install.
+FROM_CACHE=false
+
+# Set by detect_source_mode(): "clone" when $ATELIER_SOURCE_ROOT is a git
+# repo (legacy/dev flow), "snapshot" otherwise (plugin cache, unpacked
+# tarball — both are plain trees). Informational in F1/F2: all phases run
+# identically in both modes; later phases (#39 F3/F4) branch on it.
+SOURCE_MODE=""
 
 # Default path for atelier's isolated Claude config root (M5.0). The operator
 # may override via the --config-dir flag or the ATELIER_CONFIG_DIR env var;
@@ -196,6 +218,17 @@ OPTIONS:
                         Resolution priority: this flag, then the
                         ATELIER_CONFIG_DIR env var, then the default
                         \`~/.claude-work/\`.
+  --source-root <path>  Directory to install atelier FROM (scripts/,
+                        templates/, .claude-plugin/). Resolution priority:
+                        this flag, then the ATELIER_SOURCE_ROOT env var,
+                        then the directory install.sh itself lives in.
+                        Accepts a git clone (legacy/dev), the Claude Code
+                        plugin cache, or an unpacked tarball.
+  --from-cache          Declare the source tree a plugin-cache snapshot
+                        (forces snapshot mode even if a .git dir is
+                        somehow present). All phases still run — this is
+                        only a mode hint used by the repo-less install
+                        flow (#39).
   --yes, -y             Non-interactive mode. The preflight collision
                         check refuses (rather than prompts) if the target
                         config dir already has unrelated content.
@@ -222,6 +255,13 @@ parse_args() {
         ATELIER_CONFIG_DIR_FLAG="$2"; shift 2 ;;
       --config-dir=*)
         ATELIER_CONFIG_DIR_FLAG="${1#--config-dir=}"; shift ;;
+      --source-root)
+        [ -n "${2:-}" ] || die "--source-root requires a path"
+        ATELIER_SOURCE_ROOT_FLAG="$2"; shift 2 ;;
+      --source-root=*)
+        ATELIER_SOURCE_ROOT_FLAG="${1#--source-root=}"; shift ;;
+      --from-cache)
+        FROM_CACHE=true; shift ;;
       --yes|-y)
         NONINTERACTIVE=true; shift ;;
       --refresh-shellrc)
@@ -256,6 +296,49 @@ resolve_config_dir() {
   # Expand leading ~ tilde if present (operator may type `~/.foo`).
   ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR/#\~/$HOME}"
   export ATELIER_CONFIG_DIR
+}
+
+# ---------- source root + mode (#39 F1) ----------
+
+# Resolve $ATELIER_SOURCE_ROOT — the tree atelier installs FROM. Single
+# shared concept for every source-reading phase (templates, helper scripts,
+# the runtime-dir copy in Phase C.1). Priority: --source-root flag >
+# $ATELIER_SOURCE_ROOT env > the directory install.sh lives in (today's
+# behavior). The resolved path must exist and look like an atelier tree
+# (scripts/ + .claude-plugin/plugin.json) so a typo'd flag fails here with
+# a clear message instead of half-way through Phase C.1.
+resolve_source_root() {
+  if [ -n "$ATELIER_SOURCE_ROOT_FLAG" ]; then
+    ATELIER_SOURCE_ROOT="$ATELIER_SOURCE_ROOT_FLAG"
+  elif [ -n "${ATELIER_SOURCE_ROOT:-}" ]; then
+    : # use existing env var value
+  else
+    ATELIER_SOURCE_ROOT="$_ATELIER_SCRIPT_DIR"
+  fi
+  # Expand leading ~ tilde if present, then normalize to an absolute
+  # physical path (symlink-free) so comparisons and copies are stable.
+  ATELIER_SOURCE_ROOT="${ATELIER_SOURCE_ROOT/#\~/$HOME}"
+  [ -d "$ATELIER_SOURCE_ROOT" ] \
+    || die "source root '$ATELIER_SOURCE_ROOT' is not a directory (from --source-root / \$ATELIER_SOURCE_ROOT)"
+  ATELIER_SOURCE_ROOT="$(cd -P "$ATELIER_SOURCE_ROOT" && pwd)"
+  if [ ! -d "$ATELIER_SOURCE_ROOT/scripts" ] || [ ! -f "$ATELIER_SOURCE_ROOT/.claude-plugin/plugin.json" ]; then
+    die "source root '$ATELIER_SOURCE_ROOT' does not look like an atelier tree (missing scripts/ or .claude-plugin/plugin.json)"
+  fi
+  export ATELIER_SOURCE_ROOT
+}
+
+# Detect how the source tree is delivered. "clone" — a git repo (the
+# legacy/dev flow, includes worktrees); "snapshot" — a plain tree (Claude
+# Code plugin cache, unpacked tarball). --from-cache short-circuits to
+# snapshot. Sets the SOURCE_MODE global; behavior-neutral in F1/F2.
+detect_source_mode() {
+  if [ "$FROM_CACHE" = true ]; then
+    SOURCE_MODE="snapshot"
+  elif git -C "$ATELIER_SOURCE_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    SOURCE_MODE="clone"
+  else
+    SOURCE_MODE="snapshot"
+  fi
 }
 
 # ---------- install-status marker (M7.1.F6) ----------
@@ -1044,6 +1127,17 @@ phase_b() {
 # the recorded git-wt SHA from here to detect drift against upstream.
 ATELIER_STATE_DIR="${HOME}/.local/state/atelier"
 
+# Versioned managed runtime dir (#39 F2). Phase C.1 copies scripts/ +
+# templates/ (+ install.sh + .claude-plugin/plugin.json for version
+# introspection) from $ATELIER_SOURCE_ROOT into
+# $ATELIER_RUNTIME_BASE/<version>/ and atomically swaps the `current`
+# symlink. The ~/.local/bin helper symlinks target current/scripts/* so the
+# helpers keep working when the source (clone OR plugin cache) moves or is
+# deleted, and a version bump is a single symlink swap with the previous
+# version retained for rollback. Override the base with $ATELIER_RUNTIME_DIR
+# (tests use a scratch HOME).
+ATELIER_RUNTIME_BASE="${ATELIER_RUNTIME_DIR:-${HOME}/.local/share/atelier}"
+
 phase_c_1_instantiate_templates() {
   # Atelier ships `templates/` with placeholders that depend on where atelier
   # is installed:
@@ -1060,7 +1154,7 @@ phase_c_1_instantiate_templates() {
   # accepted the default. Per-task / per-project consumers read the
   # instantiated copy under $ATELIER_CONFIG_DIR/templates/ and only worry
   # about the runtime placeholders that genuinely change per invocation.
-  local src_dir="$ATELIER_REPO_ROOT/templates"
+  local src_dir="$ATELIER_SOURCE_ROOT/templates"
   local dst_dir="$ATELIER_CONFIG_DIR/templates"
   mkdir -p "$dst_dir"
 
@@ -1243,18 +1337,135 @@ phase_c_1_git_identity() {
   sublog "git identity set: $new_name <$new_email>"
 }
 
+# ---------- versioned runtime dir (#39 F2) ----------
+
+# Read the atelier version shipped by the source tree from its plugin
+# manifest. Echoes the version string; dies when the manifest is missing or
+# carries no version (the runtime dir is keyed by it).
+runtime_source_version() {
+  local manifest="$ATELIER_SOURCE_ROOT/.claude-plugin/plugin.json"
+  [ -f "$manifest" ] \
+    || die "cannot version the runtime dir: $manifest not found (is --source-root pointing at an atelier tree?)"
+  local version
+  version="$(jq -r '.version // empty' "$manifest" 2>/dev/null || true)"
+  [ -n "$version" ] \
+    || die "cannot version the runtime dir: no .version in $manifest"
+  printf '%s\n' "$version"
+}
+
+# Copy the runtime payload from source root $1 into dir $2, preserving the
+# scripts/ + templates/ layout. The layout invariant matters: helpers resolve
+# their plugin root as dirname(realpath(self))/.. — from
+# <runtime>/<version>/scripts/<helper> that lands on <runtime>/<version>/,
+# which therefore must carry templates/ and .claude-plugin/plugin.json just
+# like the clone did. install.sh itself rides along so a managed install can
+# re-run phases (e.g. --refresh-shellrc) without any clone on disk.
+_runtime_copy_payload() {
+  local src="$1" dest="$2"
+  mkdir -p "$dest/.claude-plugin"
+  # -p preserves modes (helper exec bits) and timestamps; -R recurses.
+  cp -pR "$src/scripts" "$dest/scripts"
+  cp -pR "$src/templates" "$dest/templates"
+  cp -p "$src/.claude-plugin/plugin.json" "$dest/.claude-plugin/plugin.json"
+  if [ -f "$src/install.sh" ]; then
+    cp -p "$src/install.sh" "$dest/install.sh"
+  fi
+  # #39 F2 layout audit: atelier-setup-project's decision-policy step reads
+  # agents/decision-broker/catalog.json relative to the plugin root it
+  # derives from its own realpath. Without this one agent asset the policy
+  # prompts would silently skip ("catalog missing") on terminal-run
+  # setup-project once helpers resolve into the runtime dir.
+  if [ -f "$src/agents/decision-broker/catalog.json" ]; then
+    mkdir -p "$dest/agents/decision-broker"
+    cp -p "$src/agents/decision-broker/catalog.json" "$dest/agents/decision-broker/catalog.json"
+  fi
+}
+
+# Keep at most the 2 most recent version dirs under $ATELIER_RUNTIME_BASE
+# (current + one rollback candidate). NEVER prunes the dir `current` points
+# to, even if it somehow isn't among the newest two. Staging leftovers
+# (.staging-*) are dot-prefixed so `ls` never lists them here.
+_runtime_prune_old_versions() {
+  local current_target name dir count=0
+  current_target="$(readlink "$ATELIER_RUNTIME_BASE/current" 2>/dev/null || true)"
+  # Version dir names are jq-read semver strings (no newlines/controls);
+  # `ls -1t` gives the mtime ordering we key off.
+  # shellcheck disable=SC2012
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    [ "$name" = "current" ] && continue
+    dir="$ATELIER_RUNTIME_BASE/$name"
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+    count=$((count + 1))
+    [ "$count" -le 2 ] && continue
+    [ "$name" = "$current_target" ] && continue
+    rm -rf "$dir"
+    sublog "pruned old runtime version $name"
+  done < <(ls -1t "$ATELIER_RUNTIME_BASE" 2>/dev/null)
+}
+
+# Phase C.1 (#39 F2): materialize $ATELIER_RUNTIME_BASE/<version>/ from
+# $ATELIER_SOURCE_ROOT and swap the `current` symlink. Copy is atomic-ish:
+# build into a .staging-<version>.$$ sibling, then a single mv into place.
+# Idempotent: when <version>/ already exists with identical content
+# (diff -rq), nothing is touched; when it exists but differs (e.g. a dev
+# clone re-installed without a version bump), it is replaced via staging+mv.
+# Runs in BOTH clone and snapshot mode — the clone is just another source,
+# so existing installs migrate transparently on their next install.sh run.
+phase_c_1_runtime_dir() {
+  local version version_dir staging
+  version="$(runtime_source_version)"
+  version_dir="$ATELIER_RUNTIME_BASE/$version"
+  mkdir -p "$ATELIER_RUNTIME_BASE"
+
+  staging="$ATELIER_RUNTIME_BASE/.staging-${version}.$$"
+  rm -rf "$staging"
+  _runtime_copy_payload "$ATELIER_SOURCE_ROOT" "$staging"
+
+  if [ -d "$version_dir" ] && diff -rq "$version_dir" "$staging" >/dev/null 2>&1; then
+    rm -rf "$staging"
+    step_skip "runtime $version already in place ($version_dir)"
+  elif [ -d "$version_dir" ]; then
+    # Same version, different content — replace atomically: move the stale
+    # dir aside first (mv onto an existing dir would nest instead of swap).
+    local stale="$ATELIER_RUNTIME_BASE/.stale-${version}.$$"
+    mv "$version_dir" "$stale"
+    mv "$staging" "$version_dir"
+    rm -rf "$stale"
+    sublog "replaced runtime $version (content changed without a version bump)"
+  else
+    mv "$staging" "$version_dir"
+    sublog "installed runtime $version -> $version_dir"
+  fi
+
+  # Atomic swap. Relative target so the whole runtime base can be relocated
+  # (or mounted elsewhere) without dangling; -n replaces an existing
+  # `current` symlink instead of descending into it.
+  ln -sfn "$version" "$ATELIER_RUNTIME_BASE/current"
+  step_ok "runtime current -> $version"
+
+  _runtime_prune_old_versions
+}
+
 _phase_c_1_symlink_helper() {
   # Helper that symlinks one of atelier's bin scripts into ~/.local/bin.
   # Idempotent: re-link if the existing symlink points elsewhere; leave
   # plain files alone (operator may have pinned a manual copy).
+  #
+  # #39 F2: the link target is the managed runtime dir
+  # ($ATELIER_RUNTIME_BASE/current/scripts/<helper>), NOT the source tree.
+  # Routing through `current` means a version bump swaps every helper at
+  # once with zero bin-dir edits — and pre-#39 installs whose links still
+  # point at the clone are migrated automatically by the "points elsewhere
+  # → re-link" branch below.
   local helper_name="$1"
-  local src="$ATELIER_REPO_ROOT/scripts/$helper_name"
+  local src="$ATELIER_RUNTIME_BASE/current/scripts/$helper_name"
   local bin_dir="${HOME}/.local/bin"
   local dest="$bin_dir/$helper_name"
 
   if [ ! -f "$src" ]; then
     warn "expected $src — skipping $helper_name install"
-    warn "this likely means install.sh is being run from outside the atelier checkout"
+    warn "this likely means the runtime-dir phase did not run, or the source tree at $ATELIER_SOURCE_ROOT does not ship this helper"
     return
   fi
   if [ ! -x "$src" ]; then
@@ -1290,11 +1501,12 @@ phase_c_1_setup_project_helper() {
   #   - the operator can run either binary directly from any terminal
   #     (notably `atelier-uninstall` to decommission atelier — see M5.0.3).
   #
-  # Why a symlink and not a copy: the operator already has the atelier
-  # checkout (from `git clone`), and `install.sh` is re-run when atelier is
-  # updated. A symlink ensures every script change is picked up without a
-  # separate "copy step". The link target is absolute so it survives the
-  # operator's cwd changing between install runs.
+  # Why a symlink and not a copy: the helpers live in the managed runtime
+  # dir ($ATELIER_RUNTIME_BASE/current/scripts/ — #39 F2), and `current` is
+  # an atomically swapped symlink. Linking through it means a version bump
+  # updates every helper at once without touching ~/.local/bin. The link
+  # target is absolute so it survives the operator's cwd changing between
+  # install runs.
   local bin_dir="${HOME}/.local/bin"
   mkdir -p "$bin_dir"
 
@@ -1795,7 +2007,7 @@ phase_c_1_atelier_auto_mode() {
 # install). The heavy lifting (enumeration, picker, non-destructive copy of
 # *.jsonl only) lives in scripts/atelier-import-conversations.
 phase_c_1_import_conversations() {
-  local bin="$ATELIER_REPO_ROOT/scripts/atelier-import-conversations"
+  local bin="$ATELIER_SOURCE_ROOT/scripts/atelier-import-conversations"
 
   # Non-interactive install (CI / piped): never prompt. The operator can run
   # `/atelier:import-conversations` or the helper later.
@@ -1843,6 +2055,9 @@ phase_c_1() {
   phase_c_1_git_wt
   phase_c_1_env_excludes
   phase_c_1_git_identity
+  # #39 F2: materialize the versioned runtime dir BEFORE the helper
+  # symlinks — they target $ATELIER_RUNTIME_BASE/current/scripts/.
+  phase_c_1_runtime_dir
   phase_c_1_setup_project_helper
   phase_c_1_atelier_help_file
   phase_c_1_atelier_auto_mode
@@ -1949,7 +2164,7 @@ phase_c_2_coolify() {
   read -r -p "    Set up Coolify deployments now (installs the coolify-integration plugin)? [y/N]: " ans
   case "${ans:-N}" in
     [Yy]|[Yy][Ee][Ss])
-      if "$ATELIER_REPO_ROOT/scripts/atelier-setup-coolify" --non-interactive; then
+      if "$ATELIER_SOURCE_ROOT/scripts/atelier-setup-coolify" --non-interactive; then
         COOLIFY_SET_UP=true
         ok "coolify-integration installed — add COOLIFY_BASE_URL + COOLIFY_API_TOKEN to a project's .env, or run /atelier:setup-coolify from it"
       else
@@ -1975,7 +2190,7 @@ phase_c_2_vercel() {
   read -r -p "    Set up Vercel deployments now (installs the vercel-integration plugin)? [y/N]: " ans
   case "${ans:-N}" in
     [Yy]|[Yy][Ee][Ss])
-      if "$ATELIER_REPO_ROOT/scripts/atelier-setup-vercel" --non-interactive; then
+      if "$ATELIER_SOURCE_ROOT/scripts/atelier-setup-vercel" --non-interactive; then
         VERCEL_SET_UP=true
         ok "vercel-integration installed — add VERCEL_TOKEN to a project's .env, or run /atelier:setup-vercel from it"
       else
@@ -2001,7 +2216,7 @@ phase_c_2_neon() {
   read -r -p "    Set up Neon Postgres now (installs the neon-integration plugin)? [y/N]: " ans
   case "${ans:-N}" in
     [Yy]|[Yy][Ee][Ss])
-      if "$ATELIER_REPO_ROOT/scripts/atelier-setup-neon" --non-interactive; then
+      if "$ATELIER_SOURCE_ROOT/scripts/atelier-setup-neon" --non-interactive; then
         NEON_SET_UP=true
         ok "neon-integration installed — add NEON_API_KEY to a project's .env, or run /atelier:setup-neon from it"
       else
@@ -2138,6 +2353,11 @@ print_first_steps() {
 main() {
   parse_args "$@"
   resolve_config_dir
+  # #39 F1: resolve the tree atelier installs FROM (clone, plugin cache, or
+  # tarball) + how it is delivered. Behavior-neutral: every phase runs the
+  # same in both modes; the mode is logged for the operator/doctor.
+  resolve_source_root
+  detect_source_mode
 
   # Pin every claude invocation in this script (Phase B auth, Phase C.2
   # marketplace + plugin install) to atelier's resolved config dir. Child
@@ -2160,6 +2380,7 @@ main() {
 
   log "atelier install.sh starting (os=$(detect_os), arch=$(uname -m))"
   sublog "atelier config dir: $ATELIER_CONFIG_DIR"
+  sublog "source root: $ATELIER_SOURCE_ROOT (mode: $SOURCE_MODE)"
 
   phase_0_preflight
   phase_a
@@ -2175,4 +2396,11 @@ main() {
   print_first_steps
 }
 
-main "$@"
+# Main-gate (#39 F1/F2): run main only when install.sh is executed, not when
+# it is sourced. The hermetic tests (hooks/tests/install-*.test.sh) source
+# this file to exercise individual phase functions (resolve_source_root,
+# phase_c_1_runtime_dir, ...) without triggering a full install. The
+# `return` probe succeeds only in a sourced context.
+if ! (return 0 2>/dev/null); then
+  main "$@"
+fi

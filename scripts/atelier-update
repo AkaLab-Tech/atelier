@@ -1,26 +1,34 @@
 #!/usr/bin/env bash
 #
-# atelier-update — pull the latest atelier from origin/main, refresh the
-# instantiated templates in $ATELIER_CONFIG_DIR, and trigger
-# `claude plugin update` so the agents/skills/commands that Claude Code
-# loads at session-start point at the new version.
+# atelier-update — update an atelier install to the latest release.
 #
-# This is the M6.1.a (engine) half. The permission-diff prompt and
-# revert behaviour for changes to settings.template.json land in M6.1.b
-# along with the /atelier:update slash command. Today, when this script
-# detects that settings.template.json changed, it surfaces a warning
-# directing the operator to run the slash command interactively once
-# M6.1.b lands; the engine still applies the new template (the operator
-# already opted into the update by running atelier-update).
+# Two delivery modes (#39):
+#   clone   : legacy/dev flow — git fetch + merge --ff-only on the clone,
+#             then refresh the versioned runtime dir, instantiated templates,
+#             plugin cache, and helper symlinks.
+#   managed : repo-less flow (#39 F4) — `claude plugin update` refreshes
+#             Claude Code's plugin cache, the new version is copied into the
+#             versioned runtime dir ($ATELIER_RUNTIME_DIR, default
+#             ~/.local/share/atelier) and `current` is atomically swapped.
+#             No git operations anywhere. The runtime-dir copy/swap/prune is
+#             install.sh's F2 implementation, sourced in a subshell from the
+#             install.sh the plugin cache ships.
+#
+# In BOTH modes the ~/.local/bin helper symlinks converge on
+# $RUNTIME_BASE/current/scripts/ — never on the clone or the plugin cache.
+#
+# Permission-diff prompting for settings.template.json changes is M6.1.b and
+# only runs on the clone-mode pulled path (it needs git history for the old
+# template); managed mode backs up the previous instantiated template instead.
 #
 # Usage:
 #   atelier-update [--dry-run] [--plugin-root <path>]
 #   atelier-update --help
 #
 # Exit codes:
-#   0  update applied (file diff is non-empty)
-#   1  unrecoverable error (git pull failed, jq missing, no clone, ...)
-#   2  already up to date (no commits pulled)
+#   0  update applied (something changed / drift resynced)
+#   1  unrecoverable error (git pull failed, jq missing, no plugin cache, ...)
+#   2  already up to date (nothing to do)
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -132,14 +140,29 @@ refresh_instantiated_templates() {
   done
 }
 
-# True (0) when any scripts/atelier-* helper is missing from ~/.local/bin or
-# points somewhere other than the clone. A release that adds a helper (e.g.
-# M5.4's atelier-housekeeping) leaves it unlinked until install.sh is re-run
-# by hand — atelier-update never re-symlinked. This closes that gap (F60).
+# The scripts/ dir the ~/.local/bin helper symlinks must resolve through —
+# the managed runtime `current` symlink (#39 F2/F4), in BOTH clone and
+# managed mode, so a version bump swaps every helper atomically. Falls back
+# to the source tree's scripts/ only for pre-F2 installs whose runtime dir
+# was never materialized (they converge the next time a runtime swap runs).
+runtime_scripts_dir() {
+  if [ -d "$RUNTIME_BASE/current/scripts" ]; then
+    printf '%s/current/scripts\n' "$RUNTIME_BASE"
+  else
+    printf '%s/scripts\n' "$PLUGIN_ROOT"
+  fi
+}
+
+# True (0) when any atelier-* helper is missing from ~/.local/bin or points
+# somewhere other than the runtime `current` dir (#39 F4 — was: the clone). A
+# release that adds a helper (e.g. M5.4's atelier-housekeeping) leaves it
+# unlinked until install.sh is re-run by hand — atelier-update never
+# re-symlinked. This closes that gap (F60).
 symlinks_out_of_sync() {
   local bin_dir="$HOME/.local/bin"
-  local src name dest
-  for src in "$PLUGIN_ROOT"/scripts/atelier-*; do
+  local scripts_dir src name dest
+  scripts_dir="$(runtime_scripts_dir)"
+  for src in "$scripts_dir"/atelier-*; do
     [ -f "$src" ] || continue
     name="$(basename "$src")"
     dest="$bin_dir/$name"
@@ -152,15 +175,18 @@ symlinks_out_of_sync() {
   return 1
 }
 
-# Symlink every scripts/atelier-* helper into ~/.local/bin (idempotent; mirrors
+# Symlink every atelier-* helper into ~/.local/bin (idempotent; mirrors
 # install.sh's _phase_c_1_symlink_helper but auto-discovers, so a newly shipped
 # helper never needs a matching install.sh edit to be linked). Never clobbers a
-# plain file the operator may have pinned manually.
+# plain file the operator may have pinned manually. #39 F4: link targets route
+# through $RUNTIME_BASE/current/scripts/ in both modes (clone-era links that
+# still point at the clone are migrated by the "points elsewhere" branch).
 resync_script_symlinks() {
   local bin_dir="$HOME/.local/bin"
   mkdir -p "$bin_dir"
-  local src name dest current linked=0
-  for src in "$PLUGIN_ROOT"/scripts/atelier-*; do
+  local scripts_dir src name dest current linked=0
+  scripts_dir="$(runtime_scripts_dir)"
+  for src in "$scripts_dir"/atelier-*; do
     [ -f "$src" ] || continue
     name="$(basename "$src")"
     dest="$bin_dir/$name"
@@ -201,21 +227,27 @@ usage() {
   cat <<EOF
 ${SCRIPT_NAME} ${VERSION}
 
-Pull the latest atelier from origin/main, refresh instantiated templates,
-and trigger \`claude plugin update\` so Claude Code sessions load the
-new version on next start.
+Update atelier to the latest release and refresh the installed artifacts
+(versioned runtime dir, instantiated templates, helper symlinks) so Claude
+Code sessions load the new version on next start. Managed installs (#39)
+update via Claude Code's plugin cache; clone installs (legacy/dev) pull
+origin/main.
 
 USAGE:
   ${SCRIPT_NAME} [OPTIONS]
 
 OPTIONS:
-  --plugin-root <path>   Path to the atelier clone. Resolution order:
-                         this flag, then \$ATELIER_PLUGIN_ROOT, then the
-                         clone this script lives inside (resolved via
-                         readlink on the symlink, then dirname). The
-                         final path must be a git repository with an
-                         \`origin\` remote pointing at AkaLab-Tech/atelier
-                         (or a fork thereof).
+  --plugin-root <path>   Path to the atelier clone (legacy/dev flow).
+                         Resolution order: this flag, then
+                         \$ATELIER_PLUGIN_ROOT, then the source root this
+                         script lives inside (resolved via readlink on the
+                         symlink, then dirname). Flag/env paths must be a
+                         git repository with an \`origin\` remote pointing
+                         at AkaLab-Tech/atelier (or a fork thereof). When
+                         the discovered root is the managed runtime dir
+                         (#39 — no git clone on disk), the update runs via
+                         \`claude plugin update\` + a runtime-dir swap
+                         instead of git.
   --dry-run              Pull + classify + report, but do not re-instantiate
                          templates or invoke \`claude plugin update\`.
                          Useful to see what would change.
@@ -228,10 +260,12 @@ EXIT CODES:
 
 NOTES:
   - settings.template.json changes are surfaced as a warning here; the
-    permission-diff prompt + revert flow lands in M6.1.b.
-  - Re-symlinking is NOT needed: the helpers in ~/.local/bin/ point at
-    the clone's scripts/ directory; \`git pull\` updates those files in
-    place, so the symlinks already resolve to the new content.
+    permission-diff prompt + revert flow (M6.1.b) runs on the clone-mode
+    pulled path. Managed mode backs up the previous instantiated copy.
+  - Helper symlinks in ~/.local/bin/ resolve through the versioned runtime
+    dir's \`current\` symlink (#39): a version swap updates every helper at
+    once; this script re-links anything missing or still pointing at a
+    clone / plugin cache.
   - \`claude plugin update\` refreshes Claude Code's plugin cache. Open
     sessions keep loading the old version until they restart.
 EOF
@@ -253,16 +287,25 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# ---------- resolve plugin root ----------
+# ---------- resolve source root (#39 F1) ----------
+# Shared concept with install.sh's ATELIER_SOURCE_ROOT: the tree the
+# installed helpers were sourced from. Two delivery modes exist —
+#   clone   : a git repo (legacy/dev flow) → the git fetch/merge path below.
+#   managed : the versioned runtime dir install.sh Phase C.1 populates
+#             ($ATELIER_RUNTIME_DIR, default ~/.local/share/atelier), a
+#             plain tree with no git metadata.
+RUNTIME_BASE="${ATELIER_RUNTIME_DIR:-$HOME/.local/share/atelier}"
+
 resolve_plugin_root() {
-  # 1) explicit flag wins
+  # 1) explicit flag wins — legacy/dev clone flow, unchanged (#39 keeps
+  #    --plugin-root as the explicit clone escape hatch).
   if [ -n "$PLUGIN_ROOT_FLAG" ]; then
     [ -d "$PLUGIN_ROOT_FLAG/.git" ] || die "--plugin-root '$PLUGIN_ROOT_FLAG' is not a git repo"
     printf '%s\n' "$PLUGIN_ROOT_FLAG"
     return
   fi
 
-  # 2) env var
+  # 2) env var — unchanged
   if [ -n "${ATELIER_PLUGIN_ROOT:-}" ]; then
     [ -d "$ATELIER_PLUGIN_ROOT/.git" ] || die "\$ATELIER_PLUGIN_ROOT '$ATELIER_PLUGIN_ROOT' is not a git repo"
     printf '%s\n' "$ATELIER_PLUGIN_ROOT"
@@ -270,7 +313,10 @@ resolve_plugin_root() {
   fi
 
   # 3) script-relative discovery: this script is symlinked from ~/.local/bin/
-  #    to <clone>/scripts/atelier-update. Resolve the symlink, then dirname twice.
+  #    to <root>/scripts/atelier-update (where <root> is the clone pre-#39,
+  #    or $RUNTIME_BASE/current/ → $RUNTIME_BASE/<version>/ post-#39).
+  #    Resolve the symlink, then dirname twice. No .git requirement here —
+  #    detect_update_mode() decides clone vs managed afterwards.
   local self real_path
   self="${BASH_SOURCE[0]}"
   if [ -L "$self" ]; then
@@ -278,14 +324,160 @@ resolve_plugin_root() {
   else
     real_path="$self"
   fi
-  # real_path is now <clone>/scripts/atelier-update; dirname × 2 → <clone>
+  # real_path is now <root>/scripts/atelier-update; dirname × 2 → <root>
   local candidate; candidate="$(cd -P "$(dirname "$real_path")/.." && pwd)"
-  if [ -d "$candidate/.git" ] && [ -f "$candidate/install.sh" ]; then
+  if [ -f "$candidate/install.sh" ]; then
     printf '%s\n' "$candidate"
     return
   fi
 
-  die "could not resolve atelier clone root (try --plugin-root <path> or set \$ATELIER_PLUGIN_ROOT)"
+  die "could not resolve atelier source root (try --plugin-root <path> or set \$ATELIER_PLUGIN_ROOT)"
+}
+
+# detect_update_mode <root> — echo "clone" when the root is a git repo
+# (covers worktrees too), "managed" when it is a plain tree under the
+# versioned runtime dir, "unknown" otherwise. Compares against both the
+# literal and the physical $RUNTIME_BASE path because <root> comes back
+# symlink-resolved from resolve_plugin_root.
+detect_update_mode() {
+  local root="$1"
+  if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'clone\n'
+    return
+  fi
+  local base_physical
+  base_physical="$(cd -P "$RUNTIME_BASE" 2>/dev/null && pwd || printf '%s' "$RUNTIME_BASE")"
+  case "$root" in
+    "$RUNTIME_BASE"|"$RUNTIME_BASE"/*|"$base_physical"|"$base_physical"/*)
+      printf 'managed\n'
+      return ;;
+  esac
+  printf 'unknown\n'
+}
+
+# ---------- runtime dir swap + managed update (#39 F4) ----------
+
+# True (0) when the managed runtime dir's `current` symlink does not point at
+# the version the source tree ships — the runtime lags the source, or was
+# never materialized (pre-#39-F2 install). Used by the clone-mode no-commits
+# path so clone installs also converge on the runtime dir.
+runtime_out_of_sync() {
+  local want="$1" have
+  have="$(readlink "$RUNTIME_BASE/current" 2>/dev/null || true)"
+  [ "$have" != "$want" ]
+}
+
+# Copy the runtime payload from source tree $1 into $RUNTIME_BASE/<version>/
+# and atomically swap `current` (+ prune down to 2 retained versions).
+# REUSES install.sh's F2 implementation (phase_c_1_runtime_dir with its
+# staging+mv and prune helpers) by sourcing the install.sh the source tree
+# itself ships — install.sh is main-gated, so sourcing only defines
+# functions. Runs in a subshell so install.sh's own log/warn/die helpers and
+# globals never leak into this script. Works from both a clone and a
+# plugin-cache snapshot: both carry install.sh at their root.
+runtime_swap_from_source() {
+  local src="$1"
+  [ -f "$src/install.sh" ] || die "cannot swap runtime dir: $src/install.sh missing (not an atelier tree?)"
+  log "materializing runtime dir from $src"
+  (
+    export ATELIER_SOURCE_ROOT="$src"
+    # shellcheck disable=SC1091
+    source "$src/install.sh"
+    resolve_source_root
+    detect_source_mode
+    phase_c_1_runtime_dir
+  ) || die "runtime dir swap from $src failed"
+}
+
+# Managed-mode update (#39 F4): `claude plugin update` refreshes Claude
+# Code's plugin cache (that IS the fetch step — no git), then the freshly
+# cached version is copied into $RUNTIME_BASE/<version>/ and `current` is
+# swapped. Always exits: 0 update applied / drift resynced, 2 already up to
+# date, 1 unrecoverable.
+managed_update() {
+  local cfg="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+  cfg="${cfg/#\~/$HOME}"
+  local manifest="$cfg/plugins/installed_plugins.json"
+  local current_version
+  current_version="$(readlink "$RUNTIME_BASE/current" 2>/dev/null || true)"
+
+  log "managed install — updating from Claude Code's plugin cache (no git)"
+  sublog "config dir:  $cfg"
+  sublog "runtime:     $RUNTIME_BASE (current: ${current_version:-<none>})"
+
+  if $DRY_RUN; then
+    local cached
+    cached="$(read_cached_plugin_version)"
+    log "DRY-RUN — would run \`claude plugin update atelier@akalab-tech\`, copy the cached version into $RUNTIME_BASE/<version>/ and swap current"
+    sublog "cache is at ${cached:-unknown}; runtime current is at ${current_version:-<none>}"
+    exit 0
+  fi
+
+  # 1) Let the claude CLI pull the latest release into its plugin cache.
+  #    This replaces clone-mode's git fetch/merge; there is NO separate
+  #    cache refresh after the swap (the CLI just did it — that's the
+  #    point of managed mode). refresh_plugin_cache tolerates "already up
+  #    to date" and network failures (warn + continue with what's cached).
+  refresh_plugin_cache
+
+  # 2) Resolve the ACTIVE cache version via installed_plugins.json — the
+  #    claude CLI's own pointer file — never by globbing version dirs.
+  [ -f "$manifest" ] \
+    || die "$manifest not found — Claude Code has no record of the atelier plugin (re-run the bootstrap installer)"
+  local install_path new_version
+  install_path="$(jq -r '.plugins["atelier@akalab-tech"][0].installPath // empty' "$manifest" 2>/dev/null || true)"
+  new_version="$(jq -r '.plugins["atelier@akalab-tech"][0].version // empty' "$manifest" 2>/dev/null || true)"
+  [ -n "$install_path" ] || die "no installPath recorded for atelier@akalab-tech in $manifest"
+  install_path="${install_path/#\~/$HOME}"
+  [ -d "$install_path" ] || die "plugin cache dir '$install_path' (from $manifest) does not exist"
+  if [ -z "$new_version" ]; then
+    new_version="$(jq -r '.version // empty' "$install_path/.claude-plugin/plugin.json" 2>/dev/null || true)"
+  fi
+  [ -n "$new_version" ] || die "cannot determine the cached atelier version (no version in $manifest or the cached plugin.json)"
+  sublog "cache:       $new_version ($install_path)"
+
+  # 3) Same version → no swap needed; the drift checks below still run so
+  #    templates/symlinks that lag the runtime converge (mirrors clone
+  #    mode's no-commits resync path).
+  local swapped=false
+  if [ "$new_version" = "$current_version" ]; then
+    log "runtime already at $new_version — checking installed artifacts for drift"
+  else
+    log "updating runtime: ${current_version:-<none>} → $new_version"
+    runtime_swap_from_source "$install_path"
+    swapped=true
+  fi
+
+  # 4) Point the shared refresh helpers at the runtime version dir — the
+  #    managed equivalent of "the clone after git pull". Decoupled from the
+  #    cache path on purpose: the runtime copy is atelier's own tree.
+  PLUGIN_ROOT="$RUNTIME_BASE/$new_version"
+
+  local tmpl_drift=false link_drift=false
+  templates_out_of_sync && tmpl_drift=true || true
+  symlinks_out_of_sync && link_drift=true || true
+
+  if ! $swapped && ! $tmpl_drift && ! $link_drift; then
+    log "already up to date — nothing to do"
+    echo ""
+    ok "version: $new_version (cache, runtime, templates and helper symlinks all in sync)"
+    exit 2
+  fi
+
+  # 5) Converge the installed artifacts: instantiated templates (same
+  #    function clone mode uses, now reading the new runtime dir), helper
+  #    symlinks through current/, and the shellrc hook block.
+  { $swapped || $tmpl_drift; } && refresh_instantiated_templates || true
+  resync_script_symlinks
+  refresh_shellrc_block
+
+  echo ""
+  if $swapped; then
+    ok "update applied — runtime current -> $new_version; restart open Claude Code sessions to pick up agent/skill/command changes"
+  else
+    ok "installed artifacts resynced to $new_version"
+  fi
+  exit 0
 }
 
 # ---------- dependency check ----------
@@ -299,6 +491,19 @@ log "atelier-update ${VERSION}"
 
 PLUGIN_ROOT="$(resolve_plugin_root)"
 sublog "plugin-root: $PLUGIN_ROOT"
+
+UPDATE_MODE="$(detect_update_mode "$PLUGIN_ROOT")"
+if [ "$UPDATE_MODE" = "managed" ]; then
+  # #39 F4 — cache-driven managed update: `claude plugin update` refreshes
+  # the plugin cache, the new version is copied into $RUNTIME_BASE/<version>/
+  # and `current` is swapped. managed_update never returns (exit 0/1/2).
+  managed_update
+fi
+if [ "$UPDATE_MODE" != "clone" ]; then
+  die "resolved root '$PLUGIN_ROOT' is neither a git clone nor a managed runtime dir under $RUNTIME_BASE (use --plugin-root <clone> or \$ATELIER_PLUGIN_ROOT)"
+fi
+
+# ---------- clone mode (legacy/dev) — unchanged below ----------
 
 # Confirm remote points at the atelier repo (or a fork thereof). We accept
 # any URL that ends with `atelier.git`, `atelier`, or `/atelier-*` — covers
@@ -354,20 +559,22 @@ if [ "$OLD_SHA" = "$NEW_SHA" ]; then
   # F60 symlinks). Detect each dimension; only declare done when ALL align.
   ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
   CACHED_VERSION="$(read_cached_plugin_version)"
-  cache_drift=false; tmpl_drift=false; link_drift=false
+  cache_drift=false; tmpl_drift=false; link_drift=false; rt_drift=false
   [ "$CACHED_VERSION" != "$NEW_VERSION" ] && cache_drift=true || true
   templates_out_of_sync && tmpl_drift=true || true
+  runtime_out_of_sync "$NEW_VERSION" && rt_drift=true || true
   symlinks_out_of_sync && link_drift=true || true
 
-  if ! $cache_drift && ! $tmpl_drift && ! $link_drift; then
+  if ! $cache_drift && ! $tmpl_drift && ! $link_drift && ! $rt_drift; then
     log "already up to date — nothing to do"
     echo ""
-    ok "version: $NEW_VERSION (cache, templates and helper symlinks all in sync)"
+    ok "version: $NEW_VERSION (cache, runtime, templates and helper symlinks all in sync)"
     exit 2
   fi
 
   $cache_drift && warn "plugin cache is at ${CACHED_VERSION:-unknown}, clone is at $NEW_VERSION" || true
   $tmpl_drift  && warn "instantiated templates differ from the clone" || true
+  $rt_drift    && warn "managed runtime dir lags the clone (current != $NEW_VERSION)" || true
   $link_drift  && warn "one or more helper symlinks are missing or stale" || true
 
   if $DRY_RUN; then
@@ -375,11 +582,14 @@ if [ "$OLD_SHA" = "$NEW_SHA" ]; then
     echo ""
     $cache_drift && ok "would refresh plugin cache: ${CACHED_VERSION:-unknown} → $NEW_VERSION" || true
     $tmpl_drift  && ok "would refresh instantiated templates" || true
+    $rt_drift    && ok "would refresh the runtime dir + swap current -> $NEW_VERSION" || true
     $link_drift  && ok "would re-symlink helper scripts" || true
     exit 0
   fi
 
   log "resyncing installed artifacts (no new commits to pull)"
+  # Runtime swap first — the symlink resync below routes through current/.
+  $rt_drift    && runtime_swap_from_source "$PLUGIN_ROOT" || true
   $tmpl_drift  && refresh_instantiated_templates || true
   $cache_drift && refresh_plugin_cache || true
   resync_script_symlinks
@@ -538,15 +748,21 @@ else
 
   # 2) Trigger `claude plugin update` so Claude Code's plugin cache lands
   #    on the new version. Open sessions keep loading the old version
-  #    until they restart — surface this in the final report.
+  #    until they restart — surface this in the final report. (Clone mode
+  #    keeps this step; in managed mode the CLI update IS the fetch.)
   refresh_plugin_cache
 
-  # 3) Re-symlink helper scripts (M7.1.F60). A pulled release may have added a
+  # 3) Refresh the managed runtime dir from the just-pulled clone and swap
+  #    `current` (#39 F4) — must land before the symlink resync below,
+  #    which routes every helper through $RUNTIME_BASE/current/scripts/.
+  runtime_swap_from_source "$PLUGIN_ROOT"
+
+  # 4) Re-symlink helper scripts (M7.1.F60). A pulled release may have added a
   #    new scripts/atelier-* helper; without this it would stay unlinked until
   #    the operator re-ran install.sh by hand.
   resync_script_symlinks
 
-  # 4) Re-inject the shellrc hook block (TASK_016) — see refresh_shellrc_block.
+  # 5) Re-inject the shellrc hook block (TASK_016) — see refresh_shellrc_block.
   refresh_shellrc_block
 fi
 

@@ -36,11 +36,10 @@ You don't need to know which is which or do anything about it up front — ateli
 
 ### Step 1.1 — Get atelier and run the installer
 
-**What you do.** Open the Terminal app, then copy-paste these two lines (download atelier, then start the installer):
+**What you do.** Open the Terminal app, then copy-paste this one line (it downloads and starts the installer — there's nothing to clone):
 
 ```bash
-git clone https://github.com/AkaLab-Tech/atelier.git ~/atelier
-cd ~/atelier && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/AkaLab-Tech/atelier/main/bootstrap.sh | bash
 ```
 
 **What you should see.** The installer runs in clearly labelled phases and tells you what it's doing at each one:

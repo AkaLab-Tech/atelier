@@ -21,6 +21,22 @@ For checks the doctor cannot perform (it can't reach the network, your shell has
 
 ---
 
+## Managed vs clone install — which do you have?
+
+Since the repo-less installer (#39), atelier can be installed two ways, and a few recovery steps differ between them:
+
+- **Managed** (the default since the bootstrap one-liner): there is no atelier source folder on your machine. The `atelier-*` commands live in a versioned runtime dir at `~/.local/share/atelier/<version>/` behind a `current` symlink, sourced from Claude Code's plugin cache. Re-installing means re-running the bootstrap one-liner:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/AkaLab-Tech/atelier/main/bootstrap.sh | bash
+  ```
+
+- **Clone** (pre-#39 installs, maintainers, contributors): you ran `git clone` once and `./install.sh` from the checkout. Still fully supported. Re-installing means re-running `./install.sh` from that clone — which also migrates the helper symlinks onto the managed runtime dir automatically.
+
+**How to tell:** `atelier-doctor` reports it — look for the `install mode: managed` / `install mode: clone` line under Host checks (a `mixed` or `broken` verdict comes with its own fix). Where a fix below says "re-run the installer", that means the bootstrap one-liner on a managed install, or `./install.sh` from your checkout on a clone install.
+
+---
+
 ## Setup-time problems
 
 Issues that come up while running `install.sh` or right after.
@@ -39,7 +55,7 @@ Issues that come up while running `install.sh` or right after.
 
 **Cause:** A base dependency (`git`, `gh`, `fnm`, `pnpm`, `jq`, `fzf`) couldn't install.
 
-**Fix:** Install the failing tool by hand using your package manager, then re-run `./install.sh`. The installer is idempotent: it picks up where it left off (M7.1.F6).
+**Fix:** Install the failing tool by hand using your package manager, then re-run the installer (the bootstrap one-liner, or `./install.sh` from your clone). The installer is idempotent: it picks up where it left off (M7.1.F6).
 
 ### `install.sh` keeps prompting to log in with the same GitHub account
 
@@ -69,7 +85,7 @@ Issues that come up while running a task.
 
 **Cause:** `atelier-task-resolve` is missing from `PATH`, or `~/.local/bin` isn't on `PATH` yet.
 
-**Fix:** Re-run `./install.sh` from the atelier checkout — this refreshes the symlinks at `~/.local/bin/atelier-*`. Then `source ~/.zshrc`.
+**Fix:** Run `atelier-update` (it re-links any missing helper through the runtime dir's `current/scripts/`), or re-run the installer — either refreshes the symlinks at `~/.local/bin/atelier-*`. Then `source ~/.zshrc`.
 
 ### `atelier-task-resolve` says "no projects registered" but you have set up a project
 
@@ -110,15 +126,15 @@ Issues that come up while running a task.
 
 **Cause:** The help file was introduced in **M7.1.F34** (v0.7.1) and is written by `install.sh` Phase C.1. Older installs never had it, and `atelier-update` will refresh it the next time it runs.
 
-**Fix:** Run `atelier-update`. If it still fails, re-run `./install.sh` from the atelier checkout — phase `phase_c_1_atelier_help_file` writes the file unconditionally.
+**Fix:** Run `atelier-update`. If it still fails, re-run the installer — phase `phase_c_1_atelier_help_file` writes the file unconditionally.
 
 ### `atelier-update` says "already up to date" but the doctor still warns about a stale version
 
 **Symptom:** `atelier-update` exits with "already up to date — no template refresh needed", but `atelier-doctor` keeps flagging a plugin-version mismatch.
 
-**Cause:** The atelier git clone (`~/atelier`) is at the latest tag but `$ATELIER_CONFIG_DIR/templates/` or the plugin cache lags behind. This was the dogfood-5 finding behind **M7.1.F31**: a no-op `git pull` skipped the template refresh.
+**Cause:** The source of the install (the plugin cache on a managed install, the git clone on a clone install) is at the latest version but one of the installed artifacts — `$ATELIER_CONFIG_DIR/templates/`, the runtime dir, a helper symlink — lags behind. This was the dogfood-5 finding behind **M7.1.F31**: a no-op update skipped the template refresh.
 
-**Fix:** Force the refresh: `atelier-update --force` (or delete `$ATELIER_CONFIG_DIR/templates/` and re-run `atelier-update`). Then re-launch any open Claude sessions so they pick up the refreshed settings template.
+**Fix:** Re-run `atelier-update` — the "already up to date" path now checks each artifact for drift and resyncs whatever lags (templates, runtime dir, symlinks). If it still reports clean while the doctor disagrees, delete `$ATELIER_CONFIG_DIR/templates/` and re-run `atelier-update`. Then re-launch any open Claude sessions so they pick up the refreshed settings template.
 
 ### `claude plugin install` fails with "marketplace not registered"
 
@@ -211,7 +227,7 @@ To check whether auto-mode is currently active, inside any atelier session: `/st
 
 **Cause:** Author and reviewer are the same GitHub identity. GitHub silently downgrades approvals when the reviewer is the PR author — there's no way to override this server-side. This is **dogfood-1 finding #11**.
 
-**Fix (recommended):** Re-run `./install.sh`, log out from GitHub in the browser between the two prompts, and sign in with a different account for the reviewer identity.
+**Fix (recommended):** Re-run the installer, log out from GitHub in the browser between the two prompts, and sign in with a different account for the reviewer identity.
 
 **Fix (single-developer pattern):** Accept that single-account projects merge manually. Memorize:
 ```bash
@@ -242,11 +258,11 @@ gh pr merge <N> --squash --delete-branch
 
 **Cause:** The external `git-wt` binary at `~/.local/bin/git-wt` is missing, outdated, or shadowed by a different `git-wt` on `PATH`.
 
-**Fix:** Run `atelier-doctor` (or `atelier-doctor --fix` to auto-repair the symlink when possible) — the report will flag the issue with the exact fix. The fix is the snippet from `install.sh:check_git_wt_drift` (clone, run `install.sh --skill-for=claude`, record the SHA). Or simply re-run `./install.sh` from the atelier checkout.
+**Fix:** Run `atelier-doctor` (or `atelier-doctor --fix` to auto-repair the symlink when possible) — the report will flag the issue with the exact fix. The fix is the snippet from `install.sh:check_git_wt_drift` (clone git-wt, run its `install.sh --skill-for=claude`, record the SHA). Or simply re-run the atelier installer.
 
 ### `atelier-hooks-version` mismatch warning during install
 
-**Symptom:** `./install.sh` prints `→ refreshing atelier shellrc block (v0 → v1)` (or similar version pair).
+**Symptom:** The installer prints `→ refreshing atelier shellrc block (v0 → v1)` (or similar version pair).
 
 **Cause:** This is **expected behavior** when upgrading atelier from one version to a later one (M7.1.F7c). The shellrc block in your `~/.zshrc` is older than the current `install.sh` ships; the installer strips the old block and re-injects the new one in place.
 
@@ -272,12 +288,12 @@ If the doctor passes but tasks still fail or atelier behaves unexpectedly:
 If atelier is in a state you cannot unwind from the steps above, you can wipe and reinstall. Your project files and any `.claude/` folders inside your projects are **not** touched.
 
 ```bash
-atelier-uninstall --purge          # removes ~/.claude-work entirely (atelier's config root)
-rm -rf ~/atelier                   # removes the downloaded source
-git clone https://github.com/AkaLab-Tech/atelier ~/atelier
-cd ~/atelier
-./install.sh
+atelier-uninstall --purge          # removes ~/.claude-work (atelier's config root) AND
+                                   # the managed runtime dir (~/.local/share/atelier)
+curl -fsSL https://raw.githubusercontent.com/AkaLab-Tech/atelier/main/bootstrap.sh | bash
 ```
+
+(Clone-based install? Add `rm -rf <your-clone>` between the two steps if you also want a fresh checkout, then re-clone and run `./install.sh` from it instead of the one-liner.)
 
 After re-install, re-register each project with `atelier /atelier:setup-project <path>` (idempotent — won't overwrite existing files). Confirm the registry with `atelier-list-projects` once you're done.
 
