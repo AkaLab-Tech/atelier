@@ -53,7 +53,8 @@ Pick the single highest-priority next step (first match):
 4. **A task in progress** → `/atelier:resume-task`.
 5. **A `[ready]` task** → `/atelier:next-task` (name it).
 6. **Backlog but nothing `[ready]`** → `/atelier:plan-task <id>` (a short ranked
-   shortlist of candidates).
+   shortlist of candidates — reuses `task-discovery`'s `plan_candidates` contract,
+   the same shape `/next-task`'s no-claimable-task path prints).
 7. **Empty backlog** → suggest writing a task / nothing to do.
 
 For a **workspace root**, the headline is the board + router:

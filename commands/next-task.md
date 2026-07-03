@@ -1,7 +1,7 @@
 ---
 description: Pick the next task from `ROADMAP.md`, set up its worktree, and hand it to the `task-orchestrator` agent end-to-end.
 argument-hint: "[task-id] [--yes|-y]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git fetch:*), Bash(git ls-remote:*), Bash(git show:*), Bash(git cat-file:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(gh pr list:*), Bash(atelier-setup-project:*), Bash(atelier-resolve-dep:*), Bash(atelier-task-backend:*), Bash(jq:*), Bash(env:*), Bash(test:*), Skill, Task
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git fetch:*), Bash(git ls-remote:*), Bash(git show:*), Bash(git cat-file:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(gh pr list:*), Bash(atelier-setup-project:*), Bash(atelier-resolve-dep:*), Bash(atelier-task-backend:*), Bash(jq:*), Bash(env:*), Bash(test:*), Skill, Task, AskUserQuestion, SlashCommand
 ---
 
 You are running the `/next-task` slash command. Drive the full pickup-to-PR flow for one task from the project's `ROADMAP.md`, exactly as [PLAN.md §7](PLAN.md) prescribes.
@@ -129,6 +129,25 @@ The `blocked_by` validation covers both forms:
   ```
   Use the verdict word from the helper's stdout to fill the message. Do **not** claim the task.
 
+### 3.5. No claimable task — surface plan candidates
+
+If step 3's `task-discovery` invocation returns no eligible task, this command does **not** fall through to a generic abort — it returns a structured `state` (`candidates` | `foreign` | `empty`) and `plan_candidates` list (see `skills/task-discovery/SKILL.md` § "No-eligible-task return"). Branch on `state`; this step is a **terminal state** for the command, not a failure:
+
+- **`state: candidates`** — print the ranked shortlist exactly as `task-discovery` returned it (already ordered P0 > P1 > P2, tie-broken by no open `blocked_by` first, capped at 5), one line per entry:
+  ```text
+  #<id> · <title> · <priority> · <why_not_ready>
+  → /atelier:plan-task #<id>
+  ```
+  If the result carries a `note` (e.g. "planned, waiting on #23"), print it below the shortlist — those items are already planned, so never suggest `/plan-task` on them.
+- **`state: foreign`** — the backlog itself isn't a parseable §5 ROADMAP (files backend: non-conforming `ROADMAP.md`; non-files backend: board unreachable/absent). Suggest `/atelier:adopt-roadmap --format atelier` and stop.
+- **`state: empty`** — every item is `[x]`, or the roadmap bucket is empty. Say so plainly: nothing to plan or claim right now.
+
+**Interactive mode**, `state: candidates` only: after printing the shortlist, offer via `AskUserQuestion` to plan the top-ranked candidate (`#<id>`, the first shortlist entry) now. On **yes**, dispatch it with the `SlashCommand` tool: `/atelier:plan-task #<id>`. This only *launches* planning — the product lead's approval gate inside `/plan-task` is unchanged, and `/next-task` never approves a plan itself. On **no**, stop; nothing else runs. `state: foreign` and `state: empty` never offer this prompt — there is no candidate to plan.
+
+**Non-interactive mode** (`--yes` / `-y` / `ATELIER_AUTO`): print the shortlist (or the `foreign`/`empty` message) and stop. **Never** dispatch `/atelier:plan-task` automatically — this path is print-only in headless runs, regardless of `state`.
+
+This step ends the command — do not proceed to step 4.
+
 ### 4. Confirm with the operator
 
 Display the chosen task in a short summary (`id`, `title`, `priority`, `estimate`).
@@ -206,7 +225,9 @@ End the command with a single status line:
   Next:        task-orchestrator running in the worktree.
 ```
 
-Or, if any step aborted, report exactly which step and why — the operator decides whether to resume from there.
+Or, if step 3.5 fired (no claimable task), its shortlist / `adopt-roadmap` suggestion / empty-backlog message **is** the command's output — that is a documented terminal state, not an aborted step.
+
+For any other step that fails, report exactly which step and why — the operator decides whether to resume from there.
 
 ## Hard refusals
 
@@ -217,5 +238,6 @@ Or, if any step aborted, report exactly which step and why — the operator deci
 - **Never** claim a task whose `blocked_by:` references an open item — including a cross-repo `<token>#id` whose target is not closed in that member's `HISTORY.md` (`atelier-resolve-dep` exits non-zero), or whose token/project is not a resolvable workspace member.
 - **Never** edit `settings.template.json` itself from this command — that file is the template, not the output. The helper writes the instantiated copy to `<worktree>/.claude/settings.json`; this command never touches either file directly.
 - **Never** push or open a PR from this command — that is `pr-author`'s job at the end of the chain.
+- **Never** dispatch `/atelier:plan-task` from step 3.5 in non-interactive mode (`--yes` / `-y` / `ATELIER_AUTO`) — headless runs print the plan-candidates shortlist only. The interactive offer-then-dispatch path (`AskUserQuestion` → `SlashCommand`) is the only place this command may launch planning, and even there the planning approval itself stays inside `/plan-task`.
 - **Never** claim a `[ready]` task whose `.plan/<id>.md` (or, for a decomposed epic, the sub-task rewrite) is not present on `origin/<base>` — refuse with a pointer to land the plan commit. A worktree cut from `origin/<base>` would otherwise operate on stale ROADMAP state and drop the decomposition. **(This applies to `planStorage=committed`.)** Under `planStorage=local` the plan file is deliberately never on `origin/<base>`: validate it in the main checkout (`test -r "$MAIN_ROOT/.plan/<id>.md"`) and carry its contents inline (step 8) instead — but the `ROADMAP.md` decomposition-on-base check still applies, since the backlog is committed under both modes.
 - **Never** look for a `planStorage=local` plan in the task worktree — `git worktree add` never copies the gitignored file, so `<worktree>/.plan/<id>.md` is always absent under `local` mode. The only source is `<MAIN_ROOT>/.plan/<id>.md` in the operator's main checkout.

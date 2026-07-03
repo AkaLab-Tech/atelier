@@ -422,7 +422,7 @@ Declared in `.mcp.json` at the plugin root and auto-loaded when atelier is activ
 ### Slash commands (global)
 
 - `/plan-task <id>` — product-lead planning gate: dispatch the `planner`, review the draft, and on approval commit `.plan/<id>.md` + mark the task `[ready]` (§5 Planning gate). A task is only claimable once planned.
-- `/next-task` — full pickup-to-PR flow (claims only `[ready]` tasks).
+- `/next-task` — full pickup-to-PR flow (claims only `[ready]` tasks). When nothing is claimable it surfaces a ranked shortlist of plan candidates (via `task-discovery`'s `plan_candidates`, capped at 5, `P0 > P1 > P2` then no-open-`blocked_by`-first) instead of a bare error, and in interactive mode can dispatch `/plan-task <id>` on the top candidate — planning approval itself still happens inside `/plan-task`. Headless runs print the shortlist only.
 - `/resume-task <id>` — continue after interruption.
 - `/finish-task` — finalize PR.
 - `/status` — what's in progress, blocked, awaiting review.
