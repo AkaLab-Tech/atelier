@@ -49,9 +49,18 @@ fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 # Fixture helpers
 # ---------------------------------------------------------------------------
 
-# get_mtime <file> — portable (BSD/macOS or GNU/Linux) mtime-in-seconds.
+# get_mtime <file> — portable (GNU/Linux or BSD/macOS) mtime-in-seconds.
+# GNU coreutils FIRST, BSD/macOS as fallback. Order matters: `stat -f %m` is BSD
+# syntax, but on GNU stat `-f` means --file-system, so `stat -f %m "$1"` there
+# treats `%m` and "$1" as filesystem operands — it prints a multi-line
+# filesystem block (whose free-block counts vary between calls) to stdout before
+# failing on the `%m` operand. With BSD-first ordering that leaked, non-numeric,
+# call-varying output would slip through on Linux and make two mtime reads of an
+# unchanged file compare unequal. Trying `stat -c %Y` (GNU) first emits only the
+# mtime on Linux; on macOS it fails cleanly (no stdout) and the `-f %m` fallback
+# returns the mtime.
 get_mtime() {
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
 }
 
 # seed_settings <dir> — writes a settings.json with:
