@@ -151,6 +151,22 @@ Capture the merge commit SHA from the command output (it prints `Merged pull req
 
 Once the merge succeeds:
 
+**Best-effort task-complete cue** (fire immediately, before steps 1-5): run
+
+```bash
+"$HOME/.local/bin/atelier-notify-cue" task-complete &
+```
+
+Absolute anchor because this skill runs inside subagents whose PATH may
+exclude `~/.local/bin` — same rationale as `sync-notification-hook.sh`'s
+`atelier-notify` anchor. This runs **only** on a successful merge (never on
+a `held` PR — it lives in this section, not in the guardrail evaluation
+above). It is opt-in (silent no-op when `.notification.onTaskComplete` is
+off/absent, per `atelier-notify-cue`'s own contract) and fully backgrounded:
+its exit code, timing, and output are never inspected, never gate steps 1-5
+below, and never appear in — or change — the `Decision:` line or the
+structured report. Treat it exactly like a fire-and-forget log line.
+
 Read `postMergeCleanup` from `<project>/.atelier.json` before running steps 4 and 5. The block and its defaults:
 
 ```jsonc
@@ -261,4 +277,5 @@ Next step:     human review required. Operator can:
 - **Never** silently widen the size budget. The threshold is the AND-gate from `atelier-pr-size-check`, configurable per-project via `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`. If a project legitimately needs a higher ceiling, the operator updates that file (version-controlled, reviewable) — the skill never raises the gate at runtime.
 - **Never** force-update, `reset --hard`, or stash the operator's working tree during the base fast-forward (step 4). A dirty main worktree, a diverged base, or a non-zero exit from `merge --ff-only` must skip and surface — never mutate the operator's checked-out state.
 - **Never** hand-roll the orphan sweep (step 5). The only permitted deletion path is `atelier-housekeeping --project <root> --yes --no-stamp`. Do not call `git branch -d`, `git push --delete`, or `git wt rm` for branches other than the just-merged task branch — those are the binary's responsibility, not the skill's.
+- **Never** let the task-complete notification cue (`atelier-notify-cue task-complete`) gate, slow, or appear in the `Decision:`/structured report. It is a fire-and-forget best-effort convenience — fired only on merge success, never on `held`, and its outcome (success, silent no-op, or failure) is never inspected.
 

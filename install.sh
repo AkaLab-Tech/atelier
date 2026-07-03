@@ -1576,6 +1576,10 @@ phase_c_1_setup_project_helper() {
   # /atelier:set-notification.
   _phase_c_1_symlink_helper atelier-notify
   _phase_c_1_symlink_helper atelier-set-notification
+  # #42: atelier-notify-cue plays the task-complete / task-blocked cues,
+  # delegating actual playback to atelier-notify. Also backed by
+  # atelier-set-notification's task-complete/task-blocked subcommands.
+  _phase_c_1_symlink_helper atelier-notify-cue
   # TASK_017: atelier-align surveys (and applies Tier-1 fixes to) every registered
   # project/workspace so they converge to the installed atelier; backs /atelier:align.
   _phase_c_1_symlink_helper atelier-align

@@ -132,6 +132,14 @@ Capture the issue **URL** and **number** from the command output (`gh` prints th
 
 If the body exceeds GitHub's issue-body limit (65 536 chars), the 6 logs are too verbose; truncate each `<details>` block's contents to the first 3 KB and add `[truncated — full log at <worktree-path>/.task-log/<filename>]` so the on-disk evidence remains the source of truth. Surface the truncation in your final report.
 
+**Best-effort task-blocked cue** (fire immediately, right after the issue is created — before Step 5): run
+
+```bash
+"$HOME/.local/bin/atelier-notify-cue" task-blocked &
+```
+
+Absolute anchor for the same reason `sync-notification-hook.sh` anchors on `$HOME/.local/bin/atelier-notify` — this agent's PATH is not guaranteed to include `~/.local/bin`. It is opt-in (silent no-op when `.notification.onTaskBlocked` is off/absent) and fully backgrounded: never inspect its exit code or output, never let it delay or gate Step 5 below (the `IN_PROGRESS.md` `[BLOCKED]` marker + docs PR), and never let its failure affect this agent's own success/failure.
+
 ### Step 5 — Mark the entry in `IN_PROGRESS.md` on the MAIN worktree
 
 **Critical scope rule:** edit the `IN_PROGRESS.md` that lives on the **main worktree** of the repository, not the copy inside the failed task's worktree. If you edit the task-worktree copy, the change never reaches `main`, the next `/next-task` does not see the `[BLOCKED]` marker, and the orchestrator will re-pick the same task forever.
@@ -221,4 +229,5 @@ Orchestrator next steps:
 - **Never** open more than one `blocked` issue per task. If `gh issue list --search "<task-id> in:title label:blocked"` already returns one for the same `<task-id>`, stop and report the existing issue URL — the orchestrator should not have re-invoked you.
 - **Never** mark a task `[BLOCKED]` in `IN_PROGRESS.md` if it was never there in the first place. Surface the inconsistency instead of inventing an entry.
 - **Never** handle a `pr-author` `oversized` return. That is **not** a `retry-with-logs` hard-stop — the orchestrator surfaces it directly to the operator with the three resolution options (re-plan into sub-tasks / open PR manually / raise budget in `.atelier.json`), and the task entry keeps its `[OVERSIZE]` marker (not `[BLOCKED]`). If you somehow receive an oversized-task briefing, stop and report the orchestrator-side bug — do not open a `blocked` issue.
+- **Never** treat the task-blocked notification cue (`atelier-notify-cue task-blocked`) as a step that can fail this agent's job. It is a best-effort convenience fired right after Step 4 — never a gate on Step 5's `[BLOCKED]` marker, the docs PR, or the hard-stop handoff to the operator.
 

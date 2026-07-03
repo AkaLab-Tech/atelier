@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+#
+# atelier-notify-cue — best-effort, opt-in audible cue for task-lifecycle
+# events (task-complete / task-blocked). Fired by skills/auto-merge/SKILL.md
+# (post-merge cleanup) and agents/unblocker.md (right after the blocked
+# issue opens).
+#
+# Distinct from scripts/atelier-notify (#41's Notification-hook cue for
+# questions/permission prompts): this binary owns its OWN opt-in pref gate
+# (.notification.onTaskComplete / .onTaskBlocked in operator.json) and its
+# own per-cue default sound, then DELEGATES actual playback to the
+# untouched atelier-notify — it never touches an audio backend directly.
+#
+# NEVER hard-fails: missing jq, missing/malformed operator.json, the pref
+# gate being off/absent, an unresolvable sound, or a missing atelier-notify
+# binary are all silent no-ops (exit 0). Callers invoke this from the
+# critical path of a merge or a hard-stop handoff — a broken cue must never
+# block, slow, or fail that chain.
+#
+# Usage:
+#   atelier-notify-cue task-complete
+#   atelier-notify-cue task-blocked
+#
+# Pref gate, read from $ATELIER_CONFIG_DIR/operator.json (default: OFF for
+# both cues; written by `atelier-set-notification task-complete|task-blocked`):
+#   .notification.onTaskComplete    (bool)
+#   .notification.taskCompleteSound (string, optional override)
+#   .notification.onTaskBlocked     (bool)
+#   .notification.taskBlockedSound  (string, optional override)
+#
+# Default sounds — distinct per cue, and distinct from atelier-notify's own
+# input-cue default (macOS Glass / Linux message.oga):
+#   task-complete -> macOS Hero  | Linux /usr/share/sounds/freedesktop/stereo/complete.oga
+#   task-blocked  -> macOS Basso | Linux /usr/share/sounds/freedesktop/stereo/dialog-error.oga
+#
+# Playback (including the terminal-bell fallback when no backend/sound
+# resolves) is entirely delegated to atelier-notify, which backgrounds it
+# itself — this script returns immediately regardless of outcome.
+
+set -uo pipefail   # deliberately NOT -e: every step below is best-effort
+
+CUE="${1:-}"
+case "$CUE" in
+  task-complete) FLAG_KEY="onTaskComplete"; SOUND_KEY="taskCompleteSound" ;;
+  task-blocked)  FLAG_KEY="onTaskBlocked";  SOUND_KEY="taskBlockedSound" ;;
+  *) exit 0 ;;
+esac
+
+command -v jq >/dev/null 2>&1 || exit 0
+
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+OP_FILE="$ATELIER_CONFIG_DIR/operator.json"
+
+[ -f "$OP_FILE" ] || exit 0
+
+ENABLED="$(jq -r --arg k "$FLAG_KEY" '.notification[$k] // false' "$OP_FILE" 2>/dev/null || true)"
+[ "$ENABLED" = "true" ] || exit 0
+
+SOUND="$(jq -r --arg k "$SOUND_KEY" '.notification[$k] // empty' "$OP_FILE" 2>/dev/null || true)"
+
+if [ -z "$SOUND" ]; then
+  case "$(uname 2>/dev/null || true)" in
+    Darwin)
+      case "$CUE" in
+        task-complete) SOUND="Hero" ;;
+        task-blocked)  SOUND="Basso" ;;
+      esac
+      ;;
+    Linux)
+      case "$CUE" in
+        task-complete) SOUND="/usr/share/sounds/freedesktop/stereo/complete.oga" ;;
+        task-blocked)  SOUND="/usr/share/sounds/freedesktop/stereo/dialog-error.oga" ;;
+      esac
+      ;;
+    *) SOUND="" ;;
+  esac
+fi
+
+# Locate scripts/atelier-notify to delegate playback to. Mirrors the
+# resolution style in hooks/sync-notification-hook.sh / atelier-set-notification:
+# prefer the sibling in this script's own (possibly symlinked-through)
+# directory, then the managed ~/.local/bin symlink, then bare PATH lookup.
+_resolve_notify_bin() {
+  local self_dir
+  self_dir="$(cd -P "$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")" 2>/dev/null && pwd)"
+  if [ -n "$self_dir" ] && [ -x "$self_dir/atelier-notify" ]; then
+    printf '%s\n' "$self_dir/atelier-notify"
+    return 0
+  fi
+  if [ -x "$HOME/.local/bin/atelier-notify" ]; then
+    printf '%s\n' "$HOME/.local/bin/atelier-notify"
+    return 0
+  fi
+  command -v atelier-notify 2>/dev/null
+}
+
+NOTIFY_BIN="$(_resolve_notify_bin)" || true
+[ -n "${NOTIFY_BIN:-}" ] || exit 0
+
+if [ -n "$SOUND" ]; then
+  "$NOTIFY_BIN" --sound "$SOUND" >/dev/null 2>&1 &
+else
+  "$NOTIFY_BIN" >/dev/null 2>&1 &
+fi
+
+exit 0
