@@ -94,14 +94,22 @@ if [ -z "$updated" ] || ! printf '%s' "$updated" | jq empty >/dev/null 2>&1; the
   exit 0
 fi
 
-# No-op guard: skip the write entirely when the desired state already
-# matches, so re-running never bumps the file's mtime.
-if [ "$(printf '%s' "$existing" | jq -S .)" = "$(printf '%s' "$updated" | jq -S .)" ]; then
+mkdir -p "$ATELIER_CONFIG_DIR"
+tmp="$(mktemp "${SETTINGS_FILE}.atelier.XXXXXX" 2>/dev/null)" || exit 0
+printf '%s\n' "$updated" > "$tmp" 2>/dev/null || { rm -f "$tmp"; exit 0; }
+
+# Write-if-changed: only ever replace settings.json when the rendered
+# bytes actually differ from what's already on disk, on BOTH the on and
+# off paths above. This is a direct byte comparison (not a semantic jq -S
+# one) so it can't be fooled by any formatting/ordering quirk between how
+# the file happens to be serialized and how jq re-renders it — the only
+# thing that matters is "would this write change anything on disk". A run
+# that reconciles to the already-desired state is therefore a true no-op:
+# no write, no mtime bump, regardless of environment.
+if [ -f "$SETTINGS_FILE" ] && cmp -s "$tmp" "$SETTINGS_FILE"; then
+  rm -f "$tmp"
   exit 0
 fi
 
-mkdir -p "$ATELIER_CONFIG_DIR"
-tmp="$(mktemp "${SETTINGS_FILE}.atelier.XXXXXX" 2>/dev/null)" || exit 0
-printf '%s\n' "$updated" > "$tmp" 2>/dev/null && mv "$tmp" "$SETTINGS_FILE" || rm -f "$tmp"
-
+mv "$tmp" "$SETTINGS_FILE"
 exit 0
