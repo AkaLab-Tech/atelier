@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+#
+# atelier-notify — best-effort, cross-platform audible cue for the
+# Notification hook (questions / permission prompts). Fired by the
+# Notification entry sync-notification-hook.sh materializes in
+# $ATELIER_CONFIG_DIR/settings.json when the operator opts in via
+# `atelier-set-notification on`.
+#
+# NEVER hard-fails: a missing audio backend, an unresolvable --sound, or a
+# failed playback attempt is a silent no-op (exit 0). A broken sound path
+# must never noisily interrupt, delay, or block a session — Notification
+# hooks run on the critical path of every question/permission prompt.
+#
+# Usage:
+#   atelier-notify [--sound <name|path>]
+#
+# --sound is a best-effort hint:
+#   - a value containing a `/` is tried as a file path
+#   - a bare name is resolved against the platform's built-in sound dir
+#   - unset, or the resolved path is not readable -> silently falls back to
+#     the platform default (macOS: Glass; Linux: freedesktop "message")
+#
+# Backend priority (each branch guarded by `command -v`):
+#   macOS (Darwin) -> afplay
+#   Linux          -> paplay -> aplay -> canberra-gtk-play
+#   no backend     -> terminal bell (printf '\a')
+#
+# Playback is backgrounded (&) so this script returns immediately — safe to
+# call from a hook that waits on the invoking command to exit.
+
+set -uo pipefail   # deliberately NOT -e: every step below is best-effort
+
+SOUND_HINT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --sound)
+      SOUND_HINT="${2:-}"
+      shift 2 2>/dev/null || shift "$#"
+      ;;
+    --sound=*)
+      SOUND_HINT="${1#--sound=}"
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+play_macos() {
+  command -v afplay >/dev/null 2>&1 || return 1
+  local path=""
+  if [ -n "$SOUND_HINT" ]; then
+    case "$SOUND_HINT" in
+      */*) path="$SOUND_HINT" ;;
+      *)   path="/System/Library/Sounds/${SOUND_HINT}.aiff" ;;
+    esac
+    [ -r "$path" ] || path=""
+  fi
+  [ -n "$path" ] || path="/System/Library/Sounds/Glass.aiff"
+  [ -r "$path" ] || return 1
+  afplay "$path" >/dev/null 2>&1 &
+  return 0
+}
+
+play_linux() {
+  local path=""
+  if [ -n "$SOUND_HINT" ] && [ -r "$SOUND_HINT" ]; then
+    path="$SOUND_HINT"
+  fi
+
+  if command -v paplay >/dev/null 2>&1; then
+    if [ -z "$path" ]; then
+      for default in /usr/share/sounds/freedesktop/stereo/message.oga \
+                      /usr/share/sounds/freedesktop/stereo/dialog-information.oga; do
+        [ -r "$default" ] && { path="$default"; break; }
+      done
+    fi
+    [ -n "$path" ] || return 1
+    paplay "$path" >/dev/null 2>&1 &
+    return 0
+  fi
+
+  if command -v aplay >/dev/null 2>&1; then
+    if [ -z "$path" ]; then
+      for default in /usr/share/sounds/alsa/Front_Center.wav; do
+        [ -r "$default" ] && { path="$default"; break; }
+      done
+    fi
+    [ -n "$path" ] || return 1
+    aplay "$path" >/dev/null 2>&1 &
+    return 0
+  fi
+
+  if command -v canberra-gtk-play >/dev/null 2>&1; then
+    canberra-gtk-play -i message >/dev/null 2>&1 &
+    return 0
+  fi
+
+  return 1
+}
+
+bell() {
+  printf '\a' 2>/dev/null || true
+}
+
+case "$(uname 2>/dev/null || true)" in
+  Darwin) play_macos || bell ;;
+  Linux)  play_linux || bell ;;
+  *)      bell ;;
+esac
+
+exit 0

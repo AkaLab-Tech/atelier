@@ -1570,6 +1570,12 @@ phase_c_1_setup_project_helper() {
   # atelier-set-language persists the operator's chat language (how atelier
   # addresses you) in $ATELIER_CONFIG_DIR/operator.json; backs /atelier:set-language.
   _phase_c_1_symlink_helper atelier-set-language
+  # #41: atelier-notify plays a best-effort, never-hard-failing audible cue
+  # (Notification hook events); atelier-set-notification persists the
+  # opt-in preference in $ATELIER_CONFIG_DIR/operator.json and backs
+  # /atelier:set-notification.
+  _phase_c_1_symlink_helper atelier-notify
+  _phase_c_1_symlink_helper atelier-set-notification
   # TASK_017: atelier-align surveys (and applies Tier-1 fixes to) every registered
   # project/workspace so they converge to the installed atelier; backs /atelier:align.
   _phase_c_1_symlink_helper atelier-align
@@ -1998,6 +2004,29 @@ phase_c_1_atelier_auto_mode() {
   sublog "enabled auto-mode in $target (permissions.defaultMode = \"auto\")"
 }
 
+# #41: reconcile the Notification hook entry in $ATELIER_CONFIG_DIR/settings.json
+# against the operator's .notification.enabled preference (operator.json),
+# at install time — so the FIRST session already has the hook if the
+# operator (or a prior install) already opted in, without waiting for the
+# SessionStart hook to fire once. Shares the exact same reconcile logic as
+# the SessionStart hook (hooks/sync-notification-hook.sh) and
+# atelier-set-notification's own post-write reconcile: all three call sites
+# invoke the identical script, so install-time and session-time behavior
+# can never drift apart. Runs from $ATELIER_SOURCE_ROOT (not the runtime
+# dir) since hooks/ is intentionally not part of the runtime-dir payload
+# (see _runtime_copy_payload) but IS present in the source/cache checkout
+# install.sh itself runs from.
+phase_c_1_atelier_notification_hook() {
+  local sync_script="$ATELIER_SOURCE_ROOT/hooks/sync-notification-hook.sh"
+  if [ ! -f "$sync_script" ]; then
+    step_skip "notification hook reconcile skipped (sync-notification-hook.sh not found at $sync_script)"
+    return
+  fi
+  ATELIER_CONFIG_DIR="$ATELIER_CONFIG_DIR" bash "$sync_script" \
+    && step_ok "notification hook reconciled against operator preference" \
+    || warn "notification hook reconcile failed — run atelier-set-notification later to retry"
+}
+
 # M4.29: offer to bring the operator's prior Claude Code conversation
 # transcripts across from their personal ~/.claude into atelier's separate
 # $ATELIER_CONFIG_DIR, so `claude --resume` inside an atelier session is not
@@ -2061,6 +2090,7 @@ phase_c_1() {
   phase_c_1_setup_project_helper
   phase_c_1_atelier_help_file
   phase_c_1_atelier_auto_mode
+  phase_c_1_atelier_notification_hook
   phase_c_1_import_conversations
   phase_c_1_shellrc_hooks
   ok "Phase C.1 complete"
