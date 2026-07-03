@@ -33,6 +33,37 @@ epic_siblings: [<#id>, ...]         (present only when the picked task is a sub-
 
 When no eligible task exists (everything is `[x]`, or every unchecked item has an open `blocked_by`), return that explicitly — do **not** invent a task.
 
+### No-eligible-task return: `plan_candidates`
+
+The no-eligible-task return is **structured**, not a free-text sentence — the caller (`/next-task`, `/orient`) needs to branch on it, not parse prose:
+
+```text
+state:           candidates | foreign | empty
+plan_candidates: [ <entry>, ... ]   (ranked, capped at 5; empty for `foreign` / `empty`)
+note:            <optional, e.g. "planned, waiting on #23">
+```
+
+Each `<entry>` in `plan_candidates`:
+
+```text
+id:              <#NN>
+title:           <imperative title>
+type:            bug | feat | chore | docs | refactor
+priority:        P0 | P1 | P2
+estimate:        <as written>   (may be empty)
+blocked_by:      <as written>   (may be empty)
+why_not_ready:   unplanned | blocked | unplanned; blocked_by:#NN open
+```
+
+`state` meanings:
+- **`candidates`** — the backlog is a parseable §5 roadmap with unplanned (or unplanned-and-blocked) items to show. `plan_candidates` is the ranked shortlist.
+- **`foreign`** — the backlog itself isn't parseable per PLAN.md §5. `files` backend: the `ROADMAP.md` doesn't match the P0/P1/P2 shape (atelier's own `## High/Medium/Low` dev roadmap is *not* this case — see "Edge cases" below — but an arbitrary non-roadmap file is). Non-`files` backend: the board is unreachable or absent. `plan_candidates` is empty; the caller should route to `/atelier:adopt-roadmap --format atelier`.
+- **`empty`** — every item is `[x]`, or the priority sections / roadmap bucket contain nothing. `plan_candidates` is empty.
+
+**Ranking** (when `state: candidates`): **P0 > P1 > P2**, tie-broken by *no open `blocked_by` first* — an unplanned-and-unblocked item ranks above an unplanned-and-blocked item at the same priority (it is a better next thing to plan). Cap the list at **5** entries.
+
+**Only `[x]`-excluded, unclaimed items are candidates.** An item that is `[ready]`/Ready but gated by an open `blocked_by` is **already planned** — it is not a plan candidate, since suggesting `/plan-task` on an already-planned item is wrong. If the shortlist would otherwise be empty but such items exist, surface them via the optional `note` field ("planned, waiting on <blocker>") instead of listing them in `plan_candidates`.
+
 ## ROADMAP.md format (PLAN.md §5, summary)
 
 The roadmap is grouped by priority. The agent picks **the first unchecked item of the highest-priority section with no open `blocked_by` dependency**.
@@ -81,7 +112,10 @@ Sections are headed `## 🔥 P0 — …`, `## 🎯 P1 — …`, `## 💭 P2 — 
 4. **Filter `[ready]` (planning gate).** For the **autonomous flow** (the skill invoked by `task-orchestrator` or `/atelier:next-task`), a candidate is eligible only if its line carries the literal `[ready]` marker **and** a committed `.plan/<id>.md` exists in the project root. An unchecked task without `[ready]` is **silently skipped** the same way a `blocked_by`-gated task is — it is backlog the product lead has not planned yet via `/atelier:plan-task`. A line marked `[ready]` whose `.plan/<id>.md` is missing is an **inconsistency**: surface it (`ready-without-plan: <#id>`) and treat the candidate as not eligible. See "When is the `[ready]` gate in effect?" below — it does **not** apply to atelier's own dev roadmap.
 5. **Filter `[OVERSIZE]` and `[BLOCKED]` markers.** A candidate whose heading line contains either marker is **silently skipped** (the operator owns the resolution). Same rule applies to sub-tasks.
 6. **Move on to the next section** only when the current one has no eligible candidates left.
-7. **No eligible task anywhere** → return the reason precisely: *"no planned tasks to claim — every unchecked item is unplanned (run `/atelier:plan-task <id>`), blocked by another open item, or everything is done"*. Do not pick an unplanned or blocked item just to keep busy.
+7. **No eligible task anywhere** → distinguish three states and return the structured `plan_candidates` result defined in "No-eligible-task return" above. Never pick an unplanned or blocked item just to keep busy, and never fall back to a plain sentence.
+   - **Backlog is parseable and has unplanned (or unplanned-and-blocked) items** → `state: candidates`. Walk every unchecked, unclaimed item across all sections (skipping only `[x]`-completed and already-claimed ones), and for each compute `why_not_ready`: `unplanned` (no `[ready]`/Ready marker), `blocked` (already `[ready]`/Ready but has an open `blocked_by` — rare, since a ready-and-blocked item is usually excluded rather than surfaced, see below), or the combined `unplanned; blocked_by:#NN open` (unplanned **and** blocked — the common case). Sort P0 > P1 > P2, tie-break by no open `blocked_by` first, cap at 5.
+   - **Nothing parseable** → `state: foreign`, empty `plan_candidates`.
+   - **Backlog is empty** → `state: empty`, empty `plan_candidates`.
 
 ### When is the `[ready]` gate in effect?
 
@@ -148,4 +182,6 @@ The orchestrator (`task-orchestrator` agent) takes the returned record and:
 3. Hands `acceptance` and `context` to `implementer` as the spec.
 
 When this skill is invoked **directly by the operator** ("what's next?"), present the result in a short table — id, title, type, priority, estimate, and a **planned?** column (`[ready]` vs `unplanned — run /plan-task`). Show unplanned high-priority items too, so the operator sees what to plan next; do not hide them the way the autonomous auto-pick does. Then ask whether to plan or claim, rather than auto-claiming. A task can only be claimed once it is `[ready]`.
+
+This skill is the **single producer** of the ranked shortlist: the `plan_candidates` contract above (no-eligible-task return, autonomous callers) and this direct-operator-query table describe the same underlying unplanned-vs-`[ready]` split — `/next-task`'s no-claimable-task path and `/atelier:orient`'s backlog-but-nothing-`[ready]` state both consume `plan_candidates` rather than re-deriving their own shortlist logic.
 
