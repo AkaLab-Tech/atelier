@@ -1,24 +1,41 @@
 #!/usr/bin/env bash
 #
-# atelier-set-notification — opt-in preference for an audible cue on
-# Notification hook events (questions / permission prompts). Stored at
-# $ATELIER_CONFIG_DIR/operator.json under a NESTED `.notification.{enabled,
-# sound}` object, alongside (never clobbering) `.language` or any other key.
+# atelier-set-notification — opt-in preferences for atelier's audible cues.
+# Covers THREE independent cues, all stored at
+# $ATELIER_CONFIG_DIR/operator.json under a NESTED `.notification` object,
+# alongside (never clobbering) `.language` or any other key:
 #
-# Default (absent key) is OFF — the plugin never forces sound on.
+#   - input cue        (bare `on`/`off`, backward-compatible with #41):
+#                       .notification.{enabled,sound} — Notification hook
+#                       events (questions / permission prompts).
+#   - task-complete cue (`task-complete on|off [--sound X]`):
+#                       .notification.{onTaskComplete,taskCompleteSound} —
+#                       fired by skills/auto-merge/SKILL.md on merge success.
+#   - task-blocked cue  (`task-blocked on|off [--sound X]`):
+#                       .notification.{onTaskBlocked,taskBlockedSound} —
+#                       fired by agents/unblocker.md after the blocked issue
+#                       opens.
+#
+# Default (absent key) is OFF for all three — the plugin never forces sound
+# on.
 #
 # Usage:
 #   atelier-set-notification on [--sound <name|path>]
 #   atelier-set-notification off
+#   atelier-set-notification task-complete on|off [--sound <name|path>]
+#   atelier-set-notification task-blocked on|off [--sound <name|path>]
 #   atelier-set-notification --show
 #   atelier-set-notification --clear
 #   atelier-set-notification --help
 #
-# After a successful on/off/--clear write, this reconciles the Notification
-# hook entry in $ATELIER_CONFIG_DIR/settings.json immediately (via
-# hooks/sync-notification-hook.sh) so `--show` and the actual materialized
-# hook never drift, then tells the operator the change applies to new
-# sessions (the running session's hooks were already loaded).
+# After a successful input-cue on/off/--clear write, this reconciles the
+# Notification hook entry in $ATELIER_CONFIG_DIR/settings.json immediately
+# (via hooks/sync-notification-hook.sh) so `--show` and the actual
+# materialized hook never drift, then tells the operator the change applies
+# to new sessions (the running session's hooks were already loaded). The
+# task-complete/task-blocked cues have no settings.json hook entry (they are
+# emitted directly by the skill/agent that owns each event), so they never
+# trigger that reconcile.
 #
 # Exit codes: 0 ok · 1 error (bad args / jq missing / write failed)
 
@@ -29,20 +46,24 @@ die() { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<EOF
-${SCRIPT_NAME} — opt-in audible cue on questions/permission prompts.
+${SCRIPT_NAME} — opt-in audible cues (three independent cues).
 
 USAGE:
-  ${SCRIPT_NAME} on [--sound <name|path>]   enable, optionally set a sound hint
-  ${SCRIPT_NAME} off                        disable
-  ${SCRIPT_NAME} --show                     print the current setting
-  ${SCRIPT_NAME} --clear                    unset (revert to default: off)
+  ${SCRIPT_NAME} on [--sound <name|path>]              input cue: enable (questions/permission prompts)
+  ${SCRIPT_NAME} off                                   input cue: disable
+  ${SCRIPT_NAME} task-complete on|off [--sound <n|p>]   task-complete cue (merge success)
+  ${SCRIPT_NAME} task-blocked on|off [--sound <n|p>]    task-blocked cue (hard-stop issue opened)
+  ${SCRIPT_NAME} --show                                print all three cues' current settings
+  ${SCRIPT_NAME} --clear                                unset all three (revert to default: off)
   ${SCRIPT_NAME} --help
 
-Stored at \$ATELIER_CONFIG_DIR/operator.json under a nested
-.notification.{enabled,sound} object — never touches .language or any other
-key. Default (absent key) is OFF; the plugin never forces sound on. Restart
-open Claude Code sessions to apply (the hook is also reconciled immediately
-so a fresh terminal / \`atelier-notify\` run reflects the new state right away).
+Stored at \$ATELIER_CONFIG_DIR/operator.json under a nested .notification
+object — never touches .language or any other key. Default (absent key) is
+OFF for all three cues; the plugin never forces sound on. The input cue
+takes effect in new sessions (its Notification hook entry is reconciled
+immediately, but a running session's hooks were already loaded). The
+task-complete/task-blocked cues have no hook entry — they apply to the very
+next merge / hard-stop, no session restart needed.
 EOF
 }
 
@@ -85,6 +106,66 @@ _reconcile() {
   ATELIER_CONFIG_DIR="$ATELIER_CONFIG_DIR" "$hook" >/dev/null 2>&1 || true
 }
 
+# _set_task_cue <flag-key> <sound-key> <label> <on|off> [--sound <name|path> ...]
+#
+# Shared writer for the task-complete / task-blocked subcommands. Mirrors the
+# merge-safe jq pattern the bare on/off case uses for .enabled/.sound, just
+# against a different pair of keys under .notification — never clobbers
+# .enabled, .sound, .language, or any sibling key. Deliberately does NOT call
+# _reconcile: these two cues have no Notification hook entry in settings.json
+# (they are emitted directly by auto-merge / unblocker), so there is nothing
+# to reconcile.
+_set_task_cue() {
+  local flag_key="$1" sound_key="$2" label="$3" state="$4"
+  shift 4
+  local sound=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --sound)
+        [ $# -ge 2 ] || die "--sound requires a value"
+        sound="$2"; shift 2 ;;
+      --sound=*)
+        sound="${1#--sound=}"; shift ;;
+      *) die "unknown argument: $1 (run --help for usage)" ;;
+    esac
+  done
+  [ "$state" = "on" ] || [ -z "$sound" ] || die "--sound is only valid with 'on'"
+
+  mkdir -p "$ATELIER_CONFIG_DIR"
+  local tmp base
+  tmp="$(mktemp)"
+  if [ -f "$OP_FILE" ]; then
+    base="$(cat "$OP_FILE")"
+  else
+    base="{}"
+  fi
+
+  if [ "$state" = "on" ] && [ -n "$sound" ]; then
+    printf '%s' "$base" | jq --arg fk "$flag_key" --arg sk "$sound_key" --arg s "$sound" \
+      '.notification = ((.notification // {}) | .[$fk] = true | .[$sk] = $s)' \
+      > "$tmp" 2>/dev/null || { rm -f "$tmp"; die "failed to merge $OP_FILE (invalid JSON?)"; }
+  elif [ "$state" = "on" ]; then
+    printf '%s' "$base" | jq --arg fk "$flag_key" \
+      '.notification = ((.notification // {}) | .[$fk] = true)' \
+      > "$tmp" 2>/dev/null || { rm -f "$tmp"; die "failed to merge $OP_FILE (invalid JSON?)"; }
+  else
+    printf '%s' "$base" | jq --arg fk "$flag_key" \
+      '.notification = ((.notification // {}) | .[$fk] = false)' \
+      > "$tmp" 2>/dev/null || { rm -f "$tmp"; die "failed to merge $OP_FILE (invalid JSON?)"; }
+  fi
+  mv "$tmp" "$OP_FILE"
+
+  if [ "$state" = "on" ]; then
+    printf 'OK: %s enabled.\n' "$label"
+    if [ -n "$sound" ]; then
+      printf '    sound hint: %s (falls back silently to the platform default if unresolvable)\n' "$sound"
+    fi
+  else
+    printf 'OK: %s disabled.\n' "$label"
+  fi
+  exit 0
+}
+
 command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
 
 [ $# -ge 1 ] || { usage; exit 1; }
@@ -95,15 +176,35 @@ case "$1" in
     if [ -f "$OP_FILE" ]; then
       enabled="$(jq -r '.notification.enabled // false' "$OP_FILE" 2>/dev/null || true)"
       sound="$(jq -r '.notification.sound // empty' "$OP_FILE" 2>/dev/null || true)"
+      tc_enabled="$(jq -r '.notification.onTaskComplete // false' "$OP_FILE" 2>/dev/null || true)"
+      tc_sound="$(jq -r '.notification.taskCompleteSound // empty' "$OP_FILE" 2>/dev/null || true)"
+      tb_enabled="$(jq -r '.notification.onTaskBlocked // false' "$OP_FILE" 2>/dev/null || true)"
+      tb_sound="$(jq -r '.notification.taskBlockedSound // empty' "$OP_FILE" 2>/dev/null || true)"
     else
       enabled="false"; sound=""
+      tc_enabled="false"; tc_sound=""
+      tb_enabled="false"; tb_sound=""
     fi
     if [ "$enabled" = "true" ]; then
-      printf 'operator notification sound: on'
+      printf 'input cue (questions/permission prompts): on'
       if [ -n "${sound:-}" ]; then printf ' (sound: %s)' "$sound"; fi
       printf '\n'
     else
-      printf 'operator notification sound: off (default)\n'
+      printf 'input cue (questions/permission prompts): off (default)\n'
+    fi
+    if [ "$tc_enabled" = "true" ]; then
+      printf 'task-complete cue: on'
+      if [ -n "${tc_sound:-}" ]; then printf ' (sound: %s)' "$tc_sound"; fi
+      printf '\n'
+    else
+      printf 'task-complete cue: off (default)\n'
+    fi
+    if [ "$tb_enabled" = "true" ]; then
+      printf 'task-blocked cue: on'
+      if [ -n "${tb_sound:-}" ]; then printf ' (sound: %s)' "$tb_sound"; fi
+      printf '\n'
+    else
+      printf 'task-blocked cue: off (default)\n'
     fi
     exit 0 ;;
   --clear)
@@ -169,6 +270,22 @@ case "$1" in
 
     printf 'OK: notification sound disabled. Restart open Claude Code sessions to apply.\n'
     exit 0 ;;
+  task-complete)
+    shift
+    [ $# -ge 1 ] || die "usage: task-complete on|off [--sound <name|path>]"
+    case "$1" in
+      on|off) : ;;
+      *) die "expected on|off after 'task-complete', got: $1" ;;
+    esac
+    _set_task_cue onTaskComplete taskCompleteSound "task-complete cue" "$@" ;;
+  task-blocked)
+    shift
+    [ $# -ge 1 ] || die "usage: task-blocked on|off [--sound <name|path>]"
+    case "$1" in
+      on|off) : ;;
+      *) die "expected on|off after 'task-blocked', got: $1" ;;
+    esac
+    _set_task_cue onTaskBlocked taskBlockedSound "task-blocked cue" "$@" ;;
   --*) die "unknown flag: $1 (run --help for usage)" ;;
-  *) die "unknown argument: $1 (run --help for usage; expected on|off|--show|--clear)" ;;
+  *) die "unknown argument: $1 (run --help for usage; expected on|off|task-complete|task-blocked|--show|--clear)" ;;
 esac
