@@ -1,0 +1,276 @@
+#!/usr/bin/env bash
+#
+# atelier-release — pure resolution helper behind the `/atelier:release`
+# slash command (#43). This binary never touches git state beyond reading
+# it: it does not fetch, tag, push, branch, or dispatch anything. The
+# command drives those side effects; this helper only answers "what would
+# the next release look like?" as JSON.
+#
+# Subcommands:
+#   atelier-release resolve --project <path> [<override>]
+#       <override>  optional: major | minor | patch | an explicit
+#                   X.Y.Z (or vX.Y.Z) version. Overrides the inferred
+#                   bump. Emits JSON on stdout (shape below).
+#   atelier-release enumerate --all
+#       Reserved seam for workspace-wide release fan-out. NOT implemented
+#       in this task — exits 2 with "not yet implemented (#44)".
+#   atelier-release --help
+#
+# `resolve` reads <path>/.claude-plugin/plugin.json for `.version` (the
+# CURRENT released version) and <path>'s git history for commits on
+# origin/main since the last `vX.Y.Z` tag, and infers the next SemVer
+# bump from Conventional Commit prefixes (feat -> minor; fix/chore ->
+# patch; `!` after the type, or `BREAKING CHANGE` in a commit body ->
+# major). The caller (commands/release.md) is responsible for having
+# already run `git fetch origin main` against <path> — this helper reads
+# whatever `origin/main` already resolves to locally, it never fetches.
+#
+# JSON shape (`resolve`, success or noop):
+#   {
+#     "current":             "0.39.0",
+#     "last_tag":             "v0.39.0" | null,
+#     "unreleased_commits":  [{"sha": "<full-sha>", "subject": "..."}],
+#     "inferred_bump":        "major" | "minor" | "patch" | null,
+#     "next_version":         "0.40.0",
+#     "noop":                 false,
+#     "refuse_reason":        null,
+#     "pr_body_lines":       ["- <short-sha> <subject>", ...]
+#   }
+#
+# Guards — refuse with a non-zero exit and `refuse_reason` set (no chain
+# should be cut on a refusal):
+#   - dirty working tree at <path> (git status --porcelain non-empty)
+#   - local `main` behind `origin/main` (main..origin/main has commits)
+#   - resolved next_version <= current (reuses the version_cmp below,
+#     ported from scripts/atelier-doctor)
+#
+# Not a refusal — a clean no-op: zero unreleased commits since last_tag
+# emits `noop: true`, `next_version` == `current`, exit 0. The caller
+# reports "nothing to release since <last_tag>" and cuts no chain.
+#
+# Exit codes:
+#   0   resolved (JSON on stdout), including the noop case
+#   1   refused (dirty / behind / non-advancing) — JSON with
+#       refuse_reason on stdout, human message on stderr
+#   2   usage error, missing dependency (jq), or `enumerate` (#44 seam)
+
+set -uo pipefail
+
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+die_usage() { printf '!! %s: %s\n' "$SCRIPT_NAME" "$*" >&2; exit 2; }
+
+# ---------- shared version helpers (ported from scripts/atelier-doctor) ----------
+# Strip leading "v" from a version tag if present.
+strip_v() { printf '%s' "${1#v}"; }
+
+# version_cmp <a> <b> — three-way numeric compare of two dot-separated
+# versions. Echoes -1 when a<b, 0 when a==b, 1 when a>b. Pre-release/build
+# metadata (anything from the first "-" or "+") is dropped; missing or
+# non-numeric segments count as 0. Pure bash, macOS 3.2 compatible (no
+# `sort -V`, which is GNU-only). Identical to atelier-doctor's copy —
+# reused verbatim rather than re-derived, per the shared version-compare
+# contract the two binaries rely on.
+version_cmp() {
+  local a="${1%%-*}" b="${2%%-*}"
+  a="${a%%+*}"; b="${b%%+*}"
+  local -a av bv
+  IFS=. read -ra av <<<"$a"
+  IFS=. read -ra bv <<<"$b"
+  local n=${#av[@]} i x y
+  [ "${#bv[@]}" -gt "$n" ] && n=${#bv[@]}
+  for ((i = 0; i < n; i++)); do
+    x=${av[i]:-0}; y=${bv[i]:-0}
+    x=${x//[!0-9]/}; y=${y//[!0-9]/}
+    x=$((10#${x:-0})); y=$((10#${y:-0}))
+    if [ "$x" -gt "$y" ]; then printf '1';  return; fi
+    if [ "$x" -lt "$y" ]; then printf -- '-1'; return; fi
+  done
+  printf '0'
+}
+
+# bump_version <current> <level> — apply a SemVer bump to a dot-separated
+# X.Y.Z version. Non-numeric/missing segments count as 0.
+bump_version() {
+  local cur="$1" level="$2"
+  local -a parts
+  IFS=. read -ra parts <<<"$cur"
+  local maj="${parts[0]:-0}" min="${parts[1]:-0}" pat="${parts[2]:-0}"
+  maj="${maj//[!0-9]/}"; min="${min//[!0-9]/}"; pat="${pat//[!0-9]/}"
+  maj="${maj:-0}"; min="${min:-0}"; pat="${pat:-0}"
+  case "$level" in
+    major) printf '%d.%d.%d' "$((maj + 1))" 0 0 ;;
+    minor) printf '%d.%d.%d' "$maj" "$((min + 1))" 0 ;;
+    patch) printf '%d.%d.%d' "$maj" "$min" "$((pat + 1))" ;;
+    *) printf '%s' "$cur" ;;
+  esac
+}
+
+# ---------- resolve ----------
+cmd_resolve() {
+  command -v jq >/dev/null 2>&1 || die_usage "jq is required"
+
+  local project="" override=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project="${2:-}"; shift 2 ;;
+      --project=*) project="${1#--project=}"; shift ;;
+      --help|-h) sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      -*) die_usage "unknown flag: $1 (run --help)" ;;
+      *) [ -z "$override" ] || die_usage "unexpected extra arg: $1"; override="$1"; shift ;;
+    esac
+  done
+  [ -n "$project" ] || die_usage "--project <path> is required"
+
+  project="$(cd "$project" 2>/dev/null && pwd -P)" || die_usage "--project path does not exist"
+  git -C "$project" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || die_usage "$project is not a git repository"
+
+  local plugin_json="$project/.claude-plugin/plugin.json"
+  [ -f "$plugin_json" ] || die_usage "$plugin_json not found"
+  local current
+  current="$(jq -r '.version // empty' "$plugin_json" 2>/dev/null)"
+  [ -n "$current" ] || die_usage "$plugin_json has no .version"
+
+  # Normalize + validate an explicit override up front (usage error, not a
+  # runtime refusal — a bad override is a caller mistake).
+  local explicit_version="" bump_override=""
+  if [ -n "$override" ]; then
+    case "$override" in
+      major|minor|patch) bump_override="$override" ;;
+      v[0-9]*.[0-9]*.[0-9]*) explicit_version="$(strip_v "$override")" ;;
+      [0-9]*.[0-9]*.[0-9]*) explicit_version="$override" ;;
+      *) die_usage "invalid override '$override' (expected major|minor|patch|X.Y.Z)" ;;
+    esac
+  fi
+
+  git -C "$project" rev-parse --verify -q origin/main >/dev/null 2>&1 \
+    || die_usage "origin/main not resolvable in $project — run git fetch origin main first"
+
+  # ---- guard: dirty working tree ----
+  if [ -n "$(git -C "$project" status --porcelain 2>/dev/null)" ]; then
+    emit_refusal "$current" "dirty working tree at $project — commit or stash before resolving a release"
+    exit 1
+  fi
+
+  # ---- guard: local main behind origin/main ----
+  if git -C "$project" rev-parse --verify -q main >/dev/null 2>&1; then
+    local behind
+    behind="$(git -C "$project" rev-list --count main..origin/main 2>/dev/null || printf 0)"
+    if [ "${behind:-0}" -gt 0 ]; then
+      emit_refusal "$current" "local main is behind origin/main by $behind commit(s) — pull before resolving a release"
+      exit 1
+    fi
+  fi
+
+  # ---- last tag ----
+  local last_tag
+  last_tag="$(git -C "$project" tag --list 'v*' --sort=-v:refname 2>/dev/null | head -1)"
+  if [ -z "$last_tag" ]; then
+    last_tag="$(git -C "$project" describe --tags --match 'v*' --abbrev=0 2>/dev/null || true)"
+  fi
+
+  local range
+  if [ -n "$last_tag" ]; then range="$last_tag..origin/main"; else range="origin/main"; fi
+
+  # ---- unreleased commits + bump inference ----
+  local commits_json='[]' pr_lines_json='[]' has_major=false has_minor=false count=0
+  local sha subject body short
+  while IFS= read -r sha; do
+    [ -n "$sha" ] || continue
+    count=$((count + 1))
+    subject="$(git -C "$project" log -1 --format='%s' "$sha" 2>/dev/null)"
+    body="$(git -C "$project" log -1 --format='%b' "$sha" 2>/dev/null)"
+    short="${sha:0:7}"
+
+    if [[ "$subject" =~ ^[a-zA-Z]+(\([^\)]*\))?!: ]]; then has_major=true; fi
+    if [[ "$subject" =~ ^feat(\([^\)]*\))?: ]]; then has_minor=true; fi
+    if [[ "$body" == *"BREAKING CHANGE"* ]]; then has_major=true; fi
+
+    commits_json="$(jq -c --argjson acc "$commits_json" --arg sha "$sha" --arg subject "$subject" \
+      '$acc + [{"sha":$sha,"subject":$subject}]' <<<'null')"
+    pr_lines_json="$(jq -c --argjson acc "$pr_lines_json" --arg line "- $short $subject" \
+      '$acc + [$line]' <<<'null')"
+  done < <(git -C "$project" log "$range" --format='%H' 2>/dev/null)
+
+  local inferred_bump=""
+  if [ "$count" -gt 0 ]; then
+    if [ "$has_major" = true ]; then inferred_bump="major"
+    elif [ "$has_minor" = true ]; then inferred_bump="minor"
+    else inferred_bump="patch"
+    fi
+  fi
+
+  # ---- noop: nothing unreleased ----
+  if [ "$count" -eq 0 ]; then
+    jq -n --arg current "$current" --arg last_tag "${last_tag:-}" \
+      '{current:$current, last_tag: (if $last_tag == "" then null else $last_tag end),
+        unreleased_commits: [], inferred_bump: null, next_version: $current,
+        noop: true, refuse_reason: null, pr_body_lines: []}'
+    exit 0
+  fi
+
+  # ---- resolve next_version ----
+  local next_version
+  if [ -n "$explicit_version" ]; then
+    next_version="$explicit_version"
+  else
+    next_version="$(bump_version "$current" "${bump_override:-$inferred_bump}")"
+  fi
+
+  # ---- guard: resolved next_version must advance past current ----
+  if [ "$(version_cmp "$next_version" "$current")" -le 0 ]; then
+    emit_refusal_full "$current" "$last_tag" "$commits_json" "$inferred_bump" "$next_version" "$pr_lines_json" \
+      "resolved next_version $next_version does not advance past current $current"
+    exit 1
+  fi
+
+  jq -n \
+    --arg current "$current" \
+    --arg last_tag "${last_tag:-}" \
+    --argjson unreleased_commits "$commits_json" \
+    --arg inferred_bump "$inferred_bump" \
+    --arg next_version "$next_version" \
+    --argjson pr_body_lines "$pr_lines_json" \
+    '{current:$current, last_tag: (if $last_tag == "" then null else $last_tag end),
+      unreleased_commits:$unreleased_commits, inferred_bump:$inferred_bump,
+      next_version:$next_version, noop:false, refuse_reason:null,
+      pr_body_lines:$pr_body_lines}'
+}
+
+# emit_refusal <current> <reason> — refusal before any commit/bump data exists.
+emit_refusal() {
+  local current="$1" reason="$2"
+  jq -n --arg current "$current" --arg reason "$reason" \
+    '{current:$current, last_tag:null, unreleased_commits:[], inferred_bump:null,
+      next_version:$current, noop:false, refuse_reason:$reason, pr_body_lines:[]}'
+  printf '!! %s: %s\n' "$SCRIPT_NAME" "$reason" >&2
+}
+
+# emit_refusal_full — refusal once commit/bump data has already been resolved
+# (the next_version <= current case), so the JSON carries the full context.
+emit_refusal_full() {
+  local current="$1" last_tag="$2" commits_json="$3" inferred_bump="$4" next_version="$5" pr_lines_json="$6" reason="$7"
+  jq -n \
+    --arg current "$current" --arg last_tag "${last_tag:-}" \
+    --argjson unreleased_commits "$commits_json" --arg inferred_bump "$inferred_bump" \
+    --arg next_version "$next_version" --argjson pr_body_lines "$pr_lines_json" --arg reason "$reason" \
+    '{current:$current, last_tag: (if $last_tag == "" then null else $last_tag end),
+      unreleased_commits:$unreleased_commits, inferred_bump:$inferred_bump,
+      next_version:$next_version, noop:false, refuse_reason:$reason,
+      pr_body_lines:$pr_body_lines}'
+  printf '!! %s: %s\n' "$SCRIPT_NAME" "$reason" >&2
+}
+
+# ---------- enumerate (reserved, #44) ----------
+cmd_enumerate() {
+  printf '!! %s: enumerate/--all is not yet implemented (#44) — resolve one project at a time via "resolve --project <path>".\n' "$SCRIPT_NAME" >&2
+  exit 2
+}
+
+# ---------- dispatch ----------
+case "${1:-}" in
+  resolve) shift; cmd_resolve "$@" ;;
+  enumerate) shift; cmd_enumerate "$@" ;;
+  --help|-h|'') sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; [ -n "${1:-}" ] && exit 0 || exit 2 ;;
+  *) die_usage "unknown subcommand: $1 (run --help)" ;;
+esac
