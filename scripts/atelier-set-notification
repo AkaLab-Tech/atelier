@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+#
+# atelier-set-notification — opt-in preference for an audible cue on
+# Notification hook events (questions / permission prompts). Stored at
+# $ATELIER_CONFIG_DIR/operator.json under a NESTED `.notification.{enabled,
+# sound}` object, alongside (never clobbering) `.language` or any other key.
+#
+# Default (absent key) is OFF — the plugin never forces sound on.
+#
+# Usage:
+#   atelier-set-notification on [--sound <name|path>]
+#   atelier-set-notification off
+#   atelier-set-notification --show
+#   atelier-set-notification --clear
+#   atelier-set-notification --help
+#
+# After a successful on/off/--clear write, this reconciles the Notification
+# hook entry in $ATELIER_CONFIG_DIR/settings.json immediately (via
+# hooks/sync-notification-hook.sh) so `--show` and the actual materialized
+# hook never drift, then tells the operator the change applies to new
+# sessions (the running session's hooks were already loaded).
+#
+# Exit codes: 0 ok · 1 error (bad args / jq missing / write failed)
+
+set -euo pipefail
+
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+die() { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} — opt-in audible cue on questions/permission prompts.
+
+USAGE:
+  ${SCRIPT_NAME} on [--sound <name|path>]   enable, optionally set a sound hint
+  ${SCRIPT_NAME} off                        disable
+  ${SCRIPT_NAME} --show                     print the current setting
+  ${SCRIPT_NAME} --clear                    unset (revert to default: off)
+  ${SCRIPT_NAME} --help
+
+Stored at \$ATELIER_CONFIG_DIR/operator.json under a nested
+.notification.{enabled,sound} object — never touches .language or any other
+key. Default (absent key) is OFF; the plugin never forces sound on. Restart
+open Claude Code sessions to apply (the hook is also reconciled immediately
+so a fresh terminal / \`atelier-notify\` run reflects the new state right away).
+EOF
+}
+
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+OP_FILE="$ATELIER_CONFIG_DIR/operator.json"
+
+# Locate hooks/sync-notification-hook.sh across the three ways this helper
+# can end up running (mirrors the plugin_root resolution in scripts/atelier-doctor):
+#   1. inside a live session, $CLAUDE_PLUGIN_ROOT points at the plugin root
+#   2. run from a dev/clone checkout, scripts/ sits one level under the root
+#   3. a managed install's ~/.local/bin symlink resolves into the versioned
+#      runtime dir, whose payload intentionally omits hooks/ — fall back to
+#      the plugin cache installPath Claude Code records.
+_resolve_sync_hook() {
+  local candidate="${CLAUDE_PLUGIN_ROOT:-}"
+  if [ -n "$candidate" ] && [ -f "$candidate/hooks/sync-notification-hook.sh" ]; then
+    printf '%s\n' "$candidate/hooks/sync-notification-hook.sh"
+    return 0
+  fi
+  candidate="$(cd -P "$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/.." 2>/dev/null && pwd)"
+  if [ -n "$candidate" ] && [ -f "$candidate/hooks/sync-notification-hook.sh" ]; then
+    printf '%s\n' "$candidate/hooks/sync-notification-hook.sh"
+    return 0
+  fi
+  if command -v jq >/dev/null 2>&1; then
+    candidate="$(jq -r '.plugins["atelier@akalab-tech"][0].installPath // empty' \
+      "$ATELIER_CONFIG_DIR/plugins/installed_plugins.json" 2>/dev/null)"
+    candidate="${candidate/#\~/$HOME}"
+    if [ -n "$candidate" ] && [ -f "$candidate/hooks/sync-notification-hook.sh" ]; then
+      printf '%s\n' "$candidate/hooks/sync-notification-hook.sh"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+_reconcile() {
+  local hook
+  hook="$(_resolve_sync_hook)" || return 0
+  ATELIER_CONFIG_DIR="$ATELIER_CONFIG_DIR" "$hook" >/dev/null 2>&1 || true
+}
+
+command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+
+[ $# -ge 1 ] || { usage; exit 1; }
+
+case "$1" in
+  --help|-h) usage; exit 0 ;;
+  --show)
+    if [ -f "$OP_FILE" ]; then
+      enabled="$(jq -r '.notification.enabled // false' "$OP_FILE" 2>/dev/null || true)"
+      sound="$(jq -r '.notification.sound // empty' "$OP_FILE" 2>/dev/null || true)"
+    else
+      enabled="false"; sound=""
+    fi
+    if [ "$enabled" = "true" ]; then
+      printf 'operator notification sound: on'
+      if [ -n "${sound:-}" ]; then printf ' (sound: %s)' "$sound"; fi
+      printf '\n'
+    else
+      printf 'operator notification sound: off (default)\n'
+    fi
+    exit 0 ;;
+  --clear)
+    [ -f "$OP_FILE" ] || { printf 'OK: already unset (off).\n'; exit 0; }
+    tmp="$(mktemp)"
+    jq 'del(.notification)' "$OP_FILE" > "$tmp" 2>/dev/null || { rm -f "$tmp"; die "failed to update $OP_FILE"; }
+    mv "$tmp" "$OP_FILE"
+    _reconcile
+    printf 'OK: notification preference unset (off). Restart open sessions to apply.\n'
+    exit 0 ;;
+  on)
+    shift
+    SOUND=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --sound)
+          [ $# -ge 2 ] || die "--sound requires a value"
+          SOUND="$2"; shift 2 ;;
+        --sound=*)
+          SOUND="${1#--sound=}"; shift ;;
+        *) die "unknown argument: $1 (run --help for usage)" ;;
+      esac
+    done
+
+    mkdir -p "$ATELIER_CONFIG_DIR"
+    tmp="$(mktemp)"
+    if [ -f "$OP_FILE" ]; then
+      base="$(cat "$OP_FILE")"
+    else
+      base="{}"
+    fi
+    if [ -n "$SOUND" ]; then
+      printf '%s' "$base" | jq --arg s "$SOUND" \
+        '.notification = ((.notification // {}) | .enabled = true | .sound = $s)' \
+        > "$tmp" 2>/dev/null || { rm -f "$tmp"; die "failed to merge $OP_FILE (invalid JSON?)"; }
+    else
+      printf '%s' "$base" | jq \
+        '.notification = ((.notification // {}) | .enabled = true)' \
+        > "$tmp" 2>/dev/null || { rm -f "$tmp"; die "failed to merge $OP_FILE (invalid JSON?)"; }
+    fi
+    mv "$tmp" "$OP_FILE"
+    _reconcile
+
+    printf 'OK: atelier will play a sound on questions/permission prompts.\n'
+    if [ -n "$SOUND" ]; then
+      printf '    sound hint: %s (falls back silently to the platform default if unresolvable)\n' "$SOUND"
+    fi
+    printf '    Restart open Claude Code sessions to apply.\n'
+    exit 0 ;;
+  off)
+    mkdir -p "$ATELIER_CONFIG_DIR"
+    tmp="$(mktemp)"
+    if [ -f "$OP_FILE" ]; then
+      base="$(cat "$OP_FILE")"
+    else
+      base="{}"
+    fi
+    printf '%s' "$base" | jq \
+      '.notification = ((.notification // {}) | .enabled = false)' \
+      > "$tmp" 2>/dev/null || { rm -f "$tmp"; die "failed to merge $OP_FILE (invalid JSON?)"; }
+    mv "$tmp" "$OP_FILE"
+    _reconcile
+
+    printf 'OK: notification sound disabled. Restart open Claude Code sessions to apply.\n'
+    exit 0 ;;
+  --*) die "unknown flag: $1 (run --help for usage)" ;;
+  *) die "unknown argument: $1 (run --help for usage; expected on|off|--show|--clear)" ;;
+esac

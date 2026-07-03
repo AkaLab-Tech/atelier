@@ -293,12 +293,13 @@ jq -e '[
   && pass "G2: refresh-mirror.sh is registered under hooks.SessionStart" \
   || fail "G2: refresh-mirror.sh is NOT under hooks.SessionStart in hooks.json"
 
-# G3: it is a fourth entry (three pre-existing hooks + refresh-mirror.sh)
+# G3: it is a fifth entry (three pre-existing hooks + refresh-mirror.sh +
+# sync-notification-hook.sh, added by #41)
 count="$(jq '[.hooks.SessionStart[]?.hooks[]?.command | select(. != null)] | length' \
   "$HOOKS_JSON" 2>/dev/null || true)"
-[ "$count" = "4" ] \
-  && pass "G3: hooks.SessionStart has exactly 4 entries (3 existing + refresh-mirror)" \
-  || fail "G3: hooks.SessionStart has $count entries, expected 4"
+[ "$count" = "5" ] \
+  && pass "G3: hooks.SessionStart has exactly 5 entries (3 existing + refresh-mirror + sync-notification-hook)" \
+  || fail "G3: hooks.SessionStart has $count entries, expected 5"
 
 # ===========================================================================
 # Result

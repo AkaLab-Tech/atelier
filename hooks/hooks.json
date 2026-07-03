@@ -32,6 +32,14 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/refresh-mirror.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/sync-notification-hook.sh"
+          }
+        ]
       }
     ],
     "Stop": [
