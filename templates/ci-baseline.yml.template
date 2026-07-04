@@ -1,0 +1,31 @@
+name: atelier CI
+
+# Baseline pipeline scaffolded by /atelier:setup-project (Phase 5). Runs the
+# project's detected lint / typecheck / test steps on every push and pull
+# request against the default branch. Stack detection mirrors /validate's
+# "Fast layer" (see commands/validate.md) — keep the two in sync.
+
+on:
+  push:
+    branches: [__DEFAULT_BRANCH__]
+  pull_request:
+    branches: [__DEFAULT_BRANCH__]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+__INLINE_STEPS__

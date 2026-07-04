@@ -33,6 +33,14 @@ This repo (`atelier`) is the single artifact the operator clones. `install.sh` l
 
 The native plugin system gives us: (a) one-liner install/update via `/plugin marketplace update akalab-tech` (refreshes every AkaLab-Tech plugin in the catalog), (b) semver via `plugin.json`, (c) `$CLAUDE_PLUGIN_ROOT` for clean multi-checkout support, (d) auto-discovery by convention. It does **not** increase lock-in vs symlinks — both depend on Claude Code loading skills/agents/hooks; the manifest just formalizes the same contract. Reference: [Yeachan-Heo/oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) validated this pattern at scale.
 
+### `/setup-project` CI/CD detection + scaffold offer
+
+`atelier-setup-project` (the bash helper) gained a read-only `detect_ci_status()` alongside its existing detectors (roadmap format, tracking layout, backend), emitting `atelier-ci-status=present|absent`. When `absent` on an **existing**, **GitHub-hosted**, **pnpm/Node** project, the `/setup-project` slash command (Phase 5) offers to scaffold a baseline GitHub Actions pipeline — lint + typecheck + test steps inferred with the same detection rules `/validate`'s Fast layer uses (`commands/validate.md`), pinning Node via `.nvmrc` and enabling pnpm via `pnpm/action-setup`.
+
+The write is gated behind explicit confirmation — interactive `AskUserQuestion`, or the headless `--scaffold-ci` opt-in flag; plain `--yes`/`-y`/`$ATELIER_AUTO` only prints a recommendation. This is deliberate, not incidental: `templates/settings.template.json`'s deny list blocks `Edit`/`Write` on `.github/workflows/**` **inside per-task worktrees** (agents must never touch CI config autonomously while executing a task). That deny does not reach `/setup-project`'s own session — it runs in the operator's main session against the target project's root, outside any task worktree — so the scaffold write is legitimate there, but still requires the same class of explicit, operator-gated confirmation the branch-protection step (M7.1.F31) uses, rather than writing silently just because the session's `Write` grant technically covers the path.
+
+An existing CI config of any recognised provider (not just GitHub Actions) short-circuits the offer entirely — `ci-status=present` is never overwritten. Non-GitHub remotes and non-Node projects are out of scope for v1 (skipped with a short note); a future milestone could extend detection/scaffolding to other providers or ecosystems.
+
 ---
 
 ## 2. Installation flow (`install.sh`) ✅
