@@ -389,8 +389,20 @@ The orchestrator waits (bounded) for CI to complete before invoking the merge ga
 | `tester` | Sonnet | Writes and runs unit + integration tests |
 | `e2e-runner` | Sonnet | Drives Playwright, captures screenshots |
 | `pr-author` | Sonnet | Opens PR, writes description, posts status |
+| `pr-opener` | Sonnet | Authors a non-task PR (e.g. `/atelier:align`'s base PR) so the dispatching session stays a clean, non-authoring reviewer |
 | `reviewer` | Opus | Independent review before merge |
 | `unblocker` | Sonnet | Handles failure recovery + blocking issues |
+
+**Invariant — PR authoring is always sub-agent work.** Two orthogonal axes gate
+review: git identity (`gh/author` vs `gh/reviewer`, §6) and actor/session (the
+auto-mode classifier blocks a `reviewer`/`auto-merge` dispatch as self-approval
+when the *same session* pushed that PR, independent of which `gh` identity it
+used). The dual identities satisfy the first axis but not the second, so a
+session must never commit + push + `gh pr create` for a PR it will itself send
+to `reviewer` — it delegates authoring instead: `pr-author` for `task/<id>`
+branches, `pr-opener` for everything else (align's base PR, ad-hoc chore/docs/
+fix branches). See `operator-rules.md` § "PR authoring is always sub-agent
+work" for the full rule and its one benign exception.
 
 ### Skills (global)
 

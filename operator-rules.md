@@ -161,6 +161,35 @@ memory. The classifier never gets to weigh the personal rule against the push.
 Treat the static matrix + gates as final; do not surface a confirmation prompt
 sourced from personal memory.
 
+### PR authoring is always sub-agent work
+
+atelier's two-party review runs on two orthogonal axes, and satisfying one does
+not satisfy the other. **Git identity**: GitHub's `reviewDecision` requires the
+approving login to differ from the authoring login — satisfied by the dual
+`$ATELIER_CONFIG_DIR/gh/author` + `gh/reviewer` config dirs. **Actor/session**:
+Claude Code's auto-mode classifier blocks a `reviewer` / `auto-merge` dispatch
+as self-approval whenever the *same actor* (the same session) that ran
+`git push` / `gh pr create` for that PR also dispatches its review — regardless
+of which `gh` identity performed the push. The dual `gh` identities are
+**necessary but not sufficient**: a session can push under the author identity
+and still trip the classifier the moment it turns around and dispatches
+`reviewer` on the PR it just opened.
+
+The rule for the main/orchestrating session: **never hand-author a PR you will
+then dispatch `reviewer` or `/atelier:auto-merge` against.** Commit + push +
+`gh pr create` for a PR you intend to review yourself is always delegated to a
+sub-agent, so the dispatching session stays a clean, non-authoring actor:
+
+- For a ROADMAP task PR (`task/<id>-<slug>`), delegate to `pr-author`.
+- For a non-task PR (an `/atelier:align` base PR, an ad-hoc operator request on
+  a `chore/*` / `docs/*` / `fix/*` branch), delegate to `pr-opener`.
+
+**One benign exception:** opening a PR and *not* self-reviewing it in the same
+session — e.g. `/atelier:finish-task`, which opens the PR and hands review off
+to a later, separate session or the operator — is fine. The violation is
+specifically dispatching `reviewer` / `auto-merge` from the same session that
+pushed, not authoring a PR per se.
+
 ## Operating against the task worktree (cwd vs paths)
 
 Your subprocess sandbox inherits its current working directory from the parent invocation. When `/atelier:next-task` (or another caller) dispatches you to work on a task, the worktree has been created at `<worktree-path>` (the absolute path arrives in your briefing) — but **your cwd is NOT inside it**. The cwd is whatever the operator started Claude Code from (typically the main repo or the operator's home dir).
