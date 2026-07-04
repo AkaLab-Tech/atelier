@@ -22,11 +22,12 @@
 #     - explicitly does NOT require task/<id> (states the contrast with pr-author)
 #     - states the delegation / clean-actor rationale
 #     - does not perform the IN_PROGRESS -> HISTORY tracking move
-#   Group 2 — commands/align.md Tier 3 `auto` path delegates to pr-opener
-#     - pr-opener is named in the Tier 3 auto section
+#   Group 2 — commands/align.md Tier 3 `auto` path delegates to task-orchestrator
+#     - task-orchestrator is named in the Tier 3 auto section, in non-task-pr mode
 #     - Task tool dispatch is described for the auto path
 #     - Task is present in align's allowed-tools frontmatter
-#     - the auto section does not inline `gh pr create` for its own authoring step
+#     - align states it does not itself dispatch reviewer/auto-merge, and the
+#       auto section does not inline `gh pr create` for its own authoring step
 #     - the ask path is unchanged: still authors inline via AskUserQuestion offer
 #   Group 3 — operator-rules.md documents the invariant
 #     - the two-axis (git-identity vs actor/session) rationale is present
@@ -141,14 +142,20 @@ tier3_auto_section() {
 
 TIER3_AUTO="$(tier3_auto_section)"
 
-if printf '%s' "$TIER3_AUTO" | grep -qF 'pr-opener'; then
-  pass "align: Tier 3 auto section names the pr-opener agent"
+if printf '%s' "$TIER3_AUTO" | grep -qF 'task-orchestrator'; then
+  pass "align: Tier 3 auto section names the task-orchestrator agent"
 else
-  fail "align: Tier 3 auto section does not mention pr-opener"
+  fail "align: Tier 3 auto section does not mention task-orchestrator"
+fi
+
+if printf '%s' "$TIER3_AUTO" | grep -qF 'mode: non-task-pr'; then
+  pass "align: Tier 3 auto section dispatches task-orchestrator in non-task-pr mode"
+else
+  fail "align: Tier 3 auto section does not specify mode: non-task-pr"
 fi
 
 if printf '%s' "$TIER3_AUTO" | grep -qF '(via `Task`)'; then
-  pass "align: Tier 3 auto section dispatches pr-opener via the Task tool"
+  pass "align: Tier 3 auto section dispatches task-orchestrator via the Task tool"
 else
   fail "align: Tier 3 auto section does not describe a Task-tool dispatch"
 fi
@@ -156,10 +163,18 @@ fi
 chk_prose "$ALIGN_MD" 'allowed-tools: Bash(atelier-align:*), Bash(atelier-setup-project:*), Bash(git:*), Bash(gh:*), Read, AskUserQuestion, SlashCommand, Task' \
   "align: Task tool is present in align's allowed-tools frontmatter"
 
+# Align must not itself coordinate reviewer/auto-merge for the auto path —
+# that coordination is now owned by the delegated task-orchestrator.
+if printf '%s' "$TIER3_AUTO" | grep -qF 'Align does not itself dispatch `reviewer` or `auto-merge`, and'; then
+  pass "align: Tier 3 auto section states align does not itself dispatch reviewer or auto-merge"
+else
+  fail "align: Tier 3 auto section does not disclaim align dispatching reviewer/auto-merge directly"
+fi
+
 # The auto section must delegate the base-PR authoring step (push + gh pr
-# create) to pr-opener rather than running gh pr create itself inline.
-if printf '%s' "$TIER3_AUTO" | grep -qF 'instead of running `gh pr create` inline in this session'; then
-  pass "align: Tier 3 auto section states it does not inline-author the base PR itself"
+# create) to the orchestrator rather than running gh pr create itself inline.
+if printf '%s' "$TIER3_AUTO" | grep -qF 'there is no inline `gh pr create` in this session for the auto path'; then
+  pass "align: Tier 3 auto section states there is no inline gh pr create for the auto path"
 else
   fail "align: Tier 3 auto section does not disclaim inline gh pr create authoring"
 fi
