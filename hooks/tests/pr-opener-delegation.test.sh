@@ -108,8 +108,8 @@ chk_prose "$PR_OPENER" 'Never**' \
 chk_prose "$PR_OPENER" 'stop and say so — that briefing belongs to `pr-author`' \
   "pr-opener: explicitly redirects task/<id> briefings to pr-author instead of handling them"
 
-chk_prose "$PR_OPENER" 'clean, non-authoring actor' \
-  "pr-opener: states the delegation / clean-actor rationale"
+chk_prose "$PR_OPENER" 'authoring primitive the (generalized) `task-orchestrator` dispatches for non-task branches' \
+  "pr-opener: states it is the authoring primitive the orchestrator dispatches for non-task branches"
 
 chk_prose "$PR_OPENER" 'self-approval' \
   "pr-opener: names the self-approval classifier behaviour it exists to avoid"
@@ -187,14 +187,20 @@ chk_prose "$OPERATOR_RULES" '**Git identity**' \
 chk_prose "$OPERATOR_RULES" 'necessary but not sufficient' \
   "operator-rules: states dual gh identities are necessary but not sufficient"
 
-chk_prose "$OPERATOR_RULES" 'never hand-author a PR you will' \
-  "operator-rules: states the never-hand-author-then-review rule"
+chk_prose "$OPERATOR_RULES" 'Delegating only the authoring step is NOT sufficient' \
+  "operator-rules: states delegating only the authoring is NOT sufficient"
 
-chk_prose "$OPERATOR_RULES" 'delegate to `pr-author`' \
-  "operator-rules: names pr-author as the task-PR delegation target"
+chk_prose "$OPERATOR_RULES" 'a driving session never coordinates both authoring and review' \
+  "operator-rules: states the corrected never-coordinate-both rule"
 
-chk_prose "$OPERATOR_RULES" 'delegate to `pr-opener`' \
-  "operator-rules: names pr-opener as the non-task-PR delegation target"
+chk_prose "$OPERATOR_RULES" 'author→review→merge coordination' \
+  "operator-rules: names the author→review→merge coordination the driving session delegates"
+
+chk_prose "$OPERATOR_RULES" 'sub-agent (`pr-author` for `task/<id>-<slug>` branches, `pr-opener` for' \
+  "operator-rules: names pr-author (task branches) and pr-opener (non-task branches) as the orchestrator's authoring sub-agents"
+
+chk_prose "$OPERATOR_RULES" '`pr-opener` for non-task branches' \
+  "operator-rules: names pr-opener as the non-task-branch authoring sub-agent"
 
 chk_prose "$OPERATOR_RULES" 'One benign exception' \
   "operator-rules: names the benign open-without-self-review exception"
@@ -206,8 +212,17 @@ chk_prose "$OPERATOR_RULES" 'One benign exception' \
 chk_prose "$PLAN" '| `pr-opener` | Sonnet |' \
   "PLAN §7: pr-opener row present in the agents table"
 
+chk_prose "$PLAN" 'Authoring primitive the orchestrator dispatches for non-task PRs' \
+  "PLAN §7: pr-opener row purpose corrected to authoring primitive dispatched by the orchestrator"
+
 chk_prose "$PLAN" '**Invariant — PR authoring is always sub-agent work.**' \
   "PLAN §7: prose note states the invariant"
+
+chk_prose "$PLAN" 'Delegating only the authoring is NOT sufficient' \
+  "PLAN §7: invariant note states delegating only the authoring is NOT sufficient"
+
+chk_prose "$PLAN" 'entire author→review→merge coordination one level down to' \
+  "PLAN §7: invariant note names the author→review→merge coordination delegated one level down"
 
 chk_prose "$PLAN" 'operator-rules.md` § "PR authoring is always sub-agent' \
   "PLAN §7: cross-references operator-rules.md's invariant section"

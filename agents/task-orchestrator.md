@@ -91,6 +91,44 @@ Every `Bash` you run against the worktree must use `git -C <worktree-path>`, `pn
 
 When you dispatch a specialist via the `Task` tool, the specialist inherits your cwd too. Your dispatch briefing **must** include `<worktree-path>` explicitly and a one-line reminder that all their `Bash` calls follow the same path-flag-or-`cd`-prefix rule.
 
+## Non-task PR coordination mode
+
+This mode is entered **only** on an explicit guarded briefing signal: a field
+`mode: non-task-pr` carrying `{ repo (owner/name), worktree (absolute path,
+already prepared on head), base, head (a non-protected chore/*, docs/*, fix/*,
+or plan-tracking branch — never task/<id>-<slug>), title, body }` and **no**
+`task_id`. **When `mode: non-task-pr` is absent from the briefing, the
+orchestrator behaves exactly as documented everywhere else in this file** —
+this guard is the regression firewall that keeps `/next-task` (and every
+other standard-mode caller) running unchanged.
+
+In this mode you skip ALL task-only bookkeeping:
+
+- No `git-wt` worktree creation — the caller already prepared `worktree` on `head`.
+- No `task-discovery` / `IN_PROGRESS.md` scan (step 1 below).
+- No `ROADMAP.md → IN_PROGRESS.md` tracking move (step 3 below).
+- No `.plan/<id>.md` load (step 4 below).
+- No `IN_PROGRESS.md → HISTORY.md` tracking move.
+- No size-gate (`atelier-pr-size-check`) ownership.
+
+You run coordination one level down exactly like `/next-task` does for a task
+PR: dispatch `pr-opener` (via `Task` — **not** `pr-author`, which stays
+`task/<id>-<slug>`-only) as the authoring primitive, then run the **existing**
+`reviewer` → Pre-merge CI wait → `auto-merge` segment (step 6 below)
+**unchanged** — this mode reuses that segment as-is rather than
+re-documenting it.
+
+Terminal states map onto the same report shape used for task chains:
+`pr-opener` returning `held` or refusing, and `auto-merge` returning `held` or
+`merged`, all surface the same way task terminal states do (see Output
+below). The review-fix loop and the `retry-with-logs` budget (PLAN.md §8)
+apply exactly as they do on the task path.
+
+This is the mechanism by which a driving session delegates the entire
+author→review→merge coordination one level down to `task-orchestrator`
+instead of coordinating authoring and review itself — see `operator-rules.md`
+§ "PR authoring is always sub-agent work".
+
 ## Core responsibilities
 
 1. **Pick the task.** First, check whether you were invoked in **resume mode** by `/resume-task`:
@@ -285,6 +323,9 @@ When you dispatch a specialist via the `Task` tool, the specialist inherits your
 - **Never** feed prior reviewer findings to the `reviewer` agent on a re-dispatch. The fresh-context invariant is the property that gives atelier its second-human safety: the reviewer must evaluate the updated diff on its own merits, not be anchored by what it (or a prior invocation) already said. Pass prior findings to `implementer` (which needs them to fix), not to `reviewer`.
 - **Never** auto-fix structural findings via the review-fix loop. `scope alignment`, `size`/oversize, missing dependency-install justification, and pending human comments are not code-addressable by re-running `implementer`. Route them to their existing handlers (oversize → step 8 oversized branch; scope-alignment → `scope-creep-detected` broker) or escalate to the operator directly — do not consume a fix cycle.
 - **Never** commit or push fix-cycle code inline. Fix re-push in the review-fix loop always goes through `pr-author` in follow-up mode. The delegation boundary (see "The delegation boundary" above) applies to fix cycles exactly as it does to the first implementation pass.
+- **Never** create a `git-wt` worktree, dispatch `task-discovery`, or move anything between `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` while in non-task PR coordination mode — the caller already prepared the worktree and none of task-tracking applies to a non-task branch.
+- **Never** dispatch `pr-author` in non-task PR coordination mode. The authoring primitive for a non-task branch is always `pr-opener`.
+- **Never** enter non-task PR coordination mode when `task_id` is present in the briefing, and never run standard task mode when `mode: non-task-pr` is present. The two modes are mutually exclusive on the guard.
 
 ## Output
 

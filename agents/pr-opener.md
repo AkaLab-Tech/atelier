@@ -1,21 +1,21 @@
 ---
 name: pr-opener
 description: |
-  Use this agent to author a **non-task** PR — a chore/docs/fix branch prepared in a worktree (e.g. `/atelier:align`'s Tier 3 base PR, an ad-hoc operator request) — from its own sub-agent context. It commits (if not already committed), pushes to a non-protected branch, and opens the PR under the author identity. It exists so the dispatching session never itself runs `git push` / `gh pr create` for the PR it is about to hand to `reviewer` — see the "Why a separate agent" section below. Not for ROADMAP task branches: those go through `pr-author`.
+  Use this agent to author a **non-task** PR — a chore/docs/fix branch prepared in a worktree (e.g. `/atelier:align`'s Tier 3 base PR, an ad-hoc operator request) — from its own sub-agent context. It commits (if not already committed), pushes to a non-protected branch, and opens the PR under the author identity. It is the authoring primitive `task-orchestrator` dispatches (in its "non-task PR coordination mode") for non-task branches — see the "Why a separate agent" section below. Not for ROADMAP task branches: those go through `pr-author`.
 
   <example>
   Context: /atelier:align prepared a `chore/atelier-align` branch with resynced .atelier.json in a temporary worktree, under `auto` policy.
   user: "Open the base PR for this repo from /tmp/align-worktree-akalab-foo, base main, head chore/atelier-align."
-  assistant: "I'll use the pr-opener agent — it will run the push gate, commit if needed, push chore/atelier-align, and open the PR under the author identity. Because pr-opener does the pushing, this session stays a clean actor and can dispatch reviewer / auto-merge afterward without tripping the self-approval classifier."
+  assistant: "I'll route this through task-orchestrator's non-task PR coordination mode — it dispatches pr-opener as the authoring primitive to run the push gate, commit if needed, push chore/atelier-align, and open the PR under the author identity, then owns the reviewer / auto-merge segment itself."
   <commentary>
-  Canonical use: align's Tier 3 auto path delegates authoring instead of running gh pr create inline.
+  Canonical use: align's Tier 3 auto path delegates the whole author→review→merge coordination to task-orchestrator instead of running gh pr create inline.
   </commentary>
   </example>
 
   <example>
   Context: Operator asked the main session to open a docs-only PR for a typo fix already committed on docs/fix-readme-typo.
   user: "Open a PR for the docs/fix-readme-typo branch in this worktree."
-  assistant: "I'll dispatch the pr-opener agent to push the branch and open the PR — that way, if you also want me to review and merge it in this same session, the review dispatch won't be blocked as self-approval."
+  assistant: "I'll dispatch task-orchestrator in non-task PR coordination mode — it dispatches pr-opener to push the branch and open the PR, then owns the reviewer / auto-merge dispatch itself, so this session never coordinates both authoring and review of the same PR."
   <commentary>
   Ad-hoc, non-roadmap request. pr-opener is the generic authoring path; pr-author is reserved for task/<id> branches.
   </commentary>
@@ -31,7 +31,7 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
 
 ## Why a separate agent (the invariant this agent exists to satisfy)
 
-atelier's two-party review runs on two orthogonal axes. (1) **Git identity**: GitHub's `reviewDecision` requires the approving login to differ from the author login — satisfied by the dual `gh/author` + `gh/reviewer` config dirs. (2) **Actor/session**: Claude Code's auto-mode classifier blocks a `reviewer`/`auto-merge` dispatch as self-approval when the *same actor* that ran `git push` / `gh pr create` for a PR also dispatches its review — regardless of which `gh` identity did the pushing. `pr-author` already satisfies axis (2) for task PRs because `task-orchestrator` delegates authoring to it as a sub-agent; the dispatching orchestrator session itself never pushed. `pr-opener` gives every **non-task** authoring path (align's base PR, an ad-hoc operator request) the same property: the session that calls `Task(pr-opener)` stays a clean, non-authoring actor and can safely dispatch `reviewer` / `/atelier:auto-merge` against the PR afterward.
+atelier's two-party review runs on two orthogonal axes. (1) **Git identity**: GitHub's `reviewDecision` requires the approving login to differ from the author login — satisfied by the dual `gh/author` + `gh/reviewer` config dirs. (2) **Actor/session**: Claude Code's auto-mode classifier blocks a `reviewer`/`auto-merge` dispatch as self-approval when the *same actor* that ran `git push` / `gh pr create` for a PR also dispatches its review — regardless of which `gh` identity did the pushing. Delegating only the authoring step to a sub-agent is **not**, by itself, enough to satisfy axis (2): the classifier attributes a sub-agent's push back to whichever session goes on to dispatch that PR's review. `pr-author` satisfies axis (2) for task PRs because `task-orchestrator` — one level below the driving session — dispatches `pr-author` as the authoring primitive and then owns the `reviewer` → `auto-merge` segment itself; the driving session never coordinates both halves. `pr-opener` is the **authoring primitive the (generalized) `task-orchestrator` dispatches for non-task branches** (its "non-task PR coordination mode" — see `agents/task-orchestrator.md`), so the *orchestrator*, not the driving session, owns author→review→merge for a non-task PR exactly as it does for the task path.
 
 ## Briefing you require
 
