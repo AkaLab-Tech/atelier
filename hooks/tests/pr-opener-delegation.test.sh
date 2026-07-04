@@ -47,18 +47,6 @@
 #     - pr-opener never sees a task/* branch in this mode
 #     - regression guard: the OLD absolute "never dispatch pr-author in
 #       non-task PR coordination mode" sentence stays gone
-#   Group 5 — agents/task-orchestrator.md: non-task-pr mode selects the
-#             authoring primitive BY BRANCH SHAPE (#44c review-fix retarget)
-#     - task/* heads are admitted (no longer rejected) while protected
-#       branches remain excluded
-#     - the authoring primitive is selected by branch shape, and a task/*
-#       head dispatches pr-author
-#     - the mode honors an explicit author_agent: pr-author hint
-#     - non-task head shapes (chore/*, docs/*, fix/*, plan-tracking)
-#       dispatch pr-opener
-#     - pr-opener never sees a task/* branch in this mode
-#     - regression guard: the OLD absolute "never dispatch pr-author in
-#       non-task PR coordination mode" sentence must stay gone
 #
 # Hermetic: greps committed prose only; no network, no jq required beyond
 # what's already on PATH for other suite tests, no temp dirs.
