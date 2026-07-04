@@ -1,7 +1,7 @@
 ---
 description: Initialise a project so the operator can run atelier tasks in it — delegates to the `atelier-setup-project` bash helper installed by `install.sh`, then dispatches `project-profiler` to draft the root `CLAUDE.md`. Idempotent — re-running preserves all existing files. Typical usage is just `/atelier:setup-project` from inside the project directory; passing a path is only for the uncommon case of configuring a project from outside it.
-argument-hint: "[--yes|-y] [--mode=new|existing] [--apply-branch-protection] [--backend <files|linear|github-project>] [project-path-if-not-cwd]"
-allowed-tools: Read, Glob, Grep, Write, Bash(atelier-setup-project:*), AskUserQuestion, Task
+argument-hint: "[--yes|-y] [--mode=new|existing] [--apply-branch-protection] [--backend <files|linear|github-project>] [--scaffold-ci] [project-path-if-not-cwd]"
+allowed-tools: Read, Glob, Grep, Write, Bash(atelier-setup-project:*), Bash(git -C * remote get-url origin:*), Bash(git remote get-url origin:*), AskUserQuestion, Task
 ---
 
 You are running the `/setup-project` slash command. This command has two phases: (1) delegate mechanical scaffolding to the `atelier-setup-project` bash binary on `$PATH`, then (2) dispatch the `project-profiler` agent to draft the root `CLAUDE.md` based on the mode the bash helper detected.
@@ -35,6 +35,7 @@ The helper also emits four `atelier-*=...` marker lines that Phase 2, Phase 3, a
 - `atelier-root-claude-md=present|missing` — whether `<path>/CLAUDE.md` already exists.
 - `atelier-tracking-layout=created|preserved-empty|preserved-nonempty` — whether `IN_PROGRESS.md` was created fresh (canonical empty slot), pre-existed and is empty, or pre-existed with task-like content. `preserved-nonempty` triggers Phase 3.
 - `atelier-backend=files|linear|github-project|…` — the backend resolved from an existing `<path>/.roadmap.json` (`.backend` field via `jq`), defaulting to `files` when the file is absent or `jq` is unavailable. Phase 4 uses this to decide whether to delegate to `/create-roadmap --backend`.
+- `atelier-ci-status=present|absent` — read-only CI/CD detection (GitHub Actions or another recognised provider config). Phase 5 uses this to decide whether to offer a baseline pipeline scaffold. The helper never writes a workflow file itself.
 
 Relay the helper's stdout back to the operator verbatim. If the helper exits non-zero, surface the error and stop — do NOT run Phase 2.
 
@@ -153,6 +154,43 @@ When the chosen backend is `linear` or `github-project`:
 
 4. After the delegation completes (or is skipped), surface the final `atelier-backend=` value to the operator so they can see the configured state.
 
+## Phase 5 — CI/CD scaffold offer
+
+Parse the helper's stdout for `atelier-ci-status=...`. The helper's detection is **read-only** — it never writes a workflow file; this phase is the only place a workflow can be written, and only under explicit confirmation.
+
+Stack detection here **must not drift** from `/validate`'s "Fast layer" (`commands/validate.md`) — both read the same manifest / config files to infer the linter, typechecker, and test runner. This is a documented contract, not a shared code path: if you change one, update the other.
+
+### Step 5a — gating
+
+Act only when **all** of the following hold; otherwise do nothing (no output, no offer):
+
+1. `atelier-ci-status=absent` (when `present`, print *"CI already configured — preserved."* and stop — never touch an existing workflow).
+2. `atelier-detected-mode=existing` (from Phase 1's marker). A brand-new (`new`-mode) project has nothing yet to run lint/typecheck/test against — skip silently.
+3. `<project>/package.json` exists. The baseline pipeline runs `pnpm install` + `pnpm`-driven steps (per the pnpm-only rule); a non-Node project has no pnpm surface to scaffold against — skip silently.
+4. The project has a GitHub remote: run `git -C <project> remote get-url origin` and check the URL contains `github.com`. If there is no `origin` remote, or it points elsewhere (GitLab, Bitbucket, self-hosted), print a short note — *"CI/CD scaffold only supports GitHub Actions; `origin` is not a GitHub remote — skipping the offer."* — and stop. Do not attempt to scaffold a non-GitHub-Actions pipeline.
+
+### Step 5b — detect steps (mirrors `/validate`'s Fast layer)
+
+Using `Read`/`Glob` against `<project>` (never `Bash`, this is pure file inspection):
+
+- **Lint**: `eslint.config.*` or `.eslintrc.*` → `pnpm exec eslint .` (or `pnpm run lint` if `package.json` has a `lint` script — prefer the script). `.prettierrc.*` / `prettier.config.*` → `pnpm exec prettier --check .`. `biome.json` → `pnpm exec biome check .`. Else, a bare `lint` script in `package.json` → `pnpm run lint`. If none match, omit the lint step entirely (do not scaffold a no-op step).
+- **Typecheck**: `tsconfig.json` → `pnpm exec tsc --noEmit`. Else a `typecheck` script in `package.json` → `pnpm run typecheck`. If neither, omit the step.
+- **Tests**: `vitest.config.*` or `devDependencies.vitest` → `pnpm exec vitest run`. `jest.config.*` or `devDependencies.jest` → `pnpm exec jest`. Else a `test` script in `package.json` → `pnpm test`. If none match, omit the step (do not fabricate a placeholder test step).
+
+If **none** of lint/typecheck/test resolve to a real step, stop and print: *"No detectable lint/typecheck/test tooling — nothing to scaffold a pipeline around."* Do not write an empty-shell workflow.
+
+### Step 5c — compose the workflow
+
+Read the skeleton at `$CLAUDE_PLUGIN_ROOT/templates/ci-baseline.yml.template`. It provides the name, `on:` triggers, checkout/pnpm/Node setup, and `pnpm install --frozen-lockfile` steps already wired for `node-version-file: .nvmrc` and pnpm via `pnpm/action-setup@v4`. Substitute `__DEFAULT_BRANCH__` with the project's default branch (`git -C <project> remote show origin` or simply `main`/`master` — whichever the repo's `HEAD` resolves to; do not hardcode `main` blindly). Replace the `__INLINE_STEPS__` placeholder with one `- name: ...` / `run: ...` step per tool resolved in Step 5b, in the order lint → typecheck → test. This is inline composition, not pure token substitution — conditional steps can't be expressed by the skeleton alone.
+
+### Step 5d — confirmation gate (never write without it)
+
+- **Interactive**: use `AskUserQuestion` — show the composed workflow content and the detected steps, options *"Write `.github/workflows/atelier-ci.yml`"* / *"Skip"*. On confirm, `Write(<project>/.github/workflows/atelier-ci.yml, <composed content>)`. On skip, print a one-line note and do nothing.
+- **Headless (`--yes`/`-y`/`$ATELIER_AUTO`) WITHOUT `--scaffold-ci`**: never write. Print the composed workflow's step summary as a recommendation — *"CI/CD absent; run with `--scaffold-ci` (headless) or interactively to write a baseline GitHub Actions pipeline: <detected steps>."*
+- **Headless WITH `--scaffold-ci`**: the flag itself is the confirmation — `Write(<project>/.github/workflows/atelier-ci.yml, <composed content>)` directly, no further prompt.
+
+Note on the `.github/workflows/**` write-deny in `templates/settings.template.json`: that deny list is instantiated into **per-task worktrees** (`<worktree>/.claude/settings.json`, written by `--per-task-settings`) so that agents implementing a *task* never touch CI config autonomously. It does not apply to this slash command's own session — `/setup-project` runs in the operator's main session against the target project's root, not inside a task worktree, so its `Write` (already granted generically in this command's `allowed-tools`) covers the workflow path here without needing a scoped grant.
+
 ## Hard refusals
 
 These all live in the bash helper; documented here so the operator knows what to expect when reading the `/setup-project` contract:
@@ -167,6 +205,9 @@ These all live in the bash helper; documented here so the operator knows what to
 - **Never invoke `Edit`, `mkdir`, `sed`, or `jq` directly from this slash command.** Phase 1's file work happens inside the bash helper. Phase 2's only allowed writes are: (a) `Write(<abs>/CLAUDE.md, <agent-returned-content>)` and (b) nothing else.
 - **Never dispatch `project-profiler` in `new` mode without an explicit operator answer.** The agent's prompt enforces this defensively but the slash command should refuse to even invoke it (the briefing would carry an empty `operator_answer` field).
 - **Never write `.roadmap.json` inline** — delegate the backend write to crt's `/create-roadmap --backend …`. atelier never re-implements the `.roadmap.json` write or any MCP registration that crt owns.
+- **Never write a CI/CD workflow headlessly without `--scaffold-ci`.** Plain `--yes` / `-y` / `$ATELIER_AUTO` prints a recommendation only; the flag is the explicit headless opt-in.
+- **Never overwrite an existing workflow.** `atelier-ci-status=present` produces no offer and no write, regardless of mode or flags.
+- **CI/CD detection is read-only.** `detect_ci_status()` in the bash helper never writes; the only write in Phase 5 is the operator- or flag-confirmed `Write(<project>/.github/workflows/atelier-ci.yml, ...)`.
 
 ## Hard refusals
 

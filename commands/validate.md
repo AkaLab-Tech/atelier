@@ -27,6 +27,8 @@ If the worktree path is ambiguous (no briefing, cwd is the main repo), **stop an
 
 Run the following checks in order. Each check is independent — a failing check does **not** short-circuit the rest; report every check's result so the implementer (or operator) sees the full picture.
 
+Note: `/setup-project` Phase 5 (CI/CD scaffold offer) infers the same lint/typecheck/test steps from this Fast layer's detection rules to compose a baseline GitHub Actions pipeline. The two are a documented contract, not a shared code path — if you change the detection rules here, update `commands/setup-project.md` Phase 5 to match.
+
 ### 1. Lint
 
 Detect the project's linter from manifest / config files:

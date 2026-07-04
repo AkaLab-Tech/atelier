@@ -100,6 +100,15 @@ OPTIONS:
                          headlessly via the author identity, which must be a
                          repo admin. No-op when the rule already requires at
                          least 1 review.
+  --scaffold-ci          Headless opt-in, consumed by the /setup-project slash
+                         command (not this bash helper), to write a baseline
+                         GitHub Actions workflow when CI/CD is detected as
+                         absent. This helper only accepts and ignores the
+                         flag so it does not trip the "unknown option" guard
+                         when the slash command passes \$ARGUMENTS through
+                         verbatim; it never writes a workflow file itself —
+                         detect_ci_status() is read-only. See
+                         commands/setup-project.md Phase 5.
   --mode <new|existing>  Force the project-mode detection (M4.19) used
                          by the /setup-project slash command to decide
                          whether to interview the operator (new) or
@@ -135,6 +144,15 @@ MARKER LINES (printed on stdout after setup completes):
                          The /setup-project slash command surfaces this marker
                          and uses "files" vs non-"files" to decide whether to
                          delegate to /create-roadmap --backend <choice>.
+  atelier-ci-status=<present|absent>
+                         "present" when a recognised CI/CD config already
+                         exists (GitHub Actions, GitLab CI, CircleCI, Azure
+                         Pipelines, Jenkinsfile, Bitbucket Pipelines, Drone,
+                         Travis); "absent" otherwise. Read-only signal — this
+                         helper never writes a workflow file. The
+                         /setup-project slash command uses this marker to
+                         decide whether to offer a baseline GitHub Actions
+                         pipeline (Phase 5).
 
 EXIT CODES:
   0   success (created, updated, or preserved)
@@ -153,6 +171,8 @@ RECONFIGURE_FLAG=false     # M7.1.F59: --reconfigure allows headless re-setup of
 OVERRIDE_FLAG=false        # M7.1.F63: --override overwrites a legacy non-atelier settings.json headlessly (with backup)
 GRANT_REVIEWER_FLAG=false  # M7.1.F65: --grant-reviewer grants the reviewer identity read access headlessly (author must be admin)
 APPLY_BRANCH_PROTECTION_FLAG=false  # M7.1.F31: --apply-branch-protection applies the branch-protection rule headlessly
+# shellcheck disable=SC2034  # set but never read by this script — accepted only so the arg-parse loop below doesn't die on "unknown option" when the /setup-project slash command passes $ARGUMENTS through verbatim; the actual scaffold decision lives entirely in the slash command
+SCAFFOLD_CI_FLAG=false
 NONINTERACTIVE=false
 [ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
 # M7.1.F63: a non-TTY stdin cannot answer a `read` prompt — under `set -e` the
@@ -230,6 +250,15 @@ while [ $# -gt 0 ]; do
       # applies the rule headlessly via the author identity (which must be a
       # repo admin). Same posture as --grant-reviewer.
       APPLY_BRANCH_PROTECTION_FLAG=true; shift ;;
+    --scaffold-ci)
+      # Consumed here only so this flag doesn't trip the "unknown option"
+      # guard below when the /setup-project slash command passes $ARGUMENTS
+      # through to this helper verbatim. The actual scaffold decision and
+      # write live entirely in the slash command (commands/setup-project.md
+      # Phase 5) — this helper's CI/CD detection is read-only regardless of
+      # this flag's value.
+      # shellcheck disable=SC2034  # never read by this script, see declaration comment above
+      SCAFFOLD_CI_FLAG=true; shift ;;
     --help|-h)
       usage; exit 0 ;;
     --)
@@ -407,6 +436,7 @@ TRACKING_LAYOUT_STATUS=""  # set by detect_tracking_layout (created|preserved-em
 ROADMAP_FORMAT_STATUS=""   # set by detect_roadmap_format (absent|conforming|non-conforming) — M7.1.F74
 BACKEND_STATUS=""          # set by detect_backend_status (files|linear|github-project|…) — M9.3a
 BRANCH_PROTECTION_STATUS=""  # set by step_branch_protection (M7.1.F31)
+CI_STATUS=""               # set by detect_ci_status (present|absent)
 
 # ---------- M4.19: detect project mode (new vs existing) ----------
 # Bash side does detection ONLY. Drafting the root CLAUDE.md (AI work)
@@ -592,6 +622,40 @@ detect_backend_status() {
   b="$(jq -r '.backend // "files"' "$f" 2>/dev/null || printf 'files')"
   [ -n "$b" ] && [ "$b" != "null" ] || b="files"
   printf '%s\n' "$b"
+}
+
+# ---------- detect CI/CD configuration presence ----------
+# Bash side does detection ONLY — it never writes a workflow file. The
+# /setup-project slash command reads this signal and, when it is `absent` on
+# an existing GitHub-hosted project, offers to scaffold a baseline GitHub
+# Actions pipeline inferred from the stack (see commands/setup-project.md
+# Phase 5). Mirrors the shape of detect_backend_status() / detect_roadmap_format()
+# above: a pure relay, no side effects.
+#
+# Outcomes:
+#   present  — a recognised CI/CD config already exists for at least one
+#              provider below.
+#   absent   — none of the recognised configs exist.
+#
+# Recognised providers: GitHub Actions (any non-empty *.yml/*.yaml under
+# .github/workflows/), GitLab CI, CircleCI, Azure Pipelines, Jenkins,
+# Bitbucket Pipelines, Drone, Travis CI.
+detect_ci_status() {
+  local p="$PROJECT"
+
+  if [ -d "$p/.github/workflows" ]; then
+    local f
+    for f in "$p"/.github/workflows/*.yml "$p"/.github/workflows/*.yaml; do
+      [ -f "$f" ] && [ -s "$f" ] && { printf 'present\n'; return; }
+    done
+  fi
+
+  for f in "$p/.gitlab-ci.yml" "$p/.circleci/config.yml" "$p/azure-pipelines.yml" \
+           "$p/Jenkinsfile" "$p/bitbucket-pipelines.yml" "$p/.drone.yml" "$p/.travis.yml"; do
+    [ -f "$f" ] && { printf 'present\n'; return; }
+  done
+
+  printf 'absent\n'
 }
 
 # ---------- helpers used by step_settings_json (M7.1.F26 / M7.1.F64) ----------
@@ -1578,6 +1642,7 @@ ROOT_CLAUDE_MD_STATUS="$(detect_root_claude_md "$PROJECT")"
 TRACKING_LAYOUT_STATUS="$(detect_tracking_layout)"
 ROADMAP_FORMAT_STATUS="$(detect_roadmap_format)"
 BACKEND_STATUS="$(detect_backend_status)"
+CI_STATUS="$(detect_ci_status)"
 
 # ---------- output ----------
 echo ""
@@ -1595,6 +1660,7 @@ sublog ".npmrc:                         $NPMRC_STATUS"
 sublog ".gitignore:                     $GITIGNORE_STATUS"
 sublog "reviewer repo access:           $REVIEWER_ACCESS_STATUS"
 sublog "branch protection:              $BRANCH_PROTECTION_STATUS"
+sublog "CI/CD:                          $CI_STATUS"
 sublog "$(printf '%s' "$CONFIG_FILE" | sed "s|^$HOME|~|"): $CONFIG_STATUS"
 sublog "setupCompleted:                 $SETUP_COMPLETED"
 sublog "setupVersion:                   $SETUP_VERSION"
@@ -1608,6 +1674,7 @@ printf 'atelier-root-claude-md=%s\n' "$ROOT_CLAUDE_MD_STATUS"
 printf 'atelier-tracking-layout=%s\n' "$TRACKING_LAYOUT_STATUS"
 printf 'atelier-roadmap-format=%s\n' "$ROADMAP_FORMAT_STATUS"
 printf 'atelier-backend=%s\n' "$BACKEND_STATUS"
+printf 'atelier-ci-status=%s\n' "$CI_STATUS"
 echo ""
 if [ "$ROOT_CLAUDE_MD_STATUS" = "missing" ]; then
   sublog "Root CLAUDE.md is missing. The /setup-project slash command will dispatch"
