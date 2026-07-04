@@ -48,7 +48,8 @@ Never flip `[ready]` or set the Project's `Ready` field without a human approval
    jq -r '.planStorage // "committed"' .atelier.json 2>/dev/null || echo committed
    ```
    - **`committed`** (default) — the plan file is committed to the base branch alongside the readiness flip (Phase 4, unchanged). It lands on `origin/<base>`, is checked out into every task worktree, and appears in the task PR.
-   - **`local`** — the plan file is a **gitignored, never-committed** artifact in this main checkout. You still write it and still set readiness, but you **never** `git add`/commit `.plan/<id>.md`. `/atelier:next-task` and `/atelier:resume-task` read it locally from here and carry its contents inline in the orchestrator briefing (PLAN.md §16.5, TASK_027). This mode requires `.plan/` to be gitignored in the repo. Known trade-off: the plan does **not** appear in the task PR, so reviewers lose the "what was approved" audit trail.
+   - **`local`** — the plan file is a **gitignored, never-committed** artifact in this main checkout. You still write it and still set readiness, but you **never** `git add`/commit `.plan/<id>.md`. `/atelier:next-task` and `/atelier:resume-task` read it locally from here and carry its contents inline in the orchestrator briefing (PLAN.md §16.5, TASK_027). This mode requires `.plan/` to be gitignored in the repo. Known trade-off: the plan does **not** appear in the task PR, so reviewers lose the "what was approved" audit trail. **Caveat:** the plan file still only exists in *this* main checkout — a different machine or session has no way to read it.
+   - **`resident`** — valid **only** for a non-`files` backend (`github-project` / `linear`). The plan is written into the backend item itself via `setPlan(id, markdown)` (the `roadmap-tracking-flow` skill, delimited by `<!-- atelier:plan:start -->`/`<!-- atelier:plan:end -->` in the item body/description) and read back with `getPlan(id)`. **No `.plan/<id>.md` file exists anywhere** — not committed, not local, not gitignored. Nothing about the plan ever needs to reach `origin/<base>` or live on any one machine: any session that can reach the backend can `getPlan(id)`. This is the mode for a project that keeps **no local ROADMAP/`.plan` mirror at all** — refuse immediately with *"planStorage: resident requires a non-files backend — this project's backend is `files`, which has no item body to store a plan in"* if `.atelier.json` sets `resident` on a `files` backend.
 
 ## Phase 2 — Dispatch the planner
 
@@ -81,12 +82,13 @@ If the planner returned `refused-*` / `error`, skip to Phase 5 (nothing to commi
 
 Only after explicit approval:
 
-**Plan-storage mode (from Phase 1 step 4).** The backend sub-sections below describe the default `planStorage=committed` path. Under `planStorage=local`, apply the **same steps except never `git add`/commit `.plan/<id>.md`** — it stays a gitignored local artifact. Concretely:
+**Plan-storage mode (from Phase 1 step 4).** The backend sub-sections below describe the default `planStorage=committed` path. Under `planStorage=local`, apply the **same steps except never `git add`/commit `.plan/<id>.md`** — it stays a gitignored local artifact. Under `planStorage=resident`, skip the file entirely and write through `setPlan` instead. Concretely:
 
 - **`files` backend, `local`:** still flip `[ready]` in `ROADMAP.md` (and, if decomposed, still commit the epic rewrite), and still commit that `ROADMAP.md` change (`git add ROADMAP.md` — **omit `.plan`**), because the `[ready]` marker must still reach `origin/<base>` for `/next-task` to see it. The `.plan/<id>.md` file(s) stay local and uncommitted.
-- **`github-project` backend, `local`:** set the Project's `Ready` field (`setReady(id, true)`) exactly as below, and make **no commit at all** — there is no `ROADMAP.md`, and `.plan/<id>.md` stays local.
+- **`github-project` / `linear` backend, `local`:** set the Project's `Ready` field (`setReady(id, true)`) exactly as below, and make **no commit at all** — there is no `ROADMAP.md`, and `.plan/<id>.md` stays local.
+- **`github-project` / `linear` backend, `resident`:** set the Project's `Ready` field (`setReady(id, true)`) exactly as below, then call `setPlan(id, <approved plan markdown>)` via the `roadmap-tracking-flow` skill, passing the full contents of the (still-uncommitted, working-tree) draft `.plan/<id>.md` the planner wrote in Phase 2. This writes the plan into the backend item's body between the `atelier:plan` delimiters. Make **no commit at all**, then delete the now-superseded working-tree draft (`rm .plan/<id>.md` or `git clean -f .plan/<id>.md`) — under `resident` mode no plan file is left behind anywhere, local or committed, once `setPlan` has confirmed the write.
 
-In both `local` cases, still flip the draft plan's `Status:` line to `ready (approved — product lead)` inside the local `.plan/<id>.md` (a working-tree edit that is simply never staged). Everything else in Phase 4 below is the `committed`-mode path.
+In the `local` cases, still flip the draft plan's `Status:` line to `ready (approved — product lead)` inside the local `.plan/<id>.md` (a working-tree edit that is simply never staged). Under `resident`, flip the `Status:` line the same way **before** passing the content to `setPlan`, so the stored plan reads as approved. Everything else in Phase 4 below is the `committed`-mode path.
 
 ### `files` backend (unchanged — `planStorage=committed`)
 
@@ -130,7 +132,7 @@ Do **not** edit `ROADMAP.md` — there is none for this backend; the `Ready` fli
    ```
 4. Surface the commit SHA.
 
-The planning gate is satisfied when **both** the Project's `Ready` field is set **and** `.plan/<id>.md` is committed — a `Ready` item without a committed plan file is the same inconsistency §5 defines for the `files` backend (§16.5).
+The planning gate is satisfied when **both** the Project's `Ready` field is set **and** `.plan/<id>.md` is committed — a `Ready` item without a committed plan file is the same inconsistency §5 defines for the `files` backend (§16.5). (This is the `committed`-mode gate; under `resident` the gate is `Ready` set **and** a non-empty `getPlan(id)` — see the `resident` sub-case above, and never a `.plan/<id>.md` file of any kind.)
 
 ## Phase 5 — Discard (rejection / refusal)
 
@@ -142,11 +144,11 @@ When the product lead rejects, or the planner refused/errored after leaving work
 2. Remove the draft plan files the planner wrote that are not tracked: `git clean -f .plan` (only the new draft files; never touch already-committed plans). Confirm with `git status --porcelain .plan` before and after.
 3. Report that nothing was committed and the ROADMAP/`.plan` are back to their pre-command state.
 
-### `github-project` backend (new)
+### `github-project` / `linear` backend (new)
 
 1. Remove the draft plan files the planner wrote that are not tracked: `git clean -f .plan`. Confirm with `git status --porcelain .plan` before and after. There is no `ROADMAP.md` to revert.
-2. If `setReady(id, true)` already ran before a later failure in Phase 4, call `setReady(id, false)` via the `roadmap-tracking-flow` skill to un-set the `Ready` field. Because approval is the gate and the `setReady` call happens **after** approval, a rejection from the product lead never reaches the flip — the un-set path covers only a mid-Phase-4 failure (e.g. `setReady` succeeded but the subsequent `git commit` failed).
-3. Report that nothing was committed and the `.plan` is back to its pre-command state; if the `Ready` field was un-set, confirm that too.
+2. If `setReady(id, true)` already ran before a later failure in Phase 4, call `setReady(id, false)` via the `roadmap-tracking-flow` skill to un-set the `Ready` field. Because approval is the gate and the `setReady` call happens **after** approval, a rejection from the product lead never reaches the flip — the un-set path covers only a mid-Phase-4 failure (e.g. `setReady` succeeded but the subsequent `git commit` failed, or, under `resident`, the subsequent `setPlan` call failed).
+3. Report that nothing was committed and the `.plan` is back to its pre-command state; if the `Ready` field was un-set, confirm that too. Under `resident`, also confirm `setPlan` was never called (or, if it partially succeeded before the failure, that the backend item's plan section does not carry a stray approved-but-unreviewed plan — re-run `getPlan(id)` to check, and clear it with an empty `setPlan(id, "")` if it does).
 
 ## Output
 
@@ -160,7 +162,9 @@ Commit:    <sha>
 Next:      push/merge this commit to origin/<base> first (a decomposition is only claimable once it is on origin/<base>); then run /atelier:next-task to claim <first ready id>
 ```
 
-Under `planStorage=local`, adjust the tail lines: annotate `Plans:` with `(local — gitignored, not committed)`; for the `files` backend `Commit:` shows only the `ROADMAP.md` `[ready]`/epic-rewrite commit (the plan is not in it), and for the `github-project` backend the `Commit:` line is omitted entirely (nothing was committed). The `Next:` line still requires the `files` backend's `ROADMAP.md` `[ready]`/decomposition to reach `origin/<base>`, but **drops the "land the plan commit" precondition for the plan file itself** — `/next-task` reads the plan locally from this main checkout.
+Under `planStorage=local`, adjust the tail lines: annotate `Plans:` with `(local — gitignored, not committed)`; for the `files` backend `Commit:` shows only the `ROADMAP.md` `[ready]`/epic-rewrite commit (the plan is not in it), and for the `github-project`/`linear` backend the `Commit:` line is omitted entirely (nothing was committed). The `Next:` line still requires the `files` backend's `ROADMAP.md` `[ready]`/decomposition to reach `origin/<base>`, but **drops the "land the plan commit" precondition for the plan file itself** — `/next-task` reads the plan locally from this main checkout.
+
+Under `planStorage=resident`, annotate `Plans:` with `(backend-resident — stored in the <backend> item, no file)`; omit the `Commit:` line entirely (nothing was ever committed, and no local file survives Phase 4 either); the `Next:` line drops the landing precondition altogether — `/atelier:next-task <id>` can claim it immediately once `Ready` is set, with no push/merge step required for the plan.
 
 On refusal / rejection, the output is the reason plus the suggested next action, and a line confirming nothing was committed.
 
@@ -169,6 +173,7 @@ On refusal / rejection, the output is the reason plus the suggested next action,
 - **Never** flip `[ready]` or set the Project's `Ready` field without explicit product-lead approval. In non-interactive mode, stop at the draft — for both `files` and `github-project` backends.
 - **Never** start the implement chain or invoke `task-orchestrator` / `implementer` from this command. `/plan-task` is planning-only.
 - **Never** run from a task worktree — the backlog and `.plan/` you'd edit are on the wrong branch (Phase 1 step 2).
-- **Never** push the commit; never push to a protected branch directly. Landing happens via a normal PR to `origin/<base>` (squash-merge), not a direct push. For the decomposed case, the epic rewrite and every `.plan/<sub-id>.md` must land together in that one commit/PR — they are already one commit, so a partial landing cannot occur. **Claimability contract (`planStorage=committed`):** `/next-task` cuts the task worktree from `origin/<base>` and reads the merged ROADMAP from `origin/<base>` — a plan/decomposition committed locally but not yet on `origin/<base>` is invisible and is silently dropped. **The plan commit is not claimable until it is on `origin/<base>`.** Until then, running `/atelier:next-task` will refuse with a clear message pointing to the unmerged plan. **Under `planStorage=local` this claimability precondition does not apply to the plan *file*** — the plan is read from the main checkout and is never expected on `origin/<base>` (for the `files` backend, the `[ready]`/epic-rewrite in `ROADMAP.md` must still land, exactly as above).
+- **Never** push the commit; never push to a protected branch directly. Landing happens via a normal PR to `origin/<base>` (squash-merge), not a direct push. For the decomposed case, the epic rewrite and every `.plan/<sub-id>.md` must land together in that one commit/PR — they are already one commit, so a partial landing cannot occur. **Claimability contract (`planStorage=committed`):** `/next-task` cuts the task worktree from `origin/<base>` and reads the merged ROADMAP from `origin/<base>` — a plan/decomposition committed locally but not yet on `origin/<base>` is invisible and is silently dropped. **The plan commit is not claimable until it is on `origin/<base>`.** Until then, running `/atelier:next-task` will refuse with a clear message pointing to the unmerged plan. **Under `planStorage=local` this claimability precondition does not apply to the plan *file*** — the plan is read from the main checkout and is never expected on `origin/<base>` (for the `files` backend, the `[ready]`/epic-rewrite in `ROADMAP.md` must still land, exactly as above). **Under `planStorage=resident` there is no commit at all to push** — `setPlan` already made the plan durable in the backend the moment Phase 4 ran; there is nothing pending, nothing to land, and nothing for `/next-task` to wait on.
 - **Never** edit `IN_PROGRESS.md` or `HISTORY.md` — the task is not claimed yet, so there is no in-progress entry.
 - **Never** edit `ROADMAP.md` for a non-`files` backend — there is none; the `Ready` flip goes through the backend (`setReady`) only.
+- **Never** set `planStorage: resident` on a `files` backend — there is no backend item to hold a plan body. Refuse immediately (Phase 1 step 4) rather than silently falling back to `committed`.
