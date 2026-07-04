@@ -37,6 +37,28 @@
 #   Group 4 — PLAN.md §7 documents pr-opener
 #     - pr-opener row present in the agents table
 #     - cross-reference to operator-rules.md invariant present
+#   Group 5 — agents/task-orchestrator.md: non-task-pr mode selects the
+#             authoring primitive BY BRANCH SHAPE (#44c review-fix retarget)
+#     - the mode's head field admits a task/* shape and still excludes
+#       protected branches
+#     - the authoring primitive is selected by branch shape: task/* -> pr-author
+#     - the mode honors an explicit author_agent: pr-author hint
+#     - non-task head shapes (chore/*, docs/*, fix/*, plan-tracking) -> pr-opener
+#     - pr-opener never sees a task/* branch in this mode
+#     - regression guard: the OLD absolute "never dispatch pr-author in
+#       non-task PR coordination mode" sentence stays gone
+#   Group 5 — agents/task-orchestrator.md: non-task-pr mode selects the
+#             authoring primitive BY BRANCH SHAPE (#44c review-fix retarget)
+#     - task/* heads are admitted (no longer rejected) while protected
+#       branches remain excluded
+#     - the authoring primitive is selected by branch shape, and a task/*
+#       head dispatches pr-author
+#     - the mode honors an explicit author_agent: pr-author hint
+#     - non-task head shapes (chore/*, docs/*, fix/*, plan-tracking)
+#       dispatch pr-opener
+#     - pr-opener never sees a task/* branch in this mode
+#     - regression guard: the OLD absolute "never dispatch pr-author in
+#       non-task PR coordination mode" sentence must stay gone
 #
 # Hermetic: greps committed prose only; no network, no jq required beyond
 # what's already on PATH for other suite tests, no temp dirs.
@@ -51,6 +73,7 @@ PR_OPENER="$REPO_ROOT/agents/pr-opener.md"
 ALIGN_MD="$REPO_ROOT/commands/align.md"
 OPERATOR_RULES="$REPO_ROOT/operator-rules.md"
 PLAN="$REPO_ROOT/PLAN.md"
+TASK_ORCH="$REPO_ROOT/agents/task-orchestrator.md"
 
 fails=0
 pass() { printf '  PASS: %s\n' "$1"; }
@@ -241,6 +264,51 @@ chk_prose "$PLAN" 'entire author→review→merge coordination one level down to
 
 chk_prose "$PLAN" 'operator-rules.md` § "PR authoring is always sub-agent' \
   "PLAN §7: cross-references operator-rules.md's invariant section"
+
+# ---------------------------------------------------------------------------
+# Group 5: agents/task-orchestrator.md — non-task-pr mode selects the
+# authoring primitive BY BRANCH SHAPE (#44c review-fix retarget)
+# ---------------------------------------------------------------------------
+
+chk_prose "$TASK_ORCH" \
+  'already prepared on head), base, head (any pushable branch — chore/*, docs/*,' \
+  "task-orchestrator: non-task-pr mode's head field admits chore/*, docs/* pushable shapes"
+
+chk_prose "$TASK_ORCH" \
+  'fix/*, plan-tracking, or task/* — except a protected branch: main/master/' \
+  "task-orchestrator: non-task-pr mode admits a task/* head, still excludes protected branches"
+
+chk_prose "$TASK_ORCH" \
+  'the authoring primitive is selected **by branch shape**: a `task/*`' \
+  "task-orchestrator: authoring primitive is selected by branch shape (mode-section prose)"
+
+chk_prose "$TASK_ORCH" \
+  'head dispatches `pr-author` (via `Task`, honoring an explicit `author_agent:' \
+  "task-orchestrator: a task/* head dispatches pr-author, honoring the author_agent hint"
+
+chk_prose "$TASK_ORCH" \
+  '`docs/*`, `fix/*`, or plan-tracking) dispatches `pr-opener`. Either way, run' \
+  "task-orchestrator: non-task head shapes (chore/*, docs/*, fix/*, plan-tracking) dispatch pr-opener"
+
+chk_prose "$TASK_ORCH" \
+  'selected **by branch shape**, not hardcoded: a `task/*` head dispatches `pr-author`' \
+  "task-orchestrator: Decision rules restate by-branch-shape selection (task/* -> pr-author)"
+
+chk_prose "$TASK_ORCH" \
+  'honoring an `author_agent: pr-author` hint' \
+  "task-orchestrator: Decision rules restate the author_agent: pr-author hint"
+
+chk_prose "$TASK_ORCH" \
+  'a `chore/*`/`docs/*`/`fix/*`/plan-tracking head dispatches `pr-opener`' \
+  "task-orchestrator: Decision rules restate non-task heads dispatch pr-opener"
+
+chk_prose "$TASK_ORCH" \
+  '`pr-opener` never sees a `task/*` branch in this mode' \
+  "task-orchestrator: pr-opener never sees a task/* branch in this mode"
+
+chk_absent "$TASK_ORCH" \
+  '**Never** dispatch `pr-author` in non-task PR coordination mode. The authoring primitive for a non-task branch is always `pr-opener`.' \
+  "task-orchestrator: OLD absolute 'never dispatch pr-author in non-task mode' sentence stays gone (regression guard)"
 
 # ---------------------------------------------------------------------------
 # Result
