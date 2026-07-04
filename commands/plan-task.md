@@ -166,6 +166,8 @@ Under `planStorage=local`, adjust the tail lines: annotate `Plans:` with `(local
 
 Under `planStorage=resident`, annotate `Plans:` with `(backend-resident — stored in the <backend> item, no file)`; omit the `Commit:` line entirely (nothing was ever committed, and no local file survives Phase 4 either); the `Next:` line drops the landing precondition altogether — `/atelier:next-task <id>` can claim it immediately once `Ready` is set, with no push/merge step required for the plan.
 
+**Autonomous plan-landing PRs.** This command itself never pushes or opens a PR (see Hard refusals below) — the `Next:` line's "push/merge this commit to origin/<base>" step is normally the operator's own action. But when the driving session opens that plan-landing PR (the tracking PR that lands the `[ready]`/decomposition commit from Phase 4 onto `origin/<base>`) **autonomously** rather than handing it to the operator, that PR's author→review→merge coordination must be delegated through `task-orchestrator` (non-task PR coordination mode) — never authored and reviewed by the driving session itself. This is the same reason the align base PR is delegated rather than coordinated inline: a driving session must never coordinate both authoring and review of a PR it prepared, because the harness classifier blocks that self-approval.
+
 On refusal / rejection, the output is the reason plus the suggested next action, and a line confirming nothing was committed.
 
 ## Hard refusals
@@ -177,3 +179,4 @@ On refusal / rejection, the output is the reason plus the suggested next action,
 - **Never** edit `IN_PROGRESS.md` or `HISTORY.md` — the task is not claimed yet, so there is no in-progress entry.
 - **Never** edit `ROADMAP.md` for a non-`files` backend — there is none; the `Ready` flip goes through the backend (`setReady`) only.
 - **Never** set `planStorage: resident` on a `files` backend — there is no backend item to hold a plan body. Refuse immediately (Phase 1 step 4) rather than silently falling back to `committed`.
+- **Never** author AND review a plan-landing PR from this command's own turn — when opened autonomously, delegate the whole author→review→merge coordination to `task-orchestrator` (non-task PR coordination mode), exactly as the align base PR does.

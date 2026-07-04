@@ -1,10 +1,10 @@
 ---
-description: Cut a version release for a project through the independent pr-author → reviewer → auto-merge chain — the command never authors or merges the bump PR from its own turn.
+description: Cut a version release for a project by delegating the whole author → review → merge coordination to task-orchestrator (non-task PR coordination mode) — the command never authors, reviews, or merges the bump PR from its own turn.
 argument-hint: "[<version>|major|minor|patch] [--project <path>] [--all] [--yes|-y]"
-allowed-tools: Read, Bash(atelier-release:*), Bash(git fetch:*), Bash(git tag:*), Bash(git push origin v*), Bash(git describe:*), Bash(git log:*), Bash(git rev-parse:*), Bash(gh pr view:*), Skill, Task, AskUserQuestion
+allowed-tools: Read, Bash(atelier-release:*), Bash(git fetch:*), Bash(git tag:*), Bash(git push origin v*), Bash(git describe:*), Bash(git log:*), Bash(git rev-parse:*), Skill, Task, AskUserQuestion
 ---
 
-You are running the `/atelier:release` slash command. Cut the **next** SemVer release for one project (per [PLAN.md §14](PLAN.md), design decision recorded in §14.9) by driving the same independent chain every other atelier PR goes through — `pr-author` → `reviewer` → auto-merge. **This command never authors, reviews, or merges the bump PR from its own turn.** Authoring and review are always two separate `Task` dispatches, exactly as for an ordinary task.
+You are running the `/atelier:release` slash command. Cut the **next** SemVer release for one project (per [PLAN.md §14](PLAN.md), design decision recorded in §14.9). **This command never authors, reviews, or merges the bump PR from its own turn.** This command delegates the whole author→review→merge coordination to `task-orchestrator` (non-task PR coordination mode); it never dispatches `pr-author`, `reviewer`, or `auto-merge` from its own turn — exactly the way `/atelier:align` delegates its base PR.
 
 User input: `$ARGUMENTS` (optional) — may carry, in any order:
 - an explicit override: `major`, `minor`, `patch`, or a literal `X.Y.Z` / `vX.Y.Z` version (overrides the inferred bump);
@@ -20,7 +20,7 @@ Before doing anything that would otherwise pause for operator input, decide whet
 - `$ARGUMENTS` contains the literal token `-y` (surrounded by whitespace or string boundaries — not embedded in another flag).
 - The environment variable `ATELIER_AUTO` is set to any non-empty value. Probe with `env | grep -E '^ATELIER_AUTO='`.
 
-If none of those is true, you are **interactive**. In non-interactive mode, **never** use `AskUserQuestion` — auto-resolve per the per-step rule documented inline. `interactive: false` (or the equivalent prose) must be propagated into **every** `Task` dispatch this command makes (`implementer`, `pr-author`, `reviewer`), so a specialist never stalls waiting for input that will not come in a headless run.
+If none of those is true, you are **interactive**. In non-interactive mode, **never** use `AskUserQuestion` — auto-resolve per the per-step rule documented inline. `interactive: false` (or the equivalent prose) must be propagated into **every** `Task` dispatch this command makes (`implementer`, `task-orchestrator`), so a specialist never stalls waiting for input that will not come in a headless run.
 
 ## Steps
 
@@ -83,33 +83,32 @@ This command carries no `Edit` / `Write` tool — it cannot touch `.claude-plugi
 
 Wait for the dispatch to report the edit is done before proceeding — do not assume it landed.
 
-### 7. Author the release PR — `pr-author` dispatch (`Task`, separate from step 8)
+### 7. Delegate author → review → merge coordination — `task-orchestrator` dispatch (`Task`)
 
-Dispatch the `atelier:pr-author` agent via `Task`. This is a **separate** `Task` call from the `reviewer` dispatch in step 8 — the harness classifier blocks an agent from approving its own PR, and the author identity (`GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author`) lacks repo-admin, so authoring and reviewing a release bump must stay two independent dispatches exactly as they do for an ordinary task (see [PLAN.md §14.9](PLAN.md)).
+Dispatch the `atelier:task-orchestrator` agent via `Task` in **non-task PR coordination mode** — this command carries no `Edit`/`Write` tool and no `gh pr merge`/`gh pr review` in its `allowed-tools`, and would not author, review, or merge the bump PR from its own turn even if it could. The whole author→review→merge chain (author → `reviewer` → the Pre-merge CI wait → `auto-merge`) is the orchestrator's job, dispatched as ITS OWN sub-agent calls one level down from this command's turn — exactly the way `/atelier:align` delegates its base PR.
 
-The briefing must make explicit that this is a **release PR with no board item**, so `pr-author` runs its normal first-pass flow (push gate → code commit → push → size gate → `gh pr create` → return PR URL) **except step 3 is skipped entirely**: there is no `IN_PROGRESS.md` / `HISTORY.md` entry (and, on a non-`files` backend, no `moveTask` / `appendHistoryEntry` call) to make for a release, so there is nothing to move. State this explicitly in the briefing prose — it is **not** the same thing as `pr-author`'s existing `follow_up: true` re-push mode (which also skips `gh pr create`, because in that mode the PR already exists); a release PR is opened for the first time, so `gh pr create` still runs. Do **not** edit `agents/pr-author.md` to add a formal flag for this — the per-dispatch briefing carries the instruction, the same way `task-orchestrator` carries one-off contextual instructions (e.g. `plan_storage` mode) to specialists without a dedicated flag per agent file.
+Hand it a briefing carrying:
 
-Also pass, so the PR body is self-documenting:
-- `branch`: `task/release-<next_version>`.
-- The commit message: `chore(release): v<next_version>`.
-- The PR body's shipped-changes section, pre-populated from `pr_body_lines` (step 3's JSON) — one bullet per unreleased commit, so the PR auto-lists exactly the commits/PRs this release ships without `pr-author` having to re-derive it.
+- `mode: non-task-pr` — and **no** `task_id`; that field is what routes the orchestrator into non-task-pr coordination instead of its normal task chain.
+- `repo`: `<project>`'s `owner/name` (from `git -C <project> remote get-url origin`, parsed).
+- `worktree`: the absolute release worktree path from step 5, already prepared on `head`.
+- `base`: `main`.
+- `head`: `task/release-<next_version>`.
+- `title`: `chore(release): v<next_version>`.
+- `body`: the PR body's shipped-changes section, pre-populated from `pr_body_lines` (step 3's JSON) — one bullet per unreleased commit, so the PR auto-lists exactly the commits/PRs this release ships without the author agent having to re-derive it.
+- `author_agent: pr-author` — **required, not optional.** The release branch `task/release-<next_version>` is `task/*`-shaped; #44a's non-task-pr coordination mode selects the authoring primitive by branch shape (a `task/*` head routes to `pr-author`, honoring this explicit hint), while `pr-opener` stays scoped to `chore/*` / `docs/*` / `fix/*` / plan-tracking branches and never handles `task/*`. Carrying the hint here keeps this command's intent explicit and correct regardless of the orchestrator's internal default.
 - `interactive: <bool>` from this command's interaction mode.
 
-Wait for `pr-author` to return the PR URL (or `oversized` / gate-red) before proceeding. On `oversized` or gate-red, stop and surface it — do not retry silently or push a tag.
+Also make explicit in the briefing that this is a **release PR with no board item**, so the author agent runs its normal first-pass flow (push gate → code commit → push → size gate → `gh pr create` → return PR URL) **except the tracking-move step is skipped entirely**: there is no `IN_PROGRESS.md` / `HISTORY.md` entry (and, on a non-`files` backend, no `moveTask` / `appendHistoryEntry` call) to make for a release, so there is nothing to move. State this explicitly — it is **not** the same thing as `pr-author`'s existing `follow_up: true` re-push mode (which also skips `gh pr create`, because in that mode the PR already exists); a release PR is opened for the first time, so `gh pr create` still runs. Do **not** edit `agents/pr-author.md` to add a formal flag for this — the per-dispatch briefing carries the instruction, the same way `task-orchestrator` carries one-off contextual instructions (e.g. `plan_storage` mode) to specialists without a dedicated flag per agent file.
 
-### 8. Independent review — `reviewer` dispatch (`Task`, separate from step 7)
+Wait for `task-orchestrator` to return its terminal report before proceeding to step 8:
 
-Dispatch the `atelier:reviewer` agent (Opus, fresh context) via `Task` against the PR URL/number from step 7. This is always a **second, independent** `Task` dispatch — never the same subagent turn as step 7, and never approved by this command itself. `reviewer` runs under `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/reviewer`, a distinct GitHub identity from the author, so its `gh pr review --approve` lands as a real, separate approval that `reviewDecision` reflects.
+- **`merged (<sha>)`** — proceed to step 8 with that merge commit SHA.
+- **`held — <guardrails that failed>`** (or an author-side `oversized` / gate-red held inside the orchestrator's chain) — **stop and surface it exactly as reported. Do not push a tag.**
 
-### 9. Auto-merge — `atelier:auto-merge` skill
+### 8. Push the annotated tag — only after merge
 
-Once `reviewer` has posted its verdict, invoke the `atelier:auto-merge` skill against the PR. It evaluates the six guardrails from [PLAN.md §6](PLAN.md) and squash-merges only when all pass. `.claude-plugin/plugin.json` is not on the auto-merge "never merge" forbidden-path list, so a clean release bump merges the same way any other small PR does — no special-casing needed here. If the skill reports `held: <reason>`, stop and surface the hold; **do not push a tag against an unmerged PR.**
-
-Capture the **merge commit SHA** and the PR number from the skill's output — step 10 needs the SHA.
-
-### 10. Push the annotated tag — only after merge
-
-**Never** push the tag before this point. Once (and only once) step 9 confirms the PR is merged:
+**Never** push the tag before this point. Once (and only once) step 7 confirms the PR is merged:
 
 ```bash
 git -C <project> fetch origin main
@@ -117,9 +116,9 @@ git -C <project> tag -a v<next_version> <merge-sha> -m "atelier v<next_version>"
 git -C <project> push origin v<next_version>
 ```
 
-The tag targets the **merge commit SHA** captured in step 9, not whatever `origin/main` resolves to at push time (a race with another concurrent merge could otherwise tag the wrong commit). `Bash(git tag -a v*)` and `Bash(git push origin v*)` are allowlisted in `templates/settings.template.json` specifically for this step — both patterns are anchored on the literal `v` + version and cannot match a branch push (atelier branches are always `task/*`), and neither is shadowed by the `Bash(git push * main|master|develop|staging)` deny rules, which require a literal protected branch name as the final token.
+The tag targets the **merge commit SHA** captured in step 7, not whatever `origin/main` resolves to at push time (a race with another concurrent merge could otherwise tag the wrong commit). `Bash(git tag -a v*)` and `Bash(git push origin v*)` are allowlisted in `templates/settings.template.json` specifically for this step — both patterns are anchored on the literal `v` + version and cannot match a branch push (atelier branches are always `task/*`), and neither is shadowed by the `Bash(git push * main|master|develop|staging)` deny rules, which require a literal protected branch name as the final token.
 
-### 11. Print the operator update recipe
+### 9. Print the operator update recipe
 
 After the tag is pushed, print the standard three-step recipe so the operator can pick up the new version:
 
@@ -134,14 +133,15 @@ After the tag is pushed, print the standard three-step recipe so the operator ca
 
 ## Output
 
-End the command with the block from step 11, or — for any terminal state reached earlier (step 1's `--all` refusal, step 3's noop/refusal, step 4's operator decline, step 7's oversized/gate-red) — that state's own message **is** the command's output. Report exactly which step stopped and why; the operator decides whether to resume.
+End the command with the block from step 9, or — for any terminal state reached earlier (step 1's `--all` refusal, step 3's noop/refusal, step 4's operator decline, step 7's `held`) — that state's own message **is** the command's output. Report exactly which step stopped and why; the operator decides whether to resume.
 
 ## Hard refusals
 
 - **Never** implement `--all` — refuse per step 1 and point to #44 (`scripts/atelier-release enumerate` is a documented stub, not a working feature).
-- **Never** author, review, or merge the bump PR from this command's own turn. This command carries no `Edit`/`Write` tool and no `gh pr merge`/`gh pr review` in its `allowed-tools` — the version bump is `implementer`'s deliverable, the PR is `pr-author`'s, the review is `reviewer`'s, and the merge is the `atelier:auto-merge` skill's, each a separate `Task`/`Skill` dispatch.
-- **Never** let the same `Task` dispatch both author and review the PR — steps 7 and 8 are always two separate calls, matching the two distinct GitHub identities (`gh/author` vs `gh/reviewer`) the harness classifier and repo permissions require.
+- **Never** author, review, or merge the bump PR from this command's own turn. This command carries no `Edit`/`Write` tool and no `gh pr merge`/`gh pr review` in its `allowed-tools` — the version bump is `implementer`'s deliverable, and the entire author→review→merge coordination is `task-orchestrator`'s, dispatched as a single `Task` call (step 7).
+- **Never** dispatch `pr-author`, `reviewer`, or `auto-merge` from this command's own turn — the whole author→review→merge coordination is delegated to `task-orchestrator` in non-task PR coordination mode (step 7), matching the two distinct GitHub identities (`gh/author` vs `gh/reviewer`) the harness classifier and repo permissions require without this command ever holding either one itself.
+- **Never** omit the `author_agent: pr-author` hint from the step 7 briefing — it is the explicit, required signal that non-task-pr mode's branch-shape selection routes this `task/release-<version>` head to `pr-author`, never `pr-opener` (which stays scoped to `chore/*`/`docs/*`/`fix/*`/plan-tracking branches and does not handle `task/*`).
 - **Never** ride the release bump on `release/*` or `hotfix/*` — `pr-flow` and the permission matrix refuse pushes to those names outright. The branch is always `task/release-<version>`.
-- **Never** push the `vX.Y.Z` tag before `atelier:auto-merge` confirms the PR is merged. Tagging an unmerged commit (or a stale `origin/main` HEAD instead of the actual merge SHA) would point the tag at the wrong commit.
-- **Never** edit `agents/pr-author.md` to add a formal "no board item" flag for this — carry the "skip step 3, no tracking move applies" instruction in the per-dispatch briefing prose, exactly as other one-off contextual instructions reach specialists today.
+- **Never** push the `vX.Y.Z` tag before `task-orchestrator` confirms the PR is merged (step 7's terminal report). Tagging an unmerged commit (or a stale `origin/main` HEAD instead of the actual merge SHA) would point the tag at the wrong commit.
+- **Never** edit `agents/pr-author.md` to add a formal "no board item" flag for this — carry the "skip the tracking move, no board item applies" instruction in the step 7 briefing prose, exactly as other one-off contextual instructions reach specialists today.
 - **Never** silently retry `scripts/atelier-release resolve` with a different override after a refusal — surface the `refuse_reason` to the operator (or, non-interactively, to the log) and stop.
