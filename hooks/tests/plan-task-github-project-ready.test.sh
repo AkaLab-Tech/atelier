@@ -176,11 +176,33 @@ chk_prose "$PLAN_TASK" 'git add ROADMAP.md .plan' \
 chk_prose "$PLAN_TASK" 'planStorage=local' \
   "local mode: planStorage=local branch present"
 
-chk_prose "$PLAN_TASK" '`github-project` backend, `local`:' \
+chk_prose "$PLAN_TASK" '`github-project` / `linear` backend, `local`:' \
   "local mode: github-project local sub-case documented"
 
 chk_prose "$PLAN_TASK" 'make **no commit at all**' \
   "local mode: github-project sets Ready but makes no commit"
+
+# ---------------------------------------------------------------------------
+# Group 9: planStorage=resident — backend-resident plans, no file anywhere
+# ---------------------------------------------------------------------------
+#
+# Under planStorage=resident (non-files backends only), the plan is written
+# into the backend item body via setPlan/getPlan (already built in
+# claude-roadmap-tools' roadmap-tracking-flow skill) instead of any
+# .plan/<id>.md file, committed or local. Asserts plan-task.md actually
+# drives that path rather than silently falling back to committed/local.
+
+chk_prose "$PLAN_TASK" '**`resident`**' \
+  "resident mode: planStorage=resident branch documented in Phase 1"
+
+chk_prose "$PLAN_TASK" 'setPlan(id, <approved plan markdown>)' \
+  "resident mode: Phase 4 calls setPlan via roadmap-tracking-flow"
+
+chk_prose "$PLAN_TASK" 'no plan file is left behind anywhere, local or committed' \
+  "resident mode: working-tree draft removed after setPlan confirms"
+
+chk_prose "$PLAN_TASK" 'Never** set `planStorage: resident` on a `files` backend' \
+  "resident mode: hard refusal against resident on files backend"
 
 # ---------------------------------------------------------------------------
 # Result
