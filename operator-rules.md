@@ -175,20 +175,30 @@ of which `gh` identity performed the push. The dual `gh` identities are
 and still trip the classifier the moment it turns around and dispatches
 `reviewer` on the PR it just opened.
 
-The rule for the main/orchestrating session: **never hand-author a PR you will
-then dispatch `reviewer` or `/atelier:auto-merge` against.** Commit + push +
-`gh pr create` for a PR you intend to review yourself is always delegated to a
-sub-agent, so the dispatching session stays a clean, non-authoring actor:
+**Delegating only the authoring step is NOT sufficient.** Handing `git push` /
+`gh pr create` off to a sub-agent (`pr-author` or `pr-opener`) satisfies axis
+(1) but not axis (2) on its own — the classifier attributes the sub-agent's
+push back to whichever session goes on to dispatch that PR's review
+(confirmed empirically by PR #293). The rule for the session driving the
+conversation: **a driving session never coordinates both authoring and review
+of the same PR.** It delegates the entire author→review→merge coordination
+one level down to `task-orchestrator`, which dispatches the author as ITS OWN
+sub-agent (`pr-author` for `task/<id>-<slug>` branches, `pr-opener` for
+non-task branches) and then dispatches `reviewer` itself — the driving
+session never runs both halves:
 
-- For a ROADMAP task PR (`task/<id>-<slug>`), delegate to `pr-author`.
+- For a ROADMAP task PR (`task/<id>-<slug>`), `task-orchestrator` dispatches
+  the author (`pr-author`) then the reviewer, in its standard mode.
 - For a non-task PR (an `/atelier:align` base PR, an ad-hoc operator request on
-  a `chore/*` / `docs/*` / `fix/*` branch), delegate to `pr-opener`.
+  a `chore/*` / `docs/*` / `fix/*` branch), `task-orchestrator` dispatches
+  `pr-opener` for non-task branches then the reviewer, in its "non-task PR
+  coordination mode" (see `agents/task-orchestrator.md`).
 
 **One benign exception:** opening a PR and *not* self-reviewing it in the same
 session — e.g. `/atelier:finish-task`, which opens the PR and hands review off
 to a later, separate session or the operator — is fine. The violation is
-specifically dispatching `reviewer` / `auto-merge` from the same session that
-pushed, not authoring a PR per se.
+specifically coordinating both authoring and review from the same session,
+not authoring a PR per se.
 
 ## Operating against the task worktree (cwd vs paths)
 

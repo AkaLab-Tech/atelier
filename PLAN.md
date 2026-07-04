@@ -383,6 +383,8 @@ The orchestrator waits (bounded) for CI to complete before invoking the merge ga
 
 **Unattended watcher:** `/atelier:babysit-prs` (§7) drives open `task/*` PRs that are not yet reviewed or merged — re-entering at the `reviewer → auto-merge` segment — without any manual re-invocation. Loop it with `/loop <interval> /atelier:babysit-prs`; it runs one idempotent pass per invocation and reports the per-PR verdict.
 
+**Standalone (non-task) PR flows delegate the whole coordination to the orchestrator too**: no driving session runs both `gh pr create` (or `Task(pr-opener)`) and the `reviewer` / `auto-merge` dispatch for the same PR — see `agents/task-orchestrator.md` § Non-task PR coordination mode and `operator-rules.md` § "PR authoring is always sub-agent work".
+
 ---
 
 ## 7. Agents, skills, slash commands ✅
@@ -397,7 +399,7 @@ The orchestrator waits (bounded) for CI to complete before invoking the merge ga
 | `tester` | Sonnet | Writes and runs unit + integration tests |
 | `e2e-runner` | Sonnet | Drives Playwright, captures screenshots |
 | `pr-author` | Sonnet | Opens PR, writes description, posts status |
-| `pr-opener` | Sonnet | Authors a non-task PR (e.g. `/atelier:align`'s base PR) so the dispatching session stays a clean, non-authoring reviewer |
+| `pr-opener` | Sonnet | Authoring primitive the orchestrator dispatches for non-task PRs (e.g. `/atelier:align`'s base PR) |
 | `reviewer` | Opus | Independent review before merge |
 | `unblocker` | Sonnet | Handles failure recovery + blocking issues |
 
@@ -405,12 +407,17 @@ The orchestrator waits (bounded) for CI to complete before invoking the merge ga
 review: git identity (`gh/author` vs `gh/reviewer`, §6) and actor/session (the
 auto-mode classifier blocks a `reviewer`/`auto-merge` dispatch as self-approval
 when the *same session* pushed that PR, independent of which `gh` identity it
-used). The dual identities satisfy the first axis but not the second, so a
-session must never commit + push + `gh pr create` for a PR it will itself send
-to `reviewer` — it delegates authoring instead: `pr-author` for `task/<id>`
-branches, `pr-opener` for everything else (align's base PR, ad-hoc chore/docs/
-fix branches). See `operator-rules.md` § "PR authoring is always sub-agent
-work" for the full rule and its one benign exception.
+used). Delegating only the authoring is NOT sufficient: the classifier
+attributes a sub-agent's push back to the orchestrating session the moment
+that same session turns around and dispatches `reviewer` / `auto-merge`
+itself (confirmed empirically by PR #293). So a driving session never
+coordinates both authoring and review of the same PR — it delegates the
+entire author→review→merge coordination one level down to
+`task-orchestrator`, which dispatches the author (`pr-author` for
+`task/<id>-<slug>` branches, `pr-opener` for non-task branches, via its
+"non-task PR coordination mode") and `reviewer` as its own sub-agents. See
+`operator-rules.md` § "PR authoring is always sub-agent work" for the full
+rule and its one benign exception.
 
 ### Skills (global)
 
