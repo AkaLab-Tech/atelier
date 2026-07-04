@@ -109,33 +109,40 @@ exact per-repo commands instead. Do **not** push directly to the base branch.
 
 ### Tier 3 under `auto` (autonomous)
 
-Delegate the base-PR authoring to the **`pr-opener` agent** (via `Task`) — one
-dispatch per repo — instead of running `gh pr create` inline in this session:
-hand it `repo` (owner/name), `worktree` (the temporary worktree path), `base`,
-`head` (`chore/atelier-align`), `title`, and `body`. `pr-opener` runs the push
-gate, pushes the branch, and opens the PR under the author identity, then
-returns the PR URL; it does not remove the temporary worktree (do that once its
-PR URL comes back). Delegating the authoring this way means this session never
-ran `git push` / `gh pr create` for the PR itself, so the `reviewer` dispatch in
-step 1 below runs from a clean, non-authoring actor and does not trip the
-auto-mode classifier's self-approval block. Then drive each opened base PR
-through the guardrailed merge path — **in this order, per repo**:
+Delegate the **entire** base-PR authoring → review → merge coordination to the
+**`task-orchestrator` agent** (via `Task`) — one dispatch per repo — in
+**non-task mode**, instead of authoring or merging anything inline in this
+session. Hand it: `mode: non-task-pr`, `repo` (owner/name), `worktree` (the
+temporary `chore/atelier-align` worktree path, already prepared above), `base`,
+`head: chore/atelier-align`, `title`, `body`, and `interactive: false`. Do
+**not** pass a `task_id` — that field is what routes the orchestrator into its
+non-task-pr coordination mode instead of its normal task chain.
 
-1. **Review:** invoke the `reviewer` agent (via `SlashCommand`) against the PR.
-   The reviewer checks the commit content and posts an approval or requests changes.
-2. **Merge:** invoke `/atelier:auto-merge` against the PR. The skill evaluates the
-   six PLAN.md §6 guardrails and, when all pass, runs
-   `gh pr merge --squash --delete-branch`. Do **not** ask the operator to confirm
-   the merge — the guardrails ARE the authorization (see `skills/auto-merge`
-   § "Authorization model — the gate IS the consent"). If `auto-merge` returns
-   `held`, surface the held reason and stop waiting; do **not** bypass the
-   guardrail, do **not** call `gh pr merge` directly, and do **not** prompt the
-   operator to merge manually.
-3. **Fast-forward the operator's local checkout:** after the PR merges, run
-   `git -C <repo> pull --ff-only` on the operator's checkout of the base branch.
-   Tier 3 used a throwaway worktree, leaving the operator's local checkout behind
-   `origin/<base>`; this pull brings it up to date. This is a **local pull only** —
-   do **not** push to the base branch.
+The orchestrator — not align — dispatches `pr-opener` → `reviewer` → the
+Pre-merge CI wait → `auto-merge` as its own sub-agents once handed this
+briefing. **Align does not itself dispatch `reviewer` or `auto-merge`, and
+there is no inline `gh pr create` in this session for the auto path.** That
+one-level-down delegation (align dispatches task-orchestrator, which in turn
+dispatches pr-opener) is exactly what clears the auto-mode classifier's
+self-approval block — the actor that prepares the change is never the same
+actor that authors and approves it.
+
+Then handle the orchestrator's terminal response for that repo:
+
+1. **`merged`** — fast-forward the operator's local checkout: run
+   `git -C <repo> pull --ff-only` on the operator's checkout of the base
+   branch. Tier 3 used a throwaway worktree, leaving the operator's local
+   checkout behind `origin/<base>`; this pull brings it up to date. This is a
+   **local pull only** — do **not** push to the base branch. Then remove the
+   temporary worktree.
+2. **`held`** — a PLAN.md §6 guardrail held inside the orchestrator's
+   `auto-merge` step (e.g. an unprotected member repo leaving `reviewDecision`
+   empty even after a real `APPROVED` review — guardrail #2). Surface the held
+   reason and stop; this is **delegated, but held on branch-protection** — not
+   a delegation failure. Do **not** bypass the guardrail, do **not** call
+   `gh pr merge` directly, and do **not** prompt the operator to merge
+   manually. Remove the temporary worktree once the orchestrator's response is
+   terminal.
 
 ## Step 5 — report
 

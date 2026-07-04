@@ -21,11 +21,12 @@
 #     - Step 4 Tier-3 ask (interactive) section present
 #     - Step 4 Tier-3 auto (autonomous) section present
 #     - Unconditional "Never push to or merge" hard rule absent (rule is now ask-scoped)
-#   Group 3 — reviewer -> auto-merge -> base-pull sequence under auto
-#     - Step 1: reviewer agent invoked via SlashCommand
-#     - Step 2: /atelier:auto-merge skill invoked
-#     - Step 3: git pull --ff-only fast-forwards operator's local checkout
+#   Group 3 — delegated author->review->merge sequence under auto
+#     - align delegates the whole sequence to task-orchestrator (mode: non-task-pr)
+#     - the orchestrator (not align) dispatches pr-opener -> reviewer -> auto-merge
+#     - post-merge: git pull --ff-only fast-forwards operator's local checkout
 #     - fast-forward is described as a local pull only (no base-branch push)
+#     - a held terminal state is surfaced-and-stopped, not bypassed
 #   Group 4 — Spurious permission suggestion absent
 #     - prohibition on suggesting a gh pr merge permission rule is present
 #     - Bash(gh pr merge permission-rule form is absent from the file
@@ -126,20 +127,23 @@ chk_absent "$ALIGN_MD" '**Never** push to or merge' \
 # Group 3: reviewer -> auto-merge -> base-pull sequence under auto
 # ---------------------------------------------------------------------------
 
-chk_prose "$ALIGN_MD" '**Review:** invoke the `reviewer` agent (via `SlashCommand`) against the PR' \
-  "auto-sequence: step 1 — reviewer agent invoked via SlashCommand"
+chk_prose "$ALIGN_MD" 'mode: non-task-pr' \
+  "auto-sequence: align delegates via mode: non-task-pr"
 
-chk_prose "$ALIGN_MD" '**Merge:** invoke `/atelier:auto-merge` against the PR' \
-  "auto-sequence: step 2 — /atelier:auto-merge skill invoked"
+chk_prose "$ALIGN_MD" 'task-orchestrator' \
+  "auto-sequence: task-orchestrator agent named as the delegation target"
 
-chk_prose "$ALIGN_MD" '**Fast-forward the operator' \
-  "auto-sequence: step 3 — fast-forward operator's local checkout described"
+chk_prose "$ALIGN_MD" 'The orchestrator — not align — dispatches `pr-opener` → `reviewer` → the' \
+  "auto-sequence: orchestrator (not align) dispatches pr-opener -> reviewer -> auto-merge"
 
 chk_prose "$ALIGN_MD" 'git -C <repo> pull --ff-only' \
   "auto-sequence: git pull --ff-only command present for local fast-forward"
 
 chk_prose "$ALIGN_MD" '**local pull only**' \
   "auto-sequence: fast-forward is a local pull only (no push to base branch)"
+
+chk_prose "$ALIGN_MD" '**delegated, but held on branch-protection**' \
+  "auto-sequence: held terminal state is surfaced as delegated-but-held, not bypassed"
 
 # ---------------------------------------------------------------------------
 # Group 4: Spurious permission suggestion absent
