@@ -1,7 +1,7 @@
 ---
 description: Run atelier's validation checks against the current worktree. Default (fast) layer runs lint + typecheck + unit/integration tests; `--full` adds Playwright e2e + screenshots.
 argument-hint: "[--full]"
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(pnpm:*), Bash(npx:*), Bash(eslint:*), Bash(prettier:*), Bash(tsc:*), Bash(biome:*), Bash(vitest:*), Bash(jest:*), Bash(pytest:*), Bash(playwright:*), Bash(env:*), mcp__plugin_atelier_playwright
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(pnpm:*), Bash(npx:*), Bash(eslint:*), Bash(prettier:*), Bash(tsc:*), Bash(biome:*), Bash(vitest:*), Bash(jest:*), Bash(ruff:*), Bash(mypy:*), Bash(pyright:*), Bash(pytest:*), Bash(playwright:*), Bash(env:*), mcp__plugin_atelier_playwright
 ---
 
 You are running the `/validate` slash command. Execute the project's validation gate against the current worktree and print a **structured, machine-readable pass/fail summary**. Do not write code, fix issues, or invoke specialist agents — this command is a read-only execution of existing checks.
