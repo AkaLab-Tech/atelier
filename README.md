@@ -42,7 +42,7 @@ Add a line under `## 🎯 P1 — Next`:
 - [ ] chore add a script to seed the database
 ```
 
-Format: `[ ]` + type (`feat` / `bug` / `chore`) + short description. Optional fields per [PLAN.md §5](PLAN.md): `[~estimate]`, `[#issue-id]`, `[blocked_by:<other-task>]`.
+Format: `[ ]` + type (`feat` / `bug` / `chore`) + short description. Optional fields per [PLAN.md §5](PLAN.md): `[~estimate]`, `[#issue-id]`, `[blocked_by:<other-task>]`. For the full grammar (all five type tags, acceptance criteria, epics, a worked example) see the [Product Owner Guide](docs/product-owner-guide.md).
 
 ### 3. Plan it
 
@@ -148,6 +148,7 @@ Subsequent atelier updates use `atelier-update` (or `/atelier:update` from insid
 ## Other docs
 
 - [docs/quickstart.md](docs/quickstart.md) — command-first runbook: update, verify, onboard an existing project, set up a new one, cut a release.
+- [docs/product-owner-guide.md](docs/product-owner-guide.md) — how to write tasks in `ROADMAP.md` by hand: sections, item-line grammar, `blocked_by`, epics, a copy-pasteable example.
 - [docs/troubleshooting.md](docs/troubleshooting.md) — symptom-indexed guide for when something doesn't work.
 - [operator-rules.md](operator-rules.md) — invariants every atelier session honors (update flow, epic + sub-tasks, oversize handling, config-root semantics).
 - [docs/measurements/autonomous-merge-rate.md](docs/measurements/autonomous-merge-rate.md) — methodology for the Phase 7 ship-gate metric.

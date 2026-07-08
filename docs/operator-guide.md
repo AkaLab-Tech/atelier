@@ -201,6 +201,8 @@ Each line has four parts, and the punctuation matters — atelier parses these:
 
 Save the file — and remember from Step 4 that atelier reads this file **from GitHub**, so the edit needs to land on your base branch (push it, or include it in a small PR) before atelier can see it.
 
+For the full grammar — every type tag, writing good acceptance criteria, `blocked_by` (same-repo and cross-repo), epics, and a complete worked example — see the [Product Owner Guide](product-owner-guide.md).
+
 ---
 
 ## Step 6 — Approve a plan for the task
