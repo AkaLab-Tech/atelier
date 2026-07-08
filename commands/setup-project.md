@@ -29,11 +29,12 @@ That single command does **all** of the mechanical work:
 9. Records the setup in `$ATELIER_CONFIG_DIR/projects.json` with `setupCompleted` and `setupVersion`.
 10. Probes the default branch's protection rule via `gh api repos/{owner}/{repo}/branches/{branch}/protection` (M7.1.F31) and classifies it: `protected-sufficient` (≥1 required approving review — auto-merge ready), `protected-insufficient` (rule exists but no required reviews — auto-merge guardrail #2 holds forever), `unprotected` (no rule), or `no-admin` (token lacks repo-admin; cannot read). On a gap, explains the guardrail-#2 link (empty `reviewDecision`) and offers to apply an idempotent minimal rule (`required_approving_review_count=1`, `enforce_admins=false`, `restrictions=null`). Decision policy: applies autonomously when `decisionPolicy["branch-protection"] == "auto"` in `.atelier.json`, or when `--apply-branch-protection` is passed; otherwise prompts interactively. On `no-admin`, prints the exact `gh api -X PUT` command the operator can run manually. Never fails setup.
 
-The helper also emits four `atelier-*=...` marker lines that Phase 2, Phase 3, and Phase 4 parse:
+The helper also emits these `atelier-*=...` marker lines that later phases parse:
 
 - `atelier-detected-mode=new|existing` — the heuristic result (or `--mode=...` override).
 - `atelier-root-claude-md=present|missing` — whether `<path>/CLAUDE.md` already exists.
 - `atelier-tracking-layout=created|preserved-empty|preserved-nonempty` — whether `IN_PROGRESS.md` was created fresh (canonical empty slot), pre-existed and is empty, or pre-existed with task-like content. `preserved-nonempty` triggers Phase 3.
+- `atelier-roadmap-format=absent|conforming|non-conforming` — whether an existing `ROADMAP.md` already uses atelier's §5 layout. `non-conforming` triggers Phase 3b.
 - `atelier-backend=files|linear|github-project|…` — the backend resolved from an existing `<path>/.roadmap.json` (`.backend` field via `jq`), defaulting to `files` when the file is absent or `jq` is unavailable. Phase 4 uses this to decide whether to delegate to `/create-roadmap --backend`.
 - `atelier-ci-status=present|absent` — read-only CI/CD detection (GitHub Actions or another recognised provider config). Phase 5 uses this to decide whether to offer a baseline pipeline scaffold. The helper never writes a workflow file itself.
 
@@ -208,17 +209,6 @@ These all live in the bash helper; documented here so the operator knows what to
 - **Never write a CI/CD workflow headlessly without `--scaffold-ci`.** Plain `--yes` / `-y` / `$ATELIER_AUTO` prints a recommendation only; the flag is the explicit headless opt-in.
 - **Never overwrite an existing workflow.** `atelier-ci-status=present` produces no offer and no write, regardless of mode or flags.
 - **CI/CD detection is read-only.** `detect_ci_status()` in the bash helper never writes; the only write in Phase 5 is the operator- or flag-confirmed `Write(<project>/.github/workflows/atelier-ci.yml, ...)`.
-
-## Hard refusals
-
-These all live in the bash helper; documented here so the operator knows what to expect when reading the `/setup-project` contract:
-
-- **Never overwrite** `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` / `.claude/CLAUDE.md` if they already exist.
-- **Never weaken** an existing `.npmrc` (no `audit-level` downgrade, no `minimum-release-age` reduction).
-- **Never reconfigure under `--yes` / `ATELIER_AUTO`**: re-running on a configured project in non-interactive mode exits with code 2.
-- **Never run `git init`** or any git write — `/setup-project` is for atelier scaffolding only.
-- **Never invoke `Write`, `Edit`, `mkdir`, `sed`, or `jq` directly from this slash command.** All file work happens inside the bash helper, which is the only tool allowed here.
-- **Never write `.roadmap.json` inline** — delegate the backend write to crt's `/create-roadmap --backend …`.
 
 ## Where to look if something breaks
 
