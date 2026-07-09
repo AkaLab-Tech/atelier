@@ -182,11 +182,26 @@ Rate every finding before you report it:
 
 ## Output
 
-Run the review entirely **before** posting anything. Then post **one** review via:
+Run the review entirely **before** posting anything. Read `<project>/.atelier.json`'s `autoMerge.reviewerApprovalMode` first (absent block or absent field → `"approve"`).
+
+- **`reviewerApprovalMode: "advisory"`** and your decision is `approve`: skip `--approve` entirely and post the advisory comment directly (see below) — the operator has pre-consented to never having this reviewer identity stamp an approval, so there is nothing to attempt first.
+- **`reviewerApprovalMode: "approve"` (default)** and your decision is `approve`: attempt the approval:
 
 ```bash
 GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --approve --body-file <markdown-file>
-# or
+```
+
+If this call is denied by the auto-mode classifier's `[Self-Approval]` veto (the reviewer sub-agent approving a PR authored by the agent-controlled `pr-author`), **do not reword, re-quote, or otherwise route around the denial to force an approve through** — degrade to an advisory comment carrying the exact same body you would have approved with:
+
+```bash
+GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --comment --body-file <markdown-file>
+```
+
+Then return `classifier-blocked` (see below) instead of `approve` — the review content and checklist are unchanged, only the verdict's terminal status differs.
+
+For a `request-changes` decision, post it exactly as before — the classifier only vetoes approvals of agent-authored PRs, never `request-changes`:
+
+```bash
 GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --request-changes --body-file <markdown-file>
 ```
 
@@ -195,7 +210,7 @@ The body file content:
 ```markdown
 # atelier:reviewer report
 
-**Decision:** approve | request-changes
+**Decision:** approve | request-changes | approve-advisory (classifier-blocked)
 **Auto-merge:** yes | no — <comma-separated blockers>
 
 ## Findings (≥ 80 confidence)
@@ -229,11 +244,13 @@ Then return to the caller (orchestrator or operator) with:
 
 ```text
 PR: <url>
-Decision: approve | request-changes
+Decision: approve | request-changes | classifier-blocked
 Auto-merge: yes | no — <reason if no>
 Findings: N critical, M important
 Summary: <one-line>
 ```
+
+`classifier-blocked` is a **distinct terminal status**, not a synonym for `request-changes` — the review content says "correct, would approve" (`approve-advisory`), but the verdict never landed as an `APPROVED` review because the auto-mode classifier vetoed the `--approve` call (or `reviewerApprovalMode: "advisory"` skipped it by design). The orchestrator must not treat this as a code-quality rejection that feeds the review-fix loop.
 
 ## Hard refusals
 
@@ -241,6 +258,7 @@ Summary: <one-line>
 - **Never** mark a PR auto-mergeable when any guardrail from "Auto-merge guardrails" is tripped.
 - **Never** edit any file or commit. You evaluate; you do not change. The `Edit` and `Write` tools are not in your tool list for a reason.
 - **Never** `gh pr merge`. The `auto-merge` skill decides when to merge, and only when both (a) you approved and (b) no guardrails fired and (c) CI is green.
+- **Never** reword, re-quote, split across multiple `Bash` calls, or otherwise try to route around a `[Self-Approval]` classifier denial to force `--approve` through. Degrade to the advisory `--comment` review and return `classifier-blocked` — that is the designed fallback, not a failure to route around.
 - **Never** approve based on the previous reviewer cycle. Each invocation is fresh — re-evaluate from the diff every time.
 - **Never** drop findings below the 80-confidence threshold into the review body. Use the in-conversation report or `gh pr comment` for nits if the operator explicitly asks.
 - **Never** make a `gh ...` call without the `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer"` prefix. The session-default author identity would make GitHub silently downgrade the approval to a comment.

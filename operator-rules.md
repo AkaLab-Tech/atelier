@@ -437,7 +437,9 @@ What auto-mode does, for the operator:
 What the static matrix still does, unchanged:
 
 - `permissions.deny` from the project template **always wins** — the classifier is a second gate that fires only after the deny list. `git push --force*`, `rm -rf /`, the never-auto-merge surface, etc. are blocked categorically regardless of auto-mode.
-- `permissions.allow` from the project template still **short-circuits** the classifier — known-safe commands skip the round-trip and run immediately.
+- `permissions.allow` from the project template still **short-circuits** the classifier for the general case — known-safe commands skip the round-trip and run immediately.
+
+  **Known exception (#38): the `[Self-Approval]` veto is not short-circuited by a matching allow-rule.** The reviewer's `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --approve --body-file <file>` call statically matches the `Bash(GH_CONFIG_DIR=* gh pr review*)` entry in `templates/settings.template.json` — it is not a glob-mismatch — yet the classifier still vetoes it when the PR was authored by an agent-controlled `pr-author` sub-agent in the same session lineage. So the blanket claim above ("allow-rules short-circuit the classifier") does **not** hold for this specific self-approval semantic category: the veto is evaluated regardless of `permissions.allow`. `agents/reviewer.md`'s fallback (degrade to an advisory `--comment`, return `classifier-blocked`) is the actual fix for this case, not a workaround for a fixable allow-rule gap — see `docs/troubleshooting.md` § "Chain ends with `held: reviewer approval blocked by auto-mode classifier`" and `PLAN.md` §6.
 
 What changed at install time:
 

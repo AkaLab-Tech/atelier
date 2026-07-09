@@ -57,6 +57,8 @@ Note: the `reviewer` agent runs under `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/revi
 
 Reviewer has no access to the repo: on a freshly-created **private** repo the reviewer identity is often not a collaborator, so it never managed to post an approval and `reviewDecision` is `REVIEW_REQUIRED`/`null`. Do not treat this as a normal "waiting for review" hold that will resolve on its own — it never will. When the review never landed because the reviewer could not resolve the repo, surface it as the terminal state `held: reviewer cannot access this repo — auto-merge unavailable; grant the reviewer read access (run /atelier:setup-project or add it as a collaborator)`, not an open-ended wait.
 
+Reviewer degraded to advisory (`classifier-blocked`): when the auto-mode classifier vetoes the reviewer's `--approve` as self-approval (an agent-controlled reviewer approving an agent-controlled `pr-author`'s PR), or `autoMerge.reviewerApprovalMode` is `"advisory"`, the `reviewer` agent posts an advisory `--comment` review instead of `--approve` and returns `classifier-blocked` (see `agents/reviewer.md` § Output). `reviewDecision` correctly stays non-`APPROVED` in this case, so this guardrail holds and the PR is withheld for a human merge — this is the correct, designed outcome, not a bug in the guardrail. `task-orchestrator` surfaces this before it ever reaches the `auto-merge` skill (see `agents/task-orchestrator.md` step 8), so the skill should rarely be invoked at all on a `classifier-blocked` PR; if it is invoked anyway, guardrail #2 holds it exactly as it would any other non-`APPROVED` state.
+
 ### 3. All CI checks succeeded
 
 ```bash

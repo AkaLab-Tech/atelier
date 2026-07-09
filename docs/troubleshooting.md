@@ -234,6 +234,23 @@ To check whether auto-mode is currently active, inside any atelier session: `/st
 gh pr merge <N> --squash --delete-branch
 ```
 
+### Chain ends with `held: reviewer approval blocked by auto-mode classifier`
+
+**Symptom:** `task-orchestrator` finishes a task chain reporting `held: reviewer approval blocked by auto-mode classifier — human merge required` instead of `merged`. The PR carries an advisory review **comment** from the reviewer identity (not an `APPROVED` review), and `gh pr view --json reviewDecision` is not `APPROVED`.
+
+**Cause:** Claude Code's auto-mode classifier applies a `[Self-Approval]` veto: it refuses to let a reviewer sub-agent post `--approve` on a PR authored by the agent-controlled `pr-author` sub-agent, because both are spawned/controlled by the same orchestrating session — the classifier does not distinguish "fresh-context sub-agent" from "independent actor". This fires even though the reviewer runs under a distinct `gh` identity (`$ATELIER_CONFIG_DIR/gh/reviewer`) and even when the command matches the `Bash(GH_CONFIG_DIR=* gh pr review*)` allow-rule in `templates/settings.template.json` — the veto is a hard classifier decision, not a missing allow-rule (#38 investigation: the reviewer's exact command form does statically match the existing allow entry; the classifier still vetoes it). `agents/reviewer.md` catches this denial, degrades to an advisory `gh pr review --comment` carrying the same verdict body it would have approved with, and returns `classifier-blocked` instead of silently retrying or rewording the command to force the approval through.
+
+**Fix (per-task):** Read the reviewer's advisory comment on the PR (it has the full findings + checklist, same as a normal approval) and, if you agree with it, merge manually:
+```bash
+gh pr merge <N> --squash --delete-branch
+```
+
+**Fix (per-project, make the degrade explicit):** If you never expect this reviewer identity to be able to auto-approve its own agent-authored PRs on this project, set `autoMerge.reviewerApprovalMode` to `"advisory"` in `<project>/.atelier.json` — the reviewer then skips the `--approve` attempt entirely and posts the advisory comment directly, saving the always-fails round trip.
+
+**Long-term fix (outside atelier's control):** the real fix is harness-level — Claude Code's auto-mode classifier would need a notion of a second, independent actor identity so an agent-controlled reviewer can legitimately approve an agent-controlled PR. That is a Claude Code harness capability, not something atelier can implement unilaterally; the advisory-comment degrade above is the durable workaround until it exists.
+
+**Do not** widen `templates/settings.template.json`'s `gh pr review` / `gh pr merge` allow-rules yourself expecting this to fix it — the veto fires independent of the allow-rule match, and the harness's own `[Self-Modification]` classifier blocks an agent from editing its own permission templates. If you want to experiment with a wider allow-rule anyway, apply it manually to your own `~/.claude-work/settings.json` (or the relevant per-machine settings file) — this is squarely an operator-owned change atelier will not make for you.
+
 ### Task is stuck — atelier created a `blocked` GitHub issue
 
 **Symptom:** atelier opened a GitHub issue labeled `blocked` and stopped working on a task.
