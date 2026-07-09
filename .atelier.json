@@ -48,6 +48,10 @@
     "fastForwardBase": true,
     "sweepOrphans": true
   },
+  "autoMerge": {
+    "_comment": "Reviewer-approval mode for the auto-merge chain (#38). `\"approve\"` (default): the reviewer agent attempts `gh pr review --approve`; if the Claude Code auto-mode classifier vetoes it as self-approval, the reviewer degrades to an advisory `--comment` review and the orchestrator surfaces a terminal `held: reviewer approval blocked by auto-mode classifier` state for a human merge. `\"advisory\"`: the reviewer never attempts `--approve` at all and always posts the advisory comment directly — use this once you've accepted that this project's reviewer identity will never be able to auto-approve its own agent-authored PRs, to skip the always-fails attempt. Either way `reviewDecision` never reaches `APPROVED` from the agent alone, so auto-merge guardrail #2 always holds and a human merges the PR. Absent field is treated as \"approve\".",
+    "reviewerApprovalMode": "approve"
+  },
   "deliverableLanguage": "English",
   "_deliverableLanguage_comment": "Language atelier writes repo deliverables in — commit messages, PR titles/descriptions, code comments, and generated docs/artifacts (.plan/<id>.md, drafted CLAUDE.md, ROADMAP/IN_PROGRESS/HISTORY entries) — regardless of the project's own content language or the operator's chat language (M7.1.F73). Set to any language name (e.g. \"Spanish\", \"French\"). Absent field is treated as \"English\". Does not affect operator-facing chat or the project's pre-existing content.",
   "semanticRiskJudge": {
