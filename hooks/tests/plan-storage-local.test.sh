@@ -83,8 +83,8 @@ chk_prose "$NEXT_TASK" "jq -r '.planStorage // \"committed\"'" \
 chk_prose "$NEXT_TASK" 'test -r "$MAIN_ROOT/.plan/<id>.md"' \
   "next-task: local planning-gate validates the local plan file"
 
-chk_prose "$NEXT_TASK" 'Under `PLAN_STORAGE=local`, skip the plan-on-base guard entirely' \
-  "next-task: local mode drops the plan-on-base guard"
+chk_prose "$NEXT_TASK" 'Under `PLAN_SOURCE=local`, skip the plan-on-base guard entirely' \
+  "next-task: local mode (PLAN_SOURCE=local) drops the plan-on-base guard"
 
 chk_prose "$NEXT_TASK" 'pass its **Approach**, **Affected areas**, and **Acceptance criteria** **inline**' \
   "next-task: carries the plan inline in the orchestrator briefing"
