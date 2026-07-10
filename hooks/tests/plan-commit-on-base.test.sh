@@ -179,8 +179,8 @@ chk_prose "$PLAN_TASK" 'never `git add`/commit `.plan/<id>.md`' \
 chk_prose "$PLAN_TASK" 'gitignored, never-committed' \
   "plan-task: local plan described as gitignored, never-committed"
 
-chk_prose "$NEXT_TASK" 'Under `PLAN_STORAGE=local`, skip the plan-on-base guard entirely' \
-  "next-task: local mode drops the plan-on-base guard"
+chk_prose "$NEXT_TASK" 'Under `PLAN_SOURCE=local`, skip the plan-on-base guard entirely' \
+  "next-task: local mode (PLAN_SOURCE=local) drops the plan-on-base guard"
 
 chk_prose "$NEXT_TASK" 'git rev-parse --show-toplevel' \
   "next-task: captures the main-checkout root via git rev-parse --show-toplevel"
@@ -188,8 +188,8 @@ chk_prose "$NEXT_TASK" 'git rev-parse --show-toplevel' \
 chk_prose "$NEXT_TASK" 'never copies gitignored/untracked files' \
   "next-task: documents the root cause (worktree add drops ignored files)"
 
-chk_prose "$NEXT_TASK" 'planStorage=committed' \
-  "next-task: no-regression — committed mode still named as the default path"
+chk_prose "$NEXT_TASK" '**`committed`** (default) — the plan is a tracked repo file present on `origin/<base>`' \
+  "next-task: no-regression — committed mode still named as the default PLAN_SOURCE path"
 
 chk_prose "$TASK_ORCH" 'absent from the worktree by design' \
   "task-orchestrator: local plan is absent from the worktree by design"

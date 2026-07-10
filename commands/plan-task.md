@@ -134,6 +134,8 @@ Do **not** edit `ROADMAP.md` — there is none for this backend; the `Ready` fli
 
 The planning gate is satisfied when **both** the Project's `Ready` field is set **and** `.plan/<id>.md` is committed — a `Ready` item without a committed plan file is the same inconsistency §5 defines for the `files` backend (§16.5). (This is the `committed`-mode gate; under `resident` the gate is `Ready` set **and** a non-empty `getPlan(id)` — see the `resident` sub-case above, and never a `.plan/<id>.md` file of any kind.)
 
+**Cross-reference — `/next-task`'s union gate (#31).** This `committed` path for a `github-project`/`linear` backend is not dead prose: `/atelier:next-task`'s planning gate (post-#31) discovers a task's plan source per task rather than assuming every non-`files` backend is `resident` — a plan committed here via `git add .plan` is a valid `PLAN_SOURCE=committed` hit for that discovery, exactly like a `files`-backend plan. Consequently the same landing precondition applies: the commit produced by this section must reach `origin/<base>` (via a normal PR) before `/next-task` can see and claim the task — see the Hard refusals note below and `commands/next-task.md`'s plan-on-base guard.
+
 ## Phase 5 — Discard (rejection / refusal)
 
 When the product lead rejects, or the planner refused/errored after leaving working-tree changes (e.g. a decomposer rewrite landed before a later failure):

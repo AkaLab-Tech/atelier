@@ -17,17 +17,22 @@
 #     - names the Ready field as the non-files planning-gate signal
 #       (not a [ready] text token)
 #     - Ready rides along in the listTasks / getTask record (no extra backend call)
-#   Group 2 — next-task.md step 3: planning-gate validation (TASK_030 / #298)
-#     - non-files gate: Ready field set AND getPlan(id) returns a non-empty
-#       resident plan — never a committed .plan/<id>.md, which does not exist
-#       on this backend
+#   Group 2 — next-task.md step 3: planning-gate validation (#31 union gate)
+#     - non-files gate: Ready field set AND a plan found in any valid
+#       PLAN_SOURCE location (union of resident/committed/local) — a
+#       committed .plan/<id>.md is an explicitly valid source, not excluded
 #     - the old buggy "Ready field is set; .plan/<id>.md is committed" wording
 #       is gone
-#     - the backend override applies even when planStorage is absent/unset
-#       (default committed) — not just when it is explicitly "committed"
-#     - plan-on-base guard is scoped to planStorage=committed, which (per the
-#       step-2 backend override) only ever occurs for the files backend
-#     - no hard refusal tells a non-files operator to "land the plan commit"
+#     - step 2 no longer forces a resident override; PLAN_STORAGE stays the
+#       preferred write mode and does not by itself decide where a task's
+#       plan lives — including when the field is absent/unset (default
+#       committed)
+#     - plan-on-base guard runs whenever PLAN_SOURCE=committed, regardless of
+#       backend (inverted from the pre-#31 "never runs for github-project/
+#       linear" claim)
+#     - the "land the plan commit" precondition applies whenever
+#       PLAN_SOURCE=committed on any backend (inverted from the pre-#31
+#       exclusion for non-files backends)
 #     - an empty getPlan(id) under resident triggers the same stop-and-refuse
 #       as a missing [ready]/.plan, pointing at /atelier:plan-task <id>
 #     - step 8 carries the resident plan inline from the step-3-cached
@@ -41,8 +46,9 @@
 #     - GitHubProjectBackend priority mapping present
 #     - Ready-field planning gate described
 #     - ready-without-plan sentinel present
-#     - non-files plan-existence check is getPlan(id), not a committed
-#       .plan/<id>.md (old "identical across all backends" wording gone)
+#     - non-files plan-existence check is a union (resident/committed/local),
+#       not a resident-only check (old "identical across all backends" /
+#       resident-only wording gone)
 #   Group 5 — no-regression: files-backend invariants still hold
 #     - [ready] marker still referenced for the files backend
 #     - claim registry = open task/* PRs still stated
@@ -113,32 +119,32 @@ chk_prose "$NEXT_TASK" 'Ready` rides along in the returned record, no dedicated 
 # Group 2: commands/next-task.md — step 3 planning-gate validation (TASK_030)
 # ---------------------------------------------------------------------------
 
-chk_prose "$NEXT_TASK" 'Ready` field is set; `getPlan(id)` returns a non-empty resident plan' \
-  "next-task step 3: non-files gate = Ready set AND non-empty getPlan(id)"
+chk_prose "$NEXT_TASK" 'the gate requires the backend'"'"'s `Ready` field to be set (carried in the `getTask` record) plus a plan found in any valid `PLAN_SOURCE` location' \
+  "next-task step 3: non-files gate = Ready set AND a plan found in any valid PLAN_SOURCE location (union)"
 
-chk_prose "$NEXT_TASK" 'the gate requires the backend'"'"'s `Ready` field to be set (carried in the `getTask` record) plus a non-empty `getPlan(id)`' \
-  "next-task step 3: planning-gate validation spelled out for non-files backend (getPlan, not .plan file)"
+chk_prose "$NEXT_TASK" 'a committed plan file is explicitly a valid source for this backend, not excluded' \
+  "next-task step 3: committed .plan/<id>.md is explicitly a valid PLAN_SOURCE for non-files backends"
 
 chk_absent "$NEXT_TASK" 'Ready` field is set; `.plan/<id>.md` is committed' \
   "next-task step 3: old buggy non-files gate wording (committed .plan) removed"
 
-chk_prose "$NEXT_TASK" 'never a committed `.plan/<id>.md`, which does not exist for this backend' \
-  "next-task step 3: planning gate explicitly never consults a committed .plan file for non-files"
+chk_prose "$NEXT_TASK" 'the plan may live in any of three places' \
+  "next-task step 3: non-files backend plan may live in any of three union locations (not resident-only)"
 
-chk_prose "$NEXT_TASK" 'this override wins over whatever `.atelier.json`'"'"'s `planStorage` field says' \
-  "next-task step 2: effective plan-storage mode is backend-driven (resident overrides field default)"
+chk_prose "$NEXT_TASK" 'PLAN_STORAGE` captured here is the **preferred write mode**' \
+  "next-task step 1: PLAN_STORAGE is the preferred write mode, not a forced override"
 
-chk_prose "$NEXT_TASK" 'including its default `committed` when the field is absent or unset' \
-  "next-task step 2: backend override applies even when planStorage is absent/unset (default committed)"
+chk_prose "$NEXT_TASK" 'or one that has never set `planStorage` and therefore defaults to `committed`' \
+  "next-task step 2: committed default still applies when planStorage field is absent/unset (union discovery)"
 
-chk_prose "$NEXT_TASK" 'this guard **never runs** for a `github-project`/`linear` project' \
-  "next-task: plan-on-base guard scoped away from non-files backends"
+chk_prose "$NEXT_TASK" 'The guard now runs whenever `PLAN_SOURCE=committed`, regardless of backend.' \
+  "next-task: plan-on-base guard runs whenever PLAN_SOURCE=committed on any backend (inverted from pre-#31)"
 
 chk_absent "$NEXT_TASK" 'refuse with a pointer to land the plan commit. A worktree cut from `origin/<base>` would otherwise operate on stale ROADMAP state and drop the decomposition. **(This applies to `planStorage=committed`.)**' \
-  "next-task: 'land the plan commit' refusal wording updated to scope to files backend only"
+  "next-task: old scoped-to-committed-only refusal phrasing (exact string) absent"
 
-chk_prose "$NEXT_TASK" 'no path may tell a `github-project`/`linear` operator to "land the plan commit"' \
-  "next-task hard refusals: no path tells a non-files operator to land the plan commit"
+chk_prose "$NEXT_TASK" 'This applies whenever `PLAN_SOURCE=committed`, on the `files` backend and on a non-`files` backend alike' \
+  "next-task hard refusals: 'land the plan commit' precondition applies whenever PLAN_SOURCE=committed on any backend"
 
 chk_prose "$NEXT_TASK" '.plan/<id>.md' \
   "next-task step 3: .plan/<id>.md check present (files backend)"
@@ -190,8 +196,8 @@ chk_prose "$SKILL" 'ready-without-plan' \
 chk_absent "$SKILL" 'The `.plan/<id>.md` committed-file check is **identical across all backends**' \
   "SKILL.md: old wording (committed-file check identical across all backends) removed"
 
-chk_prose "$SKILL" 'no `.plan/<id>.md` file exists anywhere, committed or local, for this backend' \
-  "SKILL.md: non-files plan-existence check is getPlan(id), no .plan/<id>.md file anywhere"
+chk_prose "$SKILL" 'A non-`files` backend can legitimately hold a committed or local `.plan/<id>.md` alongside resident plans for other tasks' \
+  "SKILL.md: non-files plan-existence check is a union (resident/committed/local), not resident-only"
 
 # ---------------------------------------------------------------------------
 # Group 5: no-regression — files-backend invariants still hold
