@@ -168,7 +168,8 @@ This step ends the command — do not proceed to step 4.
 
 Display the chosen task in a short summary (`id`, `title`, `priority`, `estimate`).
 
-- **Interactive mode:** ask explicitly: *"Claim this task?"*. Wait for a yes/no. If no, stop — do not move tracking or create a worktree.
+- **Interactive mode, id explicitly named in `$ARGUMENTS` (step 3):** skip the confirmation — naming the id **is** the consent, exactly like the non-interactive branch's reasoning. Log a single line `claiming task <id> (explicitly named)` and proceed to step 5.
+- **Interactive mode, auto-picked (no id in `$ARGUMENTS`):** ask explicitly: *"Claim this task?"*. Wait for a yes/no. If no, stop — do not move tracking or create a worktree. The operator has not yet seen which task `task-discovery` chose, so this confirmation is still meaningful.
 - **Non-interactive mode:** log a single line `auto-claiming task <id> (non-interactive)` and proceed to step 5. No prompt. The operator's `--yes` / `-y` flag (or `ATELIER_AUTO=1`) **is** the consent.
 
 ### 5. Create the per-task worktree — `git-wt` skill
