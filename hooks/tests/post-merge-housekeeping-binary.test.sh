@@ -25,6 +25,12 @@
 #   Case 8 — --yes required in non-TTY: without --yes the binary exits
 #             non-zero when there are items to delete, proving the flag is
 #             load-bearing in the skill's invocation.
+#   Case 9 — closed-unmerged remote branch → needs_review (gh shim): a
+#             separate hermetic fixture with a `gh` shim on PATH reporting
+#             CLOSED for a remote origin/task/* branch's PR. Verifies the #113
+#             fix: the branch lands in needs_review, NOT remote_branches (the
+#             delete list) — regression guard against destroying unmerged
+#             work behind a closed PR.
 #
 # NOTE on --no-ff vs squash: production auto-merge uses squash-merge, after
 # which git branch --merged cannot detect the branch (squash commits are not
@@ -226,6 +232,72 @@ if [ "$second_exit" -eq 0 ] && printf '%s\n' "$second_out" | grep -q "nothing to
   pass "case 4: idempotent — second run exits 0 with 'nothing to clean up'"
 else
   fail "case 4: second run exit=$second_exit; output did not contain 'nothing to clean up' — output: $(printf '%s\n' "$second_out" | tail -5)"
+fi
+
+# ---------------------------------------------------------------------------
+# Case 9: closed-unmerged remote branch → needs_review (gh shim)
+#
+# Separate hermetic fixture (REPO9/CFG9) — not the swept $REPO — with a
+# fake `gh` on PATH so HAVE_GH=true and pr_state() resolves CLOSED for the
+# remote origin/task/9-closed-unmerged branch without any network access.
+# Regression guard for #113: a closed-without-merge remote branch must be
+# routed to needs_review, never to remote_branches (the delete list).
+# ---------------------------------------------------------------------------
+REPO9="$TMP/fixture9"
+CFG9="$TMP/cfg9"
+BIN9="$TMP/bin9"
+mkdir -p "$REPO9" "$CFG9" "$BIN9"
+
+git -C "$REPO9" init -q -b main 2>/dev/null \
+  || { git -C "$REPO9" init -q; git -C "$REPO9" symbolic-ref HEAD refs/heads/main; }
+git -C "$REPO9" config user.email "fixture9@test"
+git -C "$REPO9" config user.name  "Fixture9"
+
+printf 'initial\n' > "$REPO9/README.md"
+git -C "$REPO9" add README.md
+git -C "$REPO9" commit -qm "init"
+
+# A github.com origin remote so repo_slug() resolves a non-empty owner/name.
+git -C "$REPO9" remote add origin https://github.com/fixture/closed-unmerged.git
+
+# Build the unmerged commit on a throwaway local branch, then point a
+# remote-tracking ref at it directly (no push / no network) and delete the
+# local branch so ONLY the remote-branch enumeration path handles it.
+git -C "$REPO9" checkout -q -b task/9-closed-unmerged
+printf 'unmerged work\n' > "$REPO9/t9.txt"
+git -C "$REPO9" add t9.txt
+git -C "$REPO9" commit -qm "task 9 unmerged work"
+SHA9="$(git -C "$REPO9" rev-parse task/9-closed-unmerged)"
+git -C "$REPO9" checkout -q main
+git -C "$REPO9" branch -D task/9-closed-unmerged >/dev/null 2>&1
+git -C "$REPO9" update-ref refs/remotes/origin/task/9-closed-unmerged "$SHA9"
+
+# No IN_PROGRESS.md reference, no local task/9-* branch, no worktree — the
+# remote-branch path is the only one that can touch this fixture.
+
+# Fake `gh`: makes `command -v gh` succeed (HAVE_GH=true) and makes
+# pr_state()'s `gh pr list ... --jq '.[0].state // "NONE"'` resolve to
+# CLOSED by printing exactly that to stdout.
+cat > "$BIN9/gh" <<'GHSHIM'
+#!/usr/bin/env bash
+printf 'CLOSED'
+exit 0
+GHSHIM
+chmod +x "$BIN9/gh"
+
+jq -n --arg p "$REPO9" '{"projects":{($p):{"setupVersion":"99.0.0"}}}' \
+  > "$CFG9/projects.json"
+
+out9="$(PATH="$BIN9:$PATH" ATELIER_CONFIG_DIR="$CFG9" \
+          bash "$HOUSEKEEPING" --project "$REPO9" --report --json 2>/dev/null)"
+
+if [ -z "$out9" ] || ! printf '%s' "$out9" | jq -e . >/dev/null 2>&1; then
+  fail "case 9: closed-unmerged remote branch → needs_review, not remote_branches (gh shim CLOSED) — no parseable JSON output: $out9"
+elif printf '%s' "$out9" | jq -e '[.needs_review[]?|select(.target=="origin/task/9-closed-unmerged")]|length>0' >/dev/null 2>&1 \
+   && printf '%s' "$out9" | jq -e '[.remote_branches[]?|select(.target=="origin/task/9-closed-unmerged" or .target=="task/9-closed-unmerged")]|length==0' >/dev/null 2>&1; then
+  pass "case 9: closed-unmerged remote branch → needs_review, not remote_branches (gh shim CLOSED)"
+else
+  fail "case 9: closed-unmerged remote branch → needs_review, not remote_branches (gh shim CLOSED) — output: $out9"
 fi
 
 # ---------------------------------------------------------------------------

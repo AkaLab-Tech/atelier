@@ -245,10 +245,12 @@ enumerate_project() {
     local st; st="$(pr_state "$slug" "$branch")"
     local merged=false
     git -C "$proj" branch --merged main 2>/dev/null | sed 's/^[+* ]*//' | grep -qxF "$branch" && merged=true
-    if [ "$st" = "MERGED" ] || [ "$st" = "CLOSED" ] || $merged; then
+    if [ "$st" = "MERGED" ] || $merged; then
       DEL_WORKTREES+=("$proj"$'\t'"worktree"$'\t'"$path"$'\t'"branch $branch (PR:$st)"$'\t'"$branch")
     elif [ "$st" = "OPEN" ]; then
       add_skip "$proj" "worktree" "$path" "open PR for $branch"
+    elif [ "$st" = "CLOSED" ]; then
+      add_review "$proj" "worktree" "$path" "PR closed without merging (unmerged) — $branch"
     else
       # NONE / UNKNOWN, not merged → possibly unmerged work.
       add_review "$proj" "worktree" "$path" "orphan, unmerged ($branch, PR:$st)"
@@ -315,10 +317,12 @@ enumerate_project() {
       continue
     fi
     local st; st="$(pr_state "$slug" "$b")"
-    if [ "$st" = "MERGED" ] || [ "$st" = "CLOSED" ]; then
+    if [ "$st" = "MERGED" ]; then
       DEL_RBRANCHES+=("$proj"$'\t'"remote-branch"$'\t'"$b"$'\t'"PR $st"$'\t'"$b")
     elif [ "$st" = "OPEN" ]; then
       add_skip "$proj" "remote-branch" "origin/$b" "open PR"
+    elif [ "$st" = "CLOSED" ]; then
+      add_review "$proj" "remote-branch" "origin/$b" "PR closed without merging (unmerged)"
     else
       add_review "$proj" "remote-branch" "origin/$b" "no PR / state unknown ($st)"
     fi
