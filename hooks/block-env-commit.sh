@@ -155,7 +155,8 @@ if [ -z "$matched_path" ] && [ "$is_git_commit" -eq 1 ]; then
   # .env* files at commit time. The single `-a` substring match covers
   # all of those variants since they all contain it.
   case "$command_str" in
-    *"git commit -a"*|*"git commit --all"*)
+    *"git commit -a"*|*"git commit --all"*|\
+    *"git -C "*"commit -a"*|*"git -C "*"commit --all"*)
       if [ -z "$matched_path" ]; then
         modified_env="$(git -C "$target_dir" diff --name-only 2>/dev/null | grep -E '(^|/)\.env([^/]*)?$' | head -n1 || true)"
         if [ -n "$modified_env" ]; then

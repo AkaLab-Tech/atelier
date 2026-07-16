@@ -114,6 +114,52 @@ code="$(run_hook "$S5/main" "git -C $S5/wt add src/index.ts")"
 [ "$code" = "0" ] && pass "git -C <wt> add src/index.ts (no .env*) → allowed (exit 0)" \
                    || fail "control expected exit 0, got $code"
 
+# === Assertion 6: git -C <wt> commit -a -m x (modified tracked dotenv) ====
+# The leaking bypass the reviewer caught: `.env.local` is TRACKED (force-
+# added and committed), then modified but left unstaged. `commit -a`
+# re-stages tracked-modified files at commit time — must now block.
+S6="$TMP/s6"; make_project_and_worktree "$S6"
+printf 'SECRET=1\n' > "$S6/wt/.env.local"
+git -C "$S6/wt" add -f .env.local
+git -C "$S6/wt" commit -qm "add tracked dotenv"
+printf 'SECRET=2\n' > "$S6/wt/.env.local"
+code="$(run_hook "$S6/main" "git -C $S6/wt commit -a -m x")"
+[ "$code" = "2" ] && pass "git -C <wt> commit -a -m x (modified tracked dotenv) → blocked (exit 2)" \
+                   || fail "git -C <wt> commit -a -m x expected exit 2, got $code"
+
+# === Assertion 7: git -C <wt> commit -am x (attached -a flag variant) ======
+S7="$TMP/s7"; make_project_and_worktree "$S7"
+printf 'SECRET=1\n' > "$S7/wt/.env.local"
+git -C "$S7/wt" add -f .env.local
+git -C "$S7/wt" commit -qm "add tracked dotenv"
+printf 'SECRET=2\n' > "$S7/wt/.env.local"
+code="$(run_hook "$S7/main" "git -C $S7/wt commit -am x")"
+[ "$code" = "2" ] && pass "git -C <wt> commit -am x (modified tracked dotenv) → blocked (exit 2)" \
+                   || fail "git -C <wt> commit -am x expected exit 2, got $code"
+
+# === Assertion 8 (CONTROL): cd <wt> && git commit -a -m x, modified tracked
+#     dotenv — proves the cwd form still blocks (sibling parity with -C) ====
+S8="$TMP/s8"; make_project_and_worktree "$S8"
+printf 'SECRET=1\n' > "$S8/wt/.env.local"
+git -C "$S8/wt" add -f .env.local
+git -C "$S8/wt" commit -qm "add tracked dotenv"
+printf 'SECRET=2\n' > "$S8/wt/.env.local"
+code="$(run_hook "$S8/main" "cd $S8/wt && git commit -a -m x")"
+[ "$code" = "2" ] && pass "cd <wt> && git commit -a -m x (modified tracked dotenv) → blocked (exit 2)" \
+                   || fail "cd <wt> && git commit -a -m x expected exit 2, got $code"
+
+# === Assertion 9 (CONTROL): git -C <wt> commit -a -m x, only a normal
+#     tracked source file modified, no dotenv anywhere → no false positive =
+S9="$TMP/s9"; make_project_and_worktree "$S9"
+mkdir -p "$S9/wt/src"
+printf 'export const x = 1;\n' > "$S9/wt/src/index.ts"
+git -C "$S9/wt" add src/index.ts
+git -C "$S9/wt" commit -qm "add source file"
+printf 'export const x = 2;\n' > "$S9/wt/src/index.ts"
+code="$(run_hook "$S9/main" "git -C $S9/wt commit -a -m x")"
+[ "$code" = "0" ] && pass "git -C <wt> commit -a -m x (no dotenv, modified source only) → allowed (exit 0)" \
+                   || fail "control expected exit 0, got $code"
+
 echo
 if [ "$fails" -eq 0 ]; then
   echo "All F57 block-env-commit regression checks passed."
