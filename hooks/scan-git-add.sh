@@ -8,8 +8,11 @@
 # Decision matrix:
 #   - Block → exit 2 + stderr message (Claude sees it, the `git add` is rejected).
 #   - Warn  → exit 0 + stderr warning (the `git add` proceeds).
-#   - Ask   → stdout JSON  {"permissionDecision": "ask", "permissionDecisionReason": "..."}
-#             + exit 0 (Claude Code prompts the operator).
+#   - Ask   → stdout JSON  {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+#             "permissionDecision": "ask", "permissionDecisionReason": "..."}}
+#             + exit 0 (Claude Code prompts the operator). The decision fields
+#             MUST sit under hookSpecificOutput — a top-level
+#             permissionDecision is ignored by the harness (#126).
 #
 # Layered defence: this is the second runtime check on `git add` (the
 # first is block-env-commit, sub-PR 1, also matched on Bash). Both fire
@@ -43,10 +46,39 @@ command_str="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/de
 # Only intercept `git add` Bash calls.
 [ "$tool_name" = "Bash" ] || exit 0
 [ -n "$command_str" ] || exit 0
+# #130 — also match `git -C <path> add`, the atelier convention for
+# addressing a task worktree from a cwd that stays at the main repo.
+# Without this arm the command fell through to `exit 0` and NOTHING was
+# scanned — a silent, total bypass of the secret scanner.
 case "$command_str" in
   *"git add "*|*"git add"|*"git add;"*|*"git add&"*) ;;
+  *"git -C "*"add "*|*"git -C "*"add"|*"git -C "*"add;"*|*"git -C "*"add&"*) ;;
   *) exit 0 ;;
 esac
+
+# #258 — resolve the directory the `git add` actually targets. This hook
+# inherits the cwd of the Bash tool call, which (per atelier's
+# cwd-vs-worktree rule) is normally the main repo, NOT the task worktree
+# an agent addresses via `git -C <worktree> add …` or `cd <worktree> &&
+# git add …`. Without this, every git/file operation below (ls-files,
+# diff, cat, -f/-d checks) ran against the wrong tree. Mirrors
+# safe-commit.sh's target_dir resolution (M7.1.F57); only the `-C` and
+# `cd`-prefix arms are needed here (this hook has no --git-dir/--work-tree
+# refusal to preserve).
+target_dir="$PWD"
+if printf '%s' "$command_str" | grep -qE 'git[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-C[[:space:]]'; then
+  c_path="$(printf '%s' "$command_str" | sed -nE "s/.*git[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-C[[:space:]]+(\"([^\"]+)\"|'([^']+)'|([^[:space:]]+)).*/\3\4\5/p")"
+  [ -n "$c_path" ] && target_dir="$c_path"
+elif printf '%s' "$command_str" | grep -qE '^[[:space:]]*cd[[:space:]]'; then
+  cd_path="$(printf '%s' "$command_str" | sed -nE "s/^[[:space:]]*cd[[:space:]]+(\"([^\"]+)\"|'([^']+)'|([^[:space:]&;|]+)).*/\2\3\4/p")"
+  [ -n "$cd_path" ] && target_dir="$cd_path"
+fi
+if [ -d "$target_dir" ]; then
+  target_dir="$(cd "$target_dir" 2>/dev/null && pwd)" || target_dir="$PWD"
+else
+  target_dir="$PWD"
+fi
+cd "$target_dir" 2>/dev/null || true
 
 # ---- Resolve which paths would be staged --------------------------------
 # Strategy:
@@ -59,11 +91,23 @@ esac
 TO_STAGE_FILE="$(mktemp -t atelier-scan-git-add.XXXXXX)"
 trap 'rm -f "$TO_STAGE_FILE"' EXIT
 
+# #258 — normalise "git [-C <path>] add …" → an expression beginning at
+# `add …` so the wildcard detector and add_args extraction below work
+# whether or not a `-C <path>` sits between `git` and `add`.
+add_expr="$(printf '%s' "$command_str" | sed -nE "s/.*git[[:space:]]+-C[[:space:]]+(\"[^\"]+\"|'[^']+'|[^[:space:]]+)[[:space:]]+(add[[:space:]].*)/\2/p")"
+if [ -z "$add_expr" ]; then
+  add_expr="$(printf '%s' "$command_str" | sed -nE "s/.*(git[[:space:]]+add([[:space:]].*)?)/\1/p")"
+  # strip the leading "git " so add_expr starts at "add"
+  add_expr="$(printf '%s' "$add_expr" | sed -E 's/^git[[:space:]]+//')"
+fi
+[ -z "$add_expr" ] && add_expr="$command_str"
+
 # Wildcard detection. `*"git add ."*` (plain glob) is too greedy — it
 # also matches `git add .env`. Use a regex that requires the wildcard
 # token to be word-bounded: either followed by whitespace / chain
-# operator, or sitting at end-of-string.
-if [[ "$command_str" =~ git[[:space:]]+add[[:space:]]+(\.|-A|--all|:/|\*)([[:space:]]|;|\&|\||$) ]]; then
+# operator, or sitting at end-of-string. Anchored at `add_expr` (which
+# starts at `add`) so `git -C <path> add .` is detected too (#258).
+if [[ "$add_expr" =~ ^add[[:space:]]+(\.|-A|--all|:/|\*)([[:space:]]|;|\&|\||$) ]]; then
   is_wildcard=1
 else
   is_wildcard=0
@@ -79,7 +123,7 @@ else
     # (`;`, `&&`, `||`, `|`). Strip flags (-f / --force / -p / -u …).
     # We don't try to perfectly emulate git's CLI; a few false positives
     # in token extraction at worst over-scan, never under-scan.
-    add_args="$(printf '%s' "$command_str" | sed -E 's/.*git add[[:space:]]+//' | sed -E 's/[[:space:]]*(;|&&|\|\||\|).*//' )"
+    add_args="$(printf '%s' "$add_expr" | sed -E 's/^add[[:space:]]+//' | sed -E 's/[[:space:]]*(;|&&|\|\||\|).*//' )"
     for tok in $add_args; do
       case "$tok" in
         -*) continue ;;  # flag, skip
@@ -471,7 +515,7 @@ if [ "${#ask_reasons[@]}" -gt 0 ]; then
     log_decision "$HOOK_NAME" "Bash" "$aname" "ask" "ask in $apath: $amatch"
   done
   reason="${reason%; }"
-  jq -cn --arg r "$reason" '{permissionDecision: "ask", permissionDecisionReason: $r}'
+  jq -cn --arg r "$reason" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}'
   exit 0
 fi
 
