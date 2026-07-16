@@ -66,14 +66,45 @@ fi
 is_git_add=0
 is_git_commit=0
 case "$command_str" in
-  *"git add"*)    is_git_add=1 ;;
+  *"git add"*)          is_git_add=1 ;;
+  *"git -C "*"add"*)    is_git_add=1 ;;
 esac
 case "$command_str" in
-  *"git commit"*) is_git_commit=1 ;;
+  *"git commit"*)          is_git_commit=1 ;;
+  *"git -C "*"commit"*)    is_git_commit=1 ;;
 esac
 
 if [ "$is_git_add" -eq 0 ] && [ "$is_git_commit" -eq 0 ]; then
   exit 0
+fi
+
+# M7.1.F57 — resolve the directory the add/commit actually targets.
+#
+# Atelier's cwd-vs-worktree rule (operator-rules.md) means an agent keeps
+# its cwd at the main repo / home and addresses the task worktree through
+# `git -C <worktree>` (or, less often, a `cd <worktree> &&` prefix). The
+# hook inherits that cwd, so `$PWD` is the WRONG tree: scanning it inspects
+# the main repo, not the worktree being staged/committed. Derive the
+# target directory from the command itself, falling back to `$PWD` only
+# for a plain `git add`/`git commit` with no `-C` / `cd`. Ported verbatim
+# from safe-commit.sh's `-C` and `cd` resolution arms (M7.1.F57).
+target_dir="$PWD"
+if printf '%s' "$command_str" | grep -qE 'git[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-C[[:space:]]'; then
+  # `git -C <path> ... add/commit` — the atelier convention.
+  c_path="$(printf '%s' "$command_str" | sed -nE "s/.*git[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-C[[:space:]]+(\"([^\"]+)\"|'([^']+)'|([^[:space:]]+)).*/\3\4\5/p")"
+  [ -n "$c_path" ] && target_dir="$c_path"
+elif printf '%s' "$command_str" | grep -qE '^[[:space:]]*cd[[:space:]]'; then
+  # `cd <path> && git add/commit …` prefix.
+  cd_path="$(printf '%s' "$command_str" | sed -nE "s/^[[:space:]]*cd[[:space:]]+(\"([^\"]+)\"|'([^']+)'|([^[:space:]&;|]+)).*/\2\3\4/p")"
+  [ -n "$cd_path" ] && target_dir="$cd_path"
+fi
+# Canonicalise relative paths against $PWD and validate the directory
+# exists; fall back to $PWD if it doesn't (fail-open: a resolution miss
+# must never become an exit 2 here).
+if [ -d "$target_dir" ]; then
+  target_dir="$(cd "$target_dir" 2>/dev/null && pwd)" || target_dir="$PWD"
+else
+  target_dir="$PWD"
 fi
 
 # Path-based scan for `.env` in the literal command. Catches the common
@@ -94,14 +125,15 @@ fi
 # scoped to the cwd of the hook (which is the worktree Claude is in).
 if [ -z "$matched_path" ] && [ "$is_git_add" -eq 1 ]; then
   case "$command_str" in
-    *"git add ."*|*"git add -A"*|*"git add --all"*|*"git add :/"*|*"git add *"*)
+    *"git add ."*|*"git add -A"*|*"git add --all"*|*"git add :/"*|*"git add *"*|\
+    *"git -C "*"add ."*|*"git -C "*"add -A"*|*"git -C "*"add --all"*|*"git -C "*"add :/"*|*"git -C "*"add *"*)
       # Untracked + modified .env* files that this wildcard add would pick up.
       # Both `git ls-files --others --exclude-standard` and `git diff --name-only`
       # are read-only and don't change repo state, so this is safe in a hook.
       candidates="$(
         {
-          git ls-files --others --exclude-standard 2>/dev/null || true
-          git diff --name-only 2>/dev/null || true
+          git -C "$target_dir" ls-files --others --exclude-standard 2>/dev/null || true
+          git -C "$target_dir" diff --name-only 2>/dev/null || true
         } | grep -E '(^|/)\.env([^/]*)?$' | head -n5
       )"
       if [ -n "$candidates" ]; then
@@ -115,7 +147,7 @@ fi
 # This catches `git commit -a` (auto-stages tracked changes) and the
 # rare case where an earlier add-with-path slipped past us.
 if [ -z "$matched_path" ] && [ "$is_git_commit" -eq 1 ]; then
-  staged_env="$(git diff --cached --name-only 2>/dev/null | grep -E '(^|/)\.env([^/]*)?$' | head -n1 || true)"
+  staged_env="$(git -C "$target_dir" diff --cached --name-only 2>/dev/null | grep -E '(^|/)\.env([^/]*)?$' | head -n1 || true)"
   if [ -n "$staged_env" ]; then
     matched_path="$staged_env"
   fi
@@ -123,9 +155,10 @@ if [ -z "$matched_path" ] && [ "$is_git_commit" -eq 1 ]; then
   # .env* files at commit time. The single `-a` substring match covers
   # all of those variants since they all contain it.
   case "$command_str" in
-    *"git commit -a"*|*"git commit --all"*)
+    *"git commit -a"*|*"git commit --all"*|\
+    *"git -C "*"commit -a"*|*"git -C "*"commit --all"*)
       if [ -z "$matched_path" ]; then
-        modified_env="$(git diff --name-only 2>/dev/null | grep -E '(^|/)\.env([^/]*)?$' | head -n1 || true)"
+        modified_env="$(git -C "$target_dir" diff --name-only 2>/dev/null | grep -E '(^|/)\.env([^/]*)?$' | head -n1 || true)"
         if [ -n "$modified_env" ]; then
           matched_path="$modified_env"
         fi
@@ -257,7 +290,7 @@ if [ -n "$matched_path" ]; then
   case "$(basename "$matched_path")" in
     .env.example|.env.sample|.env.template)
       template_path="$matched_path"
-      [ -f "$template_path" ] || template_path="$(git rev-parse --show-toplevel 2>/dev/null)/$matched_path"
+      [ -f "$template_path" ] || template_path="$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null)/$matched_path"
       if [ -f "$template_path" ]; then
         findings="$(scan_env_template "$template_path")"
         if [ -n "$findings" ]; then
