@@ -381,7 +381,8 @@ MARKER
 # unrelated content; 2 if it has an in_progress marker from a crashed
 # previous install (M7.1.F6 — resumable). Safe-without-prompt states:
 # doesn't exist, exists but empty, contains a complete/legacy
-# .atelier-managed marker, or contains plugins/<*>/atelier/.
+# .atelier-managed marker, or contains plugins/cache/*/atelier/ (the
+# layout `claude plugin install` writes).
 preflight_check() {
   local dir="$1"
   [ -d "$dir" ] || return 0
@@ -397,7 +398,7 @@ preflight_check() {
   fi
   # Glob expands to nothing if no match; the nullglob behaviour is the
   # safe path. Wrap in a subshell so set -e + nullglob don't leak out.
-  if ( shopt -s nullglob; matches=("$dir/plugins"/*/atelier); [ ${#matches[@]} -gt 0 ] ); then
+  if ( shopt -s nullglob; matches=("$dir/plugins/cache"/*/atelier "$dir/plugins"/*/atelier); [ ${#matches[@]} -gt 0 ] ); then
     return 0
   fi
   return 1
