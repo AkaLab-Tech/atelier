@@ -80,6 +80,13 @@ assert_block "git push origin staging"                "git push origin staging"
 assert_block "git push --force origin task/1-x"       "git push --force origin task/1-x"
 assert_block "git push -f origin task/1-x"             "git push -f origin task/1-x"
 
+# === BLOCK: global options separate `git` and `push` (#194 review) =========
+# `git -C <path> push …` / `git -c key=val push …` split the two tokens the
+# hook used to require contiguous — this is exactly how atelier agents
+# invoke git against a worktree, so it must not bypass the block.
+assert_block "git -C /repo push origin main"           "git -C /repo push origin main"
+assert_block "git -c key=val push origin main"         "git -c key=val push origin main"
+
 # === ALLOW: sanctioned task/* pushes and force-with-lease ==================
 assert_allow "git push origin task/12-foo"                       "git push origin task/12-foo"
 assert_allow "git push -u origin task/12-foo"                     "git push -u origin task/12-foo"

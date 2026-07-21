@@ -47,10 +47,15 @@ if [ -z "$command_str" ]; then
   exit 0
 fi
 
-# Fast path: nothing resembling `git push` anywhere in the raw command —
-# skip without paying for the message-payload strip below.
+# Fast path: nothing resembling `git ... push` anywhere in the raw command —
+# skip without paying for the message-payload strip below. Widened beyond
+# the literal contiguous "git push" substring: `git -C <path> push` and
+# `git -c key=val push` separate the two tokens with global options, so a
+# strict "git push" substring match silently drops those segments before
+# the tokenizer below ever runs (#194 review). This is only a cheap
+# pre-filter — the real gate is the per-token walk further down.
 case "$command_str" in
-  *"git push"*) ;;
+  *git*push*) ;;
   *) exit 0 ;;
 esac
 
@@ -78,15 +83,20 @@ strip_message_payload() {
 }
 scan_str="$(strip_message_payload "$command_str")"
 
-# Isolate every `git push …` segment from chained commands. Splitting on
+# Isolate every `git ... push …` segment from chained commands. Splitting on
 # `&&` / `;` / `|` is enough here: we only need to find the segments that
 # actually invoke `git push` — we are not trying to parse arbitrary shell.
+# Match on separate `git` / `push` substrings (not the contiguous "git
+# push") so `git -C <path> push …` / `git -c key=val push …` are not
+# dropped here before the tokenizer walk below gets to see them (#194
+# review) — that walk is what actually confirms/rejects a real push
+# invocation, this is just candidate selection.
 push_segments=()
 while IFS= read -r seg; do
   seg="$(printf '%s' "$seg" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
   [ -z "$seg" ] && continue
   case "$seg" in
-    *"git push"*) push_segments+=("$seg") ;;
+    *git*push*) push_segments+=("$seg") ;;
   esac
 done < <(printf '%s\n' "$scan_str" | tr ';&|' '\n\n\n')
 
