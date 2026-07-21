@@ -1,7 +1,7 @@
 ---
 description: Align every registered atelier project/workspace to the installed atelier in one pass — version-drift resync + decision policy (Tier 1, applied by atelier-align), §5 ROADMAP adoption + legacy IN_PROGRESS reset (Tier 2, via /adopt-roadmap), and one commit-to-base PR per changed repo (Tier 3). Surveys read-only first; applies nothing without confirmation (or pre-consent via `auto` policy).
 argument-hint: "[<workspace-slug>] [--policy <auto|ask>]"
-allowed-tools: Bash(atelier-align:*), Bash(atelier-setup-project:*), Bash(git:*), Bash(gh:*), Read, AskUserQuestion, SlashCommand, Task
+allowed-tools: Bash(atelier-align:*), Bash(atelier-setup-project:*), Bash(git rev-parse:*), Bash(git -C * rev-parse:*), Bash(git remote:*), Bash(git -C * remote:*), Bash(git ls-remote:*), Bash(git -C * ls-remote:*), Bash(git branch:*), Bash(git status:*), Bash(git fetch:*), Bash(git -C * fetch:*), Bash(git worktree:*), Bash(git -C * worktree:*), Bash(git add:*), Bash(git -C * add:*), Bash(git commit:*), Bash(git -C * commit:*), Bash(git pull --ff-only*), Bash(git -C * pull --ff-only*), Bash(git push origin chore/atelier-align*), Bash(git push -u origin chore/atelier-align*), Bash(git -C * push origin chore/atelier-align*), Bash(git -C * push -u origin chore/atelier-align*), Bash(gh pr create:*), Bash(gh pr view:*), Bash(gh pr list:*), Read, AskUserQuestion, SlashCommand, Task
 ---
 
 You are running `/atelier:align` — the one-pass project/workspace aligner. It
@@ -171,10 +171,13 @@ filling `TODO` placeholders in adopted roadmaps.
   six PLAN.md §6 guardrails + `gh pr merge --squash --delete-branch`). Never push
   directly to the base branch. Never call `gh pr merge` outside of the `auto-merge`
   skill. If `auto-merge` holds, surface the held reason and stop — do not bypass it.
-- **Never suggest adding a `gh pr merge` permission rule.** `Bash(gh:*)` is already
-  granted in align's `allowed-tools` frontmatter — the merge command is permitted
-  by design. Raising a permission question here is a false signal that wastes the
-  operator's attention.
+- **Align never runs `gh pr merge` in its own session and does not need it
+  granted.** Merging is delegated one level down to the `task-orchestrator` →
+  `auto-merge` dispatch, which runs under the per-worktree settings —
+  `Bash(gh pr merge*)` lives in `templates/settings.template.json`'s allow list,
+  not in align's `allowed-tools` frontmatter. Raising a permission question about
+  `gh pr merge` in align's own session is a false signal that wastes the
+  operator's attention; the grant belongs to the delegate, not to align.
 - **Under `auto`, never emit an off-spec `AskUserQuestion` about reviewing or
   merging a base PR.** Reviewing is the `reviewer` agent's job; merging is the
   `auto-merge` skill's job. Any `AskUserQuestion` gate about these under `auto` is

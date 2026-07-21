@@ -28,8 +28,8 @@
 #     - fast-forward is described as a local pull only (no base-branch push)
 #     - a held terminal state is surfaced-and-stopped, not bypassed
 #   Group 4 — Spurious permission suggestion absent
-#     - prohibition on suggesting a gh pr merge permission rule is present
-#     - Bash(gh pr merge permission-rule form is absent from the file
+#     - align never runs gh pr merge in its own session (permission-deflection intent)
+#     - allowed-tools frontmatter does not enumerate a Bash(gh pr merge grant
 #     - off-spec AskUserQuestion prohibition for reviewing/merging under auto present
 #   Group 5 — ask path preserved (no-regression)
 #     - AskUserQuestion offer for the PR still present under ask
@@ -149,13 +149,23 @@ chk_prose "$ALIGN_MD" '**delegated, but held on branch-protection**' \
 # Group 4: Spurious permission suggestion absent
 # ---------------------------------------------------------------------------
 
-chk_prose "$ALIGN_MD" '**Never suggest adding a `gh pr merge` permission rule.**' \
-  "permission-deflection: hard rule prohibiting the spurious permission suggestion is present"
+chk_prose "$ALIGN_MD" 'Align never runs `gh pr merge` in its own session and does not need it' \
+  "permission-deflection: hard rule stating align never runs/needs gh pr merge in its own session is present"
 
-# The spurious improvisation added a Bash(gh pr merge:*) permission rule to
-# allowed-tools. Assert that form is not present — Bash(gh:*) already covers it.
-chk_absent "$ALIGN_MD" 'Bash(gh pr merge' \
-  "permission-deflection: Bash(gh pr merge permission-rule form absent from file"
+# allowed-tools is now an enumerated minimum-necessary list (no blanket
+# Bash(gh:*)). The spurious improvisation this guards against is enumerating a
+# Bash(gh pr merge:*) grant directly in that list — merging is delegated to
+# task-orchestrator -> auto-merge, which runs under per-worktree settings
+# (Bash(gh pr merge*) lives in templates/settings.template.json, not here).
+# Scope the check to the allowed-tools frontmatter line itself, since the Hard
+# rules prose now legitimately references `Bash(gh pr merge*)` when describing
+# where that grant actually lives.
+ALLOWED_TOOLS_LINE="$(grep -m1 '^allowed-tools:' "$ALIGN_MD")"
+if printf '%s' "$ALLOWED_TOOLS_LINE" | grep -qF 'Bash(gh pr merge'; then
+  fail "permission-deflection: allowed-tools frontmatter enumerates a Bash(gh pr merge grant — should be absent"
+else
+  pass "permission-deflection: allowed-tools frontmatter does not enumerate a Bash(gh pr merge grant"
+fi
 
 chk_prose "$ALIGN_MD" '**Under `auto`, never emit an off-spec `AskUserQuestion` about reviewing or' \
   "permission-deflection: prohibition on off-spec AskUserQuestion about reviewing/merging under auto present"
