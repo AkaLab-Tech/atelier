@@ -46,7 +46,7 @@ These are binding rules an implementer must respect:
 - **Node**: managed by `fnm` with per-project `.nvmrc`. No `nvm`, no system Node assumptions.
 - **GitHub auth**: HTTPS only. **Never** generate, reference, or rely on SSH keys. Cloning is `gh repo clone` or `https://github.com/...` (PLAN.md §2 step 5).
 - **Dependency installs** (PLAN.md §4): self-question if stdlib suffices → compare ≥2 alternatives → justify in commit/PR → reject packages <7 days old (per-project `.npmrc minimum-release-age=10080` written by `/setup-project`) → reject moderate+ vulnerabilities (per-project `.npmrc audit-level=moderate`). Use `/safe-install` once it exists.
-- **Git push** is restricted to `origin task/<id>-<slug>`. Pushing to `main`/`master`/`develop`/`staging` or any `--force` push is in the absolute deny list (PLAN.md §3).
+- **Git push** is restricted to `origin task/<id>-<slug>`. Pushing to `main`/`master`/`develop`/`staging` or any `--force` push is denied — the static globs in the permission template cover the literal shapes, but the categorical mechanism is the `PreToolUse` hook `hooks/block-protected-push.sh`, which resolves the actual destination ref and force flags (any refspec form, any flag spelling) before the push runs (PLAN.md §3).
 - **`package.json` and `pnpm-lock.yaml`** are not edited directly — always go through `pnpm add/remove/update`.
 - **Workflows under `.github/workflows/**`** are not edited by agents.
 - **Secrets**: `.env*` is in git's global excludes; the `PreToolUse` hook `hooks/block-env-commit.sh` blocks any add/commit that touches `.env*`, and `hooks/scan-git-add.sh` / `hooks/scan-edit-write.sh` scan content against the catalogues in `hooks/patterns/`.
