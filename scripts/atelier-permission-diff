@@ -172,10 +172,13 @@ describe_permission() {
     "Bash(docker ps*)")                          echo "list containers" ;;
     "Bash(docker logs*)")                        echo "tail container logs" ;;
     # ---------- file ops ----------
-    "Bash(ls*)")                                 echo "list files" ;;
+    "Bash(ls)")                                  echo "list files" ;;
+    "Bash(ls *)")                                echo "list files" ;;
     "Bash(mkdir -p*)")                           echo "create directories" ;;
-    "Bash(mv*)")                                 echo "move / rename files" ;;
-    "Bash(cp*)")                                 echo "copy files" ;;
+    "Bash(mv <worktree>/**)")                    echo "move / rename files sourced from the worktree" ;;
+    "Bash(mv <worktree>-worktrees/**)")          echo "move / rename files sourced from the worktree" ;;
+    "Bash(cp <worktree>/**)")                    echo "copy files sourced from the worktree" ;;
+    "Bash(cp <worktree>-worktrees/**)")          echo "copy files sourced from the worktree" ;;
     # ---------- destructive (deny list) ----------
     "Bash(rm -rf *)")                            echo "BLOCKED: recursive remove" ;;
     "Bash(rm -fr *)")                            echo "BLOCKED: recursive remove" ;;
@@ -186,6 +189,11 @@ describe_permission() {
     "Bash(git push * master)")                   echo "BLOCKED: push to master" ;;
     "Bash(git push * develop)")                  echo "BLOCKED: push to develop" ;;
     "Bash(git push * staging)")                  echo "BLOCKED: push to staging" ;;
+    "Bash(git push *:main)")                     echo "BLOCKED: push to main (refspec form)" ;;
+    "Bash(git push *:master)")                   echo "BLOCKED: push to master (refspec form)" ;;
+    "Bash(git push *:develop)")                  echo "BLOCKED: push to develop (refspec form)" ;;
+    "Bash(git push *:staging)")                  echo "BLOCKED: push to staging (refspec form)" ;;
+    "Bash(git push origin +*)")                  echo "BLOCKED: hard-force refspec push" ;;
     "Bash(git reset --hard*)")                   echo "BLOCKED: destructive reset" ;;
     "Bash(gh auth logout*)")                     echo "BLOCKED: GitHub logout" ;;
     "Bash(pnpm publish*)")                       echo "BLOCKED: publish to registry" ;;

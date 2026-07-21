@@ -25,6 +25,11 @@
       "Bash(git push * master)",
       "Bash(git push * develop)",
       "Bash(git push * staging)",
+      "Bash(git push *:main)",
+      "Bash(git push *:master)",
+      "Bash(git push *:develop)",
+      "Bash(git push *:staging)",
+      "Bash(git push origin +*)",
       "Bash(git reset --hard*)",
       "Bash(git config --global*)",
 
@@ -202,10 +207,13 @@
       "Bash(docker ps*)",
       "Bash(docker logs*)",
 
-      "Bash(ls*)",
+      "Bash(ls)",
+      "Bash(ls *)",
       "Bash(mkdir -p*)",
-      "Bash(mv*)",
-      "Bash(cp*)",
+      "Bash(mv <worktree>/**)",
+      "Bash(mv <worktree>-worktrees/**)",
+      "Bash(cp <worktree>/**)",
+      "Bash(cp <worktree>-worktrees/**)",
 
       "mcp__plugin_atelier_playwright__*",
 

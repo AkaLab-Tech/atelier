@@ -59,10 +59,14 @@ trail and the "Revert this PR" affordance are independent of team
 size.
 
 The atelier permission model (PLAN.md §3) blocks **pushes** to
-protected branches via `Bash(git push * main)` deny rules in
-`settings.template.json`. The **commit-level** rule here is a
-discipline enforced by always working on a non-protected branch
-before the first `git commit`.
+protected branches and any hard-force push categorically via the
+`PreToolUse` hook `hooks/block-protected-push.sh` — the static
+`Bash(git push * main)`-style deny globs in `settings.template.json`
+are belt-and-suspenders for the literal shapes, but the hook is what
+actually resolves the destination ref and force flags in any refspec
+or flag form (globs alone cannot express that). The **commit-level**
+rule here is a discipline enforced by always working on a
+non-protected branch before the first `git commit`.
 
 ### Before pushing
 
@@ -436,7 +440,7 @@ What auto-mode does, for the operator:
 
 What the static matrix still does, unchanged:
 
-- `permissions.deny` from the project template **always wins** — the classifier is a second gate that fires only after the deny list. `git push --force*`, `rm -rf /`, the never-auto-merge surface, etc. are blocked categorically regardless of auto-mode.
+- `permissions.deny` from the project template **always wins** — the classifier is a second gate that fires only after the deny list. `git push --force*`, `rm -rf /`, the never-auto-merge surface, etc. are blocked at this layer. **Protected-branch and force pushes specifically are made categorical by the `PreToolUse` hook `hooks/block-protected-push.sh` (#194), not by the deny globs alone** — the globs are prefix/suffix-anchored string matches that cannot express "protected branch anywhere in the refspec" or "force flag anywhere in the args" (e.g. `git push origin HEAD:main`, `git push origin +HEAD:main`, `git push origin main --force` all slip past `Bash(git push * main)`/`Bash(git push --force*)`); the hook resolves the actual destination ref and force flags before the push runs, regardless of surface form.
 - `permissions.allow` from the project template still **short-circuits** the classifier for the general case — known-safe commands skip the round-trip and run immediately.
 
   **Known exception (#38): the `[Self-Approval]` veto is not short-circuited by a matching allow-rule.** The reviewer's `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --approve --body-file <file>` call statically matches the `Bash(GH_CONFIG_DIR=* gh pr review*)` entry in `templates/settings.template.json` — it is not a glob-mismatch — yet the classifier still vetoes it when the PR was authored by an agent-controlled `pr-author` sub-agent in the same session lineage. So the blanket claim above ("allow-rules short-circuit the classifier") does **not** hold for this specific self-approval semantic category: the veto is evaluated regardless of `permissions.allow`. `agents/reviewer.md`'s fallback (degrade to an advisory `--comment`, return `classifier-blocked`) is the actual fix for this case, not a workaround for a fixable allow-rule gap — see `docs/troubleshooting.md` § "Chain ends with `held: reviewer approval blocked by auto-mode classifier`" and `PLAN.md` §6.
