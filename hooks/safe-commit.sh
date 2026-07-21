@@ -18,7 +18,7 @@
 # Performance / timeout:
 #   Lint + typecheck + tests can take minutes in real projects. Claude
 #   Code's default hook timeout is 60s; this hook's hooks.json entry
-#   bumps it to 600000 ms (10 minutes) to fit medium-sized projects.
+#   bumps it to 600 s (10 minutes) to fit medium-sized projects.
 #   For very long suites, the operator has three escape hatches:
 #     - Override the timeout in the operator's own settings.local.json.
 #     - Export `ATELIER_SKIP_SAFE_COMMIT=1` for a single shell session
