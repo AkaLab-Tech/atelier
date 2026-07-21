@@ -434,7 +434,7 @@ if [ "${#ask_reasons[@]}" -gt 0 ]; then
     log_decision "$HOOK_NAME" "Bash" "$aname" "ask" "ask on $apkg: $amatch"
   done
   reason="${reason%; }"
-  jq -cn --arg r "$reason" '{permissionDecision: "ask", permissionDecisionReason: $r}'
+  jq -cn --arg r "$reason" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: $r}}'
   exit 0
 fi
 

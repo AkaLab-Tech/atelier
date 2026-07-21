@@ -16,7 +16,8 @@
 # Contract per Claude Code hooks reference (PreToolUse):
 #   stdin  — JSON: { session_id, tool_name, tool_input: { command, ... } }
 #   exit 0 — allow the tool call (optionally with a JSON permission decision on
-#            stdout; we emit {"permissionDecision":"ask",...} to escalate)
+#            stdout; we emit {"hookSpecificOutput":{"hookEventName":"PreToolUse",
+#            "permissionDecision":"ask",...}} to escalate)
 #   exit 2 — block (we never hard-block here; the deny-list owns that)
 #
 # Posture (all operator-confirmed, see HISTORY entry):
@@ -206,7 +207,7 @@ case "$decision" in
     [ -n "$reason" ] || reason="risky action on $matched_class surface"
     msg="atelier:semantic-risk-judge — Haiku flagged a $matched_class action: $reason"
     log_decision "$HOOK_NAME" "Bash" "$matched_class" "ask" "$reason"
-    jq -cn --arg r "$msg" '{permissionDecision: "ask", permissionDecisionReason: $r}'
+    jq -cn --arg r "$msg" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: $r}}'
     exit 0
     ;;
   allow)
