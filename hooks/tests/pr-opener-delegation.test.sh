@@ -25,7 +25,8 @@
 #   Group 2 — commands/align.md Tier 3 `auto` path delegates to task-orchestrator
 #     - task-orchestrator is named in the Tier 3 auto section, in non-task-pr mode
 #     - Task tool dispatch is described for the auto path
-#     - Task is present in align's allowed-tools frontmatter
+#     - Task is present in align's allowed-tools frontmatter (enumerated grant
+#       list, not a pinned verbatim line)
 #     - align states it does not itself dispatch reviewer/auto-merge, and the
 #       auto section does not inline `gh pr create` for its own authoring step
 #     - the ask path is unchanged: still authors inline via AskUserQuestion offer
@@ -171,8 +172,16 @@ else
   fail "align: Tier 3 auto section does not describe a Task-tool dispatch"
 fi
 
-chk_prose "$ALIGN_MD" 'allowed-tools: Bash(atelier-align:*), Bash(atelier-setup-project:*), Bash(git:*), Bash(gh:*), Read, AskUserQuestion, SlashCommand, Task' \
-  "align: Task tool is present in align's allowed-tools frontmatter"
+# allowed-tools is now an enumerated minimum-necessary grant list (no blanket
+# Bash(git:*)/Bash(gh:*)); pinning the full line verbatim would just re-create
+# brittleness against future grant narrowing. The invariant this test actually
+# cares about is that Task is present in the frontmatter line.
+ALLOWED_TOOLS_LINE="$(grep -m1 '^allowed-tools:' "$ALIGN_MD")"
+if printf '%s' "$ALLOWED_TOOLS_LINE" | grep -qF 'SlashCommand, Task'; then
+  pass "align: Task tool is present in align's allowed-tools frontmatter"
+else
+  fail "align: Task tool is not present in align's allowed-tools frontmatter"
+fi
 
 # Align must not itself coordinate reviewer/auto-merge for the auto path —
 # that coordination is now owned by the delegated task-orchestrator.
