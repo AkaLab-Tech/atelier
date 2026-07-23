@@ -93,7 +93,13 @@ fi
 # Output: $TO_STAGE_FILE contains one path per line, scoped to the
 # current cwd (which is the worktree Claude is operating in).
 TO_STAGE_FILE="$(mktemp -t atelier-scan-git-add.XXXXXX)"
-trap 'rm -f "$TO_STAGE_FILE"' EXIT
+# Signal channel for added_lines_for's parse-error status. A plain
+# variable assignment inside added_lines_for does NOT survive its
+# callers' `added="$(added_lines_for "$path")"` command substitution
+# (that runs the function in a subshell) — so the parse-error/binary
+# signal has to cross process boundaries via a file, not a variable.
+PARSE_ERROR_FILE="$(mktemp -t atelier-scan-parse-error.XXXXXX)"
+trap 'rm -f "$TO_STAGE_FILE" "$PARSE_ERROR_FILE"' EXIT
 
 # #258 — normalise "git [-C <path>] add …" → an expression beginning at
 # `add …` so the wildcard detector and add_args extraction below work
@@ -218,14 +224,17 @@ is_lockfile() {
 # `git add` is about to stage as well as anything staged by an earlier
 # `git add` in the same session — either way it's about to be committed.
 #
-# Sets SCAN_PARSE_ERROR=1 and returns empty when the diff can't be
-# scoped cleanly (binary content, or the `git diff` invocation itself
-# failing) — callers must fail closed (block) on that signal rather
-# than silently treating "no diff text" as "nothing added".
-SCAN_PARSE_ERROR=0
+# Writes 1 (parse error — binary content or a `git diff` failure) or 0
+# to $PARSE_ERROR_FILE and returns empty when the diff can't be scoped
+# cleanly — callers must read that file after the command substitution
+# and fail closed (block) on "1" rather than silently treating "no diff
+# text" as "nothing added". (A `SCAN_PARSE_ERROR=1` variable assignment
+# here would NOT survive the caller's `added="$(added_lines_for ...)"`
+# command substitution — that invokes this function in a subshell whose
+# variable changes are discarded when it exits — hence the file.)
 added_lines_for() {
   local path="$1"
-  SCAN_PARSE_ERROR=0
+  printf '0' > "$PARSE_ERROR_FILE"
   # $path may be absolute (a literal absolute token in the `git add`
   # command) or relative to target_dir — resolve once for the plain
   # `cat` fallback below; git itself resolves either form fine as a
@@ -238,11 +247,11 @@ added_lines_for() {
   if git -C "$target_dir" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
     local diff_out
     if ! diff_out="$(git -C "$target_dir" diff HEAD --no-color --unified=0 -- "$path" 2>/dev/null)"; then
-      SCAN_PARSE_ERROR=1
+      printf '1' > "$PARSE_ERROR_FILE"
       return 0
     fi
     if printf '%s\n' "$diff_out" | grep -qE '^Binary files '; then
-      SCAN_PARSE_ERROR=1
+      printf '1' > "$PARSE_ERROR_FILE"
       return 0
     fi
     printf '%s\n' "$diff_out" | awk '/^\+\+\+/ { next } /^\+/ { sub(/^\+/, ""); print }'
@@ -386,7 +395,9 @@ scan_added_lines() {
   added="$(added_lines_for "$path")"
   # #297 fail-closed — a diff we couldn't scope (binary, or the `git
   # diff` invocation itself erroring) must block, not silently pass.
-  [ "$SCAN_PARSE_ERROR" -eq 1 ] && block_now "diff-parse-error" "$path" "" \
+  # Read the signal from $PARSE_ERROR_FILE, not a variable — the
+  # command substitution above ran added_lines_for in a subshell.
+  [ "$(cat "$PARSE_ERROR_FILE" 2>/dev/null)" = "1" ] && block_now "diff-parse-error" "$path" "" \
     "could not scope the staged diff for this path (binary content or a diff error) — failing closed"
   [ -z "$added" ] && return 0
 
@@ -459,8 +470,9 @@ scan_with_reused_patterns() {
   local content
   content="$(added_lines_for "$path")"
   # #297 fail-closed — mirrors the guard in scan_added_lines; kept here
-  # too in case call order ever changes.
-  [ "$SCAN_PARSE_ERROR" -eq 1 ] && block_now "diff-parse-error" "$path" "" \
+  # too in case call order ever changes. Read from $PARSE_ERROR_FILE,
+  # not a variable — added_lines_for ran in a subshell above.
+  [ "$(cat "$PARSE_ERROR_FILE" 2>/dev/null)" = "1" ] && block_now "diff-parse-error" "$path" "" \
     "could not scope the staged diff for this path (binary content or a diff error) — failing closed"
   [ -z "$content" ] && return 0
 
