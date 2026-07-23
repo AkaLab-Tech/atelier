@@ -59,7 +59,7 @@ Invoke the `planner` agent via the `Task` tool. The briefing must include:
 - `project_root`: the absolute path resolved in Phase 1.
 - `entry_point`: `plan-task`.
 
-**Wait for it to return.** The planner writes draft `.plan/<id>.md` file(s) (and, for an oversize task, rewrites the ROADMAP block into an epic via `task-decomposer`) — all as **uncommitted** working-tree changes.
+**Wait for it to return.** Under `planStorage=committed`/`local` the planner writes draft `.plan/<id>.md` file(s) (and, for an oversize task, rewrites the ROADMAP block into an epic via `task-decomposer`) — all as **uncommitted** working-tree changes. Under `planStorage=resident` the planner writes no file at all — it returns the draft plan markdown inline as each unit's `content` field (see `agents/planner.md`'s Output); there is nothing in the working tree to diff or discard until Phase 4 calls `setPlan`.
 
 ## Phase 3 — Review with the product lead
 
@@ -86,9 +86,9 @@ Only after explicit approval:
 
 - **`files` backend, `local`:** still flip `[ready]` in `ROADMAP.md` (and, if decomposed, still commit the epic rewrite), and still commit that `ROADMAP.md` change (`git add ROADMAP.md` — **omit `.plan`**), because the `[ready]` marker must still reach `origin/<base>` for `/next-task` to see it. The `.plan/<id>.md` file(s) stay local and uncommitted.
 - **`github-project` / `linear` backend, `local`:** set the Project's `Ready` field (`setReady(id, true)`) exactly as below, and make **no commit at all** — there is no `ROADMAP.md`, and `.plan/<id>.md` stays local.
-- **`github-project` / `linear` backend, `resident`:** set the Project's `Ready` field (`setReady(id, true)`) exactly as below, then call `setPlan(id, <approved plan markdown>)` via the `roadmap-tracking-flow` skill, passing the full contents of the (still-uncommitted, working-tree) draft `.plan/<id>.md` the planner wrote in Phase 2. This writes the plan into the backend item's body between the `atelier:plan` delimiters. Make **no commit at all**, then delete the now-superseded working-tree draft (`rm .plan/<id>.md` or `git clean -f .plan/<id>.md`) — under `resident` mode no plan file is left behind anywhere, local or committed, once `setPlan` has confirmed the write.
+- **`github-project` / `linear` backend, `resident`:** set the Project's `Ready` field (`setReady(id, true)`) exactly as below, then call `setPlan(id, <approved plan markdown>)` via the `roadmap-tracking-flow` skill, passing the planner's **returned inline plan content** for that unit (the `content` field from the planner's Phase 2 return, with its `Status:` line flipped to `ready (approved — product lead)`) — not any file, since the planner wrote none. This writes the plan into the backend item's body between the `atelier:plan` delimiters. Make **no commit at all** — under `resident` **no plan file is left behind anywhere, local or committed** — none is ever written; the planner returns the plan markdown inline and `setPlan` stores it in the backend item body, so there is nothing to delete once `setPlan` has confirmed the write.
 
-In the `local` cases, still flip the draft plan's `Status:` line to `ready (approved — product lead)` inside the local `.plan/<id>.md` (a working-tree edit that is simply never staged). Under `resident`, flip the `Status:` line the same way **before** passing the content to `setPlan`, so the stored plan reads as approved. Everything else in Phase 4 below is the `committed`-mode path.
+In the `local` cases, still flip the draft plan's `Status:` line to `ready (approved — product lead)` inside the local `.plan/<id>.md` (a working-tree edit that is simply never staged). Under `resident`, flip the `Status:` line the same way in the planner's returned inline content **before** passing it to `setPlan` — there is no working-tree file to edit, only the in-memory markdown the planner returned in Phase 2. Everything else in Phase 4 below is the `committed`-mode path.
 
 ### `files` backend (unchanged — `planStorage=committed`)
 
