@@ -16,6 +16,8 @@ This command does **not** start the implement chain. The next `/atelier:next-tas
 
 `$ARGUMENTS` must carry a single task id matching `^#?\d+[a-z]?$` (with or without leading `#`; a letter suffix like `42a` is allowed so a single sub-task can be planned). Anything else: print usage and exit.
 
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
+
 ```text
 Usage: /atelier:plan-task <task-id>
 Example: /atelier:plan-task #42
@@ -153,6 +155,8 @@ When the product lead rejects, or the planner refused/errored after leaving work
 3. Report that nothing was committed and the `.plan` is back to its pre-command state; if the `Ready` field was un-set, confirm that too. Under `resident`, also confirm `setPlan` was never called (or, if it partially succeeded before the failure, that the backend item's plan section does not carry a stray approved-but-unreviewed plan — re-run `getPlan(id)` to check, and clear it with an empty `setPlan(id, "")` if it does).
 
 ## Output
+
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
 
 ```text
 == /atelier:plan-task <task_id> ==

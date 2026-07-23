@@ -77,6 +77,8 @@ The slow layer is the PR-gate equivalent — run it **once** before `pr-author` 
 
 Print a structured summary in this exact format (the `task-orchestrator` parses it to decide the inner loop's next action):
 
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
+
 ```text
 == /validate report ==
 

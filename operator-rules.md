@@ -14,6 +14,10 @@ Governs: commit messages, PR titles and descriptions, code comments, and atelier
 
 Does **not** govern: operator-facing chat / status messages (mirror the operator's language there), or the project's pre-existing content (never translate or rewrite it). Identifiers and code are language-neutral.
 
+## Command output-block language (#28)
+
+Atelier's slash commands show their final operator-facing output as a fenced ` ```text ` block (e.g. `✓ Task claimed:`, `Worktree:`, `Next:`). Those blocks are **illustrative structure, not literal output** — the English labels are placeholders for the shape of the message, never strings to reproduce verbatim. When you actually render that output to the operator, translate every label into the operator's chatLanguage (set via `/atelier:set-language`, injected above as "Address the operator in **`<language>`**" when configured); only values that are inherently language-neutral (paths, branch names, ids, code) stay as-is.
+
 ## Dependency installs (§4)
 
 Before any `pnpm add`:

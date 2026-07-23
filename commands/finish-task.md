@@ -42,6 +42,8 @@ Capture the PR URL from the skill's output.
 
 End with:
 
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
+
 ```text
 ✓ Task finalised: <id> — <title>
   Commit:  <short-sha>

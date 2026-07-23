@@ -18,6 +18,8 @@ This command does **not** start the implement chain and does **not** mark anythi
 
 If `$ARGUMENTS` is empty or has more than one token, print usage and exit:
 
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
+
 ```text
 Usage: /atelier:slice-task <task-id>
 Example: /atelier:slice-task #42
@@ -65,6 +67,8 @@ If the agent returned `refused-*` or `error`:
 ## Phase 4 — Report
 
 Print a compact summary the operator can scan:
+
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
 
 ```text
 == /atelier:slice-task <task_id> ==

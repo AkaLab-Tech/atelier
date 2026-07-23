@@ -81,6 +81,8 @@ Two independent kinds of blocked, always checked regardless of `BACKEND`:
 
 Use this exact dashboard shape so the operator can grep / scan reliably:
 
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
+
 ```text
 == atelier status ==
 

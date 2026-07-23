@@ -104,6 +104,8 @@ If none of the three holds, the task is unplanned.
 
 If the task fails the planning gate (missing `Ready` / missing `[ready]`, or no `PLAN_SOURCE` was found in any valid location above — e.g. an empty `getPlan(id)` under `resident` with no committed or local fallback found either), **stop and refuse** in both interactive and non-interactive mode — never improvise a plan, never offer to plan it inline:
 
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
+
 ```text
 ✗ /next-task: task #<id> is not planned — run `/atelier:plan-task #<id>` first.
    A task is only claimable once a product lead has approved a plan and it carries [ready].
@@ -116,6 +118,8 @@ git cat-file -e origin/<base>:.plan/<id>.md
 ```
 
 For the **`files` backend**, this probe *is* the plan-existence check (the discovery above defers to it for `committed` mode) — it always runs when `PLAN_SOURCE=committed`. For a **non-`files` backend**, the discovery above already ran this exact probe to determine `PLAN_SOURCE=committed` in the first place (precedence step 2), so it necessarily succeeds here too — this guard is the same check, applied consistently to both backend families rather than skipped for one of them. **This inverts the pre-#31 wording:** the guard used to be described as never running for a `github-project`/`linear` project because step 2 supposedly forced every non-`files` backend to `resident` — that claim was the bug (issue #318). The guard now runs whenever `PLAN_SOURCE=committed`, regardless of backend. If the probe exits non-zero (file absent on `origin/<base>`), **stop and refuse** — the plan was committed locally by `/atelier:plan-task` but never landed on the base:
+
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
 
 ```text
 ✗ /next-task: task #<id> is marked [ready] but its plan/decomposition is not on origin/<base>.
@@ -235,6 +239,8 @@ From this point the chain (`implementer` → `tester` → `pr-author`) is the or
 ## Output
 
 End the command with a single status line:
+
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
 
 ```text
 ✓ Task claimed: <id> — <title>
