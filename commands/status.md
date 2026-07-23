@@ -1,6 +1,6 @@
 ---
 description: Show the operator what's in progress, what's blocked, and what's awaiting review — across the current project's roadmap, worktrees, and open PRs.
-allowed-tools: Read, Glob, Grep, Bash(git wt list), Bash(git branch:*), Bash(git status:*), Bash(gh pr list:*), Bash(atelier-task-backend:*), Bash(gh issue list:*)
+allowed-tools: Read, Glob, Grep, Bash(git wt list), Bash(git branch:*), Bash(git status:*), Bash(gh pr list:*), Bash(atelier-task-backend:*), Bash(gh issue list:*), Bash(gh api graphql:*)
 ---
 
 You are running the `/status` slash command. This is **read-only** — never modify any file or perform a git/gh write.
@@ -58,6 +58,25 @@ Two independent kinds of blocked, always checked regardless of `BACKEND`:
 - When `BACKEND` is `files`: read `ROADMAP.md`. Find every unchecked item with a `blocked_by:` pointing at an open (`[ ]`) id elsewhere in the same file. For each, capture `id`, `title`, and the blocker id.
 - When `BACKEND` is not `files`: do not attempt to reconstruct this list — there is no local file to scan. Render a single note instead: "dependency-gated view lives on the `<BACKEND>` board".
 
+### 5. Epic-in-flight (`github-project` only, #328)
+
+`/status` never lists raw backlog ("Todo") items, so this section never presents a claimable-looking epic on its own — but the operator (or another consumer reading the raw board directly) can still be misled by a board item stuck on `Todo` while its slices are already in progress or merged. When `BACKEND` is `github-project`, cross-check the open `task/*` PRs already gathered in section 3 against native GitHub sub-issues to catch this and re-label it correctly, rather than saying nothing:
+
+- For each open `task/*` PR, resolve the board item its branch's `<id>` corresponds to, then check whether that item has a **parent** issue (`Issue.parent` — the reverse of `subIssues`, same native-sub-issue linkage documented in `skills/task-discovery/SKILL.md` § "Backend-aware backlog source (M9.1)" step 6). Only issue-backed items can have one; a `DraftIssue`-backed item (the common case for atelier-managed boards, including this repo's own) has no parent to check — skip it silently, same as today.
+- When a parent is found, read the parent epic's own sub-issues (same query shape as the task-discovery recipe) and map each sub-issue's Status through `githubProject.stateMap`. If at least one sub-issue is done/in-progress (the PR you are already looking at, at minimum, proves that), the parent is an **epic in flight** — regardless of what its own Status field currently shows on the board.
+  ```bash
+  gh api graphql -f query='
+  query($owner:String!, $repo:String!, $number:Int!) {
+    repository(owner:$owner, name:$repo) {
+      issue(number:$number) {
+        parent { number title }
+      }
+    }
+  }' -f owner=<owner> -f repo=<repo> -F number=<sub-issue-number>
+  ```
+  followed by the same `subIssues` + `fieldValueByName(name:"Status")` query from the task-discovery recipe, run against the returned `parent.number`.
+- Render every epic found this way under its own dashboard section (below), annotated `(epic, N/M slices done)` — **never** alongside anything that looks like an open, claimable task. This is the annotation the operator needs: a corrective signal that a `Todo`-looking board item is not actually available backlog.
+
 ## Output format
 
 Use this exact dashboard shape so the operator can grep / scan reliably:
@@ -98,6 +117,15 @@ Use this exact dashboard shape so the operator can grep / scan reliably:
 
   (omit the section entirely if there are none)
 
+▶ Epics in flight (github-project only, #328)
+  • #<epic-id> — <epic title> (epic, N/M slices done)
+    Board shows: <Status label as currently set>  — do not treat as claimable backlog
+    Slice in progress: #<NN> <slice-title> (this repo's open PR proving it)
+
+  (github-project backend only; omit the section entirely on `files` / `linear`,
+   and omit it on github-project when no open task/* PR's board item has a parent
+   epic still sitting in the roadmap bucket)
+
 ▶ Out-of-band PRs (non-task/* branches)
   • #<NN> <title> — <headRefName>
 
@@ -117,9 +145,11 @@ Use this exact dashboard shape so the operator can grep / scan reliably:
 - If `gh pr list` fails (not authenticated, no network), report `PRs: <unavailable — gh auth status?>` and continue with the other sections.
 - If `gh issue list` fails (not authenticated, no network), report `Blocked (hard-stopped): <unavailable — gh auth status?>` and continue with the other sections — do not skip the whole `▶ Blocked` section, the dependency-gated subsection may still be renderable.
 - If `git wt list` fails (binary missing), report `Worktrees: <git-wt not installed — see /atelier:doctor>` and continue.
+- If a section 5 `gh api graphql` call fails (not authenticated, no network, or the repo has no native sub-issues feature enabled), report `Epics in flight: <unavailable — gh auth status?>` and continue — do not skip the rest of the dashboard over this one section.
 
 ## Edge cases
 
 - **No `IN_PROGRESS.md` at all**: if `BACKEND` is `files` and the operator simply hasn't run roadmap-tracking-flow init, report it once and recommend the operator initialise tracking (or run `/atelier:setup-project`). If `BACKEND` is not `files`, this is expected (state lives on the board) — do not treat it as an error.
 - **PR title is very long**: truncate to 80 chars + `…` for the dashboard; the operator can run `gh pr view <NN>` for full detail.
 - **The current directory is not inside a registered atelier project** — surface that clearly. `/status` makes sense only inside a project.
+- **Epic-in-flight is a read-path annotation only (#328).** `/status` never writes the epic's Status field back to `In Progress` / `Done` — there is currently no atelier code path that creates `github-project` slices in the first place (`task-decomposer` refuses to mutate this backend — #312), so there is nothing to hook a write-back onto yet. A first-class `github-project` decomposition mechanism plus an epic-Status write-back on slice creation/completion is the proper long-term fix; until then, this section is a **defense-in-depth annotation**, not a correction of the board itself.
