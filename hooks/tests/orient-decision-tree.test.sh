@@ -38,11 +38,15 @@ mkcfgd "$TMP/hml";     printf '# Roadmap\n## High Priority\n## Low Priority / Id
 mkcfgd "$TMP/inprog";  printf '# Roadmap\n## 🎯 P1 — Next\n- [ ] `feat` x `#1` [ready]\n'      > "$TMP/inprog/ROADMAP.md";  printf '# In Progress\n- [ ] Wire the widget\n' > "$TMP/inprog/IN_PROGRESS.md"
 mkcfgd "$TMP/drift";   printf '# Roadmap\n## 🎯 P1 — Next\n- [ ] `feat` x `#1` [ready]\n'      > "$TMP/drift/ROADMAP.md";   printf '# In Progress\n' > "$TMP/drift/IN_PROGRESS.md"
 mkdir -p "$TMP/wsroot"
+# non-files backend (github-project): configured, not in-progress, NO ROADMAP.md /
+# IN_PROGRESS.md — regresses issue #322 (used to print the false "No ROADMAP.md yet.")
+mkcfgd "$TMP/ghproj";  printf '{"backend":"github-project"}\n' > "$TMP/ghproj/.roadmap.json"
 
 # registry: drift dir on an ancient version, the rest on a future one (no drift)
-jq -n --arg r "$TMP/s5ready" --arg p "$TMP/s5plan" --arg f "$TMP/foreign" --arg h "$TMP/hml" --arg i "$TMP/inprog" --arg d "$TMP/drift" '{projects:{
+jq -n --arg r "$TMP/s5ready" --arg p "$TMP/s5plan" --arg f "$TMP/foreign" --arg h "$TMP/hml" --arg i "$TMP/inprog" --arg d "$TMP/drift" --arg g "$TMP/ghproj" '{projects:{
   ($r):{setupVersion:"99.0.0"},($p):{setupVersion:"99.0.0"},($f):{setupVersion:"99.0.0"},
-  ($h):{setupVersion:"99.0.0"},($i):{setupVersion:"99.0.0"},($d):{setupVersion:"0.0.1"}
+  ($h):{setupVersion:"99.0.0"},($i):{setupVersion:"99.0.0"},($d):{setupVersion:"0.0.1"},
+  ($g):{setupVersion:"99.0.0"}
 }}' > "$CFG/projects.json"
 jq -n --arg root "$TMP/wsroot" '{workspaces:{ wt:{name:"wt", root:$root, members:[]} }}' > "$CFG/workspaces.json"
 
@@ -57,6 +61,8 @@ hml_out="$(run "$TMP/hml")"; printf '%s' "$hml_out" | grep -qF "onboard-workspac
 chk "$(run "$TMP/inprog")"  "in-progress → resume-task"          "/atelier:resume-task"
 chk "$(run "$TMP/drift")"   "drift → resync note"                "setup v0.0.1 < installed"
 chk "$(run "$TMP/wsroot")"  "workspace root → board"             "Root of workspace \"wt\""
+chk "$(run "$TMP/ghproj")"  "non-files backend → board message"  "github-project board"
+ghproj_out="$(run "$TMP/ghproj")"; printf '%s' "$ghproj_out" | grep -qF "No ROADMAP.md yet." && fail "non-files backend must NOT show No ROADMAP.md yet." || pass "non-files backend does not show No ROADMAP.md yet."
 
 echo ""
 if [ "$fails" -eq 0 ]; then echo "orient decision tree: all assertions passed."; exit 0
