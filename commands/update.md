@@ -23,6 +23,8 @@ The slash command exists because the helper's interactive prompt requires a TTY;
 
 Anything else: print usage and exit.
 
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
+
 ```text
 Usage: /atelier:update [--dry-run]
 ```

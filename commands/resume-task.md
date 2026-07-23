@@ -175,6 +175,8 @@ For **PR-open-resume**, the retry budget is not consulted — no specialist runs
 
 End the command with a single status block:
 
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
+
 ```text
 ✓ /atelier:resume-task <id>
   Mode:           blocked-resume | interrupted-resume | pr-open-resume

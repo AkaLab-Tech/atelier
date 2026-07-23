@@ -64,6 +64,8 @@ Find the entry whose branch matches `task/<id>-*`. Call it `<wt>`. Its absence i
 
 **Neither anchor found** → refuse:
 
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
+
 ```text
 ✗ /atelier:abandon-task: task <id> is not in flight.
    No open task/<id>-* PR and no active in-progress record found.
@@ -79,6 +81,8 @@ Apply these checks before step 4 (confirm) and before any of steps 6–9 (destru
 - **Protected or non-`task/*` branch.** If the resolved branch (from Anchor A's `headRefName`, or the worktree's branch from step 2) is `main`, `master`, `develop`, `staging`, or does not start with `task/`, refuse — this command only ever touches `task/<id>-<slug>` branches.
 
 Refusal message for either case:
+
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
 
 ```text
 ✗ /atelier:abandon-task: cannot abandon task <id> — <reason>.
@@ -142,6 +146,8 @@ Skip if there was no such issue.
 ## Output
 
 End the command with a single status block:
+
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
 
 ```text
 ✓ /atelier:abandon-task <id>

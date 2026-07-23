@@ -28,6 +28,8 @@ If none of those is true, you are **interactive**. In non-interactive mode, **ne
 
 Strip `--yes` / `-y` before parsing the rest. If `--all` is present, **stop immediately** — do not proceed to any other step, do not create a worktree, do not dispatch anything:
 
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
+
 ```text
 ✗ /atelier:release --all is not implemented yet (#44) — resolve and release one project at
    a time: /atelier:release [<version>|major|minor|patch] --project <path>
@@ -121,6 +123,8 @@ The tag targets the **merge commit SHA** captured in step 7, not whatever `origi
 ### 9. Print the operator update recipe
 
 After the tag is pushed, print the standard three-step recipe so the operator can pick up the new version:
+
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
 
 ```text
 ✓ Released v<next_version> (was v<current>) — PR #<NN> merged, tag v<next_version> pushed.

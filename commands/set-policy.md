@@ -58,6 +58,8 @@ For each category you walk:
 
 After walking all requested categories, print a compact summary the operator can scan:
 
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
+
 ```text
 Decision policy updated in .atelier.json:
 

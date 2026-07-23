@@ -44,6 +44,8 @@ atelier-setup-workspace --which-workspace <current-dir>
 
 If exit non-zero (not a registered workspace member), stop with:
 
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
+
 ```text
 ✗ /atelier:babysit-prs --workspace: the current project is not part of a registered workspace.
    Register a workspace first with /atelier:setup-workspace, then re-run.
@@ -188,6 +190,8 @@ cd <worktree_path> && ... prefix. See operator-rules.md § Operating against the
 Record the orchestrator's returned status for the final report.
 
 ### 6. Produce the per-pass report
+
+> Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
 
 ```text
 == babysit-prs report ==
