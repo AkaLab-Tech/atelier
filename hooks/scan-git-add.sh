@@ -78,7 +78,11 @@ if [ -d "$target_dir" ]; then
 else
   target_dir="$PWD"
 fi
-cd "$target_dir" 2>/dev/null || true
+# #297 — do NOT `cd` into target_dir and rely on it for the rest of the
+# script. Every downstream git/file operation now takes target_dir
+# explicitly (via `git -C` or a `$target_dir/`-prefixed path), so path
+# resolution never silently depends on whether an actual `cd` happened
+# to take effect in this process.
 
 # ---- Resolve which paths would be staged --------------------------------
 # Strategy:
@@ -115,8 +119,8 @@ fi
 
 if [ "$is_wildcard" -eq 1 ]; then
   {
-    git ls-files --others --exclude-standard 2>/dev/null || true
-    git diff --name-only 2>/dev/null || true
+    git -C "$target_dir" ls-files --others --exclude-standard 2>/dev/null || true
+    git -C "$target_dir" diff --name-only 2>/dev/null || true
   } | sort -u > "$TO_STAGE_FILE"
 else
     # Extract tokens after `git add` up to the next chained operator
@@ -129,14 +133,21 @@ else
         -*) continue ;;  # flag, skip
         '') continue ;;
       esac
-      if [ -f "$tok" ] || [ -d "$tok" ]; then
+      # #297/#301 — resolve every token against target_dir explicitly.
+      # `git [-C target_dir] add <tok>` resolves <tok> relative to
+      # target_dir, never to this hook's own $PWD; the existence check
+      # and any dir expansion below must match that exactly.
+      case "$tok" in
+        /*) full_tok="$tok" ;;
+        *) full_tok="$target_dir/$tok" ;;
+      esac
+      if [ -f "$full_tok" ] || [ -d "$full_tok" ]; then
         # If it's a dir, expand to the files git would see.
-        if [ -d "$tok" ]; then
-          (
-            cd "$tok" 2>/dev/null \
-              && git ls-files --others --exclude-standard 2>/dev/null \
-              && git diff --name-only 2>/dev/null
-          ) | sed "s|^|${tok%/}/|"
+        if [ -d "$full_tok" ]; then
+          {
+            git -C "$full_tok" ls-files --others --exclude-standard 2>/dev/null
+            git -C "$full_tok" diff --name-only 2>/dev/null
+          } | sed "s|^|${tok%/}/|"
         else
           printf '%s\n' "$tok"
         fi
@@ -194,18 +205,50 @@ is_lockfile() {
   return 1
 }
 
-# Extract added lines for a path. If untracked, return the whole file.
-# If modified, return only lines starting with `+` from `git diff` (the
-# diff lines, excluding the `+++` filename header).
+# Extract added lines for a path, scoped to $target_dir (#297: never the
+# hook's own $PWD). If untracked, return the whole file (there is no
+# "base" to diff against — the entire content is new). If tracked,
+# return only lines starting with `+` from `git diff HEAD` against
+# target_dir (the diff lines, excluding the `+++` filename header) —
+# `--unified=0` drops context lines entirely so a pre-existing line
+# sitting near a real change is never mistaken for an added one (#297:
+# a private-key example already committed, unchanged, must never read
+# as newly added just because something else in the same file moved).
+# Diffing against HEAD (not just the index) also covers content this
+# `git add` is about to stage as well as anything staged by an earlier
+# `git add` in the same session — either way it's about to be committed.
+#
+# Sets SCAN_PARSE_ERROR=1 and returns empty when the diff can't be
+# scoped cleanly (binary content, or the `git diff` invocation itself
+# failing) — callers must fail closed (block) on that signal rather
+# than silently treating "no diff text" as "nothing added".
+SCAN_PARSE_ERROR=0
 added_lines_for() {
   local path="$1"
-  if git ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
-    # Tracked → diff vs HEAD, take + lines except the header.
-    git diff --no-color -- "$path" 2>/dev/null \
-      | awk '/^\+\+\+/ { next } /^\+/ { sub(/^\+/, ""); print }'
+  SCAN_PARSE_ERROR=0
+  # $path may be absolute (a literal absolute token in the `git add`
+  # command) or relative to target_dir — resolve once for the plain
+  # `cat` fallback below; git itself resolves either form fine as a
+  # pathspec under `-C target_dir`.
+  local abs_path
+  case "$path" in
+    /*) abs_path="$path" ;;
+    *) abs_path="$target_dir/$path" ;;
+  esac
+  if git -C "$target_dir" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+    local diff_out
+    if ! diff_out="$(git -C "$target_dir" diff HEAD --no-color --unified=0 -- "$path" 2>/dev/null)"; then
+      SCAN_PARSE_ERROR=1
+      return 0
+    fi
+    if printf '%s\n' "$diff_out" | grep -qE '^Binary files '; then
+      SCAN_PARSE_ERROR=1
+      return 0
+    fi
+    printf '%s\n' "$diff_out" | awk '/^\+\+\+/ { next } /^\+/ { sub(/^\+/, ""); print }'
   else
-    # Untracked → entire file content.
-    cat -- "$path" 2>/dev/null || true
+    # Untracked → entire file content, read from target_dir (not $PWD).
+    cat -- "$abs_path" 2>/dev/null || true
   fi
 }
 
@@ -341,6 +384,10 @@ scan_added_lines() {
   local path="$1"
   local added
   added="$(added_lines_for "$path")"
+  # #297 fail-closed — a diff we couldn't scope (binary, or the `git
+  # diff` invocation itself erroring) must block, not silently pass.
+  [ "$SCAN_PARSE_ERROR" -eq 1 ] && block_now "diff-parse-error" "$path" "" \
+    "could not scope the staged diff for this path (binary content or a diff error) — failing closed"
   [ -z "$added" ] && return 0
 
   local skip_entropy=0
@@ -411,6 +458,10 @@ scan_with_reused_patterns() {
   local path="$1"
   local content
   content="$(added_lines_for "$path")"
+  # #297 fail-closed — mirrors the guard in scan_added_lines; kept here
+  # too in case call order ever changes.
+  [ "$SCAN_PARSE_ERROR" -eq 1 ] && block_now "diff-parse-error" "$path" "" \
+    "could not scope the staged diff for this path (binary content or a diff error) — failing closed"
   [ -z "$content" ] && return 0
 
   # Skip rules from scan-edit-write catalogue.
