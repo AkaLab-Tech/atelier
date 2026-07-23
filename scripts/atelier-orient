@@ -74,6 +74,24 @@ backlog_state() {
   printf 'empty'
 }
 
+# Resolve $DIR's roadmap backend (files|github-project|linear|...) by delegating
+# to the sibling atelier-task-backend. Fails open to "files" if that script can't
+# be located or errors — orient must never mistake a resolution failure for a
+# non-files backend (that would suppress the §5 backlog suggestions below).
+resolve_backend() {
+  local self="${BASH_SOURCE[0]}" d cand tb out
+  while [ -L "$self" ]; do
+    d="$(cd -P "$(dirname "$self")" && pwd)"; self="$(readlink "$self")"
+    case "$self" in /*) ;; *) self="$d/$self" ;; esac
+  done
+  d="$(cd -P "$(dirname "$self")" && pwd)"
+  cand="$d/atelier-task-backend"
+  if [ -x "$cand" ]; then tb="$cand"; else tb="$(command -v atelier-task-backend 2>/dev/null || true)"; fi
+  [ -n "$tb" ] || { printf 'files'; return; }
+  out="$("$tb" "$DIR" 2>/dev/null)" || { printf 'files'; return; }
+  printf '%s' "${out:-files}"
+}
+
 # installed atelier version (best-effort) for setup-drift hints.
 installed_version() {
   local self="${BASH_SOURCE[0]}" d cand
@@ -145,27 +163,33 @@ if inprogress_occupied; then
   printf '  A task is in progress here.\n'
   printf '  -> /atelier:resume-task   (continue it)\n'
 else
-  case "$(roadmap_layout)" in
-    section5)
-      case "$(backlog_state)" in
-        ready)      printf '  A planned task is ready to claim.\n  -> /atelier:next-task\n' ;;
-        unplanned)  printf '  Backlog has tasks but none are [ready].\n  -> /atelier:plan-task <id>   (then /atelier:next-task)\n' ;;
-        *)          printf '  No open tasks in the backlog.\n  -> add a §5 task to ROADMAP.md, then /atelier:plan-task <id>\n' ;;
-      esac ;;
-    foreign)
-      printf '  ROADMAP.md is not in the §5 layout — its tasks are not claimable yet.\n'
-      if [ "$WS_ROLE" = "member" ]; then
-        printf '  -> /atelier:onboard-workspace %s   (adopt members to §5)\n' "$WS_SLUG"
-      else
-        printf '  -> /adopt-roadmap --format atelier   (then fill TODOs, commit to base)\n'
-      fi ;;
-    highmedlow)
-      printf '  ROADMAP.md uses the High/Medium/Low layout — pick a task from ROADMAP.md to work.\n'
-      printf '  -> (worked manually; not auto-claimable by /atelier:next-task — /adopt-roadmap --format atelier to switch to §5)\n' ;;
-    *)
-      printf '  No ROADMAP.md yet.\n'
-      printf '  -> add one (or re-run /atelier:setup-project)\n' ;;
-  esac
+  BACKEND="$(resolve_backend)"
+  if [ "$BACKEND" != "files" ]; then
+    printf '  This project tracks its backlog on the %s board.\n' "$BACKEND"
+    printf '  -> /atelier:status   (in-progress / open PRs / review state)\n'
+  else
+    case "$(roadmap_layout)" in
+      section5)
+        case "$(backlog_state)" in
+          ready)      printf '  A planned task is ready to claim.\n  -> /atelier:next-task\n' ;;
+          unplanned)  printf '  Backlog has tasks but none are [ready].\n  -> /atelier:plan-task <id>   (then /atelier:next-task)\n' ;;
+          *)          printf '  No open tasks in the backlog.\n  -> add a §5 task to ROADMAP.md, then /atelier:plan-task <id>\n' ;;
+        esac ;;
+      foreign)
+        printf '  ROADMAP.md is not in the §5 layout — its tasks are not claimable yet.\n'
+        if [ "$WS_ROLE" = "member" ]; then
+          printf '  -> /atelier:onboard-workspace %s   (adopt members to §5)\n' "$WS_SLUG"
+        else
+          printf '  -> /adopt-roadmap --format atelier   (then fill TODOs, commit to base)\n'
+        fi ;;
+      highmedlow)
+        printf '  ROADMAP.md uses the High/Medium/Low layout — pick a task from ROADMAP.md to work.\n'
+        printf '  -> (worked manually; not auto-claimable by /atelier:next-task — /adopt-roadmap --format atelier to switch to §5)\n' ;;
+      *)
+        printf '  No ROADMAP.md yet.\n'
+        printf '  -> add one (or re-run /atelier:setup-project)\n' ;;
+    esac
+  fi
 fi
 
 [ -n "$notes" ] && printf '  also: %s\n' "${notes%%; }"
