@@ -64,6 +64,8 @@ why_not_ready:   unplanned | blocked | unplanned; blocked_by:#NN open
 
 **Only `[x]`-excluded, unclaimed items are candidates.** An item that is `[ready]`/Ready but gated by an open `blocked_by` is **already planned** — it is not a plan candidate, since suggesting `/plan-task` on an already-planned item is wrong. If the shortlist would otherwise be empty but such items exist, surface them via the optional `note` field ("planned, waiting on <blocker>") instead of listing them in `plan_candidates`.
 
+**`GitHubProjectBackend` epic-in-flight items are never a plan candidate either (#328).** An item excluded by the "Epic-in-flight filtering" rule below (see "Backend-aware backlog source (M9.1)") is not unplanned backlog to offer up for `/plan-task` — its work is already split out and in progress, so re-planning it would be re-planning nearly-shipped work, the same false-positive the exclusion exists to prevent. Never add it to `plan_candidates`; surface it via the `note` field instead, e.g. `note: "epic in progress: #<id> (N/M slices done)"`.
+
 ## ROADMAP.md format (PLAN.md §5, summary)
 
 The roadmap is grouped by priority. The agent picks **the first unchecked item of the highest-priority section with no open `blocked_by` dependency**.
@@ -171,6 +173,51 @@ The selection algorithm above is **backend-agnostic**: it operates on a list of 
 3. **Planning gate for non-`files` backends.** In selection step 4, instead of checking a literal `[ready]` marker on a markdown line, this skill reads the backend's **Ready** field from the task record returned by `listTasks` (both `listTasks` and `getTask` fulfil their contract via the project-detail operation, which fetches each item with all its field values — so `Ready` rides along in the same record, no dedicated extra read is required). The plan-existence check for a non-`files` backend is a **union** of three possible locations, not a single one: a plan may be **resident** (in the task item's body, between the `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` markers, discovered via `getPlan(id)` — see `docs/RoadmapBackend.md` `setPlan`/`getPlan`), **committed** (a tracked `.plan/<id>.md` present on `origin/<base>` — the same file shape the `files` backend uses per §16.5), or **local** (a gitignored `.plan/<id>.md` in the operator's main checkout, valid only when the project's `planStorage` is `local`). The gate passes when a plan is found in **any** of these three locations; the caller checks them in precedence order — resident, then committed, then local — and stops at the first hit (**resident wins** when a plan exists in more than one place). A non-`files` backend can legitimately hold a committed or local `.plan/<id>.md` alongside resident plans for other tasks — e.g. a project mid-migration to `resident`, or a legacy plan (such as `atelier-dev` task `#10`) written before the migration began; the plan-existence check must never assume "non-`files` ⇒ resident-only". A task whose `Ready` field is set but for which no plan is found in **any** of the three locations is an inconsistency — surface it as `ready-without-plan: <id>` and treat the candidate as not eligible, the same way the `files` backend handles `[ready]` without a committed plan.
 4. After selection, the caller enriches the chosen task by calling `getTask(id)`, which returns the full `body`, `priority`, `Ready` field value, and backend-specific metadata. The enriched result is merged into this skill's standard output shape.
 5. The `roadmap-tracking-flow` skill is the execution layer for these calls; see that skill's SKILL.md for how `listTasks` and `getTask` are driven for each backend (`LinearBackend`'s Linear MCP path; `GitHubProjectBackend`'s hosted GitHub MCP path).
+6. **Epic-in-flight filtering for `GitHubProjectBackend` (#328).** `listTasks("roadmap")` returns each Project item as a **flat, claimable unit** — unlike the `files` backend (see "Epic-aware parsing" above), a board item carries no epic/sub-task structure of its own, since atelier does not create epics on `github-project` (`task-decomposer` refuses to mutate this backend — #312). That flatness is wrong when a board item is the **container** for work already split out and claimed elsewhere: an item left `Todo` while its slices have moved on is not an available unit, it is an epic whose Status simply never got updated (the bug this step exists to close). Because `.roadmap.json`'s `blocked_by` convention is a **plain text field with no native relations** (Projects v2 has none — see `docs/RoadmapBackend.md`), atelier cannot key epic↔slice linkage off any atelier-authored board convention; it uses **GitHub's native sub-issues** (`Issue.subIssues` / `Issue.parent`) instead, since that is the one general-purpose, forward-compatible parent/child primitive GitHub exposes independently of how the Project item itself was created. Concretely, for each candidate item `listTasks("roadmap")` returns:
+   - **Resolve whether the item is issue-backed.** A Project item's `content` is a union of `Issue` / `PullRequest` / `DraftIssue` (crt's `addTask` for this backend creates **draft** items by default — see `docs/RoadmapBackend.md`'s `GitHubProjectBackend` section — so this is not a given). Query the item's `backendId` (the `PVTI_...` node id already carried on the task record) via `gh api graphql`:
+     ```bash
+     gh api graphql -f query='
+     query($id: ID!) {
+       node(id: $id) {
+         ... on ProjectV2Item {
+           content {
+             __typename
+             ... on Issue { number repository { owner { login } name } }
+           }
+         }
+       }
+     }' -f id="<backendId>"
+     ```
+     If `__typename` is not `Issue` (a `DraftIssue` or `PullRequest`), the item cannot carry native sub-issues — it has no epic structure to check, so it is unchanged: a flat claimable unit, exactly as today. This is the common case for atelier-managed boards (including this repo's own).
+   - **When the item is issue-backed**, read its sub-issues and, for each, the Status of *its own* linked Project item (a sub-issue may itself be added to the same Project as a separate item):
+     ```bash
+     gh api graphql -f query='
+     query($owner:String!, $repo:String!, $number:Int!) {
+       repository(owner:$owner, name:$repo) {
+         issue(number:$number) {
+           subIssuesSummary { total completed percentCompleted }
+           subIssues(first: 50) {
+             nodes {
+               number
+               title
+               state
+               projectItems(first: 10) {
+                 nodes {
+                   project { number }
+                   fieldValueByName(name: "Status") {
+                     ... on ProjectV2ItemFieldSingleSelectValue { name }
+                   }
+                 }
+               }
+             }
+           }
+         }
+       }
+     }' -f owner=<owner> -f repo=<repo> -F number=<issue-number>
+     ```
+     Keep only the `projectItems` entry whose `project.number` matches this project (a sub-issue can be added to other boards too). If `subIssuesSummary.total` is `0`, there is no epic structure — flat claimable unit, unchanged. Otherwise, map each sub-issue's Status label through `githubProject.stateMap` (the same map `listTasks("roadmap")` itself uses): if **any** sub-issue's Status maps to `inProgress` or `history` (i.e. is **not** in the `roadmap` bucket), the item is an **epic in flight** — exclude it from the claimable/eligible set entirely, the same way step 2's epic-container rule excludes a `files`-backend `Epic:` line from direct selection. Surface it in the "no eligible task" shortlist / notes as `epic in progress (N/M slices done)` (`N` = count of sub-issues whose Status is outside `roadmap`, `M` = `subIssuesSummary.total`) — **never** as `ready to take`, regardless of its own `Ready` field or Status value. If every sub-issue's Status is still in the `roadmap` bucket, the item behaves as before (no slices have started yet, so it is still a legitimate flat candidate — decomposition, if any, happened entirely outside atelier and nothing is "in flight" yet).
+   - This is an **extra read the AI consumer layer performs after `listTasks`**, not a change to crt's `RoadmapBackend` contract — `listTasks`/`getTask` keep returning flat items exactly as documented; the sub-issue lookups above are plain `gh api graphql` calls the skill's caller (`/next-task`, `/atelier:status`) makes directly, layered on top.
+   - **crt-side follow-up (flagged, not implemented here):** `listTasks`/`getTask` do not currently expose whether an item's `content` is an `Issue` or a `DraftIssue`, nor the underlying issue number/repository — a consumer has to make the extra `node(id: $backendId)` round-trip above just to find out. If `GitHubProjectBackend` is ever extended to record this (e.g. `backendIssueNumber` alongside `backendId`), the first bullet above collapses into a single field read. This is a suggested crt enhancement, not a blocker for the fix here.
 
 The claim registry (open `task/*` PRs) and the collision-avoidance logic are **identical for all backends** — only the backlog source changes.
 
