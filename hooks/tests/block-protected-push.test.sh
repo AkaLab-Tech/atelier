@@ -76,6 +76,19 @@ assert_block "git push origin master"                 "git push origin master"
 assert_block "git push origin develop"                "git push origin develop"
 assert_block "git push origin staging"                "git push origin staging"
 
+# === BLOCK: trailing --force / -f against every protected branch (#94) =====
+# The static deny globs in templates/settings.template.json only cover
+# `git push * <branch> --force` / `-f` literally; this pins the categorical
+# hook-level guarantee those globs are defense-in-depth for, across both
+# flag spellings and all four protected branches.
+assert_block "git push origin main -f"                 "git push origin main -f"
+assert_block "git push origin master --force"          "git push origin master --force"
+assert_block "git push origin master -f"                "git push origin master -f"
+assert_block "git push origin develop --force"         "git push origin develop --force"
+assert_block "git push origin develop -f"               "git push origin develop -f"
+assert_block "git push origin staging --force"         "git push origin staging --force"
+assert_block "git push origin staging -f"               "git push origin staging -f"
+
 # === BLOCK: hard force to a non-protected (task/*) branch ==================
 assert_block "git push --force origin task/1-x"       "git push --force origin task/1-x"
 assert_block "git push -f origin task/1-x"             "git push -f origin task/1-x"
