@@ -216,6 +216,37 @@ chk_prose "$SKILL" 'task/*' \
   "SKILL.md no-regression: claim registry = open task/* PRs still stated"
 
 # ---------------------------------------------------------------------------
+# Group 6: next-task.md step 6 — task-not-in-from-bucket diagnosis (#66)
+# ---------------------------------------------------------------------------
+#
+# `moveTask` throwing `task-not-in-from-bucket` used to always be reported as
+# a race condition. #66 splits that into a self-interrupted-claim-resumable
+# case (pointing at /atelier:resume-task) and a genuine-race case. Asserts
+# the old unconditional wording is gone and both branches of the new
+# diagnosis are present.
+
+chk_absent "$NEXT_TASK" 'the task was already claimed by a concurrent actor — stop and report a race condition; do not proceed.' \
+  "next-task step 6 (#66): old unconditional 'always a race condition' wording removed"
+
+chk_prose "$NEXT_TASK" 'do **not** assume a race — diagnose which of two distinct causes holds before reporting anything (#66)' \
+  "next-task step 6 (#66): task-not-in-from-bucket now diagnosed instead of assumed"
+
+chk_prose "$NEXT_TASK" 'Re-read the item with `getTask(id)` via the `roadmap-tracking-flow` skill, and reuse the open `task/*` PR list already fetched in step 2 (no need to re-query)' \
+  "next-task step 6 (#66): diagnosis reuses step 2's PR list, no re-query"
+
+chk_prose "$NEXT_TASK" '**Self-interrupted claim (resumable, not a race)**' \
+  "next-task step 6 (#66): self-interrupted-claim-resumable case named"
+
+chk_prose "$NEXT_TASK" 'resolve: /atelier:resume-task <id>' \
+  "next-task step 6 (#66): self-interrupted case points at /atelier:resume-task <id>"
+
+chk_prose "$NEXT_TASK" '**Genuine race**' \
+  "next-task step 6 (#66): genuine-race case named"
+
+chk_prose "$NEXT_TASK" 'do **not** suggest `/atelier:resume-task` here, since there is no interrupted work of *this* claim'"'"'s to resume' \
+  "next-task step 6 (#66): genuine-race case does NOT suggest /atelier:resume-task"
+
+# ---------------------------------------------------------------------------
 # Result
 # ---------------------------------------------------------------------------
 echo ""

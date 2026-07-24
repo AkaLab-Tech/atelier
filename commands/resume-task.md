@@ -1,7 +1,7 @@
 ---
 description: Continue a task after interruption or unblocking. Auto-detects the resume mode from `IN_PROGRESS.md` state — "interrupted" (active entry, partial progress) vs "blocked-resumed" (entry has the `[BLOCKED]` marker and the GitHub issue has been closed by the operator). Runs the mode-specific cleanup, then hands off to `task-orchestrator`.
 argument-hint: "<task-id> [--yes|-y]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(git add:*), Bash(git commit:*), Bash(git push:*), Bash(git checkout:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(env:*), Bash(jq:*), Bash(test:*), Bash(gh issue view:*), Bash(gh pr create:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Skill, Task
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(git worktree:*), Bash(git add:*), Bash(git commit:*), Bash(git push:*), Bash(git checkout:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(env:*), Bash(jq:*), Bash(test:*), Bash(gh issue view:*), Bash(gh pr create:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh api graphql:*), Bash(atelier-task-backend:*), Skill, Task
 ---
 
 You are running the `/resume-task` slash command. Three distinct entry points lead here — all end with the same orchestrator hand-off, but they require different pre-flight cleanup:
@@ -9,8 +9,9 @@ You are running the `/resume-task` slash command. Three distinct entry points le
 - **Interrupted-resume.** The operator's previous session was killed mid-task (Claude crashed, the laptop slept past the harness timeout, the network dropped during a `git push`, etc.). The task is still active in `IN_PROGRESS.md` (no `[BLOCKED]` marker), `.task-log/` may or may not exist, the worktree is intact. The retry budget continues where it left off — logs are preserved.
 - **Blocked-resume.** The task previously reached hard-stop, `unblocker` opened a GitHub `blocked` issue, `IN_PROGRESS.md` carries the `[BLOCKED] see #<NN>` marker. The operator has now closed the issue (the unambiguous "ready to retry" signal) and wants a fresh attempt. `.task-log/` must be wiped, the budget resets to 6, the marker comes off.
 - **PR-open-resume.** The previous session got as far as opening the PR — `pr-author` already pushed the branch and moved `IN_PROGRESS.md` → `HISTORY.md` in that branch — but the session died before `reviewer` + `auto-merge` ran. So the task is **no longer in `IN_PROGRESS.md`** (the move lives in the open PR's branch), yet an **open PR exists** for `task/<id>-*` and was never reviewed/merged. The orchestrator re-enters at the `reviewer → auto-merge` segment only — no code, test, or PR step re-runs.
+- **Board-interrupted-resume (non-`files` backend only, #66).** The mirror of interrupted-resume for a `github-project`/`linear` project, where there is no `IN_PROGRESS.md` to carry the "active entry" signal. `/atelier:next-task` step 6 moves the board item to its in-progress Status *before* handing off to the orchestrator (step 8); if that hand-off is interrupted before `pr-author` ever opens a PR, the item is left "In Progress" on the board with no `IN_PROGRESS.md` entry (there is none on this backend) and no open PR — previously an invisible dead end, since neither of the other three modes' anchors fired and a re-claim attempt just died with a mis-reported "race condition". This mode resumes the task from its existing worktree, or recreates the worktree from `origin/<base>` if it was removed, and continues the specialist chain — without ever re-issuing the board move.
 
-The command **auto-detects** which mode applies from the state of `IN_PROGRESS.md` and (for PR-open-resume) the presence of an open PR. The operator does not pick.
+The command **auto-detects** which mode applies from the state of `IN_PROGRESS.md` (files backend), the backend's Status field (non-files backend), and the presence of an open PR. The operator does not pick.
 
 ## User input
 
@@ -30,20 +31,23 @@ Otherwise you are **interactive**. In non-interactive mode, never use `AskUserQu
 
 ### 1. Sanity-check the worktree
 
-Run `git status --short` and `git branch --show-current` in the main worktree. While here, **capture the main-checkout root and the plan-storage mode (TASK_027)** — this command runs in the operator's main checkout, which is where a `planStorage=local` plan physically lives (the task worktree never received it):
+Run `git status --short` and `git branch --show-current` in the main worktree. While here, **capture the main-checkout root, the backlog backend, and the plan-storage mode (TASK_027)** — this command runs in the operator's main checkout, which is where a `planStorage=local` plan physically lives (the task worktree never received it):
 
 ```bash
 MAIN_ROOT="$(git rev-parse --show-toplevel)"
+BACKEND="$(atelier-task-backend "$MAIN_ROOT")"   # → files | linear | github-project
 PLAN_STORAGE="$(jq -r '.planStorage // "committed"' "$MAIN_ROOT/.atelier.json" 2>/dev/null || echo committed)"
 ```
 
-`PLAN_STORAGE` governs how step 5 supplies the plan to the orchestrator.
+`PLAN_STORAGE` governs how step 5 supplies the plan to the orchestrator. `BACKEND` governs step 2's anchor mechanics (#66) — a `files` backend anchors on `IN_PROGRESS.md`; a non-`files` backend (`github-project` / `linear`) has no such file and anchors on the backend's own Status field instead.
 
 - **Working tree clean** → proceed to step 2.
 - **Working tree dirty, interactive mode** → surface the state and ask the operator to stash or commit before proceeding. The resume flow needs to commit a 1-line bookkeeping change to `IN_PROGRESS.md` (blocked-resume) and an unrelated dirty tree corrupts the audit trail.
 - **Working tree dirty, non-interactive mode** → **stop with error** pointing at the dirty state and the resolution (`git stash` or commit). Do NOT auto-stash.
 
-### 2. Locate the task entry in `IN_PROGRESS.md`
+### 2. Locate the task entry — backend-aware anchor
+
+**`files` backend:**
 
 Read `IN_PROGRESS.md`. Search for a heading line that contains the task id (`#<id>`, the bare `<id>`, or the explicit `task/<id>-<slug>` form — be tolerant). Three outcomes:
 
@@ -60,12 +64,45 @@ Read `IN_PROGRESS.md`. Search for a heading line that contains the task id (`#<i
   - **No open PR** → the task is genuinely not resumable here. It may be in `ROADMAP.md` (operator wanted `/atelier:next-task #<id>`), in `HISTORY.md` (already merged), or nonexistent. Surface which and suggest the right command. Stop.
 - **Multiple matches.** Two different tasks have the same id in their headings — an inconsistency in the operator's tracking files. Stop and surface the ambiguity. Do not guess.
 
-### 3. Detect the resume mode
+**Non-`files` backend (`github-project` / `linear`) — the board's Status field is the anchor, cross-checked against the open-PR registry (#66):**
+
+There is no `IN_PROGRESS.md` to search. Instead:
+
+1. Call `getTask(id)` via the `roadmap-tracking-flow` skill. If the task does not exist at all, stop and surface that (wrong id, or it was never tracked here).
+2. Check for an open `task/<id>-*` PR with the same `startswith`-filtered `gh pr list` query used above.
+3. Branch on the combination:
+   - **Status is in `githubProject.stateMap.inProgress`** (or linear's equivalent in-progress state) **and an open PR exists** → **PR-open-resume mode**. Skip step 3; go to step 4c with the PR number, URL, and `headRefName`.
+   - **Status is in `inProgress` and no open PR exists** → **board-interrupted-resume mode**. This is the self-interrupted-claim case `/atelier:next-task` step 6 now diagnoses explicitly instead of mis-reporting it as a race (#66): an earlier `/next-task` run already executed `moveTask(id, "roadmap", "in_progress")` and then died before `pr-author` ever opened a PR. The board item is not stranded — it is resumable. Skip step 3; go to step 3b.
+   - **Status is not in `inProgress`** (still in the roadmap bucket, or already moved past in-progress) → the task is not in flight here. It may still be claimable via `/atelier:next-task <id>` (if it never left the roadmap bucket), or already delivered (check the board's done/history column). Surface which and suggest the right command. Stop.
+
+### 3. Detect the resume mode (`files` backend only)
+
+This step applies only when step 2's `files`-backend branch found exactly one heading match — the non-`files` branch already fully determined the mode (board-interrupted-resume goes to step 3b, PR-open-resume goes to step 4c).
 
 Look at the matched heading line from step 2.
 
 - If it contains the literal `[BLOCKED]` substring → **blocked-resume mode**. Continue to step 4a.
 - Otherwise → **interrupted-resume mode**. Skip to step 5.
+
+### 3b. Board-interrupted-resume — resolve or recreate the worktree (non-`files` backend, #66)
+
+The board says the task is in progress, but there is no open PR to inherit from — this behaves like interrupted-resume (continue the specialist chain from wherever it left off), except there is no `IN_PROGRESS.md` entry to read and the worktree may or may not still exist.
+
+1. **Look for the worktree:**
+   ```bash
+   git wt list   # or: git worktree list --porcelain
+   ```
+   Find the entry whose branch matches `task/<id>-*`.
+
+2. **Worktree found** → the common case (the interruption happened after `/atelier:next-task` step 5 but before its step 8 hand-off, or partway through the specialist chain). Use it as-is; any partial work is preserved. Proceed to step 5 with `resume_mode: interrupted`.
+
+3. **Worktree not found** (the operator, or a housekeeping sweep, removed it after the interruption) → recreate it exactly the way `/atelier:next-task` step 5 does, cut from the current `origin/<base>`:
+   ```bash
+   git wt switch task/<id>-<slug> --from origin/<base>
+   ```
+   Resolve `<slug>` from the task's title (from `getTask(id)` in step 2), using the same slug convention `/next-task` uses. The recreated worktree starts clean — there is no partial implementation to preserve, so this is effectively attempt 1, same as a task with no prior work. Proceed to step 5 with `resume_mode: interrupted`.
+
+Either way, **do not** call `moveTask` again here — the board is already correctly in the `inProgress` bucket from the original claim; re-issuing the same move is unnecessary and reproduces the exact `task-not-in-from-bucket` symptom this recovery path exists to resolve.
 
 ### 4a. Blocked-resume preflight — verify the GitHub issue is closed
 
@@ -153,9 +190,9 @@ Carry the PR number, URL, and branch into step 5.
 Launch the `atelier:task-orchestrator` agent with these inputs:
 
 - `task_id`: `<id>`
-- `worktree_path`: `<wt>` (the absolute path captured in step 4b for blocked-resume, resolved from `git wt list` matching `task/<id>-*` for interrupted-resume, or — for PR-open-resume — the resolved worktree or `<none>` per step 4c)
+- `worktree_path`: `<wt>` (the absolute path captured in step 4b for blocked-resume; resolved from `git wt list` matching `task/<id>-*` for interrupted-resume; the worktree found or recreated in step 3b for board-interrupted-resume — a non-`files`-backend task; or — for PR-open-resume — the resolved worktree or `<none>` per step 4c)
 - `branch`: `task/<id>-<slug>` (from `git branch --show-current` inside `<wt>`, or from `git wt list`, or `headRefName` for PR-open-resume)
-- **`resume_mode`**: `interrupted` | `blocked` | `pr-open` — pass this **explicitly** in the agent prompt. The orchestrator's Step 1 ("Pick the task") has special handling for each flag:
+- **`resume_mode`**: `interrupted` | `blocked` | `pr-open` — pass this **explicitly** in the agent prompt. Board-interrupted-resume (step 3b, non-`files` backend, #66) also passes `interrupted` — the orchestrator's handling is identical (jump straight to the specialist chain from `implementer`); the only difference is upstream, in how this command located or rebuilt the worktree, which the orchestrator does not need to know about. The orchestrator's Step 1 ("Pick the task") has special handling for each flag:
   - `interrupted` / `blocked` → does **not** treat the active `IN_PROGRESS.md` entry as an anomaly, does **not** invoke `task-discovery`, and jumps directly to the specialist chain starting from `implementer`.
   - `pr-open` → **skips the entire specialist chain** (implementer / tester / e2e-runner / pr-author) and re-enters at the `reviewer → auto-merge` segment for the supplied PR. No code, test, or PR step re-runs; the open PR on origin is the source of truth.
 - **`pr_number`** + **`pr_url`**: include for PR-open-resume so the orchestrator reviews/merges the existing PR instead of expecting `pr-author` to produce one.
@@ -163,7 +200,8 @@ Launch the `atelier:task-orchestrator` agent with these inputs:
 - **plan-storage mode + plan source (TASK_027)** — always pass `plan_storage: <PLAN_STORAGE>` and `main_checkout_root: <MAIN_ROOT>` (from step 1). This matters for the **interrupted** and **blocked** modes, where the orchestrator re-dispatches the specialist chain (starting at `implementer`) and therefore needs the plan:
   - Under **`committed`**, the plan is committed in the task worktree (`<wt>/.plan/<id>.md`), so the orchestrator reads it there exactly as on the original run — the resume-mode "skip the plan-load; the worktree state is the source of truth" behaviour is unchanged. Nothing extra to carry.
   - Under **`local`**, the task worktree **never carried** the plan (it was never committed), so the orchestrator cannot re-read it from the worktree on resume. **Read `<MAIN_ROOT>/.plan/<id>.md` now** and pass its **Approach**, **Affected areas**, and **Acceptance criteria** **inline** in the orchestrator prompt — the inline copy is the only plan source on a `local`-mode resume. If `<MAIN_ROOT>/.plan/<id>.md` is unreadable, **stop** and tell the operator the local plan is missing from the main checkout (re-plan via `/atelier:plan-task <id>`).
-  - **PR-open-resume** needs no plan (no specialist runs) — pass the mode for completeness but skip the local read.
+  - Under **`resident`** (non-`files` backend only — the plan lives in the backend item's body, never as a file anywhere), the task worktree never carried a plan file either, exactly as under `local`. Call `getPlan(id)` via the `roadmap-tracking-flow` skill and pass its **Approach**, **Affected areas**, and **Acceptance criteria** **inline** in the orchestrator prompt, exactly like the `local` case above. This is the plan-storage mode board-interrupted-resume (step 3b, #66) most commonly hits, since a non-`files` backend defaults to `resident` more often than `committed`/`local`. If `getPlan(id)` returns empty, **stop** and tell the operator the plan is missing from the board (re-plan via `/atelier:plan-task <id>`). Omit `main_checkout_root` for this mode — it has no meaning here, mirroring `/atelier:next-task` step 8.
+  - **PR-open-resume** needs no plan (no specialist runs) — pass the mode for completeness but skip the local/resident read.
 
 For **blocked-resume**, also tell the orchestrator that `.task-log/` was wiped and the budget is a fresh 6.
 
@@ -179,7 +217,7 @@ End the command with a single status block:
 
 ```text
 ✓ /atelier:resume-task <id>
-  Mode:           blocked-resume | interrupted-resume | pr-open-resume
+  Mode:           blocked-resume | interrupted-resume | board-interrupted-resume | pr-open-resume
   Worktree:       <absolute-path>          (or <none> for pr-open-resume if removed)
   Branch:         task/<id>-<slug>
   Issue (closed): #<NN> — <url>           (blocked-resume only)
@@ -193,7 +231,8 @@ If a step aborted, report exactly which one and the actionable next instruction 
 
 ## Hard refusals
 
-- **Never** resume a task when `IN_PROGRESS.md` does not contain it **and** no open `task/<id>-*` PR exists. The interrupted/blocked modes require an active `IN_PROGRESS.md` entry; PR-open-resume is the *only* exception, and it requires an open, never-merged PR as its anchor (step 2). Resuming with neither anchor corrupts the orchestrator's Step 1 contract.
+- **Never** resume a task with no anchor. For the `files` backend that means `IN_PROGRESS.md` does not contain it **and** no open `task/<id>-*` PR exists. For a non-`files` backend it means the board's Status field is not in the `inProgress` bucket **and** no open `task/<id>-*` PR exists (step 2). The interrupted/blocked modes require an active `IN_PROGRESS.md` entry (files) or an in-progress Status (non-files); PR-open-resume is the *only* exception, and it requires an open, never-merged PR as its anchor. Resuming with neither anchor corrupts the orchestrator's Step 1 contract.
+- **Never** call `moveTask` again during board-interrupted-resume (step 3b, #66) — the board is already correctly in the `inProgress` bucket from the original claim; re-issuing the move is unnecessary and reproduces the exact `task-not-in-from-bucket` symptom this recovery path exists to resolve.
 - **Never** wipe `.task-log/` in interrupted-resume mode. The whole point of that mode is that the budget continues — wiping would silently extend it past the 6-attempt cap from PLAN.md §8.
 - **Never** wipe `.task-log/` when the GitHub issue is still open. The close-as-signal is the only signal — until it happens, the logs are operator evidence in flight.
 - **Never** push to `origin task/<id>-<slug>` from this command. The task branch is for the failing implementation; the bookkeeping change (`docs/resume-<id>`) lives on its own branch.
