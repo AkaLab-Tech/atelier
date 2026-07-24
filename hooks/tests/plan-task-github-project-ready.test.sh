@@ -205,6 +205,20 @@ chk_prose "$PLAN_TASK" 'Never** set `planStorage: resident` on a `files` backend
   "resident mode: hard refusal against resident on files backend"
 
 # ---------------------------------------------------------------------------
+# Group 10: Frontmatter grants — gh api graphql (#66)
+# ---------------------------------------------------------------------------
+#
+# resume-task.md's board-interrupted-resume recovery path (#66) needs
+# plan-task.md's own roadmap-tracking-flow calls (setReady/setPlan) to be
+# consistent with the same Bash(gh api graphql:*) grant next-task.md and
+# abandon-task.md now carry, so the skill's underlying getTask/moveTask/
+# setReady/setPlan calls are never silently outside this command's tool
+# grant either.
+
+chk_prose "$PLAN_TASK" 'Bash(gh api graphql:*)' \
+  "frontmatter: Bash(gh api graphql:*) in allowed-tools (#66)"
+
+# ---------------------------------------------------------------------------
 # Result
 # ---------------------------------------------------------------------------
 echo ""

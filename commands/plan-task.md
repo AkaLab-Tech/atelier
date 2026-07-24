@@ -1,7 +1,7 @@
 ---
 description: Plan a single ROADMAP.md task — dispatch the planner, review the draft with the product lead, and on approval commit the plan and mark the task `[ready]` so the orchestrator can claim it.
 argument-hint: "<task-id>"
-allowed-tools: Read, Edit, Bash(jq:*), Bash(git -C * status:*), Bash(git -C * diff:*), Bash(git -C * add:*), Bash(git -C * commit:*), Bash(git -C * checkout:*), Bash(git -C * clean:*), Bash(git status:*), Bash(git diff:*), Bash(git add:*), Bash(git commit:*), Bash(git checkout:*), Bash(git clean:*), Bash(git rev-parse:*), Bash(atelier-task-backend:*), Skill, Task
+allowed-tools: Read, Edit, Bash(jq:*), Bash(git -C * status:*), Bash(git -C * diff:*), Bash(git -C * add:*), Bash(git -C * commit:*), Bash(git -C * checkout:*), Bash(git -C * clean:*), Bash(git status:*), Bash(git diff:*), Bash(git add:*), Bash(git commit:*), Bash(git checkout:*), Bash(git clean:*), Bash(git rev-parse:*), Bash(atelier-task-backend:*), Bash(gh api graphql:*), Skill, Task
 ---
 
 You are running the `/atelier:plan-task` slash command. The product lead invokes this to plan a task **before** the orchestrator can claim it. A task is only claimable once it carries the `[ready]` marker (or the Project's `Ready` field is set, for a `github-project` backend) and a committed `.plan/<id>.md`; this command is the only way to assert that.

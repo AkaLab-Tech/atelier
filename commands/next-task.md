@@ -194,7 +194,18 @@ This edit lives on the per-task branch and travels through the task's PR; the ro
 **Non-`files` backend** — drive the claim through the `RoadmapBackend` contract (see `docs/RoadmapBackend.md`) instead of editing local files:
 
 - Call `moveTask(id, "roadmap", "in_progress")` via the `roadmap-tracking-flow` skill. This is atomic: the task moves out of the backend's roadmap bucket and into its in-progress bucket in a single operation — no local `ROADMAP.md` / `IN_PROGRESS.md` edits are made. For `github-project` specifically, the Status field on the Project item transitions from a value in `githubProject.stateMap.roadmap` (e.g. `"Backlog"` or `"Todo"`) to the first value in `githubProject.stateMap.inProgress` (default `"In Progress"`); the mapping is resolved via the stateMap in `.roadmap.json`.
-- If `moveTask` throws `task-not-in-from-bucket`, the task was already claimed by a concurrent actor — stop and report a race condition; do not proceed.
+- If `moveTask` throws `task-not-in-from-bucket`, do **not** assume a race — diagnose which of two distinct causes holds before reporting anything (#66):
+
+  1. Re-read the item with `getTask(id)` via the `roadmap-tracking-flow` skill, and reuse the open `task/*` PR list already fetched in step 2 (no need to re-query) to check for an open `task/<id>-*` PR for this id.
+  2. **Self-interrupted claim (resumable, not a race)** — the item's Status is already in `githubProject.stateMap.inProgress` (or linear's equivalent in-progress state) **and** no open `task/<id>-*` PR exists. This means an earlier claim attempt (this operator's own, most likely) already executed this exact `moveTask` and then got interrupted — worktree possibly created, PR never opened — before reaching step 8. The board is telling the truth; there is nothing to race against. Stop, but do **not** call this a race condition:
+     ```text
+     ✗ /next-task: task #<id> is already "In Progress" on the board, with no open task/<id>-* PR.
+        This looks like an interrupted claim from an earlier run, not a concurrent race —
+        a worktree may already exist from that run.
+        resolve: /atelier:resume-task <id>   (picks up the existing worktree, or recreates it
+                 from origin/<base> if it was removed, and continues the chain)
+     ```
+  3. **Genuine race** — either the item's Status is in `inProgress` **and** an open `task/<id>-*` PR already exists (a different actor's claim, complete with PR), or the Status has moved somewhere `moveTask`'s `from` bucket did not expect for a reason other than an interrupted prior attempt of this task (e.g. a different concurrent actor moved it directly). Only this case is a true race — stop and report it as such; do **not** suggest `/atelier:resume-task` here, since there is no interrupted work of *this* claim's to resume.
 
 **For both backends** — the claim lives only on the task branch (files) or in the remote backend (non-files), so `origin/<base>`'s `ROADMAP.md` / `IN_PROGRESS.MD` are unchanged until the PR merges — which is exactly why step 2 uses the open `task/*` PRs (not the base `IN_PROGRESS.md`) as the claim registry.
 

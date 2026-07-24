@@ -252,6 +252,26 @@ chk_prose "$PLAN" '/abandon-task' \
   "PLAN.md §7: /abandon-task catalog entry present"
 
 # ---------------------------------------------------------------------------
+# Group 11: stale gh-api parenthetical corrected (#66)
+# ---------------------------------------------------------------------------
+#
+# The frontmatter grew Bash(gh api graphql:*) so the roadmap-tracking-flow
+# skill can drive getTask/moveTask. Step 7's github-project bullet used to
+# justify probing Status options via the skill by claiming raw `gh api` was
+# "outside this command's tool grant" — that claim went stale the moment the
+# grant was added. Asserts the grant is present, the stale claim is gone, and
+# the corrected parenthetical documents why the grant exists.
+
+chk_prose "$CMD" 'Bash(gh api graphql:' \
+  "allowed-tools: grants Bash(gh api graphql:*) (#66)"
+
+chk_absent "$CMD" 'gh api` is outside this command'"'"'s tool grant' \
+  "step 7 (#66): stale 'gh api is outside this command's tool grant' claim removed"
+
+chk_prose "$CMD" 'is granted in this command'"'"'s frontmatter for the skill'"'"'s own `getTask`/`moveTask` calls' \
+  "step 7 (#66): corrected parenthetical explains why Bash(gh api graphql:*) is granted"
+
+# ---------------------------------------------------------------------------
 # Result
 # ---------------------------------------------------------------------------
 echo ""
