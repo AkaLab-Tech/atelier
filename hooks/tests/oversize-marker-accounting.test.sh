@@ -30,6 +30,11 @@
 # Review fix cycle 1 added groups 8-10: the same "impossible instruction /
 # false claim" class re-appeared three more times in the reordered prose.
 #
+# Review fix cycle 2 added groups 11-12: cycle 1 gave `pr-author` a SECOND way
+# to return `oversized` (from a `follow_up: true` dispatch) without teaching
+# `task-orchestrator` step 8 to tell the two apart, and the backend-tracked
+# carve-out added in cycle 0 was not inherited by the sub-steps under it.
+#
 # Contract invariants asserted:
 #   Group 1 — agents/pr-author.md: step ORDER (gate before tracking move)
 #     - size gate is step 3, tracking move step 4, push step 5, PR step 6
@@ -103,6 +108,37 @@
 #     - NEGATIVE: both "by construction" claims are gone
 #     - `scripts/atelier-pr-size-check` was deliberately NOT changed and is
 #       deliberately NOT asserted against here.
+#   Group 11 — agents/task-orchestrator.md: step 8 discriminates first-pass
+#     from `follow_up: true` `oversized`
+#     - step 8 was keyed only on "pr-author returned oversized", but on a
+#       follow-up dispatch every premise inverts: the tracking move already
+#       landed, there is no marker commit, and the PR already exists. Acting
+#       on the first-pass assumption would land a `docs/oversize-<id>` PR
+#       marking `IN_PROGRESS.md` on the base while the task's own open PR
+#       already carries the `HISTORY.md` move — on merge `main` holds both,
+#       corrupting exactly what `atelier-housekeeping` and step 1 key on.
+#     - the discriminator exists and both paths are labelled; the follow-up
+#       path skips broker + marker + auto-merge and exits the loop
+#     - the marker-landing action is scoped "first-pass only, never on the
+#       follow-up path"; the terminal report carries both statuses
+#     - reachability: review-fix Step 4 names the `oversized` return and
+#       routes it to step 8 instead of falling through to the reviewer
+#     - `pr-author`'s size-gate waiver is scoped to the first pass
+#     - NEGATIVE: the conflated single path, the unconditional marker-landing
+#       heading, the two-case enumeration, Step 4's single outcome and the
+#       untagged status line are gone
+#   Group 12 — pr-author + SKILL: the backend-tracked carve-out is INHERITED
+#     - exit-1 sub-step 1 skipped the `IN_PROGRESS.md` edit on
+#       `github-project` / `linear`, but sub-steps 2 ("commit the marker") and
+#       3 ("code commit + marker commit") were unconditional — telling the
+#       agent to commit a file it had just been told not to write. Same class
+#       as #30 defect 1, and it lands on the backend THIS repo uses.
+#     - sub-step 2 is skipped too (never fabricate an empty commit); sub-step
+#       3 says the branch carries the code commit alone; step 5's
+#       tracking-XOR-marker invariant admits the "neither" case
+#     - NEGATIVE: the unconditional `never both.` and
+#       `no tracking move — belongs on origin` forms are gone, along with
+#       SKILL's edit-only parenthetical
 #
 # Anchor policy (reviewer nit, cycle 1): each literal is the SHORTEST phrase
 # that still (a) survives a reasonable copy-edit and (b) still fires against
@@ -241,6 +277,12 @@ chk_prose "$PR_AUTHOR" \
   '**Still run step 5 (push).**' \
   "pr-author: OVERSIZE still runs the push (step 5) after committing the marker"
 
+# NOTE (cycle 2): this literal survived cycle 2 verbatim — the backend-tracked
+# carve-out was appended as a trailing parenthetical rather than spliced into
+# the phrase. It is NOT vacuous (it still fires against prose that drops the
+# code+marker claim), but on its own it would also pass against prose that
+# lost the carve-out again, so group 12 pairs it with the negative on the
+# pre-carve-out sentence tail `no tracking move — belongs on origin`.
 chk_prose "$PR_AUTHOR" \
   'code commit + marker commit, no tracking move' \
   "pr-author: OVERSIZE states origin must carry the code commit + the marker commit"
@@ -565,6 +607,214 @@ chk_prose "$SKILL" \
 chk_absent "$SKILL" \
   'stay out of the count by construction' \
   "pr-flow: OLD false 'bookkeeping stays out of the count by construction' claim gone"
+
+# ---------------------------------------------------------------------------
+# Group 11: agents/task-orchestrator.md — step 8's `oversized` branch
+# discriminates FIRST-PASS from `follow_up: true`.
+#
+# After cycle 1, `pr-author` can return `oversized` from two different
+# dispatches, and step 8 was keyed only on "pr-author returned oversized". On a
+# follow-up dispatch every premise of that single path is inverted: the branch
+# already carries the `IN_PROGRESS → HISTORY` move (landed on the first pass),
+# there is no `[OVERSIZE]` marker commit, and the PR object already exists — so
+# "the only thing missing is the PR object" is false. Acting on it anyway would
+# open a `docs/oversize-<id>` PR pulling the task out of `ROADMAP.md` into a
+# marked `IN_PROGRESS.md` entry *while* that task's own PR is open carrying the
+# `HISTORY.md` move — so on merge `main` would hold both, which is exactly the
+# state `atelier-housekeeping` and step 1's filter key on.
+#
+# Highest-value regression guards here: the discriminator exists, the
+# marker-landing action is scoped first-pass-only, and the follow-up path
+# forbids the `docs/oversize-<id>` landing outright.
+# ---------------------------------------------------------------------------
+
+chk_prose "$ORCH" \
+  'discriminate on the dispatch that produced' \
+  "task-orchestrator: step 8 discriminates on the dispatch that produced the oversized return"
+
+chk_prose "$ORCH" \
+  'leave the branch in opposite states' \
+  "task-orchestrator: states first-pass and follow_up:true leave the branch in opposite states"
+
+chk_prose "$ORCH" \
+  '**Follow-up `oversized`' \
+  "task-orchestrator: a labelled follow-up oversized path exists"
+
+chk_prose "$ORCH" \
+  '**First-pass `oversized`' \
+  "task-orchestrator: the old premise is relabelled as the first-pass path"
+
+# The three inverted premises, asserted one by one — a regression to the
+# conflated form loses all three at once.
+chk_prose "$ORCH" \
+  '**already landed** on the first pass' \
+  "task-orchestrator follow-up: premise 1 — the tracking move already landed"
+
+chk_prose "$ORCH" \
+  'there is **no** `[OVERSIZE]` marker commit' \
+  "task-orchestrator follow-up: premise 2 — there is no marker commit on this branch"
+
+chk_prose "$ORCH" \
+  'the PR object **already exists**' \
+  "task-orchestrator follow-up: premise 3 — the PR object already exists"
+
+# The four things the follow-up path must NOT do.
+chk_prose "$ORCH" \
+  '**do not** consult the `decision-broker`' \
+  "task-orchestrator follow-up: does not consult the decision-broker (no catalog option applies)"
+
+chk_prose "$ORCH" \
+  '**do not** land a base-branch marker' \
+  "task-orchestrator follow-up: forbids landing the docs/oversize-<id> base-branch marker"
+
+chk_prose "$ORCH" \
+  'is precisely the corrupt state' \
+  "task-orchestrator follow-up: names the corruption a base-branch marker would create"
+
+chk_prose "$ORCH" \
+  '**do not** invoke `auto-merge`' \
+  "task-orchestrator follow-up: does not invoke auto-merge (the size guardrail would hold it)"
+
+chk_prose "$ORCH" \
+  'without spending another cycle' \
+  "task-orchestrator follow-up: terminates by exiting the review-fix loop, no extra cycle"
+
+# The first-pass-only scoping of the marker-landing action itself.
+chk_prose "$ORCH" \
+  'first-pass `oversized` only, never on the follow-up path' \
+  "task-orchestrator: the marker-landing action is scoped first-pass-only"
+
+chk_prose "$ORCH" \
+  'already has both an open PR and the tracking move' \
+  "task-orchestrator: the housekeeping rationale enumerates the follow-up case too"
+
+# The terminal report distinguishes the two.
+chk_prose "$ORCH" \
+  '<docs-pr-url>` (first-pass)' \
+  "task-orchestrator: the existing oversized status is tagged (first-pass)"
+
+chk_prose "$ORCH" \
+  'oversized (follow-up) —' \
+  "task-orchestrator: the terminal report gained an oversized (follow-up) status"
+
+chk_prose "$ORCH" \
+  'no marker landed, tracking already moved' \
+  "task-orchestrator: the follow-up status states no marker landed and tracking already moved"
+
+# Reachability: the review-fix loop's Step 4 must name the `oversized` return
+# and route it to step 8, or an oversized follow-up falls through to Step 5 and
+# re-dispatches `reviewer` against an untriaged PR — the discriminator above
+# would never be reached at all.
+chk_prose "$ORCH" \
+  '`oversized`, when the fix grew the cumulative diff' \
+  "task-orchestrator: review-fix Step 4 names oversized as a follow-up outcome of pr-author"
+
+chk_prose "$ORCH" \
+  'do **not** proceed to Step 5' \
+  "task-orchestrator: an oversized follow-up return does not fall through to the reviewer re-dispatch"
+
+chk_prose "$ORCH" \
+  "into step 8's **follow-up \`oversized\`** path" \
+  "task-orchestrator: Step 4 routes the oversized return into step 8's follow-up path"
+
+# pr-author's side of the discriminator: the size-gate waiver is first-pass only.
+chk_prose "$PR_AUTHOR" \
+  'also **first-pass only**' \
+  "pr-author: the waived-gate re-dispatch is scoped to the first pass"
+
+chk_prose "$PR_AUTHOR" \
+  'follow-up exit 1 always pushes and returns' \
+  "pr-author: a follow-up exit 1 always pushes and returns oversized (never waived)"
+
+# Regression guards — the conflated single-path form must be gone.
+chk_absent "$ORCH" \
+  'budget. The branch is already on origin' \
+  "task-orchestrator: OLD conflated single path (premises asserted unconditionally) gone"
+
+chk_absent "$ORCH" \
+  'on the base branch before you yield.**' \
+  "task-orchestrator: OLD unconditional marker-landing heading (no first-pass scope) gone"
+
+chk_absent "$ORCH" \
+  'so neither needs one' \
+  "task-orchestrator: OLD two-case enumeration (slice-task / open-anyway only) gone"
+
+chk_absent "$ORCH" \
+  'the new commit SHA.' \
+  "task-orchestrator: OLD Step 4 single-outcome return (PR URL + SHA only) gone"
+
+chk_absent "$ORCH" \
+  '<docs-pr-url>` | `blocked' \
+  "task-orchestrator: OLD status line (one oversized status, untagged) gone"
+
+# ---------------------------------------------------------------------------
+# Group 12: agents/pr-author.md + skills/pr-flow/SKILL.md — the backend-tracked
+# carve-out is INHERITED by the sub-steps that follow it.
+#
+# Exit-1 sub-step 1 already carved out backend-tracked projects (`github-project`
+# / `linear` — no `IN_PROGRESS.md` at the repo root: skip the edit), but sub-steps
+# 2 and 3 did not inherit it: "Commit the marker" and "code commit + marker
+# commit" were unconditional, so on a backend-tracked project the agent was told
+# to commit a file it had just been told not to write. Same class as #30 defect 1
+# — an internally impossible instruction the agent has to improvise around. This
+# lands on the backend THIS repo uses, so it is not hypothetical.
+#
+# `pr-author.md`'s Output block was already correct (group 9 asserts its
+# `not moved — tracking lives in the backend` variant) and is deliberately
+# unchanged here.
+# ---------------------------------------------------------------------------
+
+chk_prose "$PR_AUTHOR" \
+  'this sub-step is skipped too' \
+  "pr-author: exit-1 sub-step 2 (commit the marker) inherits the backend-tracked carve-out"
+
+chk_prose "$PR_AUTHOR" \
+  'never fabricate an empty commit' \
+  "pr-author: forbids fabricating an empty commit when sub-step 1 wrote nothing"
+
+chk_prose "$PR_AUTHOR" \
+  'sub-step 2 produced no marker' \
+  "pr-author: exit-1 sub-step 3 inherits it too — the branch carries the code commit alone"
+
+chk_prose "$PR_AUTHOR" \
+  'never both, and on a backend-tracked project' \
+  "pr-author: step 5's tracking-XOR-marker invariant admits the backend-tracked third case"
+
+chk_prose "$PR_AUTHOR" \
+  'so the branch carries the code commit alone' \
+  "pr-author: step 5 states the backend-tracked exit-1 branch carries neither bookkeeping commit"
+
+chk_prose "$PR_AUTHOR" \
+  'counts two files' \
+  "pr-author: the --pr-mode overcount is two files (the tracking move touches IN_PROGRESS + HISTORY)"
+
+chk_prose "$SKILL" \
+  'the edit and the commit are skipped' \
+  "pr-flow: the OVERSIZE bullet skips BOTH the edit and the commit on a backend-tracked project"
+
+chk_prose "$SKILL" \
+  'the branch carries the code commit alone' \
+  "pr-flow: states what the backend-tracked exit-1 branch actually carries"
+
+# Regression guards — the unconditional claims must be gone. The second one is
+# the re-anchor for the group-3 `code commit + marker commit, no tracking move`
+# assertion: that literal survives cycle 2 verbatim, so only this negative
+# proves the carve-out parenthetical is still attached to it.
+chk_absent "$PR_AUTHOR" \
+  'never both.' \
+  "pr-author: OLD unconditional 'never both.' absolute (no backend-tracked case) gone"
+
+chk_absent "$PR_AUTHOR" \
+  'no tracking move — belongs on origin' \
+  "pr-author: OLD unconditional sub-step 3 claim (marker commit always exists) gone"
+
+chk_absent "$PR_AUTHOR" \
+  'counts roughly one file' \
+  "pr-author: OLD 'roughly one file' undercount gone"
+
+chk_absent "$SKILL" \
+  '(skip this edit on a project' \
+  "pr-flow: OLD edit-only carve-out (the commit did not inherit it) gone"
 
 # ---------------------------------------------------------------------------
 # Result
