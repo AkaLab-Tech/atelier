@@ -35,6 +35,11 @@
 # `task-orchestrator` step 8 to tell the two apart, and the backend-tracked
 # carve-out added in cycle 0 was not inherited by the sub-steps under it.
 #
+# Review fix cycle 3 added group 13: cycle 1's waived re-dispatch (`open-anyway`)
+# routes into step 4 wholesale, but step 4's own verification and step 5's
+# tracking-XOR-marker invariant were both written for a branch that has never
+# carried a marker commit. Same class again, on the path cycle 1 introduced.
+#
 # Contract invariants asserted:
 #   Group 1 — agents/pr-author.md: step ORDER (gate before tracking move)
 #     - size gate is step 3, tracking move step 4, push step 5, PR step 6
@@ -139,6 +144,14 @@
 #     - NEGATIVE: the unconditional `never both.` and
 #       `no tracking move — belongs on origin` forms are gone, along with
 #       SKILL's edit-only parenthetical
+#   Group 13 — agents/pr-author.md: step 4 is reachable on a WAIVED re-dispatch
+#     - the waiver makes step 4 run over a branch whose tip-2 are the previous
+#       pass's `[OVERSIZE]` marker commit + this tracking commit, so step 4's
+#       `git log --oneline -2` check demanded an ordering no correct branch can
+#       show and told the agent to "stop and fix" a pushed commit
+#     - step 4's check carves the waived pass out and states the positive form;
+#       step 5's XOR invariant admits the coexisting shape; step 4 strips the
+#       `[OVERSIZE]` marker so it never rides into `HISTORY.md`
 #
 # Anchor policy (reviewer nit, cycle 1): each literal is the SHORTEST phrase
 # that still (a) survives a reasonable copy-edit and (b) still fires against
@@ -289,9 +302,12 @@ chk_prose "$PR_AUTHOR" \
 
 # Deliberately long: the invariant is the exclusive-or over the two commit
 # shapes; "never both" alone would pass against prose that lists the wrong
-# alternatives.
+# alternatives. The literal stops before "— never both" (cycle 3): that
+# absolute now carries two documented carve-outs, and the exclusivity phrase
+# itself stays pinned — with its backend-tracked continuation — by group 12's
+# `never both, and on a backend-tracked project`.
 chk_prose "$PR_AUTHOR" \
-  "either the tracking commit (normal path) or the \`[OVERSIZE]\` marker commit (step 3's exit-1 path) — never both" \
+  "either the tracking commit (normal path) or the \`[OVERSIZE]\` marker commit (step 3's exit-1 path)" \
   "pr-author: step 5 (push) knows the branch carries tracking OR marker, never both"
 
 chk_prose "$PR_AUTHOR" \
@@ -815,6 +831,38 @@ chk_absent "$PR_AUTHOR" \
 chk_absent "$SKILL" \
   '(skip this edit on a project' \
   "pr-flow: OLD edit-only carve-out (the commit did not inherit it) gone"
+
+# ---------------------------------------------------------------------------
+# Group 13: agents/pr-author.md — step 4 is reachable on a WAIVED re-dispatch.
+#
+# Cycle 1 introduced the `open-anyway` waiver: on that pass exit 1 is treated as
+# exit 0 and step 4 runs. But step 4 is entered wholesale, and its verification
+# demanded `git log --oneline -2` show `code commit → chore(tracking)` at the
+# tip, else "stop and fix". On a waived pass the branch reads
+# `code → [OVERSIZE] marker → tracking` (the marker landed on the PREVIOUS pass
+# and is already on origin), and step 2 adds no new commit — so the check fails
+# by construction on a correct branch and the fix it demands would mean
+# rewriting a pushed commit. Same class as #30 defect 1: an instruction that
+# cannot be carried out. Step 5's tracking-XOR-marker invariant was falsified by
+# the same path (the branch demonstrably carries both), and the move itself
+# dragged the literal `[OVERSIZE]` string into `HISTORY.md`.
+# ---------------------------------------------------------------------------
+
+chk_prose "$PR_AUTHOR" \
+  'the code commit sits below them' \
+  "pr-author: step 4's log check carves out the waived pass (code commit is not at tip-2)"
+
+chk_prose "$PR_AUTHOR" \
+  'verify only that the tracking commit is at the tip' \
+  "pr-author: the waived-pass check is stated positively (tracking commit at the tip)"
+
+chk_prose "$PR_AUTHOR" \
+  'coexist by design' \
+  "pr-author: step 5 admits the waived shape — marker + tracking commit on one branch"
+
+chk_prose "$PR_AUTHOR" \
+  "**Strip any \`[OVERSIZE]\` marker" \
+  "pr-author: step 4 strips the marker from the heading so it never rides into HISTORY.md"
 
 # ---------------------------------------------------------------------------
 # Result
