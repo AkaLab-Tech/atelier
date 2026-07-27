@@ -143,7 +143,7 @@ chk_prose "$PR_AUTHOR" 'Follow-up mode' \
 chk_prose "$PR_AUTHOR" 'follow_up: true' \
   "pr-author: entry condition checks for follow_up: true in briefing"
 
-chk_prose "$PR_AUTHOR" 'Skip step 3 entirely' \
+chk_prose "$PR_AUTHOR" 'Skip step 4 entirely' \
   "pr-author: follow-up mode skips the IN_PROGRESS → HISTORY tracking move"
 
 chk_prose "$PR_AUTHOR" 'Skip step 6 entirely' \

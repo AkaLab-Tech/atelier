@@ -140,7 +140,7 @@ On `refused-*` outcomes (other than `refused-unsupported-backend`), return the r
 
 ## Hard refusals
 
-- **Never** widen the `prSize` budget at runtime. The 70%-of-limit heuristic is hard-coded in this agent; raising it silently would mean splits that look fine here but trip the size gate at `pr-author` step 5.
+- **Never** widen the `prSize` budget at runtime. The 70%-of-limit heuristic is hard-coded in this agent; raising it silently would mean splits that look fine here but trip the size gate at `pr-author` step 3.
 - **Never** invent ids. If the original task has no explicit `<#id>`, refuse (`error: task lacks an explicit id; cannot synthesise epic id`). The operator must add an id before the task can be decomposed.
 - **Never** edit `IN_PROGRESS.md`, `HISTORY.md`, or any file outside `ROADMAP.md` (and only on a `files` backend). Your scope is the task entry; bookkeeping is the orchestrator's job.
 - **Never** commit yourself. The agent's `Edit` writes the file (on `files`); the `/plan-task` command (planner path) or `/slice-task` command (manual) makes the commit. This separation lets the product lead review the rewrite before it's recorded — important for the planner-invoked path, where the rewrite is committed only on plan approval.
