@@ -83,19 +83,27 @@ EOF
 
 The identity file is written at install time by `install.sh` Phase B (`phase_b_capture_atelier_git_identity`) — `[user] name = AtelierAuthor` + `email = <id>+<login>@users.noreply.github.com`. The env-var prefix scopes the override to this single `git` invocation; the operator's `~/.gitconfig` is never modified. If the file is missing (shouldn't be — `/atelier:doctor` flags it), commits fall back to the operator's global identity, which works but mixes attribution with the atelier-author push token; surface a `warn` to the operator and continue.
 
-### 3. Push only to `origin task/<id>-<slug>`
+### 3. Size gate — `atelier-pr-size-check` before the tracking move and before the push
+
+The gate runs here, on the code commit alone: it is local-only (`git diff <base>...<branch>`, no network, no PR object), so this is the earliest point at which it can run at all — and running it before step 4 is what keeps the OVERSIZE path coherent, because the task's `IN_PROGRESS.md` entry is still active and can carry the `[OVERSIZE]` marker. Once step 4 has moved that entry to `HISTORY.md` there is nothing left to mark.
 
 ```sh
-git push -u origin task/<id>-<slug>
+atelier-pr-size-check --branch task/<id>-<slug> --base main --project <worktree>
 ```
 
-If the current branch name does not start with `task/`, stop — the static permissions matrix and the global rules will reject it anyway. Never use `--force` and never bypass hooks (`--no-verify`, `--no-gpg-sign`) without explicit operator authorisation.
+The tool reads `<worktree>/.atelier.json` (or built-in defaults) and applies the AND-gate over post-exemption counts. Exit codes:
+
+- **0** within budget → continue to step 4.
+- **1** OVERSIZE → **do NOT open the PR**, and **do not run step 4** — the task is not done, so its tracking entry must not move to `HISTORY.md`. Prepend the `[OVERSIZE]` marker to the task's heading in `<worktree>/IN_PROGRESS.md` and commit it as `chore(tracking): mark #<id> [OVERSIZE] — see size-check output` — on a project whose tracking lives in a backend rather than in files, **both** the edit and the commit are skipped (nothing was written, so there is nothing to commit, and the branch carries the code commit alone); then still run step 5 so the branch reaches `origin` and the operator can open the PR by hand. Surface the tool's stdout (including the suggested slice boundaries) back to the caller (`pr-author` agent or the operator). The marker rides the task branch, whose PR is never opened — landing an operator-visible marker on the base branch is `task-orchestrator`'s step 8. Opening the PR in this oversized shape would only consume a `reviewer` cycle and land at the auto-merge gate as held.
+- **2** error → fail loudly (typical causes: `jq` / `gh` missing, malformed `.atelier.json`).
+
+The count here is code-only in the literal sense — step 4's commit does not exist yet, so nothing bookkeeping can be counted. That does **not** mean the budget exempts bookkeeping: `DEFAULT_EXEMPT` covers lockfiles, generated files, tests and migrations, not `IN_PROGRESS.md` / `HISTORY.md`, so the `--pr`-mode run later (reviewer / auto-merge, on the pushed branch) counts the tracking commit too and lands slightly above this verdict. This gate is the cheap early check, not the authoritative one — a near-budget pass here can still be held there. A project that genuinely wants its tracking files out of the count sets its own `prSize.exempt` in `.atelier.json`. Deferring the check entirely to `auto-merge` would be too late (the reviewer already spent their cycle).
 
 ### 4. Move tracking — same commit set, not a follow-up
 
 The `roadmap-tracking-flow` convention (this repo, single-file layout) and the operator-facing PLAN.md §5/§6 both require `IN_PROGRESS.md` and `HISTORY.md` to be updated **inside this PR**, not in a follow-up commit on the protected branch after merge. Do one of:
 
-- **(preferred)** add a separate commit on this same branch that removes the block from `IN_PROGRESS.md` and appends a new entry to `HISTORY.md`. The PR number is known after step 5; pre-fill it with the predicted next number, and reconcile after the PR is open if it differs.
+- **(preferred)** add a separate commit on this same branch that removes the block from `IN_PROGRESS.md` and appends a new entry to `HISTORY.md`. The PR number is known after step 6; pre-fill it with the predicted next number, and reconcile after the PR is open if it differs.
 - amend the previous commit if the tracking edit was forgotten — only if that commit has not yet been pushed.
 
 The `HISTORY.md` entry follows the existing template:
@@ -116,21 +124,13 @@ The `HISTORY.md` entry follows the existing template:
 - <bullet>
 ```
 
-### 5. Size gate — `atelier-pr-size-check` before opening the PR
-
-Before `gh pr create` runs, the branch is pushed and the tracking commit is in place. Run the size check now — local mode, no network — and short-circuit if it trips:
+### 5. Push only to `origin task/<id>-<slug>`
 
 ```sh
-atelier-pr-size-check --branch task/<id>-<slug> --base main --project <worktree>
+git push -u origin task/<id>-<slug>
 ```
 
-The tool reads `<worktree>/.atelier.json` (or built-in defaults) and applies the AND-gate over post-exemption counts. Exit codes:
-
-- **0** within budget → continue to step 6.
-- **1** OVERSIZE → **do NOT open the PR**. Surface the tool's stdout (including the suggested slice boundaries) back to the caller (`pr-author` agent or the operator). The branch is already on `origin` — that's fine; nothing observably wrong with the push itself. The orchestrator's next move is to dispatch `implementer` again with slicing instructions, or to ask the operator for a split. Opening the PR in this oversized shape would only consume a `reviewer` cycle and land at the auto-merge gate as held.
-- **2** error → fail loudly (typical causes: `jq` / `gh` missing, malformed `.atelier.json`).
-
-Why here and not earlier: the size budget is a property of the diff between `main` and the task branch's tip — it can only be measured after step 4 lands the tracking commit, which is the last commit that contributes to the diff before review. Measuring before the tracking move would undercount; measuring inside `auto-merge` is too late (the reviewer already spent their cycle).
+If the current branch name does not start with `task/`, stop — the static permissions matrix and the global rules will reject it anyway. Never use `--force` and never bypass hooks (`--no-verify`, `--no-gpg-sign`) without explicit operator authorisation. This step runs on the OVERSIZE path too (carrying the code commit + the marker commit), so the branch is on `origin` either way; only step 6 is skipped.
 
 ### 6. Open the PR with `gh pr create`
 
