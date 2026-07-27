@@ -101,10 +101,25 @@ The count here is code-only in the literal sense — step 4's commit does not ex
 
 ### 4. Move tracking — same commit set, not a follow-up
 
-The `roadmap-tracking-flow` convention (this repo, single-file layout) and the operator-facing PLAN.md §5/§6 both require `IN_PROGRESS.md` and `HISTORY.md` to be updated **inside this PR**, not in a follow-up commit on the protected branch after merge. Do one of:
+The `roadmap-tracking-flow` convention (this repo, single-file layout) and the operator-facing PLAN.md §5/§6 both require `IN_PROGRESS.md` and `HISTORY.md` to be updated **inside this PR**, not in a follow-up commit on the protected branch after merge.
 
-- **(preferred)** add a separate commit on this same branch that removes the block from `IN_PROGRESS.md` and appends a new entry to `HISTORY.md`. The PR number is known after step 6; pre-fill it with the predicted next number, and reconcile after the PR is open if it differs.
-- amend the previous commit if the tracking edit was forgotten — only if that commit has not yet been pushed.
+Add a **separate commit** on this same branch that removes the block from `IN_PROGRESS.md` and appends a new entry to `HISTORY.md`. This is not one option among several: never fold the tracking edit into step 2's code commit, and never amend it in there. `agents/pr-author.md` — the agent this recipe serves — keeps those two files out of the code commit and calls the separate tracking commit non-negotiable, so reviewers can read code-only changes without bookkeeping noise. The PR number is known after step 6; pre-fill it with the predicted next number, and reconcile after the PR is open if it differs.
+
+**Ordering invariant:** this commit lands **after** step 3's size gate and **before** step 5's push, so the branch that reaches `origin` already carries it. A tracking commit created after the push never reaches `origin` at all, and the PR is malformed by this skill's own convention.
+
+**Commit message convention:**
+
+```text
+chore(tracking): move #<id> IN_PROGRESS → HISTORY
+
+<one-line note pointing at the PR this closes, if known>
+```
+
+**Verify before running step 5** — if any of these fails, stop and fix it *before* pushing:
+
+- `IN_PROGRESS.md` no longer contains the task's `#<id>` heading line.
+- `HISTORY.md` contains the new entry under the correct month / date heading.
+- `git log --oneline -2` shows the code commit, then the `chore(tracking)` commit, in that order.
 
 The `HISTORY.md` entry follows the existing template:
 
