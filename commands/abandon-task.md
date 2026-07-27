@@ -1,7 +1,7 @@
 ---
 description: Stop and discard an in-flight task — close its open PR without merging, remove the worktree and branch, and move tracking to a terminal state. The inverse of `/atelier:next-task`'s claim; preserves the approved plan and the task itself for re-claiming later — not a permanent kill.
 argument-hint: "<id> [--yes|-y]"
-allowed-tools: Read, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git worktree:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr close:*), Bash(gh issue view:*), Bash(gh issue close:*), Bash(gh api graphql:*), Bash(atelier-task-backend:*), Bash(atelier-housekeeping:*), Bash(jq:*), Bash(env:*), Bash(test:*), Skill, AskUserQuestion
+allowed-tools: Read, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git worktree:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr close:*), Bash(gh issue view:*), Bash(gh issue close:*), Bash(gh api graphql:*), Bash(atelier-task-backend:*), Bash(atelier-housekeeping:*), Bash(jq:*), Bash(env:*), Bash(test:*), Skill, Task, AskUserQuestion
 ---
 
 You are running the `/atelier:abandon-task` slash command. Its job is the **inverse of `/atelier:next-task`'s claim**: stop an in-flight task cleanly — close its open PR without merging, remove its worktree and local branch, and move tracking back to a re-plannable terminal state. It does **not** delete the approved plan, does **not** touch `ROADMAP.md`'s eligibility of the task, and does **not** close it out as delivered — the task stays re-claimable via `/atelier:next-task <id>` or `/atelier:resume-task <id>` afterward.
@@ -20,7 +20,7 @@ Same contract as `/atelier:next-task` and `/atelier:resume-task`. You are **non-
 - `$ARGUMENTS` contains the literal token `-y` (whitespace-bounded).
 - The environment variable `ATELIER_AUTO` is set to a non-empty value. Probe with `env | grep -E '^ATELIER_AUTO='`.
 
-Otherwise you are **interactive**. In non-interactive mode, never use `AskUserQuestion` — auto-resolve per the inline rule for step 5 (or stop with a clear error when no safe default exists).
+Otherwise you are **interactive**. In non-interactive mode, never use `AskUserQuestion` — auto-resolve per the inline rule for step 4 (or stop with a clear error when no safe default exists).
 
 ## Steps
 
@@ -35,7 +35,7 @@ MAIN_ROOT="$(git rev-parse --show-toplevel)"
 BACKEND="$(atelier-task-backend "$MAIN_ROOT")"   # → files | linear | github-project
 ```
 
-`BACKEND` governs steps 3 and 8 below. Run `git status --short` here too — abandoning does not require a clean tree in the *main* checkout (the destructive work happens in the *task* worktree, resolved separately in step 3), but a dirty main tree is worth a quiet note in the final report if step 8's files-backend fallback needs to commit a docs change.
+`BACKEND` governs steps 2 and 7 below. Run `git status --short` here too: abandoning does not require a clean tree in the *main* checkout — the destructive work happens in the *task* worktree, removed under its own force in step 6, and step 7's files-backend tracking move rides a throwaway worktree of its own — but a dirty main tree is still worth a quiet note in the final report.
 
 ### 2. Locate the in-flight task — the abandon anchor
 
@@ -75,7 +75,7 @@ Find the entry whose branch matches `task/<id>-*`. Call it `<wt>`. Its absence i
 
 ### 3. Refuse unsafe cases — before any destruction
 
-Apply these checks before step 4 (confirm) and before any of steps 6–9 (destruction):
+Apply these checks before step 4 (confirm) and before any of steps 5–8 (destruction):
 
 - **PR already `MERGED`.** If Anchor A's PR state is `MERGED` (`gh pr view <NN> --json state --jq '.state'`), refuse — it already shipped; there is nothing left to abandon.
 - **Protected or non-`task/*` branch.** If the resolved branch (from Anchor A's `headRefName`, or the worktree's branch from step 2) is `main`, `master`, `develop`, `staging`, or does not start with `task/`, refuse — this command only ever touches `task/<id>-<slug>` branches.
@@ -90,12 +90,12 @@ Refusal message for either case:
 
 ### 4. Confirm — the destructive gate
 
-Summarize exactly what will change: the PR (number + URL, if any), the branch, the worktree path (if resolved), and the tracking move planned for step 8.
+Summarize exactly what will change: the PR (number + URL, if any), the branch, the worktree path (if resolved), and the tracking move planned for step 7.
 
 - **Interactive:** use `AskUserQuestion` to present the summary and ask for explicit confirmation before proceeding. On "no", stop — nothing is touched.
 - **Non-interactive** (`--yes` / `-y` / `ATELIER_AUTO`): log `auto-abandoning task <id> (non-interactive)` and proceed. The flag itself is the consent, same contract as `/atelier:next-task` step 4 and `/atelier:resume-task`.
 
-Nothing in steps 5–9 runs before this gate passes.
+Nothing in steps 5–8 runs before this gate passes.
 
 ### 5. Close the PR — never merge
 
@@ -131,7 +131,12 @@ atelier-housekeeping --project "$MAIN_ROOT" --yes --no-stamp
 
 - **github-project.** Move the board item off the in-progress bucket through the `RoadmapBackend` contract via the `roadmap-tracking-flow` skill — **never** by editing local files (there are none to edit on this backend). Probe the Project's Status field options through the same skill, not an ad-hoc raw `gh api` call outside that abstraction (`Bash(gh api graphql:*)` is granted in this command's frontmatter for the skill's own `getTask`/`moveTask` calls, per `commands/next-task.md`'s step 6 precedent — the point is to keep the backend write funneled through one contract, not to withhold the permission): if an `Abandoned` or `Cancelled` option exists, `moveTask(id, "in_progress", <that option>)`; otherwise fall back to `moveTask(id, "in_progress", "roadmap")` (the `Todo` bucket, re-plannable) and note in the final report that no dedicated abandoned/cancelled state exists. Do **not** create a new Status option — that is out of scope for this command.
 - **linear.** Analogous `moveTask(id, "in_progress", "backlog")` (or the backend's `Cancelled` state if the skill exposes one) via the `roadmap-tracking-flow` skill.
-- **files.** There is usually nothing to edit — a normal in-flight claim lived only on the now-closed PR's branch (which is gone). The **only** case needing an edit is when Anchor B fired because a `[BLOCKED]` / `[OVERSIZE]` entry exists in `MAIN_ROOT/IN_PROGRESS.md`: move that entry to `HISTORY.md` under an explicit `abandoned` mark. This command's own tool grant excludes `git commit` / `git push` / `gh pr create` (see the frontmatter) precisely because that mechanic is `pr-flow`'s job, not a raw Bash chain here — so make the `IN_PROGRESS.md` / `HISTORY.md` edits with `Edit`, then invoke the `atelier:pr-flow` skill to commit them on a `docs/abandon-<id>` branch (identity: `GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf"`, mirroring the `unblocker` docs-PR pattern) and open the PR. Capture the resulting PR URL for the final report.
+- **files.** There is usually nothing to edit — a normal in-flight claim lived only on the now-closed PR's branch (which is gone). The **only** case needing an edit is when Anchor B fired because a `[BLOCKED]` / `[OVERSIZE]` entry exists in `MAIN_ROOT/IN_PROGRESS.md`: move that entry to `HISTORY.md` under an explicit `abandoned` mark. That move has to reach the base branch as its own PR, and this command never commits, pushes, or opens it from its own turn: its tool grant excludes `git commit` / `git push` / `gh pr create` (see the frontmatter), and **loading a skill grants no tools** — the commands a skill documents would still run from this session, under this session's grants. What actually supplies those tools is **dispatching a sub-agent that carries its own**. So route the PR exactly the way `/atelier:align` Tier 3 and `/atelier:release` do:
+
+  1. **Prepare the branch in a throwaway worktree** so the operator's checkout is untouched. Invoke the `git-wt` skill (or `git wt switch docs/abandon-<id> --from <base>` directly), `<base>` being the branch `MAIN_ROOT` is checked out on — normally `main`, and the ref that actually carries the `[BLOCKED]` / `[OVERSIZE]` entry. Capture the absolute worktree path it prints.
+  2. **Make the tracking move with `Edit`, inside that worktree** (never in `MAIN_ROOT`): take the entry out of `IN_PROGRESS.md` and into `HISTORY.md` under the explicit `abandoned` mark. Leave it uncommitted — `pr-opener` commits it downstream under the atelier-author identity (`GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf"`), mirroring the `unblocker` docs-PR pattern.
+  3. **Dispatch the `atelier:task-orchestrator` agent via `Task` in non-task PR coordination mode.** Hand it `mode: non-task-pr` and **no** `task_id` — that absence is what routes the orchestrator out of its normal task chain — plus `repo` (owner/name), `worktree` (the path from 1, already prepared on `head`), `base`, `head: docs/abandon-<id>`, `title` (`docs(tracking): abandon task <id>`), `body` (what was abandoned, the closed PR number if any, and why), and `interactive: <bool>` from this command's interaction mode. The orchestrator — not this command — selects `pr-opener` as the authoring primitive for a `docs/*` head and then owns the `reviewer` → Pre-merge CI wait → `auto-merge` segment. Do **not** dispatch `pr-opener`, `reviewer`, or `auto-merge` from this command's own turn.
+  4. **Handle the orchestrator's terminal report.** On `merged`, capture the PR URL for the final report and remove the throwaway worktree (`git wt rm docs/abandon-<id>`, or `git worktree remove` + `git worktree prune`). On `held`, surface the held reason verbatim, leave the throwaway worktree in place so the operator can finish the move, and say so in the final report — never merge it yourself.
 
 ### 8. Close a stale `blocked` issue, if any
 
@@ -167,7 +172,7 @@ If a step aborted, report exactly which one and why — same discipline as `/ate
 ## Hard refusals
 
 - **Never** merge. This command only ever calls `gh pr close`, never `gh pr merge` — abandoning is explicitly the "discard, do not ship" path.
-- **Never** push. There is no `git push` verb anywhere in this command's tool grant (see the frontmatter) — remote branch removal goes through `gh pr close --delete-branch` (a GitHub API call, not a push), and the rare files-backend tracking move is delegated to the `atelier:pr-flow` skill rather than done with raw `git commit`/`git push` here.
+- **Never** push. There is no `git push` verb anywhere in this command's tool grant (see the frontmatter) — remote branch removal goes through `gh pr close --delete-branch` (a GitHub API call, not a push), and the rare files-backend tracking move is delegated to `task-orchestrator`'s non-task PR coordination mode (step 7), which dispatches `pr-opener` to commit and push the `docs/abandon-<id>` branch from that agent's own grants, rather than done with raw `git commit`/`git push` here.
 - **Never** touch a protected branch (`main`/`master`/`develop`/`staging`) or any branch that does not start with `task/`. Step 3 refuses before any destructive step runs.
 - **Never** abandon a PR whose state is already `MERGED` — it already shipped; abandon only applies to in-flight, unmerged work.
 - **Never** destroy anything (close the PR, remove the worktree, delete the branch, move tracking) before step 4's confirm gate has explicitly passed, interactive or non-interactive.
