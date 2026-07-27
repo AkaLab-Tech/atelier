@@ -27,6 +27,9 @@
 # dispatched to `pr-opener`. `skills/pr-flow/SKILL.md` — the executable
 # recipe pr-author loads — is reordered to match.
 #
+# Review fix cycle 1 added groups 8-10: the same "impossible instruction /
+# false claim" class re-appeared three more times in the reordered prose.
+#
 # Contract invariants asserted:
 #   Group 1 — agents/pr-author.md: step ORDER (gate before tracking move)
 #     - size gate is step 3, tracking move step 4, push step 5, PR step 6
@@ -67,6 +70,46 @@
 #       (NOTE: `scripts/atelier-pr-size-check` has a known stale "step 4.5"
 #       help-text mention that is deliberately out of scope for #30 — it is
 #       NOT asserted here on purpose.)
+#   Group 8 — agents/pr-author.md: FOLLOW-UP mode's `oversized` still pushes
+#     - after the reorder, follow-up step 3's exit-1 returned `oversized`
+#       without ever reaching step 5, so a fix commit stranded locally while
+#       the already-open PR kept showing pre-fix code — and that falsified
+#       `task-orchestrator`'s "already on origin" premise. Same defect class
+#       as #30 defect 2, one mode over.
+#     - exit 1 now runs step 5 first, keeps step 6 skipped, and the
+#       valid-terminal-states line says so
+#     - NEGATIVE: the push-less `Exit 1 → return \`oversized\`` exit and the
+#       unqualified `\`oversized\` (step 3 tripped),` terminal are gone
+#   Group 9 — agents/pr-author.md: the Output block admits the OVERSIZE
+#     terminal exists
+#     - the `Tracking:` bullet used to say the `IN_PROGRESS → HISTORY` line
+#       "should always read exactly that. There is no 'skipped' path" — on
+#       an agent whose own step 3 deliberately skips that move. Same class:
+#       a rule that contradicts the procedure it documents.
+#     - `PR:` gained the `not opened — OVERSIZE` alternative; `Tracking:`
+#       gained the OVERSIZE and backend-tracked variants; the no-skip rule
+#       is scoped to *outside* that terminal
+#     - NEGATIVE: "should always read exactly that" is gone
+#   Group 10 — pr-author + SKILL: the local size verdict is a LOWER BOUND
+#     - both files claimed bookkeeping stays out of the count "by
+#       construction". It does not: `atelier-pr-size-check`'s
+#       `DEFAULT_EXEMPT` covers lockfiles/generated/tests/migrations and NOT
+#       `IN_PROGRESS.md` / `HISTORY.md`, so the `--pr`-mode run the reviewer
+#       and the auto-merge gate perform counts the tracking commit. The two
+#       gates disagreed by ~1 file / ~15 lines.
+#     - resolution asserted here is prose-only: the local `--branch` count is
+#       code-only *only because step 4's commit does not exist yet*, and the
+#       verdict is an early lower bound (near-budget pass = provisional)
+#     - NEGATIVE: both "by construction" claims are gone
+#     - `scripts/atelier-pr-size-check` was deliberately NOT changed and is
+#       deliberately NOT asserted against here.
+#
+# Anchor policy (reviewer nit, cycle 1): each literal is the SHORTEST phrase
+# that still (a) survives a reasonable copy-edit and (b) still fires against
+# the pre-fix text. Long literals that remain are deliberate — they encode a
+# whole ordering/enumeration invariant that no shorter substring captures
+# (e.g. the `commit → size gate → tracking commit → push → gh pr create`
+# pipeline sketch, where the sequence *is* the assertion).
 #
 # Hermetic: greps committed prose only — no network, no `gh`, no temp dirs.
 #
@@ -114,19 +157,23 @@ chk_absent() {
 # ---------------------------------------------------------------------------
 
 chk_prose "$PR_AUTHOR" \
-  '3. **Size gate — run `atelier-pr-size-check` BEFORE the tracking move and BEFORE the push.**' \
-  "pr-author: size gate is step 3 and says it runs before the tracking move + push"
+  '3. **Size gate' \
+  "pr-author: the size gate is step 3"
 
 chk_prose "$PR_AUTHOR" \
-  '4. **Move the tracking forward as a separate commit' \
+  'BEFORE the tracking move and BEFORE the push' \
+  "pr-author: the size gate heading states it runs before the tracking move + push"
+
+chk_prose "$PR_AUTHOR" \
+  '4. **Move the tracking forward' \
   "pr-author: the IN_PROGRESS → HISTORY tracking move is step 4 (after the gate)"
 
 chk_prose "$PR_AUTHOR" \
-  '5. **Push to the right place.**' \
+  '5. **Push to the right place' \
   "pr-author: the push is step 5 (after the gate and the tracking move)"
 
 chk_prose "$PR_AUTHOR" \
-  '6. **Open the PR with `gh pr create`.**' \
+  '6. **Open the PR with `gh pr create`' \
   "pr-author: gh pr create is step 6 (last, and unreachable on the OVERSIZE path)"
 
 chk_prose "$PR_AUTHOR" \
@@ -134,24 +181,26 @@ chk_prose "$PR_AUTHOR" \
   "pr-author: step 4 names step 3 as the gate it waits on (forward reference is consistent)"
 
 chk_prose "$PR_AUTHOR" \
-  'you returned `oversized` after the size gate tripped (step 3)' \
+  'after the size gate tripped (step 3)' \
   'pr-author: the terminal-states preamble points `oversized` at step 3'
 
+# Deliberately long: the sequence IS the invariant — no shorter substring
+# captures "gate sits between the code commit and the tracking commit".
 chk_prose "$PR_AUTHOR" \
   'proceed to commit → size gate → tracking commit → push → `gh pr create`' \
   "pr-author: the precondition preamble spells the corrected pipeline order"
 
 # Regression guards — the pre-fix numbering must be gone.
 chk_absent "$PR_AUTHOR" \
-  '3. **Move the tracking forward as a separate commit' \
+  '3. **Move the tracking forward' \
   "pr-author: OLD numbering gone — tracking move is no longer step 3"
 
 chk_absent "$PR_AUTHOR" \
-  '4. **Push to the right place.**' \
+  '4. **Push to the right place' \
   "pr-author: OLD numbering gone — push is no longer step 4"
 
 chk_absent "$PR_AUTHOR" \
-  '5. **Size gate — run `atelier-pr-size-check` BEFORE `gh pr create`**' \
+  '5. **Size gate' \
   "pr-author: OLD numbering gone — size gate is no longer step 5"
 
 # ---------------------------------------------------------------------------
@@ -172,11 +221,11 @@ chk_prose "$PR_AUTHOR" \
   "pr-author: OVERSIZE marks the entry that is still present in IN_PROGRESS.md"
 
 chk_prose "$PR_AUTHOR" \
-  'were this gate to run after step 4, the entry would already be in `HISTORY.md` and there would be nothing left to mark' \
+  'were this gate to run after step 4' \
   "pr-author: OVERSIZE spells out why the gate must precede the tracking move (#30 root cause)"
 
 chk_prose "$PR_AUTHOR" \
-  "and step 3's OVERSIZE exit (no PR is opened, the task is not done, and the still-active entry is what carries the \`[OVERSIZE]\` marker)" \
+  "and step 3's OVERSIZE exit" \
   "pr-author: decision rules carve the OVERSIZE exit out of the never-skip-the-tracking-move rule"
 
 # ---------------------------------------------------------------------------
@@ -185,27 +234,30 @@ chk_prose "$PR_AUTHOR" \
 # ---------------------------------------------------------------------------
 
 chk_prose "$PR_AUTHOR" \
-  '**Commit the marker** as `chore(tracking): mark #<id> [OVERSIZE]' \
-  "pr-author: OVERSIZE commits the marker as its own chore(tracking) commit"
+  '**Commit the marker**' \
+  "pr-author: OVERSIZE commits the marker as its own commit"
 
 chk_prose "$PR_AUTHOR" \
   '**Still run step 5 (push).**' \
   "pr-author: OVERSIZE still runs the push (step 5) after committing the marker"
 
 chk_prose "$PR_AUTHOR" \
-  'The branch — code commit + marker commit, no tracking move — belongs on origin' \
+  'code commit + marker commit, no tracking move' \
   "pr-author: OVERSIZE states origin must carry the code commit + the marker commit"
 
+# Deliberately long: the invariant is the exclusive-or over the two commit
+# shapes; "never both" alone would pass against prose that lists the wrong
+# alternatives.
 chk_prose "$PR_AUTHOR" \
-  "the code commit plus either the tracking commit (normal path) or the \`[OVERSIZE]\` marker commit (step 3's exit-1 path) — never both" \
+  "either the tracking commit (normal path) or the \`[OVERSIZE]\` marker commit (step 3's exit-1 path) — never both" \
   "pr-author: step 5 (push) knows the branch carries tracking OR marker, never both"
 
 chk_prose "$PR_AUTHOR" \
-  'whose PR is never opened, so it cannot reach the base branch on its own' \
+  'cannot reach the base branch on its own' \
   "pr-author: honest about the marker not reaching the base branch by itself"
 
 chk_prose "$PR_AUTHOR" \
-  "Landing an operator-visible marker on the base is \`task-orchestrator\`'s step 8" \
+  'Landing an operator-visible marker on the base' \
   "pr-author: hands base-branch marker ownership to task-orchestrator step 8"
 
 chk_prose "$PR_AUTHOR" \
@@ -214,15 +266,15 @@ chk_prose "$PR_AUTHOR" \
 
 # Regression guards — the pre-fix OVERSIZE prose must be gone.
 chk_absent "$PR_AUTHOR" \
-  'Why before push & after the branch already exists' \
+  'Why before push' \
   "pr-author: OLD 'why before push & after the branch already exists' rationale gone"
 
 chk_absent "$PR_AUTHOR" \
-  'Stay narrowly scoped to "detect oversize, mark it, return"' \
+  'detect oversize, mark it, return' \
   "pr-author: OLD scope statement (marks, returns, never pushes) gone"
 
 chk_absent "$PR_AUTHOR" \
-  'so it lands on the same branch as the code + tracking commits' \
+  'the same branch as the code + tracking commits' \
   "pr-author: OLD claim that the marker lands alongside the tracking commit gone"
 
 # ---------------------------------------------------------------------------
@@ -230,15 +282,15 @@ chk_absent "$PR_AUTHOR" \
 # ---------------------------------------------------------------------------
 
 chk_absent "$ORCH" \
-  'The branch is already on origin with the code + tracking commits + the `[OVERSIZE]` marker commit' \
+  'the code + tracking commits + the `[OVERSIZE]` marker commit' \
   "task-orchestrator: FALSE 'code + tracking commits + marker commit' claim removed (#30 defect 3)"
 
 chk_prose "$ORCH" \
-  'The branch is already on origin with the code commit + the `[OVERSIZE]` marker commit' \
+  'the code commit + the `[OVERSIZE]` marker commit' \
   "task-orchestrator: replacement states origin carries the code commit + the marker commit"
 
 chk_prose "$ORCH" \
-  'and deliberately **without** the `IN_PROGRESS → HISTORY` tracking commit, since the task is not done' \
+  'deliberately **without** the `IN_PROGRESS → HISTORY` tracking commit' \
   "task-orchestrator: replacement states the branch deliberately lacks the tracking commit"
 
 chk_prose "$ORCH" \
@@ -250,8 +302,8 @@ chk_absent "$ORCH" \
   "task-orchestrator: OLD 'step 5 size-gate' reference gone"
 
 chk_prose "$ORCH" \
-  'it marks that entry `[OVERSIZE]` on the task branch, pushes the branch, and returns without opening the PR and without moving the tracking' \
-  "task-orchestrator: describes pr-author's OVERSIZE return accurately (marks, pushes, no PR, no move)"
+  'pushes the branch, and returns without opening the PR' \
+  "task-orchestrator: describes pr-author's OVERSIZE return accurately (marks, pushes, no PR)"
 
 # ---------------------------------------------------------------------------
 # Group 5: agents/task-orchestrator.md — step 8 owns landing the
@@ -259,7 +311,7 @@ chk_prose "$ORCH" \
 # ---------------------------------------------------------------------------
 
 chk_prose "$ORCH" \
-  '**Land the operator-visible marker on the base branch before you yield.**' \
+  '**Land the operator-visible marker on the base branch' \
   "task-orchestrator: step 8 owns landing the operator-visible base-branch marker"
 
 chk_prose "$ORCH" \
@@ -271,23 +323,23 @@ chk_prose "$ORCH" \
   "task-orchestrator: step 8 dispatches pr-opener to author the marker PR (never gh pr create itself)"
 
 chk_prose "$ORCH" \
-  'This is the step that makes your own step-1 `[OVERSIZE]` filter real' \
+  'makes your own step-1 `[OVERSIZE]` filter real' \
   "task-orchestrator: step 8 states it is what makes step 1's OVERSIZE filter real"
 
 chk_prose "$ORCH" \
-  'whose PR is never opened, so it never reaches this checkout' \
+  'so it never reaches this checkout' \
   "task-orchestrator: step 1's filter is honest that pr-author's marker never reaches this checkout"
 
 chk_prose "$ORCH" \
-  '**your own step 8 lands on the base branch** via the `docs/oversize-<id>` PR' \
+  '**your own step 8 lands on the base branch**' \
   "task-orchestrator: step 1 names step 8's docs PR as the marker it actually filters on"
 
 chk_prose "$ORCH" \
-  "step 3's tracking move, and step 8's \`[OVERSIZE]\` marker on the base branch" \
+  "step 8's \`[OVERSIZE]\` marker on the base branch" \
   "task-orchestrator: the Edit/Write allowance covers step 8's base-branch marker"
 
 chk_prose "$ORCH" \
-  "including step 8's \`docs/oversize-<id>\` bookkeeping PR" \
+  "step 8's \`docs/oversize-<id>\` bookkeeping PR" \
   "task-orchestrator: the never-run-gh-pr-create rule names the step-8 bookkeeping PR as pr-opener's"
 
 chk_prose "$ORCH" \
@@ -300,19 +352,19 @@ chk_prose "$ORCH" \
 # ---------------------------------------------------------------------------
 
 chk_prose "$SKILL" \
-  '### 3. Size gate — `atelier-pr-size-check` before the tracking move and before the push' \
-  "pr-flow: recipe step 3 is the size gate, before the tracking move and the push"
+  '### 3. Size gate' \
+  "pr-flow: recipe step 3 is the size gate"
 
 chk_prose "$SKILL" \
-  '### 4. Move tracking — same commit set, not a follow-up' \
+  '### 4. Move tracking' \
   "pr-flow: recipe step 4 is the tracking move (after the gate)"
 
 chk_prose "$SKILL" \
-  '### 5. Push only to `origin task/<id>-<slug>`' \
+  '### 5. Push only to' \
   "pr-flow: recipe step 5 is the push (after the gate)"
 
 chk_prose "$SKILL" \
-  '### 6. Open the PR with `gh pr create`' \
+  '### 6. Open the PR' \
   "pr-flow: recipe step 6 is gh pr create"
 
 chk_prose "$SKILL" \
@@ -320,36 +372,36 @@ chk_prose "$SKILL" \
   "pr-flow: OVERSIZE bullet skips step 4 (the tracking move)"
 
 chk_prose "$SKILL" \
-  'then still run step 5 so the branch reaches `origin`' \
+  'still run step 5 so the branch reaches' \
   "pr-flow: OVERSIZE bullet still runs step 5 so origin carries the marker"
 
 chk_prose "$SKILL" \
-  'Once step 4 has moved that entry to `HISTORY.md` there is nothing left to mark' \
+  'there is nothing left to mark' \
   "pr-flow: records the #30 root cause (nothing left to mark after the tracking move)"
 
 chk_prose "$SKILL" \
-  'This step runs on the OVERSIZE path too (carrying the code commit + the marker commit)' \
+  'This step runs on the OVERSIZE path too' \
   "pr-flow: step 5 states it runs on the OVERSIZE path too"
 
 # Regression guards — the pre-fix recipe order + justification must be gone.
 chk_absent "$SKILL" \
-  'Why here and not earlier: the size budget is a property of the diff' \
+  'Why here and not earlier' \
   "pr-flow: OLD 'why here and not earlier' justification gone"
 
 chk_absent "$SKILL" \
-  'can only be measured after step 4 lands the tracking commit' \
+  'only be measured after step 4' \
   "pr-flow: OLD contradictory claim (measurable only after the tracking commit) gone"
 
 chk_absent "$SKILL" \
-  '### 3. Push only to `origin task/<id>-<slug>`' \
+  '### 3. Push only to' \
   "pr-flow: OLD heading order gone — the push is no longer step 3"
 
 chk_absent "$SKILL" \
-  '### 5. Size gate — `atelier-pr-size-check` before opening the PR' \
+  '### 5. Size gate' \
   "pr-flow: OLD heading order gone — the size gate is no longer step 5"
 
 chk_absent "$SKILL" \
-  "The branch is already on \`origin\` — that's fine" \
+  "already on \`origin\` — that's fine" \
   "pr-flow: OLD 'branch is already on origin — that's fine' hand-wave gone"
 
 # ---------------------------------------------------------------------------
@@ -381,6 +433,138 @@ for f in "$PR_AUTHOR" "$ORCH" "$SKILL" "$DECOMPOSER" "$RELEASE"; do
   chk_absent "$f" 'step 4.5' \
     "no stale 'step 4.5' reference in $(basename "$(dirname "$f")")/$(basename "$f")"
 done
+
+# ---------------------------------------------------------------------------
+# Group 8: agents/pr-author.md — FOLLOW-UP mode's `oversized` terminal is no
+# longer push-less. Post-reorder the gate returned at step 3 and step 5
+# (push) was never reached, so a fix commit stranded locally while the
+# already-open PR kept showing pre-fix code — and that falsified
+# `task-orchestrator`'s "already on origin, only the PR object is missing"
+# premise. Same defect class as #30 defect 2, one mode over.
+# ---------------------------------------------------------------------------
+
+chk_prose "$PR_AUTHOR" \
+  '**still run step 5 (push)**' \
+  "pr-author follow-up: exit 1 still runs step 5 (push) before returning oversized"
+
+chk_prose "$PR_AUTHOR" \
+  'The push is not optional on this path' \
+  "pr-author follow-up: the push on the oversized path is stated as mandatory"
+
+chk_prose "$PR_AUTHOR" \
+  '"already on origin" premise' \
+  "pr-author follow-up: names the orchestrator premise a push-less return would falsify"
+
+chk_prose "$PR_AUTHOR" \
+  'Skip step 6 — the PR exists' \
+  "pr-author follow-up: step 6 (gh pr create) stays skipped — the PR already exists"
+
+chk_prose "$PR_AUTHOR" \
+  "after step 5's push" \
+  "pr-author follow-up: the valid-terminal-states line says oversized comes after the push"
+
+# Regression guards — the push-less follow-up exit must be gone.
+chk_absent "$PR_AUTHOR" \
+  'Exit 1 → return `oversized`' \
+  "pr-author follow-up: OLD push-less 'Exit 1 → return oversized' exit gone"
+
+chk_absent "$PR_AUTHOR" \
+  '`oversized` (step 3 tripped),' \
+  "pr-author follow-up: OLD unqualified '(step 3 tripped)' terminal (no push) gone"
+
+chk_absent "$PR_AUTHOR" \
+  '`oversized` (step 5 tripped)' \
+  "pr-author follow-up: OLD pre-#30 '(step 5 tripped)' terminal reference gone"
+
+# ---------------------------------------------------------------------------
+# Group 9: agents/pr-author.md Output block — the `Tracking:` bullet used to
+# assert the `IN_PROGRESS → HISTORY` line "should always read exactly that.
+# There is no 'skipped' path", on an agent whose own step 3 deliberately
+# skips that move. The rule now names the terminals it does not cover.
+# ---------------------------------------------------------------------------
+
+chk_prose "$PR_AUTHOR" \
+  'not opened — OVERSIZE' \
+  "pr-author Output: the PR: bullet has an OVERSIZE alternative (no PR was opened)"
+
+chk_prose "$PR_AUTHOR" \
+  'not moved — task not done' \
+  "pr-author Output: the Tracking: bullet has an OVERSIZE variant (the move did not happen)"
+
+chk_prose "$PR_AUTHOR" \
+  'marker committed on the active entry' \
+  "pr-author Output: the OVERSIZE variant names the marker on the still-active entry"
+
+chk_prose "$PR_AUTHOR" \
+  'not moved — tracking lives in the backend' \
+  "pr-author Output: the Tracking: bullet has a backend-tracked variant (no marker written)"
+
+chk_prose "$PR_AUTHOR" \
+  'Outside that terminal there is no "skipped" path' \
+  "pr-author Output: the no-skipped-path rule is scoped to outside the OVERSIZE terminal"
+
+# Regression guards — the unqualified absolutes must be gone.
+chk_absent "$PR_AUTHOR" \
+  'should always read exactly that' \
+  "pr-author Output: OLD absolute 'should always read exactly that' claim gone"
+
+chk_absent "$PR_AUTHOR" \
+  'handed back to tester").' \
+  "pr-author Output: OLD two-outcome PR: bullet (no OVERSIZE alternative) gone"
+
+# ---------------------------------------------------------------------------
+# Group 10: pr-author + SKILL — the local `--branch` size verdict is an early
+# LOWER BOUND, not an exempt-by-construction final word. `DEFAULT_EXEMPT` in
+# `scripts/atelier-pr-size-check` covers lockfiles / generated / tests /
+# migrations and NOT `IN_PROGRESS.md` / `HISTORY.md`, so the `--pr`-mode run
+# the reviewer and the auto-merge gate perform counts the tracking commit —
+# the two gates disagreed by ~1 file / ~15 lines. The resolution asserted
+# here is prose-only; the script is deliberately unchanged and unasserted.
+# ---------------------------------------------------------------------------
+
+chk_prose "$PR_AUTHOR" \
+  'This verdict is a lower bound' \
+  "pr-author: the local size verdict is stated to be a lower bound"
+
+chk_prose "$PR_AUTHOR" \
+  '`DEFAULT_EXEMPT` does not exempt' \
+  "pr-author: states DEFAULT_EXEMPT does not exempt the tracking files"
+
+chk_prose "$PR_AUTHOR" \
+  'either limit as provisional' \
+  "pr-author: a near-budget pass is explicitly provisional"
+
+chk_absent "$PR_AUTHOR" \
+  'keeps bookkeeping lines out of the counted diff' \
+  "pr-author: OLD false 'keeps bookkeeping out of the counted diff' claim gone"
+
+chk_prose "$SKILL" \
+  "step 4's commit does not exist yet" \
+  "pr-flow: the count is code-only only because step 4's commit does not exist yet"
+
+chk_prose "$SKILL" \
+  '`DEFAULT_EXEMPT`' \
+  "pr-flow: names DEFAULT_EXEMPT as the actual exemption mechanism"
+
+chk_prose "$SKILL" \
+  'not `IN_PROGRESS.md` / `HISTORY.md`' \
+  "pr-flow: states the tracking files are NOT in DEFAULT_EXEMPT"
+
+chk_prose "$SKILL" \
+  'counts the tracking commit too' \
+  "pr-flow: the later --pr-mode run counts the tracking commit too"
+
+chk_prose "$SKILL" \
+  'not the authoritative one' \
+  "pr-flow: this gate is the cheap early check, not the authoritative one"
+
+chk_prose "$SKILL" \
+  '`prSize.exempt`' \
+  "pr-flow: points at the per-project prSize.exempt escape hatch"
+
+chk_absent "$SKILL" \
+  'stay out of the count by construction' \
+  "pr-flow: OLD false 'bookkeeping stays out of the count by construction' claim gone"
 
 # ---------------------------------------------------------------------------
 # Result
