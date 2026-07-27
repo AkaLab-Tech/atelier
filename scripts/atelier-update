@@ -22,8 +22,14 @@
 # template); managed mode backs up the previous instantiated template instead.
 #
 # Usage:
-#   atelier-update [--dry-run] [--plugin-root <path>]
+#   atelier-update [--dry-run] [--yes|-y] [--plugin-root <path>]
 #   atelier-update --help
+#
+# --yes/-y applies a pending settings.template.json permission change without
+# the interactive [y/N] prompt (which needs a TTY on stdin). This is the only
+# escape hatch for a non-interactive caller (e.g. the /atelier:update slash
+# command, whose Bash invocations never have a TTY) to accept new permissions;
+# absent both a TTY and --yes, the script still refuses and warns.
 #
 # Exit codes:
 #   0  update applied (something changed / drift resynced)
@@ -251,6 +257,11 @@ OPTIONS:
   --dry-run              Pull + classify + report, but do not re-instantiate
                          templates or invoke \`claude plugin update\`.
                          Useful to see what would change.
+  --yes, -y              Apply a pending settings.template.json permission
+                         change without the interactive [y/N] prompt. The
+                         only way to accept new permissions without a TTY
+                         on stdin (e.g. from a slash command). Has no
+                         effect when there is no pending permission change.
   --help, -h             Show this help and exit.
 
 EXIT CODES:
@@ -274,6 +285,7 @@ EOF
 # ---------- arg parse ----------
 PLUGIN_ROOT_FLAG=""
 DRY_RUN=false
+ASSUME_YES=false
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -282,6 +294,7 @@ while [ $# -gt 0 ]; do
       PLUGIN_ROOT_FLAG="$2"; shift 2 ;;
     --plugin-root=*) PLUGIN_ROOT_FLAG="${1#--plugin-root=}"; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --yes|-y) ASSUME_YES=true; shift ;;
     --help|-h) usage; exit 0 ;;
     *) die "unknown arg: $1 (run --help for usage)" ;;
   esac
@@ -701,7 +714,9 @@ else
         case "$DIFF_RC" in
           0) sublog "settings.template.json content changed but no permission diff (likely comment/whitespace only)" ;;
           1)
-            if [ -t 0 ]; then
+            if $ASSUME_YES; then
+              sublog "--yes: applying permission changes without an interactive prompt"
+            elif [ -t 0 ]; then
               printf "Apply these permission changes? [y/N]: " >&2
               read -r ans
               case "$ans" in
@@ -709,11 +724,12 @@ else
                 *)           APPLY_SETTINGS=false; sublog "operator declined — keeping old settings.template.json in \$ATELIER_CONFIG_DIR" ;;
               esac
             else
-              # Non-interactive — refuse to apply silently. The operator
-              # re-runs with a TTY to accept.
+              # Non-interactive, no --yes — refuse to apply silently. The
+              # fail-safe default: the caller re-runs with a TTY, or passes
+              # --yes, to accept.
               APPLY_SETTINGS=false
               warn "non-interactive mode: refusing to apply permission changes without confirmation"
-              warn "re-run \`atelier-update\` from an interactive shell to accept"
+              warn "re-run \`atelier-update\` from an interactive shell, or pass --yes, to accept"
             fi
             ;;
           *) warn "atelier-permission-diff failed (rc=$DIFF_RC); applying new settings.template.json without diff" ;;
