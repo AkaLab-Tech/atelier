@@ -124,6 +124,8 @@ Evaluate in order:
 1. **Explicit flag (`--backend <value>` in `$ARGUMENTS`)**: parse `--backend` from `$ARGUMENTS`, mirroring the `--yes`/`-y`/`--mode=` parsing in Phase 1. Accept exactly `files`, `linear`, or `github-project`; for any other value print a usage error and stop:
    > `Unknown --backend value: '<value>'. Valid options: files | linear | github-project`
 
+   Note: `scripts/atelier-setup-project` mirrors this exact accepted set and message text in its own `--backend` arg-parse validation. Because Phase 1 aborts on any non-zero helper exit before this step ever runs, the helper's copy is the one that actually fires in practice — adding or renaming a backend requires updating **both** places (#36 / audit#70).
+
 2. **Interactive (no `--backend` flag and not headless)**: use `AskUserQuestion` to offer the three options:
    - `files` *(default — local markdown files; ROADMAP.md / IN_PROGRESS.md / HISTORY.md)*
    - `linear` *(Linear.app — issues and projects via claude-roadmap-tools)*

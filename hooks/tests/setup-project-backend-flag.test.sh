@@ -189,16 +189,26 @@ else
   fail "case6: '--help' alone exited $rc, expected 0"
 fi
 
-if grep -q -- '--backend' "$OUT6"; then
-  pass "case6: --help output documents --backend"
+# Anchor on the OPTIONS-block entry itself (leading whitespace then
+# "--backend", the same shape as sibling entries like "  --mode <new|
+# existing>" and "  --scaffold-ci"). A bare substring grep for '--backend'
+# or 'files|linear|github-project' also matches the pre-existing STDOUT
+# MARKERS prose ("atelier-backend=<files|linear|github-project|...>" and
+# "delegate to /create-roadmap --backend <choice>"), so this must not be a
+# bare substring grep — it has to isolate the OPTIONS row before asserting
+# on its contents.
+OPTIONS_LINE6="$(grep -E '^[[:space:]]+--backend[[:space:]]' "$OUT6" || true)"
+
+if [ -n "$OPTIONS_LINE6" ]; then
+  pass "case6: --help OPTIONS block has a '--backend' entry"
 else
-  fail "case6: --help output does not mention --backend"
+  fail "case6: --help OPTIONS block has no '--backend' entry (found: $(grep -- '--backend' "$OUT6" || echo '<nothing>'))"
 fi
 
-if grep -q 'files|linear|github-project' "$OUT6"; then
-  pass "case6: --help output documents the three accepted --backend values"
+if printf '%s\n' "$OPTIONS_LINE6" | grep -qF '<files|linear|github-project>'; then
+  pass "case6: the --backend OPTIONS entry documents the three accepted values"
 else
-  fail "case6: --help output does not document files|linear|github-project"
+  fail "case6: the --backend OPTIONS entry does not document '<files|linear|github-project>', got: \"$OPTIONS_LINE6\""
 fi
 
 # ============================================================
