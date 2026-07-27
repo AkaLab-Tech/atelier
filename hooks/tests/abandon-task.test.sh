@@ -155,7 +155,7 @@ chk_regex_absent "$CMD" 'Bash\(gh pr create' \
   "allowed-tools: never grants a raw Bash(gh pr create:*) invocation"
 
 chk_absent_in_bash "$CMD" 'gh pr create' \
-  "body: never invokes gh pr create directly in a bash code block (delegated to pr-flow skill)"
+  "body: never invokes gh pr create directly in a bash code block (delegated to a sub-agent that carries its own grants — see abandon-task-tracking-route.test.sh, #34)"
 
 # ---------------------------------------------------------------------------
 # Group 3: closes the PR without merging
