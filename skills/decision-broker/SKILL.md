@@ -91,7 +91,7 @@ If `ATELIER_ASK_FOR` contains the current `category`, return `mode: ask` immedia
 
 ### Step 3 — Read project policy
 
-Read `<project_root>/.atelier.json`. Locate `decisionPolicy.<category>`. Three possible shapes:
+Read `<project_root>/.atelier.json`. Locate `decisionPolicy.byCategory.<category>`. Three possible shapes:
 
 - **Fixed option id** (e.g. `"fix-first"`) → `mode: direct`. Verify the id is in the catalog entry's `options[]`. If not, return `mode: ask` with a warning rationale ("Project policy specifies '<id>' but catalog does not list it as an option — falling back to operator"). **Note**: a fixed value here is NOT overridden by `ATELIER_POLICY_OVERRIDE` — the operator already configured a specific answer for this category, the wrapper flag is global, specific beats global.
 - **`"auto"`** → continue to Step 4.
