@@ -2431,14 +2431,6 @@ main() {
   resolve_source_root
   detect_source_mode
 
-  # Pin every claude invocation in this script (Phase B auth, Phase C.2
-  # marketplace + plugin install) to atelier's resolved config dir. Child
-  # processes inherit the export; the operator's parent shell is
-  # unaffected (this is a subshell export). The shellrc hook block
-  # injected by Phase C.1 sets the same convention inline on the `task()`
-  # function so the operator's interactive sessions also land here.
-  export CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"
-
   # --refresh-shellrc: re-inject only the shellrc hook block and exit. No
   # preflight / deps / auth / plugin work — phase_c_1_shellrc_hooks is
   # self-contained (needs only $ATELIER_CONFIG_DIR + the log helpers). Lets
@@ -2455,6 +2447,20 @@ main() {
   sublog "source root: $ATELIER_SOURCE_ROOT (mode: $SOURCE_MODE)"
 
   phase_0_preflight
+
+  # Pin every claude invocation in this script (Phase B auth, Phase C.2
+  # marketplace + plugin install) to atelier's resolved config dir. Deferred
+  # until AFTER phase_0_preflight: on a collision, the preflight reassigns
+  # $ATELIER_CONFIG_DIR to an operator-picked alternative path, and no
+  # `claude` call happens before this point, so exporting here (rather than
+  # before the preflight, then re-exporting after) guarantees
+  # CLAUDE_CONFIG_DIR == ATELIER_CONFIG_DIR at every use without a divergence
+  # window. Child processes inherit the export; the operator's parent shell
+  # is unaffected (this is a subshell export). The shellrc hook block
+  # injected by Phase C.1 sets the same convention inline on the `task()`
+  # function so the operator's interactive sessions also land here.
+  export CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR"
+
   phase_a
   phase_b
   phase_c_1
