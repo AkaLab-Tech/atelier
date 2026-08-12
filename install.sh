@@ -646,6 +646,19 @@ phase_a_claude_code() {
   sublog "installing Claude Code via the official native installer"
   sublog "(see https://code.claude.com/docs/en/setup, 'Native Install')"
   curl -fsSL https://claude.ai/install.sh | bash
+
+  # The native installer targets ~/.local/bin, which may not be on PATH yet
+  # in this (current) shell — patch it for the rest of this run so later
+  # phases (e.g. phase_b_claude_login) can resolve `claude` (mirrors the
+  # same guard in bootstrap.sh).
+  if ! has claude && [ -x "$HOME/.local/bin/claude" ]; then
+    case ":${PATH}:" in
+      *":${HOME}/.local/bin:"*) : ;;
+      *) PATH="${HOME}/.local/bin:${PATH}" ;;
+    esac
+  fi
+
+  has claude || die "claude CLI not on PATH after install — open a new terminal and re-run install.sh"
 }
 
 phase_a_chrome_optional() {
