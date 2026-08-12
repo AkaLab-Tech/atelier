@@ -1006,12 +1006,17 @@ phase_b_atelier_author_login() {
   phase_b_atelier_gh_login "author" \
     "the GitHub account atelier uses for commits, push, and PR/issue authoring"
 
-  # Register `gh` as git credential helper for HTTPS, using the author config
-  # dir as the source of credentials. `gh auth git-credential` reads
-  # $GH_CONFIG_DIR at invocation time, so the helper line written into the
-  # global gitconfig is dynamic: with $GH_CONFIG_DIR exported (the `task()`
-  # alias does this), git uses the atelier-author token; without it, git falls
-  # back to ~/.config/gh/ — i.e. the operator's normal shell outside atelier.
+  # Register `gh` as git credential helper for HTTPS in the OPERATOR's global
+  # gitconfig (~/.gitconfig), using the author config dir as the source of
+  # credentials. `gh auth git-credential` reads $GH_CONFIG_DIR at invocation
+  # time, so the helper line is dynamic: with $GH_CONFIG_DIR exported git uses
+  # the atelier-author token, without it git falls back to ~/.config/gh/.
+  #
+  # This registration is NOT visible inside atelier sessions: `task()` and
+  # `atelier()` export GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf,
+  # which REPLACES the global gitconfig rather than layering on top of it.
+  # phase_b_register_author_credential_helper() (called at the end of phase_b)
+  # registers the same helper in that file so atelier sessions can push.
   # Idempotent.
   sublog "registering gh (atelier-author) as git credential helper (HTTPS, idempotent)"
   GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh auth setup-git
@@ -1096,6 +1101,35 @@ CFG
   sublog "  -> $identity_file"
 }
 
+# Register the gh credential helper INSIDE git-identity.conf too (#40).
+# `task()` / `atelier()` export GIT_CONFIG_GLOBAL=<identity_file>, and that
+# variable replaces the global gitconfig outright — so the helper written to
+# the operator's ~/.gitconfig by phase_b_atelier_author_login() is invisible in
+# an atelier session. Without this, `git push` inside a session has no helper
+# (Linux) or silently falls back to the operator's osxkeychain entry (macOS,
+# identity confusion). Re-running `gh auth setup-git` against the identity file
+# gives the session the atelier-author token via $GH_CONFIG_DIR, exactly as the
+# personal registration does outside atelier.
+#
+# ORDER IS LOAD-BEARING: must run AFTER phase_b_capture_atelier_git_identity(),
+# whose full-file `cat >` rewrite would otherwise wipe the [credential] section.
+phase_b_register_author_credential_helper() {
+  local identity_file="$ATELIER_CONFIG_DIR/git-identity.conf"
+
+  sublog "registering gh credential helper inside git-identity.conf (idempotent)"
+  # gh writes with --replace-all + --add, so re-runs are byte-stable.
+  if ! GIT_CONFIG_GLOBAL="$identity_file" \
+       GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" \
+       gh auth setup-git; then
+    warn "could not register the gh credential helper in $identity_file"
+    warn "git push inside atelier sessions may prompt for credentials or use"
+    warn "the operator's personal identity; to fix it by hand, run:"
+    warn "  GIT_CONFIG_GLOBAL=\"$identity_file\" GH_CONFIG_DIR=\"$ATELIER_CONFIG_DIR/gh/author\" gh auth setup-git"
+    return
+  fi
+  step_ok "atelier sessions will push with the atelier-author token"
+}
+
 phase_b() {
   phase "Phase B — authentication"
 
@@ -1119,6 +1153,9 @@ phase_b() {
   phase_b_atelier_reviewer_login
   phase_b_verify_distinct_identities
   phase_b_capture_atelier_git_identity
+  # Must stay last: it appends to the file phase_b_capture_atelier_git_identity
+  # rewrites wholesale (#40).
+  phase_b_register_author_credential_helper
   ok "Phase B complete"
 }
 
