@@ -69,6 +69,7 @@
       "Read(~/.aws/**)",
       "Read(~/.gnupg/**)",
       "Read(~/.config/gh/**)",
+      "Read(<atelier-config-dir>/gh/**)",
 
       "Edit(~/.zshrc)",
       "Edit(~/.bashrc)",
