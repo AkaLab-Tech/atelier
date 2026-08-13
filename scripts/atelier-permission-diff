@@ -194,6 +194,11 @@ describe_permission() {
     "Bash(git push *:develop)")                  echo "BLOCKED: push to develop (refspec form)" ;;
     "Bash(git push *:staging)")                  echo "BLOCKED: push to staging (refspec form)" ;;
     "Bash(git push origin +*)")                  echo "BLOCKED: hard-force refspec push" ;;
+    "Bash(git push * :*)")                       echo "BLOCKED: remote branch delete (empty-source refspec)" ;;
+    "Bash(git push --all*)")                     echo "BLOCKED: bulk push of every branch" ;;
+    "Bash(git push * --all*)")                   echo "BLOCKED: bulk push of every branch" ;;
+    "Bash(git push --mirror*)")                  echo "BLOCKED: mirror push (updates and deletes every remote ref)" ;;
+    "Bash(git push * --mirror*)")                echo "BLOCKED: mirror push (updates and deletes every remote ref)" ;;
     "Bash(git reset --hard*)")                   echo "BLOCKED: destructive reset" ;;
     "Bash(gh auth logout*)")                     echo "BLOCKED: GitHub logout" ;;
     "Bash(pnpm publish*)")                       echo "BLOCKED: publish to registry" ;;

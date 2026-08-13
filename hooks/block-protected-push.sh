@@ -136,7 +136,23 @@ for seg in "${push_segments[@]}"; do
   # Tokenize. Push args are unquoted in the overwhelming majority of real
   # invocations; this mirrors the tokenisation approach the other hooks in
   # this repo use (word-splitting, not a full shell parser).
-  read -ra tokens <<< "$seg"
+  #
+  # Word-splitting leaves shell quoting *in* the token, so `git push origin
+  # "task/x:main"` would otherwise resolve its destination to `main"` and
+  # sail past `is_protected_name`. Strip `"`, `'` and a leading `\` from
+  # every token before classification. The direction is deliberately
+  # fail-safe: unquoting can only widen what we recognise as a protected
+  # destination or a force flag, never narrow it — the cost is that a
+  # pathological branch literally named `main"` is now blocked too.
+  read -ra raw_tokens <<< "$seg"
+  tokens=()
+  for raw in ${raw_tokens[@]+"${raw_tokens[@]}"}; do
+    raw="${raw//\"/}"
+    raw="${raw//\'/}"
+    raw="${raw#\\}"
+    tokens+=("$raw")
+  done
+  [ "${#tokens[@]}" -eq 0 ] && continue
 
   # Find the `push` token (git subcommand). There may be flags/options
   # between `git` and `push` (e.g. `git -C <path> push`), so search for
@@ -150,19 +166,33 @@ for seg in "${push_segments[@]}"; do
   done
   [ "$push_idx" -lt 0 ] && continue
 
-  args=("${tokens[@]:$((push_idx + 1))}")
+  # A bare `git push` (no args) leaves an empty slice; under `set -u` on
+  # bash 3.2 expanding an empty array aborts the hook with exit 1, which
+  # Claude Code reads as a hook *error* rather than a verdict.
+  args=()
+  if [ "$((push_idx + 1))" -lt "${#tokens[@]}" ]; then
+    args=("${tokens[@]:$((push_idx + 1))}")
+  fi
 
   hard_force=0
   plus_refspec=0
+  bulk_refspec=0
   positionals=()
 
-  for tok in "${args[@]}"; do
+  for tok in ${args[@]+"${args[@]}"}; do
     case "$tok" in
       --force-with-lease*|--force-if-includes*)
         : # sanctioned lease form — never a hard force by itself
         ;;
       --force|--force=*)
         hard_force=1
+        ;;
+      --all|--mirror)
+        # Updates (and for --mirror, deletes) every remote ref without ever
+        # naming one — no positional refspec for the check below to catch.
+        # `--tags` is deliberately NOT here: tag pushes are sanctioned
+        # (PLAN.md §3 release flow) and cannot move a branch ref.
+        bulk_refspec=1
         ;;
       +*)
         plus_refspec=1
@@ -203,6 +233,10 @@ for seg in "${push_segments[@]}"; do
 
   if [ -n "$protected_name" ]; then
     block "push targets protected branch '$protected_name'" "segment resolved destination ref to '$protected_name'" "$seg"
+  fi
+
+  if [ "$bulk_refspec" -eq 1 ]; then
+    block "bulk push (--all/--mirror)" "bulk push updates every remote ref, including protected branches, without naming one (--mirror additionally deletes remote refs absent locally)" "$seg"
   fi
 
   if [ "$hard_force" -eq 1 ] || [ "$plus_refspec" -eq 1 ]; then
