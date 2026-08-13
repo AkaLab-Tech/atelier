@@ -86,6 +86,47 @@
 #         one non-zero match, and it is scripts/atelier-branch-protection).
 #     F2  install.sh symlinks atelier-branch-protection in Phase C.1.
 #
+#   Phases K-N were added after #45 review CYCLE 2, whose two CRITICAL
+#   findings survived cycle 1 precisely because no fixture exercised them:
+#
+#   Phase K — CRITICAL FINDING #1: a failed re-read of the existing rule
+#     under the ADMIN identity (inside apply_protection()) must never be
+#     treated as "no rule exists". K1a: a non-404 error (transient 5xx) on
+#     the admin re-read -> exit 2, zero PUT, JSON status "read-failed", raw
+#     gh error on stderr. K1b: a 404-shaped error whose companion
+#     .protected branch-detail read itself fails -> must ALSO abort, not
+#     fall through to "unprotected". K1c (positive regression, guards
+#     against over-correcting K1a/K1b into "never applies anything"): a
+#     CONFIRMED genuinely-unprotected re-read (404 + .protected==false)
+#     under the admin identity, exercised inside apply_protection() itself
+#     (not just classify_branch_protection() in isolation) -> must still
+#     fall through to MIN_PAYLOAD and PUT successfully.
+#
+#   Phase L — CRITICAL FINDING #2: a non-null, non-empty top-level
+#     `restrictions` on the existing rule must refuse to PUT (like
+#     dismissal_restrictions / bypass_pull_request_allowances already do),
+#     not be silently replaced with `restrictions: null`. Every existing-
+#     rule fixture elsewhere in this suite uses restrictions: null, so
+#     Phase C's C7 assertion ("restrictions = null" in the PUT) pins
+#     nothing about preservation — L1/L2 are what actually pin it. L1: non-
+#     empty restrictions.users/teams -> exit 3, print_unmergeable_block
+#     names restrictions, no PUT. L2 (negative companion): restrictions
+#     present but every array empty -> must NOT trigger refusal.
+#
+#   Phase M — require_last_push_approval carry-through: previously silently
+#     reset to false by the merge payload; now preserved from the existing
+#     rule, the same pattern the Phase H booleans already cover for the
+#     other protection flags.
+#
+#   Phase N — the enforce_admins relaxation note (critical finding sub-
+#     point (a)): text output only (no JSON field). N1: existing rule had
+#     enforce_admins.enabled=true -> note present. N2 (negative companion):
+#     existing rule already had it false -> note absent.
+#
+#   D3 (folded into the existing Phase D) — cheap: print_manual_block's new
+#     WARNING about the PUT being a full replace is part of the block D1
+#     already captures; nothing previously asserted that line's presence.
+#
 # Hermetic: gh is stubbed on PATH throughout; no network calls, no writes
 # outside $TMP, no dependency on the operator's real ~/.config/gh (HOME,
 # XDG_CONFIG_HOME, and ATELIER_CONFIG_DIR are all pinned inside $TMP for
@@ -525,6 +566,17 @@ else
   fail "D1: stdout missing the manual block (got: $out_text)"
 fi
 
+# --- D3 (cheap, #45 cycle-2 review item 5): print_manual_block's new
+#     WARNING about the PUT being a full replace must be part of the block
+#     that D1 already captured. Existing Phase D/J assertions grep other
+#     substrings from this function and pass unmodified; nothing previously
+#     asserted this line. ---
+if printf '%s' "$out_text" | grep -q "WARNING:"; then
+  pass "D3: manual block includes the new WARNING about full-replace PUT semantics"
+else
+  fail "D3: expected 'WARNING:' text in the manual block (got: $out_text)"
+fi
+
 # --- D2: WITH --json — the manual block still prints as plain text on
 #     stdout, per the header comment's "regardless of --json" promise ---
 out_json="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$TMP/phase-d-xdg" ATELIER_CONFIG_DIR="$PHASE_D_ATELIER_CFG" \
@@ -958,6 +1010,583 @@ if printf '%s' "$out_manual" | grep -q "gh api -X PUT" \
   pass "J3: --manual still prints the complete copy-pasteable manual block"
 else
   fail "J3: --manual output missing the complete manual block (got: $out_manual)"
+fi
+
+# =============================================================================
+# Phase K — #45 REVIEW CYCLE-2 CRITICAL FINDING #1: a failed re-read of the
+# existing rule under the ADMIN identity must never be treated as "no rule
+# exists". Before this fix, a transient error on that re-read (5xx, secondary
+# rate limit, or a 404 whose .protected companion read itself failed) fell
+# through to payload="" -> MIN_PAYLOAD -> an unconditional full-replace PUT,
+# silently erasing status checks / code-owner reviews / linear history /
+# force-push and deletion locks / restrictions, then reporting "applied",
+# exit 0. Only a CONFIRMED-unprotected 404 (branch-detail .protected==false)
+# may still fall through to MIN_PAYLOAD.
+# =============================================================================
+
+echo ""
+echo "Phase K: apply_protection() aborts instead of PUTting when the ADMIN identity's re-read of the existing rule fails"
+
+PHASE_K_ATELIER_CFG="$TMP/phase-k-atelier-cfg"
+GH_AUTHOR_DIR_K="$PHASE_K_ATELIER_CFG/gh/author"   # PROBE identity (default_gh_dir()) — always 403s, never admin
+GH_ADMIN_DIR_K="$PHASE_K_ATELIER_CFG/gh/admin"     # ADMIN identity (resolve_admin_gh_dir()) — re-read behavior varies per case
+mkdir -p "$GH_AUTHOR_DIR_K" "$GH_ADMIN_DIR_K"
+printf 'WRITE\n' > "$GH_AUTHOR_DIR_K/perm"
+printf 'ADMIN\n' > "$GH_ADMIN_DIR_K/perm"
+
+# --- K1a: transient 502 on the admin re-read (not 404-shaped at all) ->
+#     apply_protection() must return 3 -> top-level --apply exits 2, zero
+#     PUT, JSON status "read-failed", raw gh error surfaced on stderr. ---
+GH_CALL_LOG_K1="$TMP/gh_call_log_k1"
+rm -f "$GH_CALL_LOG_K1"
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+CALL_LOG="${GH_CALL_LOG_K1}"
+ADMIN_DIR="${GH_ADMIN_DIR_K}"
+printf '%s\n' "\$*" >> "\$CALL_LOG"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    printf 'UNEXPECTED PUT INVOKED\n' >> "\$CALL_LOG"
+    printf '{}\n'
+    ;;
+  *".protected"*)
+    printf 'UNEXPECTED .protected CALL — a non-404 error must never trigger the branch-detail disambiguation\n' >> "\$CALL_LOG"
+    printf 'false\n'
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *"branches/"*"/protection"*)
+    if [ "\${GH_CONFIG_DIR:-}" = "\$ADMIN_DIR" ]; then
+      printf 'HTTP 502: Bad Gateway\n' >&2
+      exit 1
+    else
+      printf 'Must have admin rights to Repository.\n' >&2
+      exit 1
+    fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+K1_STDERR="$TMP/k1.stderr"
+out_k1="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_K_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>"$K1_STDERR")"
+rc_k1=$?
+
+[ "$rc_k1" -eq 2 ] \
+  && pass "K1a: transient 502 on the admin re-read -> --apply exits 2 (not treated as 'no rule exists')" \
+  || fail "K1a: expected exit 2, got $rc_k1 (output: $out_k1)"
+
+status_k1="$(printf '%s' "$out_k1" | jq -r '.status // empty' 2>/dev/null)"
+[ "$status_k1" = "read-failed" ] \
+  && pass "K1a: JSON status = 'read-failed'" \
+  || fail "K1a: expected JSON status 'read-failed', got '$status_k1' (output: $out_k1)"
+
+if grep -q "502" "$K1_STDERR"; then
+  pass "K1a: the underlying gh error (502) is surfaced on stderr"
+else
+  fail "K1a: expected the raw gh error on stderr (got: $(cat "$K1_STDERR"))"
+fi
+
+if [ -f "$GH_CALL_LOG_K1" ] && grep -q -- "-X PUT" "$GH_CALL_LOG_K1"; then
+  fail "K1a: THE CRITICAL REGRESSION — a PUT was made despite a failed (non-404) admin re-read (call log: $(cat "$GH_CALL_LOG_K1"))"
+else
+  pass "K1a: no PUT was ever made — no '-X PUT' invocation appears in the gh call log"
+fi
+
+# --- K1b: a 404-shaped error on the admin re-read whose companion
+#     .protected branch-detail read ITSELF fails -> must ALSO abort, not
+#     fall through to "confirmed unprotected". ---
+GH_CALL_LOG_K2="$TMP/gh_call_log_k2"
+rm -f "$GH_CALL_LOG_K2"
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+CALL_LOG="${GH_CALL_LOG_K2}"
+ADMIN_DIR="${GH_ADMIN_DIR_K}"
+printf '%s\n' "\$*" >> "\$CALL_LOG"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    printf 'UNEXPECTED PUT INVOKED\n' >> "\$CALL_LOG"
+    printf '{}\n'
+    ;;
+  *".protected"*)
+    if [ "\${GH_CONFIG_DIR:-}" = "\$ADMIN_DIR" ]; then
+      printf 'HTTP 503: Service Unavailable\n' >&2
+      exit 1
+    else
+      printf 'UNEXPECTED .protected CALL FROM PROBE\n' >> "\$CALL_LOG"
+      printf 'false\n'
+    fi
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *"branches/"*"/protection"*)
+    if [ "\${GH_CONFIG_DIR:-}" = "\$ADMIN_DIR" ]; then
+      printf 'Branch not protected\n' >&2
+      exit 1
+    else
+      printf 'Must have admin rights to Repository.\n' >&2
+      exit 1
+    fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_k2="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_K_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_k2=$?
+
+[ "$rc_k2" -eq 2 ] \
+  && pass "K1b: 404 admin re-read whose companion .protected read itself fails -> --apply exits 2 (not treated as unprotected)" \
+  || fail "K1b: expected exit 2, got $rc_k2 (output: $out_k2)"
+
+if printf '%s' "$out_k2" | grep -q "refusing to apply without reading it first"; then
+  pass "K1b: text-mode stderr carries the explanatory 'refusing to apply' message"
+else
+  fail "K1b: expected the explanatory message on stderr (got: $out_k2)"
+fi
+
+if [ -f "$GH_CALL_LOG_K2" ] && grep -q -- "-X PUT" "$GH_CALL_LOG_K2"; then
+  fail "K1b: THE CRITICAL REGRESSION — a PUT was made despite the .protected companion read itself failing (call log: $(cat "$GH_CALL_LOG_K2"))"
+else
+  pass "K1b: no PUT was ever made"
+fi
+
+# --- K1c (POSITIVE REGRESSION — guards against over-correcting K1a/K1b into
+#     "never applies anything"): a CONFIRMED genuinely-unprotected re-read
+#     (404 + .protected==false) under the admin identity, exercised INSIDE
+#     apply_protection() itself (not just classify_branch_protection() in
+#     isolation), must still fall through to MIN_PAYLOAD and PUT
+#     successfully. ---
+GH_CALL_LOG_K3="$TMP/gh_call_log_k3"
+PUT_PAYLOAD_CAPTURE_K3="$TMP/put_payload_k3.json"
+rm -f "$GH_CALL_LOG_K3" "$PUT_PAYLOAD_CAPTURE_K3"
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+CALL_LOG="${GH_CALL_LOG_K3}"
+ADMIN_DIR="${GH_ADMIN_DIR_K}"
+PUT_PAYLOAD_CAPTURE="${PUT_PAYLOAD_CAPTURE_K3}"
+printf '%s\n' "\$*" >> "\$CALL_LOG"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    prev=""
+    for a in "\$@"; do
+      if [ "\$prev" = "--input" ]; then
+        cp "\$a" "\$PUT_PAYLOAD_CAPTURE"
+        break
+      fi
+      prev="\$a"
+    done
+    printf '{}\n'
+    ;;
+  *".protected"*)
+    if [ "\${GH_CONFIG_DIR:-}" = "\$ADMIN_DIR" ]; then
+      printf 'false\n'
+    else
+      printf 'UNEXPECTED .protected CALL FROM PROBE\n' >> "\$CALL_LOG"
+      printf 'false\n'
+    fi
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *"branches/"*"/protection"*)
+    if [ "\${GH_CONFIG_DIR:-}" = "\$ADMIN_DIR" ]; then
+      printf 'Branch not protected\n' >&2
+      exit 1
+    else
+      printf 'Must have admin rights to Repository.\n' >&2
+      exit 1
+    fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_k3="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_K_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
+rc_k3=$?
+
+[ "$rc_k3" -eq 0 ] \
+  && pass "K1c: confirmed genuinely-unprotected admin re-read (404 + .protected=false) inside apply_protection() -> --apply still exits 0" \
+  || fail "K1c: expected exit 0, got $rc_k3 (output: $out_k3)"
+
+status_k3="$(printf '%s' "$out_k3" | jq -r '.status // empty' 2>/dev/null)"
+[ "$status_k3" = "applied" ] \
+  && pass "K1c: JSON status = 'applied' (over-correcting K1a/K1b must not disable applying to a genuinely unprotected branch)" \
+  || fail "K1c: expected JSON status 'applied', got '$status_k3' (output: $out_k3)"
+
+if [ ! -f "$PUT_PAYLOAD_CAPTURE_K3" ]; then
+  fail "K1c: PUT payload was never captured — the minimal rule was not applied to the genuinely-unprotected branch"
+else
+  count_k3="$(jq -r '.required_pull_request_reviews.required_approving_review_count' "$PUT_PAYLOAD_CAPTURE_K3")"
+  [ "$count_k3" = "1" ] \
+    && pass "K1c: PUT payload requires >=1 approving review (MIN_PAYLOAD applied)" \
+    || fail "K1c: required_approving_review_count: expected '1', got '$count_k3'"
+fi
+
+# =============================================================================
+# Phase L — #45 REVIEW CYCLE-2 CRITICAL FINDING #2: a non-null, non-empty
+# top-level `restrictions` on the existing rule must refuse (like
+# dismissal_restrictions / bypass_pull_request_allowances already do), not
+# be silently PUT as `restrictions: null`. Every existing-rule fixture
+# elsewhere in this suite uses restrictions: null, so C7 ("restrictions =
+# null" in the PUT) pins nothing about preservation — these two cases do.
+# =============================================================================
+
+echo ""
+echo "Phase L: apply_protection() refuses to PUT when top-level restrictions is non-null and non-empty, but proceeds when it is present-but-empty"
+
+PHASE_L_ATELIER_CFG="$TMP/phase-l-atelier-cfg"
+mkdir -p "$PHASE_L_ATELIER_CFG/gh/admin" "$PHASE_L_ATELIER_CFG/gh/author"
+printf 'WRITE\n' > "$PHASE_L_ATELIER_CFG/gh/admin/perm"
+printf 'ADMIN\n' > "$PHASE_L_ATELIER_CFG/gh/author/perm"
+
+# --- L1: restrictions.users/teams non-empty -> exits 3, print_unmergeable_
+#     block names restrictions, no PUT. Reuses run_unmergeable_case() from
+#     Phase I (generic: existing-rule JSON in, call-log path out). ---
+EXISTING_RESTRICTIONS_JSON="$TMP/existing_restrictions.json"
+cat > "$EXISTING_RESTRICTIONS_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": {"users": [{"login": "alice"}], "teams": [{"slug": "releasers"}], "apps": []}
+}
+EOF
+
+call_log_l1="$(run_unmergeable_case "$EXISTING_RESTRICTIONS_JSON" "l1")"
+
+out_l1="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_L_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_l1=$?
+
+[ "$rc_l1" -eq 3 ] \
+  && pass "L1: --apply exits 3 when the existing rule sets a non-empty top-level restrictions" \
+  || fail "L1: expected exit 3, got $rc_l1 (output: $out_l1)"
+
+if printf '%s' "$out_l1" | grep -q "restrictions"; then
+  pass "L1: print_unmergeable_block's text on stdout names restrictions"
+else
+  fail "L1: expected 'restrictions' on stdout (got: $out_l1)"
+fi
+
+if [ -f "$call_log_l1" ] && grep -q -- "-X PUT" "$call_log_l1"; then
+  fail "L1: THE CRITICAL REGRESSION — a PUT was made despite a non-empty top-level restrictions on the existing rule (call log: $(cat "$call_log_l1"))"
+else
+  pass "L1: no PUT was made"
+fi
+
+# --- L2 (negative companion): restrictions present but ALL arrays empty ->
+#     must NOT trigger refusal; apply proceeds normally and PUTs. ---
+EXISTING_EMPTY_RESTRICTIONS_JSON="$TMP/existing_empty_restrictions.json"
+cat > "$EXISTING_EMPTY_RESTRICTIONS_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": {"users": [], "teams": [], "apps": []}
+}
+EOF
+
+PUT_PAYLOAD_CAPTURE_L2="$TMP/put_payload_l2.json"
+rm -f "$PUT_PAYLOAD_CAPTURE_L2"
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_EMPTY_RESTRICTIONS_JSON}"
+PUT_PAYLOAD_CAPTURE="${PUT_PAYLOAD_CAPTURE_L2}"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    prev=""
+    for a in "\$@"; do
+      if [ "\$prev" = "--input" ]; then
+        cp "\$a" "\$PUT_PAYLOAD_CAPTURE"
+        break
+      fi
+      prev="\$a"
+    done
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_l2="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_L_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
+rc_l2=$?
+
+[ "$rc_l2" -eq 0 ] \
+  && pass "L2: present-but-empty top-level restrictions does NOT trigger refusal — --apply exits 0" \
+  || fail "L2: expected exit 0, got $rc_l2 (output: $out_l2)"
+
+status_l2="$(printf '%s' "$out_l2" | jq -r '.status // empty' 2>/dev/null)"
+[ "$status_l2" = "applied" ] \
+  && pass "L2: JSON status = 'applied' (an empty restrictions object is not 'unmodeled')" \
+  || fail "L2: expected JSON status 'applied', got '$status_l2' (output: $out_l2)"
+
+if [ ! -f "$PUT_PAYLOAD_CAPTURE_L2" ]; then
+  fail "L2: PUT payload was never captured — apply_protection() incorrectly refused on an empty restrictions object"
+else
+  pass "L2: PUT was made despite restrictions being present (empty arrays are not unmodeled)"
+fi
+
+# =============================================================================
+# Phase M — require_last_push_approval carry-through (#45 review cycle-2:
+# previously silently reset to false by the merge payload, like the Phase H
+# booleans were before the earlier fix).
+# =============================================================================
+
+echo ""
+echo "Phase M: apply_protection() carries through require_last_push_approval from the existing rule"
+
+PHASE_M_ATELIER_CFG="$TMP/phase-m-atelier-cfg"
+mkdir -p "$PHASE_M_ATELIER_CFG/gh/admin" "$PHASE_M_ATELIER_CFG/gh/author"
+printf 'WRITE\n' > "$PHASE_M_ATELIER_CFG/gh/admin/perm"
+printf 'ADMIN\n' > "$PHASE_M_ATELIER_CFG/gh/author/perm"
+
+EXISTING_LASTPUSH_JSON="$TMP/existing_lastpush.json"
+cat > "$EXISTING_LASTPUSH_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "require_last_push_approval": true,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null
+}
+EOF
+
+PUT_PAYLOAD_CAPTURE_M="$TMP/put_payload_m.json"
+rm -f "$PUT_PAYLOAD_CAPTURE_M"
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_LASTPUSH_JSON}"
+PUT_PAYLOAD_CAPTURE="${PUT_PAYLOAD_CAPTURE_M}"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    prev=""
+    for a in "\$@"; do
+      if [ "\$prev" = "--input" ]; then
+        cp "\$a" "\$PUT_PAYLOAD_CAPTURE"
+        break
+      fi
+      prev="\$a"
+    done
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_m="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_M_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
+rc_m=$?
+
+[ "$rc_m" -eq 0 ] \
+  && pass "M0: --apply exits 0 on a protected-insufficient branch with require_last_push_approval set" \
+  || fail "M0: --apply exited $rc_m, expected 0 (output: $out_m)"
+
+if [ ! -f "$PUT_PAYLOAD_CAPTURE_M" ]; then
+  fail "M: PUT payload was never captured — gh -X PUT was not called"
+else
+  rlpa="$(jq -r '.required_pull_request_reviews.require_last_push_approval' "$PUT_PAYLOAD_CAPTURE_M")"
+  [ "$rlpa" = "true" ] \
+    && pass "M1: require_last_push_approval preserved (true) — previously silently reset to false" \
+    || fail "M1: require_last_push_approval: expected 'true', got '$rlpa'"
+fi
+
+# =============================================================================
+# Phase N — enforce_admins relaxation note (#45 review cycle-2 critical
+# finding sub-point (a)): text output only, no JSON field. Present when the
+# existing rule had enforce_admins.enabled=true, absent otherwise.
+# =============================================================================
+
+echo ""
+echo "Phase N: text-mode success output notes when enforce_admins was true on the existing rule and is kept false"
+
+PHASE_N_ATELIER_CFG="$TMP/phase-n-atelier-cfg"
+mkdir -p "$PHASE_N_ATELIER_CFG/gh/admin" "$PHASE_N_ATELIER_CFG/gh/author"
+printf 'WRITE\n' > "$PHASE_N_ATELIER_CFG/gh/admin/perm"
+printf 'ADMIN\n' > "$PHASE_N_ATELIER_CFG/gh/author/perm"
+
+# --- N1: existing enforce_admins.enabled=true -> note present ---
+EXISTING_ENFORCE_TRUE_JSON="$TMP/existing_enforce_true.json"
+cat > "$EXISTING_ENFORCE_TRUE_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": true},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null
+}
+EOF
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_ENFORCE_TRUE_JSON}"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_n1="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_N_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_n1=$?
+
+[ "$rc_n1" -eq 0 ] \
+  && pass "N0: --apply exits 0 when the existing rule has enforce_admins.enabled=true" \
+  || fail "N0: --apply exited $rc_n1, expected 0 (output: $out_n1)"
+
+if printf '%s' "$out_n1" | grep -q "note: enforce_admins was true on the existing rule and is kept false"; then
+  pass "N1: text output contains the enforce_admins relaxation note when the existing rule had it true"
+else
+  fail "N1: expected the relaxation note in text output (got: $out_n1)"
+fi
+
+# --- N2 (negative companion): existing enforce_admins.enabled=false -> note
+#     ABSENT. ---
+EXISTING_ENFORCE_FALSE_JSON="$TMP/existing_enforce_false.json"
+cat > "$EXISTING_ENFORCE_FALSE_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null
+}
+EOF
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_ENFORCE_FALSE_JSON}"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_n2="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_N_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_n2=$?
+
+[ "$rc_n2" -eq 0 ] \
+  && pass "N0b: --apply exits 0 when the existing rule has enforce_admins.enabled=false" \
+  || fail "N0b: --apply exited $rc_n2, expected 0 (output: $out_n2)"
+
+if printf '%s' "$out_n2" | grep -q "note: enforce_admins was true"; then
+  fail "N2: relaxation note unexpectedly present when the existing rule already had enforce_admins=false (got: $out_n2)"
+else
+  pass "N2: relaxation note absent when the existing rule already had enforce_admins=false"
 fi
 
 # =============================================================================
