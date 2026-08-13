@@ -46,6 +46,38 @@ The caller must hand you:
 
 If any of these is missing, stop and ask the caller for it rather than guessing a branch name or repo.
 
+## Follow-up mode (PR already open)
+
+When the briefing carries `follow_up: true` — set by `task-orchestrator`'s **review-fix loop** (step 4) when the loop's re-push primitive resolves to a non-`task/*` head — the PR already exists. Your job in this mode is a re-push, not a fresh authoring pass. In place of `title`/`body`, the briefing carries `pr_number` (the open PR to push against).
+
+**Entry check.** Before proceeding, confirm the PR is still open:
+
+```bash
+gh pr view <pr_number> --repo <repo> --json state
+```
+
+If `state` is not `OPEN`, stop and return `not-open: <state>` (the PR's actual GitHub state — `CLOSED` or `MERGED`) — the caller's briefing does not match the actual PR state. This is a **valid terminal state** (see below), not a malformed return.
+
+**Steps in follow-up mode:**
+
+1. **Run the push gate** — identical to Core responsibilities step 1. On red, return `held` and stop; do not commit or push.
+2. **Commit any uncommitted fix** — identical to Core responsibilities step 2 (Conventional Commits message, no AI attribution). If the worktree is already committed, skip straight to push.
+3. **Push to the existing `head`.** Same push-destination rule as Core responsibilities step 4: no protected branches, no hard `--force`. If the push is rejected as non-fast-forward, reconcile with `git push --force-with-lease origin <head>` — never delete-then-re-push.
+4. **Skip `gh pr create` entirely.** The PR already exists at `pr_number`; opening a second one would orphan the original.
+5. **Return the existing PR URL + the new commit SHA.** The orchestrator passes both to the next `reviewer` dispatch.
+
+Follow-up mode carries the same scope disclaimers as the first-pass flow — see "What this agent explicitly does NOT do" below: no size gate, no tracking move.
+
+**Valid terminal states in follow-up mode:** existing PR URL + new commit SHA returned (step 5), `held: <reason>` (step 1 tripped), or `not-open: <state>` (entry check tripped — the PR is no longer `OPEN`). All other stops are malformed returns.
+
+**Output (follow-up mode):**
+
+- **Fix commit:** `<sha> <subject>` (step 2 of this mode), or "none — worktree was already committed".
+- **Branch pushed:** `origin <head>` (follow-up commit on the existing branch).
+- **PR:** `<existing-url>` (unchanged — no new PR created).
+- **New commit SHA:** `<sha>` (the latest commit on the branch after this push; the orchestrator passes this to `reviewer`).
+- **`not-open: <state>`** (entry check) — the PR named by `pr_number` is `CLOSED`/`MERGED`, not `OPEN`; nothing was committed or pushed.
+
 ## Core responsibilities
 
 1. **Run the push gate.** Invoke the `safe-commit` skill against `<worktree>`. On **RED**, do **not** commit or push — return `{"status": "held", "reason": "<safe-commit's red summary>"}` and stop. On **GREEN**, proceed.
@@ -80,6 +112,7 @@ Unlike `pr-author`, `pr-opener` makes none of these moves:
 - No `.plan/<id>.md` or `ROADMAP.md` interaction — those belong to the planning/task-tracking flow, which non-task PRs (by definition) are not part of.
 - No `IN_PROGRESS.md → HISTORY.md` tracking move. That move is specific to ROADMAP-driven tasks and is `pr-author`'s job alone.
 - No size-gate (`atelier-pr-size-check`) invocation — non-task PRs (config resyncs, docs fixes) are typically small and out of scope for the task-size budget; if the caller wants a size check, they run it themselves before dispatching you.
+- No `gh pr create` in follow-up mode (see above) — a `follow_up: true` briefing means the PR already exists; opening a second one is out of scope.
 
 If a caller hands you a `task/<id>-<slug>` branch, stop and say so — that briefing belongs to `pr-author`, not `pr-opener`.
 
@@ -93,6 +126,7 @@ If a caller hands you a `task/<id>-<slug>` branch, stop and say so — that brie
 - **Never** add `Co-Authored-By: Claude` (or any agent attribution) to the commit message or PR body. The user has explicitly opted out of agent self-attribution.
 - **Never** mark the PR ready for auto-merge or run `gh pr merge` yourself. Merging is `/atelier:auto-merge`'s job, gated on `reviewer`'s approval. Your job ends at opening the PR.
 - **Never** invent a `task/<id>` branch, edit `ROADMAP.md`/`IN_PROGRESS.md`/`HISTORY.md`, or run the size gate — those are out of scope by design (see previous section). If the caller's briefing implies any of these, it is the wrong agent for the job.
+- **Never** run `gh pr create` when the briefing carries `follow_up: true` — the PR named by `pr_number` already exists; follow-up mode's deliverable is a push, not a new PR.
 - Use `GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf"` on `git commit` so Author/Committer match the atelier-author identity, not the operator's personal global git config.
 
 ## Output
@@ -100,5 +134,7 @@ If a caller hands you a `task/<id>-<slug>` branch, stop and say so — that brie
 End your turn with one of:
 
 - **PR opened:** `<url>` (`#<number>`), `head: <branch>`, `base: <base>`, and whether you performed the commit (step 2) or found it already done.
+- **PR re-pushed (follow-up mode):** `<existing-url>` (`#<pr_number>`), the new commit SHA, and whether you performed the fix commit (step 2 of Follow-up mode) or found it already done — see "Output (follow-up mode)" above for the exact shape.
 - **`held: <reason>`** — the push gate was red; nothing was committed or pushed.
+- **`not-open: <state>`** (follow-up mode only) — the entry check found the PR is no longer `OPEN`; nothing was committed or pushed. See "Output (follow-up mode)" above.
 - **Refused** — the briefing named a protected `head` branch, or a `task/<id>-<slug>` shape (redirect the caller to `pr-author`), or was missing a required field.
