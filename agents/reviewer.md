@@ -191,7 +191,7 @@ Run the review entirely **before** posting anything. Read `<project>/.atelier.js
 GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --approve --body-file <markdown-file>
 ```
 
-If this call is denied by the auto-mode classifier's `[Self-Approval]` veto (the reviewer sub-agent approving a PR authored by the agent-controlled `pr-author`), **do not reword, re-quote, or otherwise route around the denial to force an approve through** — degrade to an advisory comment carrying the exact same body you would have approved with:
+If this call is denied by the auto-mode classifier's `[Self-Approval]` veto — the classifier keys on the **actor/session** that coordinated both authoring and review of this PR, not on whether both parties are agent-controlled (see `operator-rules.md` § "PR authoring is always sub-agent work") — **do not reword, re-quote, or otherwise route around the denial to force an approve through**. Instead, degrade to an advisory comment carrying the exact same body you would have approved with:
 
 ```bash
 GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --comment --body-file <markdown-file>

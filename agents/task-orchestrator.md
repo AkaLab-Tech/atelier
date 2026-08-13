@@ -126,7 +126,28 @@ authoring primitive (`pr-opener` or `pr-author`, whichever branch shape
 selected) returning `held` or refusing, and `auto-merge` returning `held` or
 `merged`, all surface the same way task terminal states do (see Output
 below). The review-fix loop and the `retry-with-logs` budget (PLAN.md §8)
-apply exactly as they do on the task path.
+apply exactly as they do on the task path — the 6-attempt ceiling and the
+3-attempts-then-reset shape are unchanged; only three of the loop's
+**handlers** differ in this mode, enumerated next.
+
+**Failure and terminal paths in this mode.** Three of the chain's handlers
+are task-shaped and do not carry over unmodified — the budget is shared, the
+routing is not:
+
+- **Re-push primitive (review-fix Step 4).** Selected by the same
+  branch-shape rule as first-pass authoring — see Step 4 below.
+- **Hard-stop (step 7).** Never dispatches `unblocker` and never writes a
+  `[BLOCKED]` marker — see step 7 below.
+- **Size/oversize findings (review-fix Step 1).** Never route to step 8's
+  oversized branch — there is no size gate and no tracking file to mark in
+  this mode; see Step 1 below.
+
+Each surfaces via the non-task report variant in Output below rather than
+the task-shaped `Status:` vocabulary. Additionally, a review-fix
+`implementer` dispatch in this mode carries **no** `.plan/<id>.md` — the
+reviewer's findings plus the PR diff are the whole spec, since a non-task
+branch never had a plan to begin with. (This is the first thing to defer if
+the size budget tightens.)
 
 This is the mechanism by which a driving session delegates the entire
 author→review→merge coordination one level down to `task-orchestrator`
@@ -234,6 +255,8 @@ instead of coordinating authoring and review itself — see `operator-rules.md`
    - Scope-alignment finding → invoke the `decision-broker` with `scope-creep-detected`.
    - Dependency-justification or pending human comments → surface to the operator directly.
 
+   **In `mode: non-task-pr`, a size/oversize finding does NOT route to step 8's oversized branch** — this mode owns no size gate and has no tracking files to mark `[OVERSIZE]` on. Instead surface it as `held: reviewer flagged size` (the non-task report variant in Output below) and yield, exactly as any other structural finding is surfaced to the operator directly.
+
    If there are **both** code-addressable and structural findings, proceed with the loop for the code-addressable ones and note the structural findings in the operator report on exhaustion (or in the chain log if the loop converges).
 
    **Step 2 — Check the cycle bound.** Read `reviewFix.maxCycles` from `.atelier.json` (default `2`). If the current review-fix cycle count equals `maxCycles`, the bound is exhausted — jump to **Exhaustion** below without re-dispatching.
@@ -245,11 +268,16 @@ instead of coordinating authoring and review itself — see `operator-rules.md`
 
    When findings implicate coverage, also dispatch `tester` (same as the first pass). Each fix attempt that fails `/validate` (inner loop) flows through `retry-with-logs` as it does today — the §8 6-attempt ceiling is shared across the inner loop and review-fix cycles alike; whichever cap is hit first ends the loop.
 
-   **Step 4 — Re-push via `pr-author` (follow-up mode).** After the inner loop exits clean and `tester` (and `e2e-runner`, when applicable) completes, dispatch `pr-author` in **follow-up mode** by including `follow_up: true` in the briefing. In this mode `pr-author` will:
-   - Skip the `IN_PROGRESS → HISTORY` tracking move (already committed on the first pass — re-doing it would be a malformed double move).
-   - Skip `gh pr create` (the PR already exists).
-   - Push the fix commit(s) to the existing `task/<id>-<slug>` branch.
-   - Return the existing PR URL + the new commit SHA — **or** `oversized`, when the fix grew the cumulative diff past budget (it pushes first, then returns). On that return do **not** proceed to Step 5: exit the loop into step 8's **follow-up `oversized`** path.
+   **Step 4 — Re-push via the follow-up-mode authoring primitive.** The re-push primitive is selected by the **same branch-shape rule** the first-pass authoring dispatch already uses (see "Non-task PR coordination mode" above): a `task/*` head re-pushes through `pr-author` with `follow_up: true`; any other pushable head (`chore/*`, `docs/*`, `fix/*`, plan-tracking) re-pushes through `pr-opener` with `follow_up: true` + `pr_number`. One rule governs both first-pass authoring and the re-push — no path reaches a `pr-author` re-push on a non-`task/*` head.
+
+   After the inner loop exits clean and `tester` (and `e2e-runner`, when applicable) completes, dispatch the selected primitive:
+
+   - `pr-author` (`task/*` head) — in **follow-up mode**:
+     - Skip the `IN_PROGRESS → HISTORY` tracking move (already committed on the first pass — re-doing it would be a malformed double move).
+     - Skip `gh pr create` (the PR already exists).
+     - Push the fix commit(s) to the existing `task/<id>-<slug>` branch.
+     - Return the existing PR URL + the new commit SHA — **or** `oversized`, when the fix grew the cumulative diff past budget (it pushes first, then returns). On that return do **not** proceed to Step 5: exit the loop into step 8's **follow-up `oversized`** path.
+   - `pr-opener` (any other head, `mode: non-task-pr` only) — in its own **follow-up mode** (`agents/pr-opener.md`): re-verifies the push gate, commits any uncommitted fix, pushes to the existing `head` (`--force-with-lease` only), skips `gh pr create`, and returns the existing PR URL + the new commit SHA — or `held: <reason>` on a red gate. This primitive owns no size gate, so it never returns `oversized`; a size finding on this path was already routed away in Step 1 above and never reaches Step 4.
 
    **Step 5 — Re-dispatch `reviewer` (fresh context).** Dispatch `reviewer` against the same PR. Do **not** pass prior findings — the fresh-context invariant requires the reviewer to evaluate the updated diff on its own merits. It naturally sees the fix commits in the diff.
 
@@ -268,6 +296,9 @@ instead of coordinating authoring and review itself — see `operator-rules.md`
    - `continue` → re-invoke the failing specialist with all `.task-log/*.md` files injected as context.
    - `reset` → preserve `.task-log/` outside the worktree, run the `git-wt` cycle (`rm` + re-`switch`), restore the logs, then re-invoke the failing specialist. Attempt 04 begins on the fresh worktree.
    - `hard-stop` → invoke the **`unblocker` agent** with `<worktree-path>`, `<task-id>`, `<task-title>`, and `<branch>`. The unblocker creates the GitHub `blocked` issue with all 6 logs attached, marks the entry in `IN_PROGRESS.md` with `[BLOCKED] see #<NN>`, and returns an issue URL. **Never** extend the 6-attempt budget silently — `retry-with-logs` refuses, and so does the orchestrator. **Never** `git wt rm` the worktree after a hard-stop — the worktree is evidence for the operator's investigation.
+
+     **In `mode: non-task-pr`, `hard-stop` never dispatches `unblocker` and never writes a `[BLOCKED]` / `[OVERSIZE]` marker** — there is no `task-id`, no `IN_PROGRESS.md` entry, and no GitHub `blocked`-issue bookkeeping to attach to a non-task branch. Instead surface `held: hard-stop after 6 attempts` with every `.task-log/*.md` path, leave the PR (if one is open) and the worktree untouched, and yield. The 6-attempt budget itself is unchanged — only the terminal handler differs.
+
 8. **Close the loop.**
    - When `auto-merge` reports `merged`: report the merge commit SHA, the worktree cleanup status, the roadmap closure status, the base fast-forward status (`Base:` line from the skill's structured output), and the orphan sweep result (`Swept:` line) to the operator. The task is done. **Do not** ask the operator to confirm the merge — by the time `auto-merge` returns `merged`, the merge has already executed. Re-prompting after the gate's positive verdict is a contract violation — see `skills/auto-merge/SKILL.md` § Authorization model.
    - When `auto-merge` reports `held`: report the failed guardrails so the operator knows what to address. The PR stays open; the worktree stays. Do not retry — the operator decides when to re-invoke.
@@ -352,6 +383,15 @@ When you finish a task chain, report exactly:
 - Worktree: `<absolute-path>` (`cleaned` if `auto-merge` removed it, `retained` otherwise).
 - PR: `<url>`.
 - Status: `merged (<sha>)` | `held — <guardrails that failed>` | `held: reviewer approval blocked by auto-mode classifier — human merge required` | `request-changes (N findings)` | `review-fix exhausted — <N> cycles, <total findings> findings accumulated; see .task-log/*.md` | `oversized — <lines>/<files>, branch task/<id>-<slug> pushed without PR; [OVERSIZE] marker landed via <docs-pr-url>` (first-pass) | `oversized (follow-up) — <lines>/<files>, PR <url> open with the fix pushed; no marker landed, tracking already moved` | `blocked — see <issue-url>` on hard stop.
+- Summary: 1–2 sentences on what changed.
+
+**Non-task report variant (`mode: non-task-pr`).** No `ROADMAP.md`/`IN_PROGRESS.md` entry exists for a non-task branch, so the `Task:` line is omitted, and the `Status:` vocabulary is reduced to what this mode can actually produce — no `oversized`, no `blocked — see <issue-url>`:
+
+- Repo: `<owner/name>`.
+- Head: `<branch>`.
+- Worktree: `<absolute-path>` (`cleaned` if `auto-merge` removed it, `retained` otherwise).
+- PR: `<url>`.
+- Status: `merged (<sha>)` | `held — <guardrails that failed>` | `held: reviewer approval blocked by auto-mode classifier — human merge required` | `request-changes (N findings)` | `review-fix exhausted — <N> cycles, <total findings> findings accumulated; see .task-log/*.md` | `held: reviewer flagged size` | `held: hard-stop after 6 attempts — see .task-log/*.md`.
 - Summary: 1–2 sentences on what changed.
 
 When a chain ends in `blocked` and the orchestrator advanced to the next task in the same invocation, output one block per task in the order they ran, separated by a `---` line.

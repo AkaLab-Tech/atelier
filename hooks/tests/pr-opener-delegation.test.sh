@@ -48,6 +48,26 @@
 #     - pr-opener never sees a task/* branch in this mode
 #     - regression guard: the OLD absolute "never dispatch pr-author in
 #       non-task PR coordination mode" sentence stays gone
+#   Group 6 — non-task PR failure paths (#44a): follow-up mode, review-fix
+#             re-push selection, hard-stop, and size/oversize handling
+#     - agents/pr-opener.md declares a `## Follow-up mode (PR already open)`
+#       section keyed on `follow_up: true` + `pr_number`
+#     - follow-up mode skips `gh pr create` entirely, and the Decision rules
+#       forbid it explicitly
+#     - follow-up mode's only force variant is `--force-with-lease`; no hard
+#       `--force` command is offered anywhere in the file
+#     - task-orchestrator's review-fix Step 4 selects the re-push primitive
+#       by branch shape: task/* -> pr-author follow-up; any other pushable
+#       head -> pr-opener follow-up + pr_number
+#     - the non-task hard-stop never dispatches `unblocker` and never writes
+#       a [BLOCKED]/[OVERSIZE] marker; it surfaces `held: hard-stop after 6
+#       attempts` instead
+#     - a non-task size/oversize finding does not route to step 8's oversized
+#       branch; it surfaces as `held: reviewer flagged size`
+#     - the non-task Output report variant's Status: vocabulary excludes
+#       `oversized` and `blocked — see <issue-url>`
+#     - the 6-attempt retry-with-logs budget is stated as unchanged in this
+#       mode — only the terminal handlers differ
 #
 # Hermetic: greps committed prose only; no network, no jq required beyond
 # what's already on PATH for other suite tests, no temp dirs.
@@ -306,6 +326,78 @@ chk_prose "$TASK_ORCH" \
 chk_absent "$TASK_ORCH" \
   '**Never** dispatch `pr-author` in non-task PR coordination mode. The authoring primitive for a non-task branch is always `pr-opener`.' \
   "task-orchestrator: OLD absolute 'never dispatch pr-author in non-task mode' sentence stays gone (regression guard)"
+
+# ---------------------------------------------------------------------------
+# Group 6 — non-task PR failure paths (#44a): follow-up mode, review-fix
+# re-push selection, hard-stop, and size/oversize handling
+# ---------------------------------------------------------------------------
+
+chk_prose "$PR_OPENER" '## Follow-up mode (PR already open)' \
+  "pr-opener: declares a follow-up mode section header"
+
+chk_prose "$PR_OPENER" \
+  'carries `follow_up: true` — set by `task-orchestrator`' \
+  "pr-opener: follow-up mode is keyed on follow_up: true, set by task-orchestrator"
+
+chk_prose "$PR_OPENER" \
+  'In place of `title`/`body`, the briefing carries `pr_number`' \
+  "pr-opener: follow-up mode briefing carries pr_number in place of title/body"
+
+chk_prose "$PR_OPENER" 'Skip `gh pr create` entirely.' \
+  "pr-opener: follow-up mode step skips gh pr create entirely"
+
+chk_prose "$PR_OPENER" \
+  '**Never** run `gh pr create` when the briefing carries `follow_up: true`' \
+  "pr-opener: Decision rules forbid gh pr create when follow_up: true"
+
+chk_prose "$PR_OPENER" \
+  'reconcile with `git push --force-with-lease origin <head>` — never delete-then-re-push.' \
+  "pr-opener: follow-up mode reconciles a non-fast-forward push with --force-with-lease"
+
+chk_absent "$PR_OPENER" 'push --force origin' \
+  "pr-opener: no hard --force command is offered anywhere (force-with-lease is the only force variant)"
+
+chk_prose "$TASK_ORCH" \
+  'any other pushable head (`chore/*`, `docs/*`, `fix/*`, plan-tracking) re-pushes through `pr-opener` with `follow_up: true` + `pr_number`.' \
+  "task-orchestrator: review-fix Step 4 selects the re-push primitive by branch shape (non-task/* -> pr-opener follow-up + pr_number)"
+
+chk_prose "$TASK_ORCH" \
+  '`hard-stop` never dispatches `unblocker` and never writes a `[BLOCKED]` / `[OVERSIZE]` marker' \
+  "task-orchestrator: non-task hard-stop never dispatches unblocker or writes a BLOCKED/OVERSIZE marker"
+
+chk_prose "$TASK_ORCH" \
+  'Instead surface `held: hard-stop after 6 attempts` with every `.task-log/*.md` path' \
+  "task-orchestrator: non-task hard-stop surfaces held: hard-stop after 6 attempts"
+
+chk_prose "$TASK_ORCH" \
+  "a size/oversize finding does NOT route to step 8's oversized branch** — this mode owns no size gate and has no tracking files to mark \`[OVERSIZE]\` on. Instead surface it as \`held: reviewer flagged size\`" \
+  "task-orchestrator: non-task size/oversize finding does not route to the oversized branch, surfaces as held: reviewer flagged size"
+
+chk_prose "$TASK_ORCH" \
+  'apply exactly as they do on the task path — the 6-attempt ceiling and the' \
+  "task-orchestrator: 6-attempt retry-with-logs budget is stated as unchanged in non-task-pr mode"
+
+chk_prose "$TASK_ORCH" \
+  "3-attempts-then-reset shape are unchanged; only three of the loop's" \
+  "task-orchestrator: 3-attempts-then-reset shape is unchanged; only the handlers differ"
+
+# Scoped check: the non-task Output report variant's *Status:* line specifically
+# (not the task-shaped variant earlier in the file, which legitimately carries
+# `oversized` and `blocked — see <issue-url>`) must exclude both tokens.
+non_task_report_status_line() {
+  awk '
+    /^\*\*Non-task report variant/ { capture=1 }
+    capture && /^- Status:/ { print; exit }
+  ' "$TASK_ORCH"
+}
+
+NON_TASK_STATUS_LINE="$(non_task_report_status_line)"
+if printf '%s' "$NON_TASK_STATUS_LINE" | grep -qF 'oversized' \
+  || printf '%s' "$NON_TASK_STATUS_LINE" | grep -qF 'blocked — see'; then
+  fail "task-orchestrator: non-task report variant's Status: line must exclude oversized and blocked — see <issue-url>"
+else
+  pass "task-orchestrator: non-task report variant's Status: line excludes oversized and blocked — see <issue-url>"
+fi
 
 # ---------------------------------------------------------------------------
 # Result
