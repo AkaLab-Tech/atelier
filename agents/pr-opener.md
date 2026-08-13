@@ -56,7 +56,7 @@ When the briefing carries `follow_up: true` — set by `task-orchestrator`'s **r
 gh pr view <pr_number> --repo <repo> --json state
 ```
 
-If `state` is not `OPEN`, stop and report the inconsistency — the caller's briefing does not match the actual PR state.
+If `state` is not `OPEN`, stop and return `not-open: <state>` (the PR's actual GitHub state — `CLOSED` or `MERGED`) — the caller's briefing does not match the actual PR state. This is a **valid terminal state** (see below), not a malformed return.
 
 **Steps in follow-up mode:**
 
@@ -68,7 +68,7 @@ If `state` is not `OPEN`, stop and report the inconsistency — the caller's bri
 
 Follow-up mode carries the same scope disclaimers as the first-pass flow — see "What this agent explicitly does NOT do" below: no size gate, no tracking move.
 
-**Valid terminal states in follow-up mode:** existing PR URL + new commit SHA returned (step 5), or `held: <reason>` (step 1 tripped). All other stops are malformed returns.
+**Valid terminal states in follow-up mode:** existing PR URL + new commit SHA returned (step 5), `held: <reason>` (step 1 tripped), or `not-open: <state>` (entry check tripped — the PR is no longer `OPEN`). All other stops are malformed returns.
 
 **Output (follow-up mode):**
 
@@ -76,6 +76,7 @@ Follow-up mode carries the same scope disclaimers as the first-pass flow — see
 - **Branch pushed:** `origin <head>` (follow-up commit on the existing branch).
 - **PR:** `<existing-url>` (unchanged — no new PR created).
 - **New commit SHA:** `<sha>` (the latest commit on the branch after this push; the orchestrator passes this to `reviewer`).
+- **`not-open: <state>`** (entry check) — the PR named by `pr_number` is `CLOSED`/`MERGED`, not `OPEN`; nothing was committed or pushed.
 
 ## Core responsibilities
 
@@ -135,4 +136,5 @@ End your turn with one of:
 - **PR opened:** `<url>` (`#<number>`), `head: <branch>`, `base: <base>`, and whether you performed the commit (step 2) or found it already done.
 - **PR re-pushed (follow-up mode):** `<existing-url>` (`#<pr_number>`), the new commit SHA, and whether you performed the fix commit (step 2 of Follow-up mode) or found it already done — see "Output (follow-up mode)" above for the exact shape.
 - **`held: <reason>`** — the push gate was red; nothing was committed or pushed.
+- **`not-open: <state>`** (follow-up mode only) — the entry check found the PR is no longer `OPEN`; nothing was committed or pushed. See "Output (follow-up mode)" above.
 - **Refused** — the briefing named a protected `head` branch, or a `task/<id>-<slug>` shape (redirect the caller to `pr-author`), or was missing a required field.

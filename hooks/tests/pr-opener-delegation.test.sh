@@ -68,6 +68,28 @@
 #       `oversized` and `blocked — see <issue-url>`
 #     - the 6-attempt retry-with-logs budget is stated as unchanged in this
 #       mode — only the terminal handlers differ
+#     -- review-fix-cycle additions (three reviewer findings on PR #367) --
+#     - task-orchestrator's Decision rules: the re-push primitive is selected
+#       by branch shape, not hardcoded (stale "always goes through pr-author"
+#       phrasing is gone)
+#     - pr-opener's follow-up entry check returns a named `not-open: <state>`
+#       terminal (not a bare "stop and report"), enumerated among the valid
+#       follow-up terminal states, and present in both the follow-up-mode and
+#       the agent's top-level Output blocks
+#     - task-orchestrator's Step 4 pr-opener bullet treats `not-open: <state>`
+#       as terminal exactly like `held`, and explicitly does NOT spend a
+#       retry-with-logs attempt on it; the final report Status: vocabulary
+#       carries `held: PR <state> out from under the fix`
+#     - the mode-section size/oversize bullet is scoped to "no size gate of
+#       its own" (a task/* head's own pr-author gate still applies); Step 8
+#       gained a mode-scoped paragraph excluding a task/* head's `oversized`
+#       return from the task-shaped discrimination, surfacing
+#       `held: task/* size gate tripped — <lines>/<files>` instead; Step 4's
+#       pr-author bullet routes that return to the mode's own oversized
+#       terminal, never the task-shaped step-8 branch
+#     - re-verifies (positively, not just by absence) that the non-task
+#       Status: line actually carries the two new tokens above, so the
+#       pre-existing oversized/blocked exclusion check isn't passing vacuously
 #
 # Hermetic: greps committed prose only; no network, no jq required beyond
 # what's already on PATH for other suite tests, no temp dirs.
@@ -397,6 +419,84 @@ if printf '%s' "$NON_TASK_STATUS_LINE" | grep -qF 'oversized' \
   fail "task-orchestrator: non-task report variant's Status: line must exclude oversized and blocked — see <issue-url>"
 else
   pass "task-orchestrator: non-task report variant's Status: line excludes oversized and blocked — see <issue-url>"
+fi
+
+# ---------------------------------------------------------------------------
+# Group 6 (review-fix additions, PR #367) — three reviewer findings fixed:
+#   Fix 1: stale "always goes through pr-author" Decision rule corrected to
+#          branch-shape selection.
+#   Fix 2: pr-opener's follow-up entry check names a `not-open: <state>`
+#          terminal, treated exactly like `held` by the orchestrator and
+#          exempt from the retry-with-logs budget.
+#   Fix 3: the mode-section size claim is scoped to "no size gate of its
+#          own", and Step 8 gained a mode-scoped `oversized` handler for a
+#          task/* head's pr-author return.
+# ---------------------------------------------------------------------------
+
+# --- Fix 1: re-push primitive selected by branch shape, not hardcoded -----
+
+chk_prose "$TASK_ORCH" \
+  'goes through the follow-up-mode authoring primitive selected **by branch shape**, not hardcoded' \
+  "task-orchestrator: Decision rules — re-push primitive is selected by branch shape, not hardcoded"
+
+chk_absent "$TASK_ORCH" \
+  'always goes through `pr-author` in follow-up mode. The delegation boundary' \
+  "task-orchestrator: OLD stale 'always goes through pr-author in follow-up mode' phrasing stays gone (regression guard)"
+
+# --- Fix 2: pr-opener's not-open: <state> terminal ------------------------
+
+chk_prose "$PR_OPENER" \
+  'stop and return `not-open: <state>`' \
+  "pr-opener: follow-up entry check returns a named not-open: <state> terminal (not a bare stop-and-report)"
+
+chk_prose "$PR_OPENER" \
+  'or `not-open: <state>` (entry check tripped — the PR is no longer `OPEN`). All other stops are malformed returns.' \
+  "pr-opener: not-open: <state> is enumerated among the valid follow-up terminal states"
+
+chk_prose "$PR_OPENER" \
+  '**`not-open: <state>`** (entry check) — the PR named by `pr_number` is `CLOSED`/`MERGED`, not `OPEN`; nothing was committed or pushed.' \
+  "pr-opener: follow-up-mode Output block documents the not-open: <state> bullet"
+
+chk_prose "$PR_OPENER" \
+  '**`not-open: <state>`** (follow-up mode only) — the entry check found the PR is no longer `OPEN`; nothing was committed or pushed. See "Output (follow-up mode)" above.' \
+  "pr-opener: agent's top-level Output block documents the not-open: <state> bullet"
+
+chk_prose "$TASK_ORCH" \
+  '**Treat `not-open: <state>` as a terminal state, exactly like `held`**' \
+  "task-orchestrator: Step 4 pr-opener bullet treats not-open: <state> as terminal exactly like held"
+
+chk_prose "$TASK_ORCH" \
+  "do **not** feed it to step 8's \`pr-author\` INCOMPLETE handler and do **not** spend a \`retry-with-logs\` attempt on it." \
+  "task-orchestrator: not-open: <state> does not consume a retry-with-logs attempt (load-bearing behaviour)"
+
+chk_prose "$TASK_ORCH" \
+  '| `held: PR <state> out from under the fix` | `held: hard-stop after 6 attempts' \
+  "task-orchestrator: final report Status: vocabulary carries held: PR <state> out from under the fix"
+
+# --- Fix 3: size-gate reconciliation ("no size gate of its own") ----------
+
+chk_prose "$TASK_ORCH" \
+  "gate of its own and has no tracking file to mark \`[OVERSIZE]\` on, and a" \
+  "task-orchestrator: mode-section size claim scoped to 'no size gate of its own' (task/* head's own pr-author gate still applies)"
+
+chk_prose "$TASK_ORCH" \
+  'never enters the discrimination below.**' \
+  "task-orchestrator: Step 8 gained a mode-scoped oversized handler excluding a task/* head's pr-author oversized return"
+
+chk_prose "$TASK_ORCH" \
+  "in \`mode: non-task-pr\`, exit into that mode's \`oversized\` terminal instead (step 8, below) — never the task-shaped branch." \
+  "task-orchestrator: Step 4 pr-author bullet routes a follow-up oversized return in non-task-pr mode to the mode's own terminal"
+
+# --- Re-verify the exclusion check still bites for the right reason -------
+# (the Status: line was extended with two new tokens by Fix 2/3 — confirm
+# they landed on the *scoped* non-task line, not just somewhere in the file,
+# so the earlier "excludes oversized/blocked" assertion isn't vacuous.)
+
+if printf '%s' "$NON_TASK_STATUS_LINE" | grep -qF 'held: task/* size gate tripped — <lines>/<files>' \
+  && printf '%s' "$NON_TASK_STATUS_LINE" | grep -qF 'held: PR <state> out from under the fix'; then
+  pass "task-orchestrator: non-task report variant's Status: line carries both new Fix 2/3 tokens (exclusion check above is not vacuous)"
+else
+  fail "task-orchestrator: non-task report variant's Status: line is missing one of the new Fix 2/3 tokens"
 fi
 
 # ---------------------------------------------------------------------------
