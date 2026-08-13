@@ -143,6 +143,14 @@ You can run `atelier /atelier:setup-project .` on as many projects as you like �
 
 If you ever want to retire a project from atelier (no more `task` will run on it), `cd` into the project and run `atelier-remove-project .` — it deregisters the project but keeps your files. Add `--purge` to also strip the few `.gitignore` and `.npmrc` entries atelier added during setup. Both flows have a Claude-session equivalent under `/atelier:remove-project`.
 
+### Branch protection
+
+Setup also applies a minimal branch protection rule (requiring at least 1 approving review) on your default branch — **by default, no flag needed**. Without this rule GitHub never computes a PR's review decision, so the auto-merge gate holds forever even after a genuine approval.
+
+Applying the rule needs a GitHub identity with admin rights on the repo. Setup tries, in order: a dedicated atelier admin identity (if you've configured one), the atelier **author** account (a free win on repos it already owns), and finally your own **personal** GitHub login. Whichever identity actually applied the rule is named in the setup output, e.g. `applied as <your-login> (…)`. If none of them has admin rights, setup still finishes normally and prints a copy-pasteable `gh api -X PUT …` command for you to run yourself.
+
+Pass `--no-branch-protection` to `atelier-setup-project` (or skip it interactively) if you don't want this rule applied. `--apply-branch-protection` still works but is now a no-op — it's kept only so older scripts and docs don't break.
+
 ### Already have a roadmap? Adopt it instead of rewriting it
 
 If your project already tracks its work in `ROADMAP.md` — its own priority names, ids like `TASK-12`, maybe another language — atelier won't recognize those tasks: the picker only reads the exact format shown in Step 5. Don't convert it by hand. In the project folder, run:
@@ -593,4 +601,4 @@ Each `atelier-*` helper also has a Claude-session equivalent under `/atelier:*` 
 - `~/.claude-work/` — atelier's own configuration, separate from your personal Claude config. (This path is `$ATELIER_CONFIG_DIR`; helpers and slash commands always read/write here, never your personal `~/.claude/`.)
 - `~/.claude-work/projects.json` — the registry of your atelier projects. `~/.claude-work/workspaces.json` — your multi-repo workspaces (only present once you create one).
 - `~/.claude-work/atelier-help.txt` — the cheatsheet shown by `atelier --help` (written at install time, refreshed by `atelier-update`).
-- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, `atelier-list-projects`, `atelier-remove-project`, `atelier-import-conversations`, `atelier-setup-workspace`, `atelier-resolve-dep`, `atelier-workspace-status`, `atelier-list-workspaces`, `atelier-remove-workspace`, `atelier-update`, `atelier-permission-diff`, `atelier-pr-size-check`, `atelier-measure-merge-rate`, and `atelier-housekeeping` commands.
+- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, `atelier-list-projects`, `atelier-remove-project`, `atelier-import-conversations`, `atelier-setup-workspace`, `atelier-resolve-dep`, `atelier-workspace-status`, `atelier-list-workspaces`, `atelier-remove-workspace`, `atelier-update`, `atelier-permission-diff`, `atelier-pr-size-check`, `atelier-measure-merge-rate`, `atelier-branch-protection`, and `atelier-housekeeping` commands.

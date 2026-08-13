@@ -1,0 +1,371 @@
+#!/usr/bin/env bash
+#
+# atelier-branch-protection — single source of truth for branch-protection
+# classification and application (#45). Extracted from the two hand-copied
+# variants that used to live in atelier-setup-project and atelier-doctor:
+# the setup-project copy never disambiguated a 404 (mapped it straight to
+# "unprotected"), and both copies always PUT as the author (bot) identity,
+# which lacks repo-admin on every AkaLab-Tech member repo, so the PUT always
+# 404s. This binary is the one place that logic lives now; both callers
+# delegate to it instead of hand-copying it a third time.
+#
+# Usage:
+#   atelier-branch-protection --status [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
+#   atelier-branch-protection --apply  [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
+#   atelier-branch-protection --help
+#
+# --repo / --branch default to `gh repo view` on the current directory's repo.
+#
+# --status classifies the branch's current protection and, when the class
+# needs remediation (unprotected / protected-insufficient / no-admin), also
+# probes for an admin-capable identity (see resolve_admin_gh_dir below) and
+# reports it — this lets a caller (atelier-doctor) decide whether a fix is
+# runnable without performing one.
+#
+# --apply classifies first (never PUTs when already protected-sufficient or
+# protected-noadmin), then, if remediation is needed, walks the same admin
+# candidate list and PUTs a merge-not-overwrite payload under the first
+# identity found.
+#
+# Exit codes:
+#   0  --status: classification succeeded (any class).
+#      --apply:  already sufficient, already protected, or applied.
+#   2  prerequisite missing (no gh/jq/git, not a git repo, no GitHub remote,
+#      or an unexpected classify error) — advisory, never treat as fatal.
+#   3  --apply only: no admin identity resolved. The copy-pasteable manual
+#      `gh api -X PUT ...` block is printed on stdout regardless of --json.
+#   4  --apply only: an admin identity was found but the PUT itself failed.
+
+set -uo pipefail
+
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+die() { printf '!!  ERROR: %s\n' "$*" >&2; exit 2; }
+
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} — classify and apply branch protection on a repo's default branch.
+
+USAGE:
+  ${SCRIPT_NAME} --status [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
+  ${SCRIPT_NAME} --apply  [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
+  ${SCRIPT_NAME} --help
+
+OPTIONS:
+  --status         Report the current classification (never mutates).
+  --apply          Apply a minimal rule (>=1 required approving review) if
+                    the branch needs it. Idempotent; never lowers an
+                    existing rule (merges rather than overwrites).
+  --repo <o/name>  Repo to target. Default: \`gh repo view\` on the cwd repo.
+  --branch <b>     Branch to target. Default: the repo's default branch.
+  --json           Emit machine-readable JSON on stdout instead of text.
+  --quiet          Suppress the human-readable success line (errors and the
+                    manual instruction block, when applicable, still print).
+  --help, -h       Show this help and exit.
+
+ADMIN IDENTITY RESOLUTION (--apply, in order):
+  1. \$ATELIER_ADMIN_GH_CONFIG_DIR      (explicit override / test seam)
+  2. \$ATELIER_CONFIG_DIR/gh/admin      (dedicated atelier admin identity)
+  3. \$ATELIER_CONFIG_DIR/gh/author     (free win on bot-owned repos)
+  4. \${XDG_CONFIG_HOME:-\$HOME/.config}/gh  (the operator's personal gh config,
+                                          tried last, used only to read
+                                          viewerPermission and to PUT)
+
+EXIT CODES:
+  0  status classified, or apply succeeded / already sufficient
+  2  prerequisite missing (advisory)
+  3  --apply: no admin identity resolved (manual block printed on stdout)
+  4  --apply: admin identity found but the PUT failed
+EOF
+}
+
+MODE=""
+REPO=""
+BRANCH=""
+JSON=false
+QUIET=false
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --status) MODE="status"; shift ;;
+    --apply)  MODE="apply"; shift ;;
+    --repo)   [ -n "${2:-}" ] || die "--repo requires a value"; REPO="$2"; shift 2 ;;
+    --repo=*) REPO="${1#--repo=}"; shift ;;
+    --branch)   [ -n "${2:-}" ] || die "--branch requires a value"; BRANCH="$2"; shift 2 ;;
+    --branch=*) BRANCH="${1#--branch=}"; shift ;;
+    --json)   JSON=true; shift ;;
+    --quiet)  QUIET=true; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "unknown arg: $1 (run --help for usage)" ;;
+  esac
+done
+
+[ -n "$MODE" ] || die "must pass --status or --apply (run --help for usage)"
+command -v gh >/dev/null 2>&1 || die "gh not found on PATH"
+command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
+
+MIN_PAYLOAD='{"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null}'
+
+# ---------- classify_branch_protection <gh_dir> <owner_repo> <branch> ----------
+# Post-#284 classifier (verbatim from the doctor's inline copy — kept
+# extractable by name for hooks/tests/*.test.sh, same as the two copies it
+# replaces). Prints one of:
+#   protected-sufficient   — required_approving_review_count >= 1
+#   protected-noadmin      — 404 on the protection endpoint, but the no-admin-
+#                             safe branch endpoint confirms .protected == true
+#                             (the token can't read the detail, but the rule
+#                             exists — never propose a PUT the identity can't run)
+#   protected-insufficient — protection exists but no required approving reviews
+#   unprotected             — genuinely no rule (branch endpoint .protected == false)
+#   no-admin                — token lacks repo-admin (GitHub 403)
+#   skip:<msg>              — unexpected error; treat as advisory skip
+classify_branch_protection() {
+  local auth_dir="$1" owner_repo="$2" branch="$3"
+  local out rc err_file err_msg
+  err_file="$(mktemp)"
+  out="$(env GH_CONFIG_DIR="$auth_dir" \
+    gh api "repos/$owner_repo/branches/$branch/protection" 2>"$err_file")" && rc=0 || rc=$?
+  err_msg="$(<"$err_file")"
+  rm -f "$err_file"
+  if [ "$rc" -eq 0 ]; then
+    local count
+    count="$(printf '%s' "$out" | \
+      jq -r '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null || printf '0')"
+    count="${count:-0}"
+    if [ "$count" -ge 1 ]; then
+      printf 'protected-sufficient'
+    else
+      printf 'protected-insufficient'
+    fi
+    return
+  fi
+  case "$err_msg" in
+    *"Must have admin"*|*"Resource not accessible"*|*"HTTP 403"*)
+      printf 'no-admin'
+      ;;
+    *"Branch not protected"*|*"HTTP 404"*|*"Not Found"*)
+      # A 404 here is AMBIGUOUS: the branch may be genuinely unprotected, OR
+      # it may be protected while this (non-admin) token simply lacks access
+      # to read the protection detail — GitHub returns 404, not 403, in that
+      # second case. Disambiguate via the no-admin-safe branch endpoint,
+      # whose `.protected` flag every collaborator can read.
+      local protected_flag
+      protected_flag="$(env GH_CONFIG_DIR="$auth_dir" \
+        gh api "repos/$owner_repo/branches/$branch" --jq '.protected' 2>/dev/null)"
+      if [ "$protected_flag" = "true" ]; then
+        printf 'protected-noadmin'
+      else
+        printf 'unprotected'
+      fi
+      ;;
+    *) printf 'skip:%s' "$(printf '%s' "$err_msg" | head -1 2>/dev/null)" ;;
+  esac
+}
+
+# ---------- admin_candidate_dirs ----------
+# Emits the fixed candidate list, one per line, in resolution order. Shared
+# by resolve_admin_gh_dir() and the manual-instruction block so both agree
+# on which identities were tried.
+admin_candidate_dirs() {
+  [ -n "${ATELIER_ADMIN_GH_CONFIG_DIR:-}" ] && printf '%s\n' "$ATELIER_ADMIN_GH_CONFIG_DIR"
+  [ -n "${ATELIER_CONFIG_DIR:-}" ] && printf '%s\n' "$ATELIER_CONFIG_DIR/gh/admin"
+  [ -n "${ATELIER_CONFIG_DIR:-}" ] && printf '%s\n' "$ATELIER_CONFIG_DIR/gh/author"
+  printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/gh"
+}
+
+# ---------- resolve_admin_gh_dir <owner_repo> ----------
+# Walks admin_candidate_dirs() and returns (on stdout, rc 0) the first
+# GH_CONFIG_DIR that both exists and reports viewerPermission == ADMIN for
+# owner_repo. Returns rc 1 with no output when none qualifies. Candidate 4
+# (the operator's personal gh config) is spelled literally here — NOT
+# reached by unsetting GH_CONFIG_DIR — because atelier sessions export
+# GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author, so "unset" would not
+# reliably land on the personal config.
+resolve_admin_gh_dir() {
+  local owner_repo="$1" candidate perm
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] && [ -d "$candidate" ] || continue
+    perm="$(env GH_CONFIG_DIR="$candidate" \
+      gh repo view "$owner_repo" --json viewerPermission --jq .viewerPermission 2>/dev/null || true)"
+    if [ "$perm" = "ADMIN" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done < <(admin_candidate_dirs)
+  return 1
+}
+
+# ---------- apply_protection <gh_dir> <owner_repo> <branch> ----------
+# Merge-not-overwrite payload builder + PUT + re-verify classify. Assumes
+# the caller already confirmed gh_dir has admin on owner_repo. Prints the
+# post-PUT classification on stdout and returns 0 on a successful PUT
+# (regardless of what the re-verify reports), 1 if the PUT itself failed.
+apply_protection() {
+  local gh_dir="$1" owner_repo="$2" branch="$3"
+
+  # Build payload: for an existing-but-insufficient rule, merge rather than
+  # overwrite so stronger settings (status checks, code-owner reviews) are
+  # preserved. enforce_admins=false lets the AtelierAuthor bot squash-merge
+  # its own approved PRs — set this to true and auto-merge breaks in a new
+  # way, because the bot itself would then be blocked by the rule it needs
+  # to pass through. restrictions=null imposes no push restrictions.
+  local existing payload=""
+  existing="$(env GH_CONFIG_DIR="$gh_dir" \
+    gh api "repos/$owner_repo/branches/$branch/protection" 2>/dev/null || true)"
+  if [ -n "$existing" ]; then
+    payload="$(printf '%s' "$existing" | jq '{
+      required_status_checks: (
+        if .required_status_checks == null then null
+        else {
+          strict: (.required_status_checks.strict // false),
+          contexts: (.required_status_checks.contexts // [])
+        } end
+      ),
+      enforce_admins: false,
+      required_pull_request_reviews: {
+        dismiss_stale_reviews: (.required_pull_request_reviews.dismiss_stale_reviews // false),
+        require_code_owner_reviews: (.required_pull_request_reviews.require_code_owner_reviews // false),
+        required_approving_review_count: 1
+      },
+      restrictions: null
+    }' 2>/dev/null || printf '')"
+  fi
+  [ -n "$payload" ] || payload="$MIN_PAYLOAD"
+
+  local tmp_payload
+  tmp_payload="$(mktemp)"
+  printf '%s\n' "$payload" > "$tmp_payload"
+  if env GH_CONFIG_DIR="$gh_dir" gh api -X PUT \
+      "repos/$owner_repo/branches/$branch/protection" \
+      --input "$tmp_payload" >/dev/null 2>&1; then
+    rm -f "$tmp_payload"
+    classify_branch_protection "$gh_dir" "$owner_repo" "$branch"
+    return 0
+  fi
+  rm -f "$tmp_payload"
+  return 1
+}
+
+# ---------- default_gh_dir ----------
+# Identity used for the (never-mutating) initial classify probe: prefer the
+# atelier author identity when configured, else gh's own default resolution
+# order, spelled literally so it is always a concrete path.
+default_gh_dir() {
+  if [ -n "${ATELIER_CONFIG_DIR:-}" ] && [ -d "$ATELIER_CONFIG_DIR/gh/author" ]; then
+    printf '%s' "$ATELIER_CONFIG_DIR/gh/author"
+  else
+    printf '%s' "${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}"
+  fi
+}
+
+print_manual_block() {
+  local owner_repo="$1" branch="$2"
+  local tried
+  tried="$(admin_candidate_dirs | paste -sd, - 2>/dev/null || admin_candidate_dirs | tr '\n' ',' | sed 's/,$//')"
+  printf 'No admin identity available to apply branch protection on %s/%s.\n' "$owner_repo" "$branch"
+  printf 'Tried: %s\n' "$tried"
+  printf 'Apply manually with a repo-admin token:\n'
+  printf "  printf '%%s\\\\n' '%s' | \\\\\n" "$MIN_PAYLOAD"
+  printf '    gh api -X PUT "repos/%s/branches/%s/protection" --input -\n' "$owner_repo" "$branch"
+}
+
+# ---------- resolve --repo/--branch when not given ----------
+if [ -z "$REPO" ] || [ -z "$BRANCH" ]; then
+  command -v git >/dev/null 2>&1 || die "git not found on PATH (or pass --repo and --branch)"
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || die "not inside a git repo (pass --repo and --branch)"
+  detect_dir="$(default_gh_dir)"
+  repo_json="$(env GH_CONFIG_DIR="$detect_dir" \
+    gh repo view --json nameWithOwner,defaultBranchRef 2>/dev/null || true)"
+  [ -n "$repo_json" ] || die "could not resolve repo via gh repo view (pass --repo and --branch)"
+  [ -n "$REPO" ] || REPO="$(printf '%s' "$repo_json" | jq -r '.nameWithOwner // empty')"
+  [ -n "$BRANCH" ] || BRANCH="$(printf '%s' "$repo_json" | jq -r '.defaultBranchRef.name // empty')"
+fi
+[ -n "$REPO" ] && [ -n "$BRANCH" ] || die "could not resolve owner/repo or branch"
+
+# ---------- --status ----------
+if [ "$MODE" = "status" ]; then
+  gh_dir="$(default_gh_dir)"
+  class="$(classify_branch_protection "$gh_dir" "$REPO" "$BRANCH")"
+
+  admin_dir=""
+  case "$class" in
+    unprotected|protected-insufficient|no-admin)
+      admin_dir="$(resolve_admin_gh_dir "$REPO" || true)" ;;
+  esac
+
+  if $JSON; then
+    jq -n --arg repo "$REPO" --arg branch "$BRANCH" --arg class "$class" \
+      --arg gh_dir "$gh_dir" --arg admin_gh_dir "$admin_dir" \
+      '{repo: $repo, branch: $branch, class: $class, gh_dir: $gh_dir,
+        admin_gh_dir: (if ($admin_gh_dir | length) > 0 then $admin_gh_dir else null end)}'
+  elif ! $QUIET; then
+    printf '%s/%s: %s\n' "$REPO" "$BRANCH" "$class"
+  fi
+  exit 0
+fi
+
+# ---------- --apply ----------
+probe_dir="$(default_gh_dir)"
+class="$(classify_branch_protection "$probe_dir" "$REPO" "$BRANCH")"
+
+emit_result() {
+  local status="$1" identity="${2:-}" gh_dir="${3:-}"
+  if $JSON; then
+    jq -n --arg status "$status" --arg repo "$REPO" --arg branch "$BRANCH" \
+      --arg class "$class" --arg identity "$identity" --arg gh_dir "$gh_dir" \
+      '{status: $status, repo: $repo, branch: $branch, class: $class,
+        identity: (if ($identity | length) > 0 then $identity else null end),
+        gh_dir: (if ($gh_dir | length) > 0 then $gh_dir else null end)}'
+  elif ! $QUIET; then
+    case "$status" in
+      already-sufficient) printf 'already sufficient: %s/%s requires >=1 approving review\n' "$REPO" "$BRANCH" ;;
+      already-protected)  printf 'already protected: %s/%s (admin token needed to verify the exact review count)\n' "$REPO" "$BRANCH" ;;
+      applied)            printf 'applied: %s/%s now requires >=1 approving review (as %s)\n' "$REPO" "$BRANCH" "$identity" ;;
+    esac
+  fi
+}
+
+case "$class" in
+  protected-sufficient)
+    emit_result "already-sufficient"
+    exit 0
+    ;;
+  protected-noadmin)
+    emit_result "already-protected"
+    exit 0
+    ;;
+  skip:*)
+    msg="${class#skip:}"
+    if $JSON; then
+      jq -n --arg repo "$REPO" --arg branch "$BRANCH" --arg msg "$msg" \
+        '{status: "skip", repo: $repo, branch: $branch, message: $msg}'
+    else
+      printf 'branch protection check skipped: %s\n' "$msg" >&2
+    fi
+    exit 2
+    ;;
+esac
+
+# unprotected | protected-insufficient | no-admin — needs an admin identity.
+if ! admin_dir="$(resolve_admin_gh_dir "$REPO")"; then
+  print_manual_block "$REPO" "$BRANCH"
+  exit 3
+fi
+
+if verify_class="$(apply_protection "$admin_dir" "$REPO" "$BRANCH")"; then
+  identity_login="$(env GH_CONFIG_DIR="$admin_dir" gh api user --jq .login 2>/dev/null || true)"
+  class="$verify_class"
+  emit_result "applied" "$identity_login" "$admin_dir"
+  exit 0
+fi
+
+identity_login="$(env GH_CONFIG_DIR="$admin_dir" gh api user --jq .login 2>/dev/null || true)"
+if $JSON; then
+  jq -n --arg repo "$REPO" --arg branch "$BRANCH" --arg class "$class" \
+    --arg identity "$identity_login" --arg gh_dir "$admin_dir" \
+    '{status: "put-failed", repo: $repo, branch: $branch, class: $class,
+      identity: $identity, gh_dir: $gh_dir}'
+else
+  printf 'failed to apply branch protection on %s/%s (as %s)\n' "$REPO" "$BRANCH" "$identity_login" >&2
+fi
+exit 4

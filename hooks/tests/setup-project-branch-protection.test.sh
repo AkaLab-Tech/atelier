@@ -1,28 +1,46 @@
 #!/usr/bin/env bash
 #
-# Tests for task #31 (M7.1.F31) — setup-project detect-and-offer branch protection.
+# Tests for task #31 (M7.1.F31) / #45 — setup-project branch protection step.
+#
+# #45 extracted classify_branch_protection() (and the inline payload/PUT/
+# verify block) out of atelier-setup-project entirely; it now lives only in
+# the shared helper scripts/atelier-branch-protection, and
+# step_branch_protection() delegates to it as an external binary via
+# resolve_branch_protection_helper(). #45 also promoted the step to
+# default-on: the old flag -> policy -> TTY-prompt ladder is gone, and
+# --apply-branch-protection is now a deprecated no-op (accepted, ignored);
+# only --no-branch-protection opts out.
 #
 # COVERAGE
-#   Phase A — classify_branch_protection() : all five output states
-#     A1  200 with required_approving_review_count=2   → protected-sufficient
-#     A2  200 with required_approving_review_count=0   → protected-insufficient
-#     A3  200 with count=1 (boundary)                  → protected-sufficient
-#     A4  200 with null required_pull_request_reviews  → protected-insufficient
-#     A5  exit 1 + "Branch not protected" stderr       → unprotected
-#     A6  exit 1 + "HTTP 404" stderr                   → unprotected
-#     A7  exit 1 + "Must have admin" stderr            → no-admin
-#     A8  exit 1 + "HTTP 403" stderr                   → no-admin
-#     A9  exit 1 + unexpected message                  → skip:*
+#   Phase A — classify_branch_protection() : all classification states,
+#     now extracted from scripts/atelier-branch-protection (the new single
+#     source of truth), not scripts/atelier-setup-project (deleted there).
 #
-#   Phase B — step_branch_protection() apply path (unprotected + admin + flag):
-#     B1  PUT payload enforce_admins = false
-#     B2  PUT payload required_approving_review_count = 1
-#     B3  PUT payload required_status_checks = null  (never invents checks, AC#3)
-#     B4  PUT payload restrictions = null
-#     B5  BRANCH_PROTECTION_STATUS set to "applied ..." after successful PUT
+#   Phase B — step_branch_protection() delegation to the external helper:
+#     B1  default-on: applies WITHOUT any flag being set (no
+#         APPLY_BRANCH_PROTECTION_FLAG needed any more)
+#     B2  --no-branch-protection: step is skipped, the helper is never
+#         invoked, BRANCH_PROTECTION_STATUS = "declined (--no-branch-protection)"
+#     B3  helper-not-found path: when atelier-branch-protection is on none
+#         of PATH / $PLUGIN_ROOT/scripts / script-relative dir,
+#         BRANCH_PROTECTION_STATUS = "skipped (atelier-branch-protection
+#         helper not found)" and the step still returns 0 — silently
+#         skipping protection on every fresh install would be the worst
+#         failure of this task, so this path is explicitly asserted.
+#     B4  no admin identity resolves (helper exits 3): the step still
+#         returns 0 (advisory-never-fails), BRANCH_PROTECTION_STATUS
+#         reflects the no-admin outcome, and the warning relayed to the
+#         operator contains a complete copy-pasteable
+#         `printf ... | gh api -X PUT ...` block.
 #
-# Hermetic: gh is stubbed on PATH throughout; no network calls, no real gh api.
-# macOS bash 3.2 compatible.
+#   Phase C — CLI arg-parse acceptance (real script binary, --help
+#     short-circuit so no project work runs, mirrors
+#     setup-project-backend-flag.test.sh's strategy):
+#     C1  --apply-branch-protection is still accepted (deprecated no-op)
+#     C2  --no-branch-protection is accepted
+#
+# Hermetic: gh and atelier-branch-protection are stubbed on PATH throughout;
+# no network calls, no real gh api. macOS bash 3.2 compatible.
 #
 # Run:  hooks/tests/setup-project-branch-protection.test.sh
 # Exit: 0 = all assertions pass, 1 = at least one failed.
@@ -31,6 +49,7 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/atelier-setup-project"
+HELPER_SCRIPT="$REPO_ROOT/scripts/atelier-branch-protection"
 
 command -v jq  >/dev/null 2>&1 || { echo "  SKIP: jq not on PATH";  exit 0; }
 command -v git >/dev/null 2>&1 || { echo "  SKIP: git not on PATH"; exit 0; }
@@ -51,15 +70,16 @@ OWNER_REPO="testowner/testrepo"
 BRANCH="main"
 
 # =============================================================================
-# Phase A — classify_branch_protection() unit tests
+# Phase A — classify_branch_protection() unit tests, extracted from the new
+# single source of truth: scripts/atelier-branch-protection.
 # =============================================================================
 
-echo "Phase A: classify_branch_protection() classification states"
+echo "Phase A: classify_branch_protection() classification states (scripts/atelier-branch-protection)"
 
 FN_CLASSIFY="$TMP/classify.sh"
-awk '/^classify_branch_protection\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$SCRIPT" > "$FN_CLASSIFY"
+awk '/^classify_branch_protection\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$HELPER_SCRIPT" > "$FN_CLASSIFY"
 if ! grep -q 'protected-sufficient' "$FN_CLASSIFY"; then
-  echo "  FAIL: could not extract classify_branch_protection() from $SCRIPT"
+  echo "  FAIL: could not extract classify_branch_protection() from $HELPER_SCRIPT"
   exit 1
 fi
 # shellcheck disable=SC1090
@@ -121,34 +141,62 @@ else
   fail "A4: expected 'protected-insufficient', got '$got'"
 fi
 
-# --- A5: exit 1 + "Branch not protected" stderr → unprotected ---
+# --- A5: exit 1 + "Branch not protected" stderr, branch endpoint says
+#     .protected == false → unprotected ---
 cat > "$TMP/bin/gh" << 'SHIMEOF'
 #!/usr/bin/env bash
-printf 'Branch not protected\n' >&2
-exit 1
+case "$*" in
+  *".protected"*) printf 'false\n' ;;
+  *) printf 'Branch not protected\n' >&2; exit 1 ;;
+esac
 SHIMEOF
 chmod +x "$TMP/bin/gh"
 
 got="$(classify_branch_protection "$AUTH_DIR" "$OWNER_REPO" "$BRANCH")"
 if [ "$got" = "unprotected" ]; then
-  pass "A5: 'Branch not protected' stderr → unprotected"
+  pass "A5: 'Branch not protected' stderr + .protected=false → unprotected"
 else
   fail "A5: expected 'unprotected', got '$got'"
 fi
 
-# --- A6: exit 1 + "HTTP 404" stderr → unprotected ---
+# --- A6: exit 1 + "HTTP 404" stderr, branch endpoint says .protected == false
+#     → unprotected ---
 cat > "$TMP/bin/gh" << 'SHIMEOF'
 #!/usr/bin/env bash
-printf 'HTTP 404: Not Found\n' >&2
-exit 1
+case "$*" in
+  *".protected"*) printf 'false\n' ;;
+  *) printf 'HTTP 404: Not Found\n' >&2; exit 1 ;;
+esac
 SHIMEOF
 chmod +x "$TMP/bin/gh"
 
 got="$(classify_branch_protection "$AUTH_DIR" "$OWNER_REPO" "$BRANCH")"
 if [ "$got" = "unprotected" ]; then
-  pass "A6: 'HTTP 404' stderr → unprotected"
+  pass "A6: 'HTTP 404' stderr + .protected=false → unprotected"
 else
   fail "A6: expected 'unprotected', got '$got'"
+fi
+
+# --- A6b (THE PR #284 twin-fix gap): exit 1 "HTTP 404" from the protection
+#     endpoint, but the no-admin-safe branch endpoint reports .protected ==
+#     true → protected-noadmin, NOT unprotected. A non-admin token gets a
+#     404 (not 403) from GitHub's protection endpoint even when the branch
+#     IS protected; classifying that as "unprotected" would make setup
+#     propose an overwrite of a rule that already exists. ---
+cat > "$TMP/bin/gh" << 'SHIMEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *".protected"*) printf 'true\n' ;;
+  *) printf 'HTTP 404: Not Found\n' >&2; exit 1 ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+got="$(classify_branch_protection "$AUTH_DIR" "$OWNER_REPO" "$BRANCH")"
+if [ "$got" = "protected-noadmin" ]; then
+  pass "A6b: 404 from protection endpoint + .protected=true → protected-noadmin (not unprotected)"
+else
+  fail "A6b: expected 'protected-noadmin', got '$got'"
 fi
 
 # --- A7: exit 1 + "Must have admin" stderr → no-admin ---
@@ -200,28 +248,32 @@ case "$got" in
 esac
 
 # =============================================================================
-# Phase B — step_branch_protection() apply path
-#
-# Scenario: unprotected repo + author is ADMIN + --apply-branch-protection flag
-# Verifies the PUT payload fields and the BRANCH_PROTECTION_STATUS outcome.
+# Phase B — step_branch_protection() delegation to the external helper
 # =============================================================================
 
 echo ""
-echo "Phase B: step_branch_protection() apply-path payload assertions"
+echo "Phase B: step_branch_protection() delegates to the atelier-branch-protection binary"
 
-# Extract both functions (classify is called by step internally)
+# Extract script_dir(), resolve_branch_protection_helper(), and
+# step_branch_protection() from atelier-setup-project.
 FN_STEP="$TMP/step_functions.sh"
-awk '/^classify_branch_protection\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$SCRIPT" > "$FN_STEP"
+awk '/^script_dir\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$SCRIPT" > "$FN_STEP"
+awk '/^resolve_branch_protection_helper\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$SCRIPT" >> "$FN_STEP"
 awk '/^step_branch_protection\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$SCRIPT" >> "$FN_STEP"
 
 if ! grep -q 'step_branch_protection' "$FN_STEP"; then
   echo "  FAIL: could not extract step_branch_protection() from $SCRIPT"
   exit 1
 fi
+if ! grep -q 'resolve_branch_protection_helper' "$FN_STEP"; then
+  echo "  FAIL: could not extract resolve_branch_protection_helper() from $SCRIPT"
+  exit 1
+fi
 
 # Stub dependencies that step_branch_protection() references but are not in
 # the extracted fragment (logging helpers from the script's global scope).
-warn()   { printf '!!  %s\n' "$*" >&2; }
+WARN_OUT="$TMP/warn_out"
+warn()   { printf '%s\n' "$*" >> "$WARN_OUT"; printf '!!  %s\n' "$*" >&2; }
 sublog() { printf '    %s\n' "$*" >&2; }
 
 # Set up a real git repo so `git -C "$PROJECT" rev-parse --is-inside-work-tree` passes.
@@ -230,135 +282,218 @@ mkdir -p "$PROJ_DIR"
 ( cd "$PROJ_DIR" && git init >/dev/null 2>&1 ) || true
 
 # Set required globals.
-ATELIER_CONFIG_DIR="$TMP/atelier"
-mkdir -p "$ATELIER_CONFIG_DIR/gh/author"
 PROJECT="$PROJ_DIR"
-APPLY_BRANCH_PROTECTION_FLAG=true
-NONINTERACTIVE=false
+NO_BRANCH_PROTECTION_FLAG=false
 BRANCH_PROTECTION_STATUS=""
+PLUGIN_ROOT="$TMP/no-such-plugin-root"  # only consulted when PATH lookup fails
 
-# Clear any stale counter file from Phase A.
-rm -f "$TMP/protection_get_count"
+# Source extracted functions.
+# shellcheck disable=SC1090
+source "$FN_STEP"
 
-# Write a stateful gh stub.  The protection GET is called twice:
-#   call 1 (classify before apply): returns 404 (unprotected)
-#   call 2 (classify for re-verify): returns 200 with count=1
-# The PUT is intercepted; its --input file is copied to $TMP/put_payload.json.
-cat > "$TMP/bin/gh" << SHIMEOF
+# gh stub for the repo-resolution call step_branch_protection() makes
+# directly: `(cd "$PROJECT" && gh repo view --json nameWithOwner,defaultBranchRef)`.
+cat > "$TMP/bin/gh" << 'SHIMEOF'
 #!/usr/bin/env bash
-SAVE_DIR="${TMP}"
-COUNT_FILE="\${SAVE_DIR}/protection_get_count"
-
-case "\$*" in
+case "$*" in
   *"nameWithOwner,defaultBranchRef"*)
     printf '{"nameWithOwner":"testowner/testrepo","defaultBranchRef":{"name":"main"}}\n'
     ;;
-  *"viewerPermission"*)
-    printf 'ADMIN\n'
-    ;;
-  *"-X PUT"*"protection"*)
-    prev=""
-    for a in "\$@"; do
-      if [ "\$prev" = "--input" ]; then
-        cp "\$a" "\${SAVE_DIR}/put_payload.json"
-        break
-      fi
-      prev="\$a"
-    done
-    printf '{"required_pull_request_reviews":{"required_approving_review_count":1}}\n'
-    ;;
-  *"protection"*)
-    count=0
-    [ -f "\$COUNT_FILE" ] && count="\$(cat "\$COUNT_FILE")"
-    count=\$((count + 1))
-    printf '%d' "\$count" > "\$COUNT_FILE"
-    if [ "\$count" -le 1 ]; then
-      printf 'Branch not protected\n' >&2
-      exit 1
-    else
-      printf '{"required_pull_request_reviews":{"required_approving_review_count":1}}\n'
-    fi
-    ;;
   *)
-    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    printf 'gh-stub: unexpected args: %s\n' "$*" >&2
     exit 1
     ;;
 esac
 SHIMEOF
 chmod +x "$TMP/bin/gh"
 
-# Source extracted functions and run the step.
-# shellcheck disable=SC1090
-source "$FN_STEP"
-step_branch_protection
-
-# --- B1: PUT payload has enforce_admins = false ---
-if [ -f "$TMP/put_payload.json" ]; then
-  enforce_admins="$(jq -r '.enforce_admins' "$TMP/put_payload.json" 2>/dev/null || true)"
-  if [ "$enforce_admins" = "false" ]; then
-    pass "B1: PUT payload enforce_admins = false"
-  else
-    fail "B1: PUT payload enforce_admins: expected 'false', got '$enforce_admins'"
-  fi
-else
-  fail "B1: PUT payload file not captured — gh -X PUT was not called"
-fi
-
-# --- B2: PUT payload has required_approving_review_count = 1 ---
-if [ -f "$TMP/put_payload.json" ]; then
-  review_count="$(jq -r '.required_pull_request_reviews.required_approving_review_count' \
-    "$TMP/put_payload.json" 2>/dev/null || true)"
-  if [ "$review_count" = "1" ]; then
-    pass "B2: PUT payload required_approving_review_count = 1"
-  else
-    fail "B2: PUT payload required_approving_review_count: expected '1', got '$review_count'"
-  fi
-else
-  fail "B2: PUT payload file not captured"
-fi
-
-# --- B3: PUT payload has required_status_checks = null (no invented checks, AC#3) ---
-if [ -f "$TMP/put_payload.json" ]; then
-  status_checks="$(jq -r '.required_status_checks' "$TMP/put_payload.json" 2>/dev/null || true)"
-  if [ "$status_checks" = "null" ]; then
-    pass "B3: PUT payload required_status_checks = null (no invented checks)"
-  else
-    fail "B3: PUT payload required_status_checks: expected 'null', got '$status_checks'"
-  fi
-else
-  fail "B3: PUT payload file not captured"
-fi
-
-# --- B4: PUT payload has restrictions = null ---
-if [ -f "$TMP/put_payload.json" ]; then
-  restrictions="$(jq -r '.restrictions' "$TMP/put_payload.json" 2>/dev/null || true)"
-  if [ "$restrictions" = "null" ]; then
-    pass "B4: PUT payload restrictions = null"
-  else
-    fail "B4: PUT payload restrictions: expected 'null', got '$restrictions'"
-  fi
-else
-  fail "B4: PUT payload file not captured"
-fi
-
-# --- B5: BRANCH_PROTECTION_STATUS indicates "applied" after successful PUT ---
-case "$BRANCH_PROTECTION_STATUS" in
-  applied*)
-    pass "B5: BRANCH_PROTECTION_STATUS = '$BRANCH_PROTECTION_STATUS' (contains 'applied')"
+# Fake atelier-branch-protection binary, dispatched on $HELPER_MODE.
+# Writes a marker file recording the exact invocation so B1 can assert the
+# runnable shape of the delegated command.
+HELPER_INVOKED="$TMP/helper_invoked"
+cat > "$TMP/bin/atelier-branch-protection" << SHIMEOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${HELPER_INVOKED}"
+case "\${HELPER_MODE:-applied}" in
+  applied)
+    printf '{"status":"applied","repo":"testowner/testrepo","branch":"main","class":"protected-sufficient","identity":"fake-admin","gh_dir":"/tmp/fake-admin"}\n'
+    exit 0
     ;;
-  *)
-    fail "B5: BRANCH_PROTECTION_STATUS: expected 'applied ...', got '$BRANCH_PROTECTION_STATUS'"
+  no-admin)
+    printf 'No admin identity available to apply branch protection on testowner/testrepo/main.\n'
+    printf 'Tried: /tmp/a,/tmp/b,/tmp/c,/tmp/d\n'
+    printf 'Apply manually with a repo-admin token:\n'
+    printf '  printf %%s '"'"'{"required_status_checks":null,"enforce_admins":false}'"'"' | \\\n'
+    printf '    gh api -X PUT "repos/testowner/testrepo/branches/main/protection" --input -\n'
+    exit 3
     ;;
 esac
+SHIMEOF
+chmod +x "$TMP/bin/atelier-branch-protection"
+
+# --- B1: default-on — applies WITHOUT APPLY_BRANCH_PROTECTION_FLAG ever
+#     being set (that global does not exist in this extracted fragment at
+#     all, proving step_branch_protection() no longer reads it). ---
+rm -f "$HELPER_INVOKED"
+NO_BRANCH_PROTECTION_FLAG=false
+export HELPER_MODE="applied"
+step_branch_protection
+step_rc=$?
+
+if [ "$step_rc" -eq 0 ]; then
+  pass "B1: step_branch_protection() returns 0 on the default-on apply path"
+else
+  fail "B1: step_branch_protection() returned $step_rc, expected 0"
+fi
+
+if [ -f "$HELPER_INVOKED" ] \
+  && grep -q -- "--apply" "$HELPER_INVOKED" \
+  && grep -q -- "--repo testowner/testrepo" "$HELPER_INVOKED" \
+  && grep -q -- "--branch main" "$HELPER_INVOKED"; then
+  pass "B1: default-on (no flag set) still invokes the helper with --apply --repo --branch"
+else
+  fail "B1: helper was not invoked with the expected args (got: $(cat "$HELPER_INVOKED" 2>/dev/null || printf '<not invoked>'))"
+fi
+
+case "$BRANCH_PROTECTION_STATUS" in
+  applied*)
+    pass "B1: BRANCH_PROTECTION_STATUS = '$BRANCH_PROTECTION_STATUS' (contains 'applied')"
+    ;;
+  *)
+    fail "B1: BRANCH_PROTECTION_STATUS: expected 'applied ...', got '$BRANCH_PROTECTION_STATUS'"
+    ;;
+esac
+
+# --- B2: --no-branch-protection skips the step entirely; the helper is
+#     never invoked. ---
+rm -f "$HELPER_INVOKED"
+NO_BRANCH_PROTECTION_FLAG=true
+BRANCH_PROTECTION_STATUS=""
+step_branch_protection
+step_rc=$?
+NO_BRANCH_PROTECTION_FLAG=false
+
+if [ "$step_rc" -eq 0 ]; then
+  pass "B2: step_branch_protection() returns 0 under --no-branch-protection"
+else
+  fail "B2: step_branch_protection() returned $step_rc, expected 0"
+fi
+
+if [ "$BRANCH_PROTECTION_STATUS" = "declined (--no-branch-protection)" ]; then
+  pass "B2: BRANCH_PROTECTION_STATUS = 'declined (--no-branch-protection)'"
+else
+  fail "B2: BRANCH_PROTECTION_STATUS: expected 'declined (--no-branch-protection)', got '$BRANCH_PROTECTION_STATUS'"
+fi
+
+if [ ! -f "$HELPER_INVOKED" ]; then
+  pass "B2: the atelier-branch-protection helper was never invoked"
+else
+  fail "B2: helper was unexpectedly invoked: $(cat "$HELPER_INVOKED")"
+fi
+
+# --- B3: helper-not-found path — with atelier-branch-protection removed
+#     from PATH and PLUGIN_ROOT/script_dir() pointing nowhere useful,
+#     step_branch_protection() must set the explicit "skipped (helper not
+#     found)" status and still return 0. This is the "silently skipping
+#     protection on every fresh install" failure the task calls out. ---
+rm -f "$HELPER_INVOKED"
+mv "$TMP/bin/atelier-branch-protection" "$TMP/bin/atelier-branch-protection.disabled"
+NO_BRANCH_PROTECTION_FLAG=false
+BRANCH_PROTECTION_STATUS=""
+step_branch_protection
+step_rc=$?
+
+if [ "$step_rc" -eq 0 ]; then
+  pass "B3: step_branch_protection() returns 0 when the helper cannot be found"
+else
+  fail "B3: step_branch_protection() returned $step_rc, expected 0"
+fi
+
+if [ "$BRANCH_PROTECTION_STATUS" = "skipped (atelier-branch-protection helper not found)" ]; then
+  pass "B3: BRANCH_PROTECTION_STATUS = 'skipped (atelier-branch-protection helper not found)'"
+else
+  fail "B3: BRANCH_PROTECTION_STATUS: expected the explicit helper-not-found skip message, got '$BRANCH_PROTECTION_STATUS'"
+fi
+
+mv "$TMP/bin/atelier-branch-protection.disabled" "$TMP/bin/atelier-branch-protection"
+
+# --- B4: no admin identity resolves (helper exits 3) — advisory-never-
+#     fails: the step still returns 0, and the operator-facing warning
+#     contains a COMPLETE copy-pasteable `printf ... | gh api -X PUT ...`
+#     block, not just a bare "no admin" message. ---
+rm -f "$HELPER_INVOKED" "$WARN_OUT"
+export HELPER_MODE="no-admin"
+NO_BRANCH_PROTECTION_FLAG=false
+BRANCH_PROTECTION_STATUS=""
+step_branch_protection
+step_rc=$?
+
+if [ "$step_rc" -eq 0 ]; then
+  pass "B4: step_branch_protection() returns 0 when no admin identity resolves (advisory, never fails)"
+else
+  fail "B4: step_branch_protection() returned $step_rc, expected 0"
+fi
+
+if [ "$BRANCH_PROTECTION_STATUS" = "unprotected (no admin identity — see warning for manual fix)" ]; then
+  pass "B4: BRANCH_PROTECTION_STATUS reflects the no-admin outcome"
+else
+  fail "B4: BRANCH_PROTECTION_STATUS: got '$BRANCH_PROTECTION_STATUS'"
+fi
+
+if [ -f "$WARN_OUT" ] \
+  && grep -q "printf" "$WARN_OUT" \
+  && grep -q -- "--input -" "$WARN_OUT" \
+  && grep -q "gh api -X PUT" "$WARN_OUT" \
+  && grep -q "branches/main/protection" "$WARN_OUT"; then
+  pass "B4: warning contains a complete copy-pasteable 'printf ... | gh api -X PUT ...' block"
+else
+  fail "B4: warning missing the complete manual block (got: $(cat "$WARN_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+unset HELPER_MODE
+
+# =============================================================================
+# Phase C — CLI arg-parse acceptance (real script binary via --help
+# short-circuit, mirrors setup-project-backend-flag.test.sh)
+# =============================================================================
+
+echo ""
+echo "Phase C: CLI flags are accepted without tripping 'unknown option'"
+
+run_help() {
+  # run_help <out-file> <err-file> <args...> -> sets $rc
+  local out="$1" err="$2"
+  shift 2
+  bash "$SCRIPT" "$@" --help >"$out" 2>"$err"
+  rc=$?
+}
+
+OUT_C1="$TMP/out_c1"; ERR_C1="$TMP/err_c1"
+run_help "$OUT_C1" "$ERR_C1" --apply-branch-protection
+
+if [ "$rc" -eq 0 ] && ! grep -q "unknown option" "$ERR_C1"; then
+  pass "C1: --apply-branch-protection is still accepted (deprecated no-op)"
+else
+  fail "C1: --apply-branch-protection rejected (rc=$rc, stderr: $(cat "$ERR_C1" 2>/dev/null))"
+fi
+
+OUT_C2="$TMP/out_c2"; ERR_C2="$TMP/err_c2"
+run_help "$OUT_C2" "$ERR_C2" --no-branch-protection
+
+if [ "$rc" -eq 0 ] && ! grep -q "unknown option" "$ERR_C2"; then
+  pass "C2: --no-branch-protection is accepted"
+else
+  fail "C2: --no-branch-protection rejected (rc=$rc, stderr: $(cat "$ERR_C2" 2>/dev/null))"
+fi
 
 # =============================================================================
 # Result
 # =============================================================================
 echo ""
 if [ "$fails" -eq 0 ]; then
-  echo "setup-project-branch-protection (#31): all assertions passed."
+  echo "setup-project-branch-protection (#31/#45): all assertions passed."
   exit 0
 else
-  echo "setup-project-branch-protection (#31): $fails assertion(s) failed."
+  echo "setup-project-branch-protection (#31/#45): $fails assertion(s) failed."
   exit 1
 fi
