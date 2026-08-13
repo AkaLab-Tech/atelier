@@ -28,10 +28,14 @@
 #         skipping protection on every fresh install would be the worst
 #         failure of this task, so this path is explicitly asserted.
 #     B4  no admin identity resolves (helper exits 3): the step still
-#         returns 0 (advisory-never-fails), BRANCH_PROTECTION_STATUS
-#         reflects the no-admin outcome, and the warning relayed to the
-#         operator contains a complete copy-pasteable
-#         `printf ... | gh api -X PUT ...` block.
+#         returns 0 (advisory-never-fails), BRANCH_PROTECTION_STATUS is the
+#         reason-agnostic "unprotected (could not apply automatically — see
+#         warning for manual fix)" — rc 3 now covers both "no admin
+#         identity resolved" AND "an admin identity resolved but the
+#         existing rule uses a field the helper won't guess at" (#45
+#         review), so the wording no longer names "no admin identity"
+#         specifically — and the warning relayed to the operator contains a
+#         complete copy-pasteable `printf ... | gh api -X PUT ...` block.
 #
 #   Phase C — CLI arg-parse acceptance (real script binary, --help
 #     short-circuit so no project work runs, mirrors
@@ -418,9 +422,12 @@ fi
 mv "$TMP/bin/atelier-branch-protection.disabled" "$TMP/bin/atelier-branch-protection"
 
 # --- B4: no admin identity resolves (helper exits 3) — advisory-never-
-#     fails: the step still returns 0, and the operator-facing warning
-#     contains a COMPLETE copy-pasteable `printf ... | gh api -X PUT ...`
-#     block, not just a bare "no admin" message. ---
+#     fails: the step still returns 0, BRANCH_PROTECTION_STATUS uses the
+#     reason-agnostic "could not apply automatically" wording (rc 3 now also
+#     covers the unmergeable-fields refusal, not just no-admin — #45
+#     review), and the operator-facing warning contains a COMPLETE
+#     copy-pasteable `printf ... | gh api -X PUT ...` block, not just a bare
+#     "no admin" message. ---
 rm -f "$HELPER_INVOKED" "$WARN_OUT"
 export HELPER_MODE="no-admin"
 NO_BRANCH_PROTECTION_FLAG=false
@@ -434,7 +441,7 @@ else
   fail "B4: step_branch_protection() returned $step_rc, expected 0"
 fi
 
-if [ "$BRANCH_PROTECTION_STATUS" = "unprotected (no admin identity — see warning for manual fix)" ]; then
+if [ "$BRANCH_PROTECTION_STATUS" = "unprotected (could not apply automatically — see warning for manual fix)" ]; then
   pass "B4: BRANCH_PROTECTION_STATUS reflects the no-admin outcome"
 else
   fail "B4: BRANCH_PROTECTION_STATUS: got '$BRANCH_PROTECTION_STATUS'"

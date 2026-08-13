@@ -151,6 +151,8 @@ Applying the rule needs a GitHub identity with admin rights on the repo. Setup t
 
 Pass `--no-branch-protection` to `atelier-setup-project` (or skip it interactively) if you don't want this rule applied. `--apply-branch-protection` still works but is now a no-op — it's kept only so older scripts and docs don't break.
 
+`atelier-doctor` (without `--fix`) reports the same check read-only — including a copy-pasteable manual command when no admin identity is available — and never applies anything itself; only `atelier-doctor --fix` and `atelier-setup-project` ever PUT a rule.
+
 ### Already have a roadmap? Adopt it instead of rewriting it
 
 If your project already tracks its work in `ROADMAP.md` — its own priority names, ids like `TASK-12`, maybe another language — atelier won't recognize those tasks: the picker only reads the exact format shown in Step 5. Don't convert it by hand. In the project folder, run:

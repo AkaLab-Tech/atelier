@@ -22,21 +22,36 @@
 #         → FAIL row mentions "no required approving reviews"
 #         → push_fix_auto (NOT push_fix_manual) registered with the runnable
 #           command `... atelier-branch-protection --apply --repo <o/r>
-#           --branch <b> --quiet`
+#           --branch <b>` — deliberately WITHOUT --quiet (#45 review, finding
+#           4): the doctor's --fix loop now folds the command's stdout into
+#           the OK line so the applying identity is surfaced, which needs
+#           the command to actually print something.
 #   D5  unprotected + NO admin identity resolves
 #         → FAIL row
 #         → push_fix_manual (NOT push_fix_auto) registered with the
-#           instruction text; no fix_auto is ever queued (nothing the
-#           caller could actually run)
+#           instruction text, sourced from the helper's --manual mode (NOT
+#           --apply — #45 review, finding 2: a diagnostic-only doctor run
+#           must never risk a second, successful admin-identity resolution
+#           PUTting a rule); no fix_auto is ever queued (nothing the caller
+#           could actually run)
 #   D6  protected-insufficient + admin identity resolves
 #         → same fix_auto path as D4 (regression: the "insufficient" class
 #           must route through the same remediation as "unprotected")
-#   D7  no-admin (403-classified) + no admin identity resolves
-#         → same fix_manual path as D5 (the doctor's new design folds
-#           "no-admin" into the generic remediation branch rather than a
-#           distinct SKIP row — see check_branch_protection()'s comment)
+#   D7  no-admin (403-classified)
+#         → its OWN $SKIP row (NOT the generic FAIL + push_fix_manual path
+#           D5 exercises): a 403 reading the protection detail is evidence
+#           of nothing about the required-review count, so asserting FAIL
+#           would repeat, for the 403 path, exactly the false-failure #284
+#           fixed for the 404 path (#45 review, finding 3) — no fix
+#           (auto or manual) is registered
 #   D8  atelier-branch-protection helper not found on PATH
 #         → SKIP row mentions the helper is missing; no fix registered
+#   E1  the top-level `--fix` execution loop (extracted separately, since it
+#       is plain script code after all checks run, not a function): a
+#       successful fix command's non-empty stdout is folded into the same
+#       line as the ✓ OK marker (#45 review, finding 4 — the applying
+#       identity must never go silent); a successful command with EMPTY
+#       stdout still prints the bare "✓ OK" line unchanged.
 #
 # Hermetic: gh AND atelier-branch-protection are stubbed on PATH; no network
 # calls, no real gh api, no dependency on the operator's ~/.config/gh.
@@ -79,6 +94,19 @@ if ! grep -q 'no required approving reviews' "$FN_CHECK_BP"; then
   exit 1
 fi
 
+# Extract the top-level `--fix` execution loop (plain script code, not a
+# function — it runs once after every check has populated FIX_AUTO_COMMANDS,
+# so there is nothing to `awk`-match by a `name() {` header). Bounded by the
+# `APPLIED_OK=0` init line through the column-0 `fi` closing the
+# `if [ ${#FIX_AUTO_COMMANDS[@]} -gt 0 ]; then` block — verified stable by
+# the grep below, same style as this file's other extraction guards.
+FN_FIX_LOOP="$TMP/fix_loop.sh"
+awk '/^APPLIED_OK=0$/{f=1} f{print} f&&/^fi$/{exit}' "$DOCTOR" > "$FN_FIX_LOOP"
+if ! grep -q 'finding 4' "$FN_FIX_LOOP" || ! grep -q 'APPLIED_OK=\$(( APPLIED_OK + 1 ))' "$FN_FIX_LOOP"; then
+  echo "  FAIL: could not extract the --fix execution loop from $DOCTOR"
+  exit 1
+fi
+
 # =============================================================================
 # Stub gh (only the two direct calls check_branch_protection() still makes)
 # and atelier-branch-protection (the delegated classify/apply calls).
@@ -90,10 +118,15 @@ fi
 #   atelier-branch-protection stub, dispatched on $HELPER_CLASS:
 #     --status ... --json → {"class": $HELPER_CLASS, "admin_gh_dir": ...}
 #       admin_gh_dir is "/tmp/fake-admin" when $HELPER_ADMIN_DIR=1, else null
-#     --apply ...          → mimics the real helper's rc-3 "no admin" path:
-#       prints the copy-pasteable manual block on stdout, exits 3
-#       (only reachable when push_fix_manual's synchronous re-invocation
-#       runs, i.e. when $HELPER_ADMIN_DIR is unset)
+#     --apply ...          → mimics the real helper's applied path (only
+#       reached when check_branch_protection() queues push_fix_auto and the
+#       caller — i.e. atelier-doctor --fix's execution loop, not this
+#       suite — actually runs the queued command)
+#     --manual ...         → mimics the real helper's --manual mode: prints
+#       the copy-pasteable manual block on stdout, exits 0 (this is what
+#       check_branch_protection() now invokes synchronously to build the
+#       push_fix_manual text, per #45 review finding 2 — --apply is never
+#       called from the read-only doctor path)
 # =============================================================================
 
 mkdir -p "$TMP/bin"
@@ -138,6 +171,17 @@ case "$*" in
       printf '    gh api -X PUT "repos/testowner/testrepo/branches/main/protection" --input -\n'
       exit 3
     fi
+    ;;
+  *"--manual"*)
+    # The real --manual mode never probes an admin identity — it always
+    # prints the same manual block regardless of $HELPER_ADMIN_DIR — and
+    # always exits 0 (there is nothing to fail at; it is pure text output).
+    printf 'No admin identity available to apply branch protection on testowner/testrepo/main.\n'
+    printf 'Tried: /tmp/a,/tmp/b,/tmp/c,/tmp/d\n'
+    printf 'Apply manually with a repo-admin token:\n'
+    printf "  printf '%%s\\\\n' '{\"required_status_checks\":null}' | \\\\\n"
+    printf '    gh api -X PUT "repos/testowner/testrepo/branches/main/protection" --input -\n'
+    exit 0
     ;;
   *)
     printf 'atelier-branch-protection-stub: unexpected args: %s\n' "$*" >&2
@@ -273,11 +317,16 @@ if [ -f "$FIX_AUTO_OUT" ] \
   && grep -q "atelier-branch-protection" "$FIX_AUTO_OUT" \
   && grep -q -- "--apply" "$FIX_AUTO_OUT" \
   && grep -q -- "--repo" "$FIX_AUTO_OUT" \
-  && grep -q -- "--branch" "$FIX_AUTO_OUT" \
-  && grep -q -- "--quiet" "$FIX_AUTO_OUT"; then
-  pass "D4: fix_auto command is the runnable 'atelier-branch-protection --apply --repo ... --branch ... --quiet'"
+  && grep -q -- "--branch" "$FIX_AUTO_OUT"; then
+  pass "D4: fix_auto command is the runnable 'atelier-branch-protection --apply --repo ... --branch ...'"
 else
   fail "D4: fix_auto command missing expected shape (got: $(cat "$FIX_AUTO_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+if [ -f "$FIX_AUTO_OUT" ] && ! grep -q -- "--quiet" "$FIX_AUTO_OUT"; then
+  pass "D4: fix_auto command deliberately omits --quiet (#45 review finding 4: the --fix loop needs the command's stdout to surface the applying identity)"
+else
+  fail "D4: fix_auto command unexpectedly contains --quiet (got: $(cat "$FIX_AUTO_OUT" 2>/dev/null || printf '<nothing>'))"
 fi
 
 # =============================================================================
@@ -335,7 +384,10 @@ else
 fi
 
 # =============================================================================
-# D7 — no-admin (403-classified) + no admin resolves: same fix_manual path as D5
+# D7 — no-admin (403-classified): its OWN $SKIP row, no fix registered at all
+#      (#45 review, finding 3 — a 403 on the protection read is evidence of
+#      NOTHING about the review count; asserting FAIL here would repeat, for
+#      the 403 path, the exact false-failure #284 fixed for the 404 path)
 # =============================================================================
 
 reset_capture
@@ -343,16 +395,22 @@ export HELPER_CLASS="no-admin"
 unset HELPER_ADMIN_DIR
 run_check
 
-if [ -f "$FIX_MANUAL_OUT" ]; then
-  pass "D7: no-admin class + no admin resolves → push_fix_manual registered"
+if [ -f "$HOST_OUT" ] && grep -q "lacks permission to read the protection rule" "$HOST_OUT"; then
+  pass "D7: no-admin class → SKIP row mentions the token lacks permission to read the rule"
 else
-  fail "D7: no-admin class + no admin resolves → expected push_fix_manual but none registered"
+  fail "D7: no-admin class → expected a SKIP row about lacking permission (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
 fi
 
-if [ ! -f "$FIX_AUTO_OUT" ]; then
-  pass "D7: no-admin class + no admin resolves → push_fix_auto is NOT registered"
+if [ -f "$HOST_OUT" ] && grep -q "no required approving reviews" "$HOST_OUT"; then
+  fail "D7: no-admin class → must NOT report the '✗ no required approving reviews' false failure"
 else
-  fail "D7: no-admin class + no admin resolves → unexpected push_fix_auto: $(cat "$FIX_AUTO_OUT")"
+  pass "D7: no-admin class → does not report the false failure row"
+fi
+
+if [ ! -f "$FIX_AUTO_OUT" ] && [ ! -f "$FIX_MANUAL_OUT" ]; then
+  pass "D7: no-admin class → no fix registered (auto or manual) — there is nothing runnable and no evidence to advise on"
+else
+  fail "D7: no-admin class → unexpected fix registered (auto: $(cat "$FIX_AUTO_OUT" 2>/dev/null); manual: $(cat "$FIX_MANUAL_OUT" 2>/dev/null))"
 fi
 
 # =============================================================================
@@ -376,12 +434,57 @@ else
   fail "D8: helper missing → unexpected fix registered"
 fi
 
-# Restore the helper for any future phases (none currently follow).
+# Restore the helper (Phase E below no longer needs it — it exercises the
+# --fix execution loop directly — but keep the fixture tidy).
 cat > "$TMP/bin/atelier-branch-protection" << 'SHIMEOF'
 #!/usr/bin/env bash
 exit 1
 SHIMEOF
 chmod +x "$TMP/bin/atelier-branch-protection"
+
+# =============================================================================
+# Phase E — the top-level `--fix` execution loop: a successful fix command's
+# non-empty stdout is folded into the OK line (#45 review, finding 4 — some
+# runnables, e.g. atelier-branch-protection --apply, name the identity they
+# actually used, and that must never go silent). A silent successful command
+# still prints the bare "✓ OK" line unchanged.
+# =============================================================================
+
+echo ""
+echo "Phase E: --fix execution loop folds a fix command's stdout into the OK line"
+
+run_fix_loop() {
+  # shellcheck disable=SC1090,SC2034
+  source "$FN_FIX_LOOP"
+}
+
+# E1 — a fix command that prints identity text on success: the OK line must
+# contain that text verbatim, not just a bare "OK".
+FIX_AUTO_COMMANDS=("printf 'applied: testowner/testrepo/main now requires >=1 approving review (as fake-admin)'")
+LOOP_OUT="$(run_fix_loop)"
+
+if printf '%s' "$LOOP_OUT" | grep -qF "$OK applied: testowner/testrepo/main now requires >=1 approving review (as fake-admin)"; then
+  pass "E1: successful command's non-empty stdout is folded into the OK line"
+else
+  fail "E1: expected the OK line to include the command's stdout (got: $LOOP_OUT)"
+fi
+
+if ! printf '%s' "$LOOP_OUT" | grep -qF "$OK OK"; then
+  pass "E1: the bare '✓ OK' line is NOT printed when the command produced output"
+else
+  fail "E1: unexpectedly printed the bare '✓ OK' line alongside the folded output (got: $LOOP_OUT)"
+fi
+
+# E2 — a fix command with EMPTY stdout on success still prints the bare
+# "✓ OK" line (regression guard: the fold must not swallow the plain case).
+FIX_AUTO_COMMANDS=("true")
+LOOP_OUT="$(run_fix_loop)"
+
+if printf '%s' "$LOOP_OUT" | grep -qF "$OK OK"; then
+  pass "E2: empty stdout on success still prints the bare '✓ OK' line"
+else
+  fail "E2: expected the bare '✓ OK' line for a silent successful command (got: $LOOP_OUT)"
+fi
 
 # =============================================================================
 # Result

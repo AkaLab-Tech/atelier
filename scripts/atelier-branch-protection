@@ -12,6 +12,7 @@
 # Usage:
 #   atelier-branch-protection --status [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
 #   atelier-branch-protection --apply  [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
+#   atelier-branch-protection --manual [--repo <owner/name>] [--branch <b>]
 #   atelier-branch-protection --help
 #
 # --repo / --branch default to `gh repo view` on the current directory's repo.
@@ -22,18 +23,33 @@
 # reports it — this lets a caller (atelier-doctor) decide whether a fix is
 # runnable without performing one.
 #
-# --apply classifies first (never PUTs when already protected-sufficient or
-# protected-noadmin), then, if remediation is needed, walks the same admin
-# candidate list and PUTs a merge-not-overwrite payload under the first
-# identity found.
+# --apply classifies first under a (possibly unprivileged) probe identity,
+# then, if remediation looks needed, resolves an admin identity and re-reads
+# the rule UNDER THAT IDENTITY before touching anything — the probe identity
+# may have 403'd or 404'd on a rule that is actually already sufficient, and
+# only the admin identity can answer that question. Never PUTs a rule it can
+# already see is sufficient; when it does PUT, it merges into the existing
+# rule rather than overwriting it, and refuses (rather than guesses) when
+# the existing rule uses a field this helper does not model.
+#
+# --manual prints the copy-pasteable manual remediation block without ever
+# probing an admin identity or reading the protection endpoint — the only
+# call shape that is guaranteed non-mutating regardless of which identities
+# happen to resolve at call time. Use this (never --apply) from a read-only
+# caller, e.g. atelier-doctor without --fix, that only wants the instruction
+# text.
 #
 # Exit codes:
 #   0  --status: classification succeeded (any class).
 #      --apply:  already sufficient, already protected, or applied.
+#      --manual: block printed.
 #   2  prerequisite missing (no gh/jq/git, not a git repo, no GitHub remote,
 #      or an unexpected classify error) — advisory, never treat as fatal.
-#   3  --apply only: no admin identity resolved. The copy-pasteable manual
-#      `gh api -X PUT ...` block is printed on stdout regardless of --json.
+#   3  --apply only: no admin identity resolved, OR an admin identity was
+#      found but the existing rule sets a field this helper does not model
+#      (dismissal_restrictions / bypass_pull_request_allowances) and it
+#      refuses to guess. The copy-pasteable manual `gh api -X PUT ...` block
+#      is printed on stdout regardless of --json.
 #   4  --apply only: an admin identity was found but the PUT itself failed.
 
 set -uo pipefail
@@ -48,16 +64,27 @@ ${SCRIPT_NAME} — classify and apply branch protection on a repo's default bran
 USAGE:
   ${SCRIPT_NAME} --status [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
   ${SCRIPT_NAME} --apply  [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
+  ${SCRIPT_NAME} --manual [--repo <owner/name>] [--branch <b>]
   ${SCRIPT_NAME} --help
 
 OPTIONS:
   --status         Report the current classification (never mutates).
   --apply          Apply a minimal rule (>=1 required approving review) if
                     the branch needs it. Idempotent; never lowers an
-                    existing rule (merges rather than overwrites).
+                    existing rule (merges rather than overwrites); re-reads
+                    the rule under the resolved admin identity before
+                    deciding, so it never downgrades a rule the admin
+                    identity can see is already sufficient.
+  --manual         Print the manual remediation block only. Never probes an
+                    admin identity or reads the protection endpoint —
+                    guaranteed non-mutating regardless of which identities
+                    resolve at call time. For read-only callers that only
+                    want the instruction text (use instead of --apply).
   --repo <o/name>  Repo to target. Default: \`gh repo view\` on the cwd repo.
   --branch <b>     Branch to target. Default: the repo's default branch.
   --json           Emit machine-readable JSON on stdout instead of text.
+                    (--manual always prints plain text; there is nothing to
+                    classify.)
   --quiet          Suppress the human-readable success line (errors and the
                     manual instruction block, when applicable, still print).
   --help, -h       Show this help and exit.
@@ -71,9 +98,10 @@ ADMIN IDENTITY RESOLUTION (--apply, in order):
                                           viewerPermission and to PUT)
 
 EXIT CODES:
-  0  status classified, or apply succeeded / already sufficient
+  0  status classified, apply succeeded / already sufficient, or manual block printed
   2  prerequisite missing (advisory)
-  3  --apply: no admin identity resolved (manual block printed on stdout)
+  3  --apply: no admin identity resolved, or the existing rule uses a field
+     this helper does not model (manual block printed on stdout either way)
   4  --apply: admin identity found but the PUT failed
 EOF
 }
@@ -88,6 +116,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --status) MODE="status"; shift ;;
     --apply)  MODE="apply"; shift ;;
+    --manual) MODE="manual"; shift ;;
     --repo)   [ -n "${2:-}" ] || die "--repo requires a value"; REPO="$2"; shift 2 ;;
     --repo=*) REPO="${1#--repo=}"; shift ;;
     --branch)   [ -n "${2:-}" ] || die "--branch requires a value"; BRANCH="$2"; shift 2 ;;
@@ -99,7 +128,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$MODE" ] || die "must pass --status or --apply (run --help for usage)"
+[ -n "$MODE" ] || die "must pass --status, --apply, or --manual (run --help for usage)"
 command -v gh >/dev/null 2>&1 || die "gh not found on PATH"
 command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
 
@@ -196,23 +225,66 @@ resolve_admin_gh_dir() {
 
 # ---------- apply_protection <gh_dir> <owner_repo> <branch> ----------
 # Merge-not-overwrite payload builder + PUT + re-verify classify. Assumes
-# the caller already confirmed gh_dir has admin on owner_repo. Prints the
-# post-PUT classification on stdout and returns 0 on a successful PUT
-# (regardless of what the re-verify reports), 1 if the PUT itself failed.
+# the caller already confirmed gh_dir has admin on owner_repo — but that
+# confirmation is only about permission, not about the rule's current
+# strength, so the FIRST thing this function does is re-read the rule under
+# gh_dir and re-decide from that read (#45 review, critical finding): the
+# earlier classification that got us here may have come from a less-
+# privileged probe identity that 403'd or 404'd on a rule that is actually
+# already sufficient. Never PUT a rule this identity can see is sufficient.
+#
+# On stdout: two lines, "<status>\n<class>" where status is
+# "already-sufficient" or "applied". Returns 0 for either. Returns 1 if a
+# PUT was attempted and failed. Returns 2 (no stdout) if the existing rule
+# sets a field this helper does not model and refuses to guess at it — the
+# caller is expected to print the manual block in that case.
 apply_protection() {
   local gh_dir="$1" owner_repo="$2" branch="$3"
 
-  # Build payload: for an existing-but-insufficient rule, merge rather than
-  # overwrite so stronger settings (status checks, code-owner reviews) are
-  # preserved. enforce_admins=false lets the AtelierAuthor bot squash-merge
-  # its own approved PRs — set this to true and auto-merge breaks in a new
-  # way, because the bot itself would then be blocked by the rule it needs
-  # to pass through. restrictions=null imposes no push restrictions.
-  local existing payload=""
+  local existing existing_rc=0
   existing="$(env GH_CONFIG_DIR="$gh_dir" \
-    gh api "repos/$owner_repo/branches/$branch/protection" 2>/dev/null || true)"
-  if [ -n "$existing" ]; then
-    payload="$(printf '%s' "$existing" | jq '{
+    gh api "repos/$owner_repo/branches/$branch/protection" 2>/dev/null)" || existing_rc=$?
+
+  local existing_count=0
+  if [ "$existing_rc" -eq 0 ] && [ -n "$existing" ]; then
+    existing_count="$(printf '%s' "$existing" | \
+      jq -r '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null || printf '0')"
+    existing_count="${existing_count:-0}"
+
+    if [ "$existing_count" -ge 1 ]; then
+      printf 'already-sufficient\nprotected-sufficient'
+      return 0
+    fi
+
+    # dismissal_restrictions / bypass_pull_request_allowances hold user and
+    # team OBJECTS on GET but need login/slug ID LISTS on PUT — reformatting
+    # them blind risks silently dropping who they cover. Since PUT is a
+    # full replace, refuse rather than guess; the manual block lets the
+    # operator carry them over by hand.
+    local has_unmodeled_restrictions
+    has_unmodeled_restrictions="$(printf '%s' "$existing" | jq -r '
+      ((.required_pull_request_reviews.dismissal_restrictions // {}) as $d
+       | (($d.users // []) | length) + (($d.teams // []) | length) > 0)
+      or
+      ((.required_pull_request_reviews.bypass_pull_request_allowances // {}) as $b
+       | (($b.users // []) | length) + (($b.teams // []) | length) + (($b.apps // []) | length) > 0)
+    ' 2>/dev/null || printf 'false')"
+    [ "$has_unmodeled_restrictions" = "true" ] && return 2
+  fi
+
+  local review_count=1
+  [ "$existing_count" -ge 1 ] && review_count="$existing_count"
+
+  # Build payload: for an existing-but-insufficient rule, merge rather than
+  # overwrite so stronger settings (status checks, code-owner reviews, and
+  # the boolean protection flags PUT resets by default) are preserved.
+  # enforce_admins=false lets the AtelierAuthor bot squash-merge its own
+  # approved PRs — set this to true and auto-merge breaks in a new way,
+  # because the bot itself would then be blocked by the rule it needs to
+  # pass through. restrictions=null imposes no push restrictions.
+  local payload=""
+  if [ "$existing_rc" -eq 0 ] && [ -n "$existing" ]; then
+    payload="$(printf '%s' "$existing" | jq --argjson count "$review_count" '{
       required_status_checks: (
         if .required_status_checks == null then null
         else {
@@ -224,9 +296,15 @@ apply_protection() {
       required_pull_request_reviews: {
         dismiss_stale_reviews: (.required_pull_request_reviews.dismiss_stale_reviews // false),
         require_code_owner_reviews: (.required_pull_request_reviews.require_code_owner_reviews // false),
-        required_approving_review_count: 1
+        required_approving_review_count: $count
       },
-      restrictions: null
+      restrictions: null,
+      required_linear_history: (.required_linear_history.enabled // false),
+      required_conversation_resolution: (.required_conversation_resolution.enabled // false),
+      allow_force_pushes: (.allow_force_pushes.enabled // false),
+      allow_deletions: (.allow_deletions.enabled // false),
+      block_creations: (.block_creations.enabled // false),
+      lock_branch: (.lock_branch.enabled // false)
     }' 2>/dev/null || printf '')"
   fi
   [ -n "$payload" ] || payload="$MIN_PAYLOAD"
@@ -238,7 +316,7 @@ apply_protection() {
       "repos/$owner_repo/branches/$branch/protection" \
       --input "$tmp_payload" >/dev/null 2>&1; then
     rm -f "$tmp_payload"
-    classify_branch_protection "$gh_dir" "$owner_repo" "$branch"
+    printf 'applied\n%s' "$(classify_branch_protection "$gh_dir" "$owner_repo" "$branch")"
     return 0
   fi
   rm -f "$tmp_payload"
@@ -268,6 +346,16 @@ print_manual_block() {
   printf '    gh api -X PUT "repos/%s/branches/%s/protection" --input -\n' "$owner_repo" "$branch"
 }
 
+print_unmergeable_block() {
+  local owner_repo="$1" branch="$2"
+  printf 'Existing branch protection on %s/%s sets dismissal_restrictions or\n' "$owner_repo" "$branch"
+  printf 'bypass_pull_request_allowances — this helper does not model those\n'
+  printf 'fields and refuses to PUT a payload that would silently drop them\n'
+  printf '(the branch protection PUT endpoint is a full replace).\n'
+  printf 'Review the existing rule and update it manually:\n'
+  printf '  gh api "repos/%s/branches/%s/protection"\n' "$owner_repo" "$branch"
+}
+
 # ---------- resolve --repo/--branch when not given ----------
 if [ -z "$REPO" ] || [ -z "$BRANCH" ]; then
   command -v git >/dev/null 2>&1 || die "git not found on PATH (or pass --repo and --branch)"
@@ -281,6 +369,12 @@ if [ -z "$REPO" ] || [ -z "$BRANCH" ]; then
   [ -n "$BRANCH" ] || BRANCH="$(printf '%s' "$repo_json" | jq -r '.defaultBranchRef.name // empty')"
 fi
 [ -n "$REPO" ] && [ -n "$BRANCH" ] || die "could not resolve owner/repo or branch"
+
+# ---------- --manual ----------
+if [ "$MODE" = "manual" ]; then
+  print_manual_block "$REPO" "$BRANCH"
+  exit 0
+fi
 
 # ---------- --status ----------
 if [ "$MODE" = "status" ]; then
@@ -352,11 +446,20 @@ if ! admin_dir="$(resolve_admin_gh_dir "$REPO")"; then
   exit 3
 fi
 
-if verify_class="$(apply_protection "$admin_dir" "$REPO" "$BRANCH")"; then
+apply_out="$(apply_protection "$admin_dir" "$REPO" "$BRANCH")"; apply_rc=$?
+
+if [ "$apply_rc" -eq 0 ]; then
+  apply_status="$(printf '%s\n' "$apply_out" | sed -n '1p')"
+  verify_class="$(printf '%s\n' "$apply_out" | sed -n '2p')"
   identity_login="$(env GH_CONFIG_DIR="$admin_dir" gh api user --jq .login 2>/dev/null || true)"
   class="$verify_class"
-  emit_result "applied" "$identity_login" "$admin_dir"
+  emit_result "$apply_status" "$identity_login" "$admin_dir"
   exit 0
+fi
+
+if [ "$apply_rc" -eq 2 ]; then
+  print_unmergeable_block "$REPO" "$BRANCH"
+  exit 3
 fi
 
 identity_login="$(env GH_CONFIG_DIR="$admin_dir" gh api user --jq .login 2>/dev/null || true)"

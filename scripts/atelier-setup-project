@@ -1440,9 +1440,13 @@ step_branch_protection() {
       esac
       ;;
     3)
-      warn "No admin identity available to apply branch protection on $owner_repo/$default_branch."
+      # rc 3 now covers two distinct reasons (#45 review): no admin identity
+      # resolved at all, OR one did but the existing rule uses a field this
+      # helper refuses to guess at (dismissal_restrictions /
+      # bypass_pull_request_allowances) — $out's own first line already
+      # names which one, so it is not duplicated here.
       printf '%s\n' "$out" | while IFS= read -r line; do warn "$line"; done
-      BRANCH_PROTECTION_STATUS="unprotected (no admin identity — see warning for manual fix)"
+      BRANCH_PROTECTION_STATUS="unprotected (could not apply automatically — see warning for manual fix)"
       ;;
     4)
       local class identity

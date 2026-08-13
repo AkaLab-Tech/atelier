@@ -41,6 +41,45 @@
 #
 #   Phase E — --help usage, `bash -n`, and the executable bit.
 #
+#   Phase G — THE #45 REVIEW'S CRITICAL FINDING, pinned so it can never
+#     regress: apply_protection() re-reads the rule under the ADMIN
+#     identity before building any payload, and short-circuits with zero
+#     PUT whenever that read already shows required_approving_review_count
+#     >= 1 — even when the PROBE identity's earlier classify saw something
+#     else entirely (403/no-admin) and only the later-resolved admin
+#     identity can see the rule is already strict. Before this fix, the
+#     decision used which identity's view? the probe's; the execution used
+#     the admin's privileges — so a repo with an existing
+#     required_approving_review_count: 3 got silently rewritten down to 1.
+#     Every `gh` invocation is logged; G asserts no "-X PUT" line ever
+#     appears in that log, the reported status is "already-sufficient", and
+#     the existing rule's count is untouched (still 3).
+#
+#   Phase H — boolean protection-field carry-through (#45 review, important
+#     finding: PUT is a full replace, so any field the payload omits resets
+#     to the API default). required_linear_history / required_
+#     conversation_resolution / allow_force_pushes / allow_deletions /
+#     block_creations / lock_branch must all be carried through from
+#     `.<field>.enabled` on GET to a plain boolean on the PUT payload, not
+#     silently reset to false.
+#
+#   Phase I — refusal to guess at fields this helper does not model (#45
+#     review, important finding): a non-empty dismissal_restrictions or
+#     bypass_pull_request_allowances on the existing rule (GET returns
+#     user/team OBJECTS; PUT wants ID LISTS — reformatting blind risks
+#     silently dropping who they cover) makes apply_protection() refuse to
+#     PUT at all; the top-level --apply exits 3 with print_unmergeable_
+#     block's text (naming the offending field) on stdout.
+#
+#   Phase J — --manual mode (#45 review, important finding: a read-only
+#     doctor invocation must never risk a mutating PUT via a second,
+#     transiently-successful admin-identity resolution). Passing --repo/
+#     --branch explicitly means --manual needs no git/gh call at all to
+#     resolve them; combined with a `gh` stub that fails hard on ANY
+#     invocation, this proves --manual never probes an admin identity or
+#     reads the protection endpoint, while still printing the complete
+#     manual block.
+#
 #   Phase F — cheap regression guards:
 #     F1  classify_branch_protection lives in exactly ONE file under
 #         scripts/ (grep -rc 'Branch not protected' scripts/ has exactly
@@ -540,6 +579,385 @@ if printf '%s' "$help_out" | grep -q "USAGE" \
   pass "E4: --help prints usage documenting --status and --apply"
 else
   fail "E4: --help output missing expected usage content (got: $help_out)"
+fi
+
+# =============================================================================
+# Phase G — THE #45 REVIEW'S CRITICAL FINDING: never PUT a rule the ADMIN
+# identity can already see is sufficient, even when the PROBE identity saw
+# something else entirely (403/no-admin).
+# =============================================================================
+
+echo ""
+echo "Phase G: apply_protection() re-reads under the admin identity and never PUTs an already-sufficient rule"
+
+PHASE_G_ATELIER_CFG="$TMP/phase-g-atelier-cfg"
+GH_AUTHOR_DIR="$PHASE_G_ATELIER_CFG/gh/author"   # the PROBE identity (default_gh_dir())
+GH_ADMIN_DIR="$PHASE_G_ATELIER_CFG/gh/admin"     # the ADMIN identity (resolve_admin_gh_dir())
+mkdir -p "$GH_AUTHOR_DIR" "$GH_ADMIN_DIR"
+printf 'WRITE\n' > "$GH_AUTHOR_DIR/perm"   # author identity: not admin (matters for candidate 3 order)
+printf 'ADMIN\n' > "$GH_ADMIN_DIR/perm"    # admin identity: candidate 2, resolves first
+
+EXISTING_STRICT_JSON="$TMP/existing_strict.json"
+cat > "$EXISTING_STRICT_JSON" << 'EOF'
+{
+  "required_status_checks": {"strict": true, "contexts": ["ci/build"]},
+  "enforce_admins": {"enabled": true},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": true,
+    "required_approving_review_count": 3
+  },
+  "restrictions": null
+}
+EOF
+
+GH_CALL_LOG_G="$TMP/gh_call_log_g"
+rm -f "$GH_CALL_LOG_G"
+
+# The PROBE identity (author dir) 403s reading the protection endpoint — it
+# genuinely cannot see the rule. Only the ADMIN identity (admin dir) can
+# read it, and what it reads is an existing rule that ALREADY requires 3
+# approving reviews.
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_STRICT_JSON}"
+CALL_LOG="${GH_CALL_LOG_G}"
+ADMIN_DIR="${GH_ADMIN_DIR}"
+printf '%s\n' "\$*" >> "\$CALL_LOG"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    printf 'UNEXPECTED PUT INVOKED\n' >> "\$CALL_LOG"
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    if [ "\${GH_CONFIG_DIR:-}" = "\$ADMIN_DIR" ]; then
+      cat "\$EXISTING_JSON"
+    else
+      printf 'Must have admin rights to Repository.\n' >&2
+      exit 1
+    fi
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_g="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_G_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
+rc_g=$?
+
+[ "$rc_g" -eq 0 ] \
+  && pass "G0: --apply exits 0 when the admin re-read shows the rule is already sufficient" \
+  || fail "G0: --apply exited $rc_g, expected 0 (output: $out_g)"
+
+status_g="$(printf '%s' "$out_g" | jq -r '.status // empty' 2>/dev/null)"
+[ "$status_g" = "already-sufficient" ] \
+  && pass "G1: reported status = 'already-sufficient'" \
+  || fail "G1: expected status 'already-sufficient', got '$status_g' (output: $out_g)"
+
+if [ -f "$GH_CALL_LOG_G" ] && grep -q -- "-X PUT" "$GH_CALL_LOG_G"; then
+  fail "G2: THE CRITICAL REGRESSION — a PUT was made despite the admin-identity re-read already showing required_approving_review_count=3 (call log: $(cat "$GH_CALL_LOG_G"))"
+else
+  pass "G2: no PUT was ever made — no '-X PUT' invocation appears in the gh call log"
+fi
+
+count_after_g="$(jq -r '.required_pull_request_reviews.required_approving_review_count' "$EXISTING_STRICT_JSON")"
+[ "$count_after_g" = "3" ] \
+  && pass "G3: the existing rule's required_approving_review_count is untouched (still 3)" \
+  || fail "G3: expected the existing rule to remain count=3, got '$count_after_g'"
+
+# =============================================================================
+# Phase H — boolean protection fields are carried through as plain booleans,
+# not reset to false (PUT is a full replace; #45 review important finding)
+# =============================================================================
+
+echo ""
+echo "Phase H: apply_protection() carries through required_linear_history / required_conversation_resolution / allow_force_pushes / allow_deletions / block_creations / lock_branch"
+
+PHASE_H_ATELIER_CFG="$TMP/phase-h-atelier-cfg"
+mkdir -p "$PHASE_H_ATELIER_CFG/gh/admin" "$PHASE_H_ATELIER_CFG/gh/author"
+printf 'WRITE\n' > "$PHASE_H_ATELIER_CFG/gh/admin/perm"
+printf 'ADMIN\n' > "$PHASE_H_ATELIER_CFG/gh/author/perm"
+
+EXISTING_BOOLEANS_JSON="$TMP/existing_booleans.json"
+cat > "$EXISTING_BOOLEANS_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": true},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null,
+  "required_linear_history": {"enabled": true},
+  "required_conversation_resolution": {"enabled": true},
+  "allow_force_pushes": {"enabled": true},
+  "allow_deletions": {"enabled": false},
+  "block_creations": {"enabled": false},
+  "lock_branch": {"enabled": false}
+}
+EOF
+
+PUT_PAYLOAD_CAPTURE_H="$TMP/put_payload_h.json"
+rm -f "$PUT_PAYLOAD_CAPTURE_H"
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_BOOLEANS_JSON}"
+PUT_PAYLOAD_CAPTURE="${PUT_PAYLOAD_CAPTURE_H}"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    prev=""
+    for a in "\$@"; do
+      if [ "\$prev" = "--input" ]; then
+        cp "\$a" "\$PUT_PAYLOAD_CAPTURE"
+        break
+      fi
+      prev="\$a"
+    done
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_h="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_H_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
+rc_h=$?
+
+[ "$rc_h" -eq 0 ] \
+  && pass "H0: --apply exits 0 on a protected-insufficient branch with boolean protection fields set" \
+  || fail "H0: --apply exited $rc_h, expected 0 (output: $out_h)"
+
+if [ ! -f "$PUT_PAYLOAD_CAPTURE_H" ]; then
+  fail "H: PUT payload was never captured — gh -X PUT was not called"
+else
+  lh="$(jq -r '.required_linear_history' "$PUT_PAYLOAD_CAPTURE_H")"
+  [ "$lh" = "true" ] \
+    && pass "H1: required_linear_history carried through as plain boolean true (not reset to false)" \
+    || fail "H1: required_linear_history: expected 'true', got '$lh'"
+
+  crr="$(jq -r '.required_conversation_resolution' "$PUT_PAYLOAD_CAPTURE_H")"
+  [ "$crr" = "true" ] \
+    && pass "H2: required_conversation_resolution carried through as plain boolean true" \
+    || fail "H2: required_conversation_resolution: expected 'true', got '$crr'"
+
+  afp="$(jq -r '.allow_force_pushes' "$PUT_PAYLOAD_CAPTURE_H")"
+  [ "$afp" = "true" ] \
+    && pass "H3: allow_force_pushes carried through as plain boolean true" \
+    || fail "H3: allow_force_pushes: expected 'true', got '$afp'"
+
+  ad="$(jq -r '.allow_deletions' "$PUT_PAYLOAD_CAPTURE_H")"
+  [ "$ad" = "false" ] \
+    && pass "H4: allow_deletions carried through as plain boolean false" \
+    || fail "H4: allow_deletions: expected 'false', got '$ad'"
+
+  bc="$(jq -r '.block_creations' "$PUT_PAYLOAD_CAPTURE_H")"
+  [ "$bc" = "false" ] \
+    && pass "H5: block_creations carried through as plain boolean false" \
+    || fail "H5: block_creations: expected 'false', got '$bc'"
+
+  lb="$(jq -r '.lock_branch' "$PUT_PAYLOAD_CAPTURE_H")"
+  [ "$lb" = "false" ] \
+    && pass "H6: lock_branch carried through as plain boolean false" \
+    || fail "H6: lock_branch: expected 'false', got '$lb'"
+fi
+
+# =============================================================================
+# Phase I — refuses to PUT when the existing rule uses a field this helper
+# does not model (dismissal_restrictions / bypass_pull_request_allowances):
+# GET returns user/team OBJECTS, PUT wants ID LISTS — refuse rather than
+# guess (#45 review, important finding)
+# =============================================================================
+
+echo ""
+echo "Phase I: apply_protection() refuses to PUT when dismissal_restrictions / bypass_pull_request_allowances are set"
+
+PHASE_I_ATELIER_CFG="$TMP/phase-i-atelier-cfg"
+mkdir -p "$PHASE_I_ATELIER_CFG/gh/admin" "$PHASE_I_ATELIER_CFG/gh/author"
+printf 'WRITE\n' > "$PHASE_I_ATELIER_CFG/gh/admin/perm"
+printf 'ADMIN\n' > "$PHASE_I_ATELIER_CFG/gh/author/perm"
+
+run_unmergeable_case() {
+  # $1 = existing-rule JSON file, $2 = label (used to name the call-log file)
+  local existing_json="$1" label="$2" call_log
+  call_log="$TMP/gh_call_log_${label}"
+  rm -f "$call_log"
+
+  cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${existing_json}"
+CALL_LOG="${call_log}"
+printf '%s\n' "\$*" >> "\$CALL_LOG"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    printf 'UNEXPECTED PUT INVOKED\n' >> "\$CALL_LOG"
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+  chmod +x "$TMP/bin/gh"
+
+  printf '%s' "$call_log"
+}
+
+# --- I1: dismissal_restrictions.teams non-empty ---
+EXISTING_DISMISSAL_JSON="$TMP/existing_dismissal.json"
+cat > "$EXISTING_DISMISSAL_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0,
+    "dismissal_restrictions": {"users": [], "teams": [{"slug": "platform-team"}]}
+  },
+  "restrictions": null
+}
+EOF
+
+call_log_i1="$(run_unmergeable_case "$EXISTING_DISMISSAL_JSON" "i1")"
+
+out_i1="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_I_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_i1=$?
+
+[ "$rc_i1" -eq 3 ] \
+  && pass "I1: --apply exits 3 when the existing rule sets dismissal_restrictions.teams" \
+  || fail "I1: expected exit 3, got $rc_i1 (output: $out_i1)"
+
+if printf '%s' "$out_i1" | grep -q "dismissal_restrictions"; then
+  pass "I1: print_unmergeable_block's text on stdout names dismissal_restrictions"
+else
+  fail "I1: expected 'dismissal_restrictions' on stdout (got: $out_i1)"
+fi
+
+if [ -f "$call_log_i1" ] && grep -q -- "-X PUT" "$call_log_i1"; then
+  fail "I1: PUT was made despite the unmodeled dismissal_restrictions field (call log: $(cat "$call_log_i1"))"
+else
+  pass "I1: no PUT was made"
+fi
+
+# --- I2: bypass_pull_request_allowances.users non-empty ---
+EXISTING_BYPASS_JSON="$TMP/existing_bypass.json"
+cat > "$EXISTING_BYPASS_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0,
+    "bypass_pull_request_allowances": {"users": [{"login": "release-bot"}], "teams": [], "apps": []}
+  },
+  "restrictions": null
+}
+EOF
+
+call_log_i2="$(run_unmergeable_case "$EXISTING_BYPASS_JSON" "i2")"
+
+out_i2="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_I_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_i2=$?
+
+[ "$rc_i2" -eq 3 ] \
+  && pass "I2: --apply exits 3 when the existing rule sets bypass_pull_request_allowances.users" \
+  || fail "I2: expected exit 3, got $rc_i2 (output: $out_i2)"
+
+if printf '%s' "$out_i2" | grep -q "bypass_pull_request_allowances"; then
+  pass "I2: print_unmergeable_block's text on stdout names bypass_pull_request_allowances"
+else
+  fail "I2: expected 'bypass_pull_request_allowances' on stdout (got: $out_i2)"
+fi
+
+if [ -f "$call_log_i2" ] && grep -q -- "-X PUT" "$call_log_i2"; then
+  fail "I2: PUT was made despite the unmodeled bypass_pull_request_allowances field (call log: $(cat "$call_log_i2"))"
+else
+  pass "I2: no PUT was made"
+fi
+
+# =============================================================================
+# Phase J — --manual mode: never probes an admin identity or reads the
+# protection endpoint, regardless of which identities would resolve
+# (#45 review, important finding — a read-only doctor invocation must never
+# risk a mutating PUT via a transiently-successful second admin-identity
+# resolution)
+# =============================================================================
+
+echo ""
+echo "Phase J: --manual mode never invokes gh at all and still prints the complete manual block"
+
+# --repo/--branch are passed explicitly so --manual needs no git/gh call to
+# resolve them either; combined with a gh stub that fails hard on ANY
+# invocation, ANY call to gh from --manual mode (admin-identity probing or
+# a protection-endpoint read) would surface as "gh-stub:" in the output.
+cat > "$TMP/bin/gh" << 'SHIMEOF'
+#!/usr/bin/env bash
+printf 'gh-stub: --manual mode must never invoke gh (args: %s)\n' "$*" >&2
+exit 1
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_manual="$(ATELIER_ADMIN_GH_CONFIG_DIR="$TMP/phase-j-would-be-admin" \
+  bash "$HELPER_SCRIPT" --manual --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_manual=$?
+
+[ "$rc_manual" -eq 0 ] \
+  && pass "J1: --manual exits 0" \
+  || fail "J1: --manual exited $rc_manual, expected 0 (output: $out_manual)"
+
+if printf '%s' "$out_manual" | grep -q "gh-stub"; then
+  fail "J2: --manual invoked gh (got: $out_manual)"
+else
+  pass "J2: --manual never invoked gh — no admin-identity probe, no protection-endpoint read"
+fi
+
+if printf '%s' "$out_manual" | grep -q "gh api -X PUT" \
+  && printf '%s' "$out_manual" | grep -q "branches/$BRANCH/protection" \
+  && printf '%s' "$out_manual" | grep -q "No admin identity available"; then
+  pass "J3: --manual still prints the complete copy-pasteable manual block"
+else
+  fail "J3: --manual output missing the complete manual block (got: $out_manual)"
 fi
 
 # =============================================================================

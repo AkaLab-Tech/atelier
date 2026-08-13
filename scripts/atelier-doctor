@@ -1048,6 +1048,16 @@ check_branch_protection() {
       push_host "$OK branch protection: $owner_repo/$default_branch is protected (admin token needed to verify the ≥1-review requirement)"
       return
       ;;
+    no-admin)
+      # The probing token got a 403 reading the protection detail — we have
+      # NO evidence either way about the required-review count (#45 review,
+      # finding 3). Asserting FAIL here would repeat, for the 403 path,
+      # exactly the false-failure #284 fixed for the 404 path above. Any fix
+      # offered here also risks weakening an already-sufficient rule the
+      # probe identity simply can't see — report SKIP, not FAIL.
+      push_host "$SKIP branch protection check: $owner_repo/$default_branch — token lacks permission to read the protection rule, cannot verify the review count"
+      return
+      ;;
     skip:*)
       push_host "$SKIP branch protection check: ${class#skip:}"
       return
@@ -1058,13 +1068,20 @@ check_branch_protection() {
       ;;
   esac
 
-  # protected-insufficient | unprotected | no-admin
+  # protected-insufficient | unprotected
   push_host "$FAIL branch protection: $owner_repo/$default_branch has no required approving reviews — auto-merge guardrail #2 (reviewDecision == APPROVED) holds forever"
 
   if [ -n "$admin_dir" ]; then
-    push_fix_auto "bash \"$helper\" --apply --repo \"$owner_repo\" --branch \"$default_branch\" --quiet"
+    push_fix_auto "bash \"$helper\" --apply --repo \"$owner_repo\" --branch \"$default_branch\""
   else
-    push_fix_manual "$(bash "$helper" --apply --repo "$owner_repo" --branch "$default_branch" 2>&1 || true)"
+    # --manual only (never --apply): --apply re-resolves an admin identity
+    # itself and, on the current plain (no --fix) doctor run, that second
+    # resolution is expected to fail again — but a single transient failure
+    # on the EARLIER --status call above (rate limit, 5xx) could leave
+    # admin_dir empty here while the second resolution now succeeds, PUTting
+    # a branch-protection rule from a diagnostic-only invocation (#45
+    # review, finding 2). --manual never probes an admin identity at all.
+    push_fix_manual "$(bash "$helper" --manual --repo "$owner_repo" --branch "$default_branch" 2>&1 || true)"
   fi
 }
 
@@ -1269,10 +1286,17 @@ if [ ${#FIX_AUTO_COMMANDS[@]} -gt 0 ]; then
     # var the runnable used a literal $... for). The command originates
     # from this script's own check functions — not from user input — so
     # the eval surface is bounded by what we ourselves call push_fix_auto
-    # with. We capture and suppress the command's normal output, then
-    # surface a one-line OK / FAIL summary.
+    # with. We capture the command's output; on success we fold any
+    # non-empty output into the OK line rather than discard it — some
+    # runnables (e.g. atelier-branch-protection --apply) name the identity
+    # they actually used, and that must never go silent (#45 review,
+    # finding 4).
     if output="$(eval "$cmd" 2>&1)"; then
-      printf '    %s OK\n' "$OK"
+      if [ -n "$output" ]; then
+        printf '    %s %s\n' "$OK" "$output"
+      else
+        printf '    %s OK\n' "$OK"
+      fi
       APPLIED_OK=$(( APPLIED_OK + 1 ))
     else
       rc=$?
