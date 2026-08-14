@@ -1434,6 +1434,16 @@ step_branch_protection() {
           BRANCH_PROTECTION_STATUS="ok (protected; admin token needed to verify the ≥1-review requirement)" ;;
         applied)
           sublog "applied: required_approving_review_count=1, enforce_admins=false on $owner_repo/$default_branch (as $identity)"
+          # #45 review finding 2: the enforce_admins-relaxed note used to be
+          # text-only, so it never reached this --json caller. enforce_admins_relaxed
+          # + message make it machine-readable; surface it the same way the
+          # helper's own plain-text branch would.
+          local relaxed message
+          relaxed="$(printf '%s' "$out" | jq -r '.enforce_admins_relaxed // false' 2>/dev/null)"
+          message="$(printf '%s' "$out" | jq -r '.message // empty' 2>/dev/null)"
+          if [ "$relaxed" = "true" ] && [ -n "$message" ]; then
+            warn "$message"
+          fi
           BRANCH_PROTECTION_STATUS="applied as $identity ($owner_repo/$default_branch: 1 required review)" ;;
         *)
           BRANCH_PROTECTION_STATUS="ok (${class:-unknown})" ;;

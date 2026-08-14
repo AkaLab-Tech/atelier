@@ -151,7 +151,7 @@ Applying the rule needs a GitHub identity with admin rights on the repo. Setup t
 
 Before applying anything, the admin identity re-reads whatever rule is already there so it can merge into it rather than overwrite it. If that re-read itself fails for a reason other than "no rule exists" (a transient GitHub error, a rate limit, …), setup never guesses — it skips applying, reports the failure, and leaves the existing rule untouched.
 
-Pass `--no-branch-protection` to `atelier-setup-project` (or skip it interactively) if you don't want this rule applied. `--apply-branch-protection` still works but is now a no-op — it's kept only so older scripts and docs don't break.
+Pass `--no-branch-protection` to `atelier-setup-project` if you don't want this rule applied — there's no interactive prompt to skip any more, the step runs unconditionally otherwise. `--apply-branch-protection` still works but is now a no-op — it's kept only so older scripts and docs don't break.
 
 `atelier-doctor` (without `--fix`) reports the same check read-only — including a copy-pasteable manual command when no admin identity is available — and never applies anything itself; only `atelier-doctor --fix` and `atelier-setup-project` ever PUT a rule.
 

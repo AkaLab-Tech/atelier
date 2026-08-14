@@ -29,8 +29,10 @@
 # may have 403'd or 404'd on a rule that is actually already sufficient, and
 # only the admin identity can answer that question. Never PUTs a rule it can
 # already see is sufficient; when it does PUT, it merges into the existing
-# rule rather than overwriting it, and refuses (rather than guesses) when
-# the existing rule uses a field this helper does not model. If the admin
+# rule rather than overwriting it, and refuses (rather than guesses) whenever
+# the existing rule has a top-level field (or a required_pull_request_reviews
+# sub-field) that is not one of the explicit, named fields this helper models
+# — see MODELED_TOP_KEYS / MODELED_PR_REVIEW_SUBKEYS below. If the admin
 # identity's re-read itself fails for any reason other than a confirmed-
 # unprotected 404, --apply aborts without ever PUTting — a failed read is
 # never treated as "no rule exists".
@@ -54,11 +56,13 @@
 #      etc.) — no PUT is attempted in that case; the underlying gh error is
 #      printed to stderr.
 #   3  --apply only: no admin identity resolved, OR an admin identity was
-#      found but the existing rule sets a field this helper does not model
-#      (dismissal_restrictions / bypass_pull_request_allowances / a non-
-#      empty top-level restrictions) and it refuses to guess. The copy-
-#      pasteable manual `gh api -X PUT ...` block is printed on stdout
-#      regardless of --json.
+#      found but the existing rule has a field outside the explicit modeled
+#      set (MODELED_TOP_KEYS / MODELED_PR_REVIEW_SUBKEYS below — e.g.
+#      dismissal_restrictions, bypass_pull_request_allowances, or ANY
+#      present top-level restrictions, even with every array empty) and it
+#      refuses to guess. The copy-pasteable manual `gh api -X PUT ...` block
+#      is printed on stdout regardless of --json, naming the offending
+#      field(s) when the reason is an unmodeled field.
 #   4  --apply only: an admin identity was found but the PUT itself failed.
 
 set -uo pipefail
@@ -144,6 +148,108 @@ command -v gh >/dev/null 2>&1 || die "gh not found on PATH"
 command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
 
 MIN_PAYLOAD='{"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null}'
+
+# ---------- modeled / informational / unmodeled field sets (#45 cycle 5) ----------
+# Four consecutive review cycles each found a NEW field the full-replace PUT
+# silently dropped while apply_protection() still reported "applied" — a
+# completeness gap, not any one field's fault. Rather than keep chasing
+# individual fields, the default is inverted here: apply_protection() only
+# considers a GET body's field understood if it is named in one of the two
+# lists below; anything else present with real content makes it refuse
+# instead of guess (see find_unmodeled_keys()). These lists are the single
+# place that question is answered — do not re-answer it ad hoc elsewhere.
+#
+# MODELED_TOP_KEYS — top-level fields the merge-payload builder in
+# apply_protection() explicitly reads and writes back.
+MODELED_TOP_KEYS=(
+  required_status_checks
+  required_pull_request_reviews
+  enforce_admins
+  required_linear_history
+  required_conversation_resolution
+  allow_force_pushes
+  allow_deletions
+  block_creations
+  lock_branch
+  allow_fork_syncing
+)
+
+# MODELED_PR_REVIEW_SUBKEYS — keys of the required_pull_request_reviews
+# object the builder round-trips. dismissal_restrictions and
+# bypass_pull_request_allowances live here too but are deliberately left
+# off: GET returns user/team OBJECTS for them, PUT wants login/slug ID
+# LISTS, and reformatting blind risks silently dropping who they cover — so
+# they fall through to "unmodeled" via the same mechanism as everything
+# else, one level down.
+MODELED_PR_REVIEW_SUBKEYS=(
+  dismiss_stale_reviews
+  require_code_owner_reviews
+  require_last_push_approval
+  required_approving_review_count
+)
+
+# Informational fields (checked inline by find_unmodeled_keys(), not listed
+# as data): GitHub's GET response includes a top-level "url" and "*_url"
+# siblings inside several nested objects (contexts_url, users_url, ...) —
+# these carry no policy meaning and are rejected outright by PUT, so they
+# must never trip the unmodeled-field refusal.
+
+# ---------- jq_array_literal <item...> ----------
+# Renders a bash array as a JSON array literal, so MODELED_TOP_KEYS /
+# MODELED_PR_REVIEW_SUBKEYS stay plain bash data instead of being re-typed
+# inside a jq program string.
+jq_array_literal() {
+  local out="[" first=true item
+  for item in "$@"; do
+    $first || out="$out,"
+    out="$out$(printf '%s' "$item" | jq -R .)"
+    first=false
+  done
+  printf '%s]' "$out"
+}
+
+# ---------- find_unmodeled_keys <existing_json> ----------
+# Prints, one per line, every field apply_protection()'s merge payload would
+# silently drop from a full-replace PUT: any top-level key of $existing_json
+# (and, one level down, any key of its required_pull_request_reviews
+# object) that is (a) not in the modeled sets above, (b) not the
+# informational "url" / "*_url" shape, and (c) not null. A null value is
+# treated the same as absent — GitHub's own GET convention for a disabled
+# optional field (required_status_checks: null, restrictions: null when no
+# rule is configured) — so it carries no policy content to lose. This is
+# what makes a PRESENT restrictions (even with every array empty) refuse:
+# on the real GET, restrictions is only present at all when push
+# restriction is enabled, so an empty allowlist means "enabled, restricted
+# to nobody", not "no restriction" — presence, not content, is the load-
+# bearing signal, which is why this checks nullness rather than emptiness.
+# Sub-keys are reported dotted (required_pull_request_reviews.
+# dismissal_restrictions) so the refusal message names exactly what it
+# found. Empty output = fully modeled, safe to build a merge payload from.
+find_unmodeled_keys() {
+  local existing="$1"
+  printf '%s' "$existing" | jq -r \
+    --argjson modeled_top "$(jq_array_literal "${MODELED_TOP_KEYS[@]}")" \
+    --argjson modeled_rpr "$(jq_array_literal "${MODELED_PR_REVIEW_SUBKEYS[@]}")" '
+    def informational: (. == "url") or test("_url$");
+    ( [ to_entries[]
+        | select(.value != null)
+        | .key
+        | select(IN($modeled_top[]) | not)
+        | select(informational | not)
+      ]
+    ) as $top
+    | ( (.required_pull_request_reviews // {}) as $rpr
+        | [ $rpr | to_entries[]
+            | select(.value != null)
+            | .key
+            | select(IN($modeled_rpr[]) | not)
+            | select(informational | not)
+            | "required_pull_request_reviews." + .
+          ]
+      ) as $rpr_sub
+    | ($top + $rpr_sub)[]
+  ' 2>/dev/null
+}
 
 # ---------- classify_branch_protection <gh_dir> <owner_repo> <branch> ----------
 # Post-#284 classifier (verbatim from the doctor's inline copy — kept
@@ -253,10 +359,10 @@ resolve_admin_gh_dir() {
 #
 # Returns 1 if a PUT was attempted and failed.
 #
-# Returns 2 (no stdout) if the existing rule sets a field this helper does
-# not model (dismissal_restrictions / bypass_pull_request_allowances / a
-# non-empty top-level restrictions) and refuses to guess at it — the caller
-# is expected to print the manual block in that case.
+# Returns 2 (stdout: the offending unmodeled key name(s), one per line —
+# see find_unmodeled_keys()) if the existing rule sets a field this helper
+# does not model and refuses to guess at it — the caller is expected to
+# print the manual block, naming those keys, in that case.
 #
 # Returns 3 (no stdout; a message is written to this function's own stderr)
 # if the re-read under gh_dir was unusable for any reason: a non-zero rc
@@ -295,23 +401,19 @@ apply_protection() {
       return 0
     fi
 
-    # dismissal_restrictions / bypass_pull_request_allowances / top-level
-    # restrictions all hold user and team OBJECTS on GET but need login/slug
-    # ID LISTS on PUT — reformatting them blind risks silently dropping who
-    # they cover. Since PUT is a full replace, refuse rather than guess; the
-    # manual block lets the operator carry them over by hand.
-    local has_unmodeled_restrictions
-    has_unmodeled_restrictions="$(printf '%s' "$existing" | jq -r '
-      ((.required_pull_request_reviews.dismissal_restrictions // {}) as $d
-       | (($d.users // []) | length) + (($d.teams // []) | length) + (($d.apps // []) | length) > 0)
-      or
-      ((.required_pull_request_reviews.bypass_pull_request_allowances // {}) as $b
-       | (($b.users // []) | length) + (($b.teams // []) | length) + (($b.apps // []) | length) > 0)
-      or
-      ((.restrictions // {}) as $r
-       | (($r.users // []) | length) + (($r.teams // []) | length) + (($r.apps // []) | length) > 0)
-    ' 2>/dev/null || printf 'false')"
-    [ "$has_unmodeled_restrictions" = "true" ] && return 2
+    # Structural refusal (#45 cycle 5): any field of the existing rule this
+    # helper does not model — see find_unmodeled_keys() above for exactly
+    # which fields that is and why restrictions is among them even when
+    # every array is empty. PUT is a full replace, so any unmodeled field
+    # silently omitted here would reset (or, for restrictions, phantom-
+    # clear) to the API default. Refuse rather than guess; the offending key
+    # name(s) are printed on stdout for the caller to relay.
+    local unmodeled_keys
+    unmodeled_keys="$(find_unmodeled_keys "$existing")"
+    if [ -n "$unmodeled_keys" ]; then
+      printf '%s' "$unmodeled_keys"
+      return 2
+    fi
   elif [ "$existing_rc" -ne 0 ]; then
     # A non-zero read is either "genuinely no rule" (404, confirmed by the
     # no-admin-safe branch-detail endpoint's .protected == false — the same
@@ -430,12 +532,14 @@ print_manual_block() {
 }
 
 print_unmergeable_block() {
-  local owner_repo="$1" branch="$2"
-  printf 'Existing branch protection on %s/%s sets dismissal_restrictions,\n' "$owner_repo" "$branch"
-  printf 'bypass_pull_request_allowances, or a non-empty restrictions — this\n'
-  printf 'helper does not model those fields and refuses to PUT a payload\n'
-  printf 'that would silently drop them (the branch protection PUT endpoint\n'
-  printf 'is a full replace).\n'
+  local owner_repo="$1" branch="$2" keys="${3:-}"
+  local keys_csv
+  keys_csv="$(printf '%s' "$keys" | paste -sd, - 2>/dev/null || printf '%s' "$keys" | tr '\n' ',' | sed 's/,$//')"
+  [ -n "$keys_csv" ] || keys_csv="a field this helper does not model"
+  printf 'Existing branch protection on %s/%s sets %s —\n' "$owner_repo" "$branch" "$keys_csv"
+  printf 'this helper does not model it and refuses to PUT a payload that\n'
+  printf 'would silently drop it (the branch protection PUT endpoint is a\n'
+  printf 'full replace).\n'
   printf 'Review the existing rule and update it manually:\n'
   printf '  gh api "repos/%s/branches/%s/protection"\n' "$owner_repo" "$branch"
 }
@@ -489,11 +593,26 @@ class="$(classify_branch_protection "$probe_dir" "$REPO" "$BRANCH")"
 emit_result() {
   local status="$1" identity="${2:-}" gh_dir="${3:-}" enforce_relaxed="${4:-false}"
   if $JSON; then
+    # enforce_admins is always kept false (load-bearing: it lets the bot
+    # squash-merge its own approved PRs) — but when the existing rule had it
+    # true, that is a silent weakening of an operator-set control. This used
+    # to be text-only (see the elif branch below), which meant it never
+    # reached callers that invoke --json (atelier-setup-project does,
+    # #45 review finding 2) — enforce_admins_relaxed + message make it
+    # machine-readable from JSON too.
+    local relaxed_json="false" relaxed_message=""
+    if [ "$status" = "applied" ] && [ "$enforce_relaxed" = "true" ]; then
+      relaxed_json="true"
+      relaxed_message="enforce_admins was true on the existing rule and is kept false (required for the bot's own squash-merges)"
+    fi
     jq -n --arg status "$status" --arg repo "$REPO" --arg branch "$BRANCH" \
       --arg class "$class" --arg identity "$identity" --arg gh_dir "$gh_dir" \
+      --argjson enforce_admins_relaxed "$relaxed_json" --arg message "$relaxed_message" \
       '{status: $status, repo: $repo, branch: $branch, class: $class,
         identity: (if ($identity | length) > 0 then $identity else null end),
-        gh_dir: (if ($gh_dir | length) > 0 then $gh_dir else null end)}'
+        gh_dir: (if ($gh_dir | length) > 0 then $gh_dir else null end),
+        enforce_admins_relaxed: $enforce_admins_relaxed,
+        message: (if ($message | length) > 0 then $message else null end)}'
   elif ! $QUIET; then
     case "$status" in
       already-sufficient) printf 'already sufficient: %s/%s requires >=1 approving review\n' "$REPO" "$BRANCH" ;;
@@ -553,7 +672,7 @@ if [ "$apply_rc" -eq 0 ]; then
 fi
 
 if [ "$apply_rc" -eq 2 ]; then
-  print_unmergeable_block "$REPO" "$BRANCH"
+  print_unmergeable_block "$REPO" "$BRANCH" "$apply_out"
   exit 3
 fi
 

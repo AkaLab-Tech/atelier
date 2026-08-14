@@ -102,16 +102,24 @@
 #     (not just classify_branch_protection() in isolation) -> must still
 #     fall through to MIN_PAYLOAD and PUT successfully.
 #
-#   Phase L — CRITICAL FINDING #2: a non-null, non-empty top-level
-#     `restrictions` on the existing rule must refuse to PUT (like
-#     dismissal_restrictions / bypass_pull_request_allowances already do),
-#     not be silently replaced with `restrictions: null`. Every existing-
-#     rule fixture elsewhere in this suite uses restrictions: null, so
-#     Phase C's C7 assertion ("restrictions = null" in the PUT) pins
-#     nothing about preservation — L1/L2 are what actually pin it. L1: non-
-#     empty restrictions.users/teams -> exit 3, print_unmergeable_block
-#     names restrictions, no PUT. L2 (negative companion): restrictions
-#     present but every array empty -> must NOT trigger refusal.
+#   Phase L — CRITICAL FINDING #2: a non-null top-level `restrictions` on
+#     the existing rule must refuse to PUT (like dismissal_restrictions /
+#     bypass_pull_request_allowances already do), not be silently replaced
+#     with `restrictions: null`. Every existing-rule fixture elsewhere in
+#     this suite uses restrictions: null, so Phase C's C7 assertion
+#     ("restrictions = null" in the PUT) pins nothing about preservation —
+#     L1/L2 are what actually pin it.
+#     PRESENCE, NOT CONTENT, is the load-bearing signal here: on the real
+#     GitHub GET, the `restrictions` key is included ONLY when push
+#     restriction is enabled — an empty allowlist ({"users":[],"teams":[],
+#     "apps":[]}) means "enabled, restricted to nobody", not "no
+#     restriction". L2 originally (an earlier #45 cycle) asserted the
+#     OPPOSITE of this — that a present-but-empty restrictions must NOT
+#     refuse — which pinned the very silent-full-replace bug this cycle
+#     closes structurally. L1: non-empty restrictions.users/teams -> exit 3,
+#     print_unmergeable_block names restrictions, no PUT. L2 (corrected):
+#     restrictions present but every array empty -> MUST ALSO refuse, exit
+#     3, no PUT — the same as L1, because it is the same signal (presence).
 #
 #   Phase M — require_last_push_approval carry-through: previously silently
 #     reset to false by the merge payload; now preserved from the existing
@@ -157,6 +165,53 @@
 #     non-default value — a fixture asserting false would pass even if the
 #     field were dropped entirely (the same gap Phase H's fixture had before
 #     this cycle's correction to H4/H5/H6).
+#
+#   Phases R-V were added after #45 review CYCLE 5, which inverted the
+#   payload builder's default from "carry through the fields I know about"
+#   to "refuse whenever the GET body has a top-level key (or required_
+#   pull_request_reviews sub-key) the builder does not explicitly model"
+#   (MODELED_TOP_KEYS / MODELED_PR_REVIEW_SUBKEYS + find_unmodeled_keys()).
+#   This closes the whole "field the payload drops silently reported as
+#   applied/exit 0" class structurally, but risks over-correcting into
+#   refusing everything — the worst possible outcome for a default-on step.
+#
+#   Phase R — THE HIGHEST-PRIORITY REGRESSION GUARD: an ordinary real-world
+#     rule (status checks, a review count that still needs raising, several
+#     protection booleans, AND the informational "url"/"*_url" siblings
+#     GitHub's real GET always includes) must still apply, not refuse.
+#     Asserts status "applied", exit 0, and several fields of the built
+#     merge payload.
+#
+#   Phase S — THE TEST THAT PINS THE WHOLE CLASS: a hypothetical/future
+#     top-level field (required_signatures) that is not in MODELED_TOP_KEYS,
+#     not informational, not null — must refuse, exit 3, and the message
+#     must NAME that key. Designed to fail if find_unmodeled_keys() ever
+#     silently no-ops, the exact failure mode the implementer's own first jq
+#     draft hit (`$modeled_top | index(.)` rebinds `.` before evaluating, so
+#     it matched nothing and every unmodeled field silently passed through).
+#     Unlike the dismissal_restrictions/bypass_pull_request_allowances/
+#     restrictions fixtures elsewhere, this fixture needs nothing named to
+#     be caught — it pins the mechanism itself.
+#
+#   Phase T — informational url/*_url keys never trigger refusal ON THEIR
+#     OWN, isolated from Phase R's broader fixture: this fixture's only
+#     extra content beyond the modeled fields is the informational shape, so
+#     it flips from applied to refused if the informational carve-out is
+#     ever removed or narrowed.
+#
+#   Phase U — emit_result's --json branch emits enforce_admins_relaxed +
+#     message (#45 review finding 2 — this used to be text-output-only, so
+#     it never reached atelier-setup-project, which invokes with --json).
+#     U1/U2: existing enforce_admins.enabled=true -> relaxed=true + message
+#     names the relaxation. U3/U4: existing enforce_admins.enabled=false ->
+#     relaxed=false + message null/empty. Reuses the EXISTING_ENFORCE_TRUE/
+#     FALSE_JSON fixtures Phase N already defined.
+#
+#   Phase V — present-but-empty dismissal_restrictions / bypass_pull_
+#     request_allowances (all three arrays empty) also refuse — the same
+#     presence-not-content reasoning L1/L2 already pin for top-level
+#     restrictions, but no existing fixture pinned it for these two fields
+#     either way before this cycle.
 #
 # Hermetic: gh is stubbed on PATH throughout; no network calls, no writes
 # outside $TMP, no dependency on the operator's real ~/.config/gh (HOME,
@@ -1291,16 +1346,22 @@ else
 fi
 
 # =============================================================================
-# Phase L — #45 REVIEW CYCLE-2 CRITICAL FINDING #2: a non-null, non-empty
-# top-level `restrictions` on the existing rule must refuse (like
+# Phase L — #45 REVIEW CYCLE-2 CRITICAL FINDING #2, corrected in cycle 5: a
+# non-null top-level `restrictions` on the existing rule must refuse (like
 # dismissal_restrictions / bypass_pull_request_allowances already do), not
 # be silently PUT as `restrictions: null`. Every existing-rule fixture
 # elsewhere in this suite uses restrictions: null, so C7 ("restrictions =
 # null" in the PUT) pins nothing about preservation — these two cases do.
+# PRESENCE, not content, is the signal: GitHub's GET only includes
+# `restrictions` at all when push restriction is enabled, so an empty
+# allowlist still means "enabled" — L2 below used to assert the opposite
+# (present-but-empty does NOT refuse), which pinned exactly the silent
+# full-replace bug this cycle closes structurally; it now asserts refusal,
+# same as L1.
 # =============================================================================
 
 echo ""
-echo "Phase L: apply_protection() refuses to PUT when top-level restrictions is non-null and non-empty, but proceeds when it is present-but-empty"
+echo "Phase L: apply_protection() refuses to PUT when top-level restrictions is present at all, whether or not its arrays are empty"
 
 PHASE_L_ATELIER_CFG="$TMP/phase-l-atelier-cfg"
 mkdir -p "$PHASE_L_ATELIER_CFG/gh/admin" "$PHASE_L_ATELIER_CFG/gh/author"
@@ -1346,8 +1407,13 @@ else
   pass "L1: no PUT was made"
 fi
 
-# --- L2 (negative companion): restrictions present but ALL arrays empty ->
-#     must NOT trigger refusal; apply proceeds normally and PUTs. ---
+# --- L2 (corrected, #45 cycle 5): restrictions present but ALL arrays
+#     empty MUST ALSO refuse. This is a correction of an earlier cycle's
+#     assertion, not a new behaviour: GitHub's GET only includes the
+#     `restrictions` key at all when push restriction is enabled, so an
+#     empty allowlist means "enabled, restricted to nobody" — presence, not
+#     content, is the load-bearing signal, exactly like L1. Reuses
+#     run_unmergeable_case() from Phase I. ---
 EXISTING_EMPTY_RESTRICTIONS_JSON="$TMP/existing_empty_restrictions.json"
 cat > "$EXISTING_EMPTY_RESTRICTIONS_JSON" << 'EOF'
 {
@@ -1362,60 +1428,26 @@ cat > "$EXISTING_EMPTY_RESTRICTIONS_JSON" << 'EOF'
 }
 EOF
 
-PUT_PAYLOAD_CAPTURE_L2="$TMP/put_payload_l2.json"
-rm -f "$PUT_PAYLOAD_CAPTURE_L2"
-
-cat > "$TMP/bin/gh" << SHIMEOF
-#!/usr/bin/env bash
-EXISTING_JSON="${EXISTING_EMPTY_RESTRICTIONS_JSON}"
-PUT_PAYLOAD_CAPTURE="${PUT_PAYLOAD_CAPTURE_L2}"
-case "\$*" in
-  *"-X PUT"*"protection"*)
-    prev=""
-    for a in "\$@"; do
-      if [ "\$prev" = "--input" ]; then
-        cp "\$a" "\$PUT_PAYLOAD_CAPTURE"
-        break
-      fi
-      prev="\$a"
-    done
-    printf '{}\n'
-    ;;
-  *"branches/"*"/protection"*)
-    cat "\$EXISTING_JSON"
-    ;;
-  *"api user --jq .login"*)
-    printf 'fake-admin-login\n'
-    ;;
-  *"viewerPermission"*)
-    permfile="\${GH_CONFIG_DIR:-}/perm"
-    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
-    ;;
-  *)
-    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
-    exit 1
-    ;;
-esac
-SHIMEOF
-chmod +x "$TMP/bin/gh"
+call_log_l2="$(run_unmergeable_case "$EXISTING_EMPTY_RESTRICTIONS_JSON" "l2")"
 
 out_l2="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_L_ATELIER_CFG" \
   bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
 rc_l2=$?
 
-[ "$rc_l2" -eq 0 ] \
-  && pass "L2: present-but-empty top-level restrictions does NOT trigger refusal — --apply exits 0" \
-  || fail "L2: expected exit 0, got $rc_l2 (output: $out_l2)"
+[ "$rc_l2" -eq 3 ] \
+  && pass "L2: present-but-empty top-level restrictions ALSO refuses (presence, not content, is the signal) — --apply exits 3" \
+  || fail "L2: expected exit 3, got $rc_l2 (output: $out_l2)"
 
-status_l2="$(printf '%s' "$out_l2" | jq -r '.status // empty' 2>/dev/null)"
-[ "$status_l2" = "applied" ] \
-  && pass "L2: JSON status = 'applied' (an empty restrictions object is not 'unmodeled')" \
-  || fail "L2: expected JSON status 'applied', got '$status_l2' (output: $out_l2)"
-
-if [ ! -f "$PUT_PAYLOAD_CAPTURE_L2" ]; then
-  fail "L2: PUT payload was never captured — apply_protection() incorrectly refused on an empty restrictions object"
+if printf '%s' "$out_l2" | grep -q "restrictions"; then
+  pass "L2: print_unmergeable_block's text on stdout names restrictions, printed regardless of --json"
 else
-  pass "L2: PUT was made despite restrictions being present (empty arrays are not unmodeled)"
+  fail "L2: expected 'restrictions' on stdout (got: $out_l2)"
+fi
+
+if [ -f "$call_log_l2" ] && grep -q -- "-X PUT" "$call_log_l2"; then
+  fail "L2: THE CLASS THIS CYCLE CLOSES — a PUT was made despite a present-but-empty top-level restrictions (call log: $(cat "$call_log_l2"))"
+else
+  pass "L2: no PUT was made"
 fi
 
 # =============================================================================
@@ -1985,6 +2017,499 @@ else
   [ "$afs" = "true" ] \
     && pass "Q1: allow_fork_syncing carried through as plain boolean true (non-default value; a false fixture would not discriminate)" \
     || fail "Q1: allow_fork_syncing: expected 'true', got '$afs'"
+fi
+
+# =============================================================================
+# Phase R — #45 CYCLE-5 REGRESSION GUARD (highest priority): the structural
+# refusal must not over-correct into refusing an ORDINARY real-world rule.
+# This is the failure mode the cycle-5 design most easily introduces —
+# refusing everything would silently stop protection being applied on every
+# fresh repo, the worst possible outcome for a default-on step. The fixture
+# below mirrors an actual GitHub GET: status checks, a review count that
+# still needs raising, several protection booleans, AND the informational
+# "url" / "*_url" siblings GitHub always includes (top-level url; url +
+# contexts_url inside required_status_checks; url inside required_pull_
+# request_reviews) — none of which are in MODELED_TOP_KEYS /
+# MODELED_PR_REVIEW_SUBKEYS by name, so this also proves the informational
+# carve-out in find_unmodeled_keys() actually fires for the shapes GitHub
+# really returns, not just a synthetic one.
+# =============================================================================
+
+echo ""
+echo "Phase R: an ordinary real-world rule (with GitHub's informational url/*_url siblings) still applies rather than refusing"
+
+PHASE_R_ATELIER_CFG="$TMP/phase-r-atelier-cfg"
+mkdir -p "$PHASE_R_ATELIER_CFG/gh/admin" "$PHASE_R_ATELIER_CFG/gh/author"
+printf 'WRITE\n' > "$PHASE_R_ATELIER_CFG/gh/admin/perm"
+printf 'ADMIN\n' > "$PHASE_R_ATELIER_CFG/gh/author/perm"
+
+EXISTING_REALWORLD_JSON="$TMP/existing_realworld.json"
+cat > "$EXISTING_REALWORLD_JSON" << 'EOF'
+{
+  "url": "https://api.github.com/repos/testowner/testrepo/branches/main/protection",
+  "required_status_checks": {
+    "url": "https://api.github.com/repos/testowner/testrepo/branches/main/protection/required_status_checks",
+    "contexts_url": "https://api.github.com/repos/testowner/testrepo/branches/main/protection/required_status_checks/contexts",
+    "strict": true,
+    "contexts": ["ci/build", "ci/test"]
+  },
+  "enforce_admins": {
+    "url": "https://api.github.com/repos/testowner/testrepo/branches/main/protection/enforce_admins",
+    "enabled": false
+  },
+  "required_pull_request_reviews": {
+    "url": "https://api.github.com/repos/testowner/testrepo/branches/main/protection/required_pull_request_reviews",
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": false,
+    "require_last_push_approval": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null,
+  "required_linear_history": {"enabled": false},
+  "required_conversation_resolution": {"enabled": true},
+  "allow_force_pushes": {"enabled": false},
+  "allow_deletions": {"enabled": false},
+  "block_creations": {"enabled": false},
+  "lock_branch": {"enabled": false},
+  "allow_fork_syncing": {"enabled": false}
+}
+EOF
+
+PUT_PAYLOAD_CAPTURE_R="$TMP/put_payload_r.json"
+rm -f "$PUT_PAYLOAD_CAPTURE_R"
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_REALWORLD_JSON}"
+PUT_PAYLOAD_CAPTURE="${PUT_PAYLOAD_CAPTURE_R}"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    prev=""
+    for a in "\$@"; do
+      if [ "\$prev" = "--input" ]; then
+        cp "\$a" "\$PUT_PAYLOAD_CAPTURE"
+        break
+      fi
+      prev="\$a"
+    done
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_r="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_R_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
+rc_r=$?
+
+[ "$rc_r" -eq 0 ] \
+  && pass "R0: --apply exits 0 on a realistic rule carrying GitHub's informational url/*_url siblings" \
+  || fail "R0: --apply exited $rc_r, expected 0 (output: $out_r)"
+
+status_r="$(printf '%s' "$out_r" | jq -r '.status // empty' 2>/dev/null)"
+[ "$status_r" = "applied" ] \
+  && pass "R1: reported status = 'applied' (NOT refused — the over-correction this cycle's design risks)" \
+  || fail "R1: expected status 'applied', got '$status_r' (output: $out_r)"
+
+if [ ! -f "$PUT_PAYLOAD_CAPTURE_R" ]; then
+  fail "R: THE OVER-CORRECTION REGRESSION — PUT payload was never captured, meaning apply_protection() refused an ordinary real-world rule"
+else
+  strict_r="$(jq -r '.required_status_checks.strict' "$PUT_PAYLOAD_CAPTURE_R")"
+  [ "$strict_r" = "true" ] \
+    && pass "R2: required_status_checks.strict preserved (true)" \
+    || fail "R2: required_status_checks.strict: expected 'true', got '$strict_r'"
+
+  contexts_r="$(jq -c '.required_status_checks.contexts' "$PUT_PAYLOAD_CAPTURE_R")"
+  [ "$contexts_r" = '["ci/build","ci/test"]' ] \
+    && pass "R3: required_status_checks.contexts preserved" \
+    || fail "R3: required_status_checks.contexts: expected '[\"ci/build\",\"ci/test\"]', got '$contexts_r'"
+
+  count_r="$(jq -r '.required_pull_request_reviews.required_approving_review_count' "$PUT_PAYLOAD_CAPTURE_R")"
+  [ "$count_r" = "1" ] \
+    && pass "R4: required_approving_review_count forced to 1 (existing was 0)" \
+    || fail "R4: required_approving_review_count: expected '1', got '$count_r'"
+
+  ccr_r="$(jq -r '.required_conversation_resolution' "$PUT_PAYLOAD_CAPTURE_R")"
+  [ "$ccr_r" = "true" ] \
+    && pass "R5: required_conversation_resolution carried through as plain boolean true" \
+    || fail "R5: required_conversation_resolution: expected 'true', got '$ccr_r'"
+
+  restrictions_r="$(jq -r '.restrictions' "$PUT_PAYLOAD_CAPTURE_R")"
+  [ "$restrictions_r" = "null" ] \
+    && pass "R6: restrictions = null" \
+    || fail "R6: restrictions: expected 'null', got '$restrictions_r'"
+
+  enforce_r="$(jq -r '.enforce_admins' "$PUT_PAYLOAD_CAPTURE_R")"
+  [ "$enforce_r" = "false" ] \
+    && pass "R7: enforce_admins = false" \
+    || fail "R7: enforce_admins: expected 'false', got '$enforce_r'"
+fi
+
+# =============================================================================
+# Phase S — #45 CYCLE-5: THE TEST THAT PINS THE WHOLE CLASS. A hypothetical/
+# future top-level field this helper has never heard of (required_signatures
+# — not in MODELED_TOP_KEYS, not informational, not null) must refuse, exit
+# 3, and NAME that key. This is the fixture designed to fail if
+# find_unmodeled_keys() ever silently no-ops — exactly the failure mode the
+# implementer's own first jq draft hit (`$modeled_top | index(.)` rebinds
+# `.` to the array itself before `index(.)` evaluates, so it always matched
+# nothing and every unmodeled field silently passed through). Every other
+# unmodeled-field fixture in this suite (dismissal_restrictions, bypass_
+# pull_request_allowances, restrictions) is DELIBERATELY excluded from the
+# modeled sets by name, so a no-op'd find_unmodeled_keys would still need
+# those specific names to leak through elsewhere to be caught; this fixture
+# needs nothing named — it proves the mechanism itself, not a specific
+# exclusion.
+# =============================================================================
+
+echo ""
+echo "Phase S: a hypothetical unmodeled top-level field (required_signatures) refuses and names itself — pins the whole refusal mechanism"
+
+PHASE_S_ATELIER_CFG="$TMP/phase-s-atelier-cfg"
+mkdir -p "$PHASE_S_ATELIER_CFG/gh/admin" "$PHASE_S_ATELIER_CFG/gh/author"
+printf 'WRITE\n' > "$PHASE_S_ATELIER_CFG/gh/admin/perm"
+printf 'ADMIN\n' > "$PHASE_S_ATELIER_CFG/gh/author/perm"
+
+EXISTING_FUTURE_FIELD_JSON="$TMP/existing_future_field.json"
+cat > "$EXISTING_FUTURE_FIELD_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null,
+  "required_signatures": {"enabled": true}
+}
+EOF
+
+call_log_s="$(run_unmergeable_case "$EXISTING_FUTURE_FIELD_JSON" "s")"
+
+out_s="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_S_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_s=$?
+
+[ "$rc_s" -eq 3 ] \
+  && pass "S1: --apply exits 3 when the existing rule sets a hypothetical unmodeled field (required_signatures)" \
+  || fail "S1: expected exit 3, got $rc_s (output: $out_s)"
+
+if printf '%s' "$out_s" | grep -q "required_signatures"; then
+  pass "S2: print_unmergeable_block's text on stdout names required_signatures"
+else
+  fail "S2: THE CLASS THIS CYCLE CLOSES — expected 'required_signatures' on stdout, find_unmodeled_keys() may have silently no-op'd (got: $out_s)"
+fi
+
+if [ -f "$call_log_s" ] && grep -q -- "-X PUT" "$call_log_s"; then
+  fail "S3: THE CRITICAL REGRESSION — a PUT was made despite the unmodeled required_signatures field (call log: $(cat "$call_log_s"))"
+else
+  pass "S3: no PUT was made"
+fi
+
+# =============================================================================
+# Phase T — #45 CYCLE-5: informational url/*_url keys never trigger refusal
+# ON THEIR OWN, isolated from Phase R's broader realistic fixture. This
+# fixture's ONLY extra top-level/nested content beyond the modeled fields is
+# the informational shape (top-level url; url + contexts_url inside
+# required_status_checks; url inside required_pull_request_reviews) — if the
+# informational carve-out in find_unmodeled_keys() were removed or narrowed,
+# this fixture (and only this fixture, since it carries nothing else
+# unmodeled) would flip from applied to refused.
+# =============================================================================
+
+echo ""
+echo "Phase T: informational url/*_url keys alone never trigger refusal"
+
+PHASE_T_ATELIER_CFG="$TMP/phase-t-atelier-cfg"
+mkdir -p "$PHASE_T_ATELIER_CFG/gh/admin" "$PHASE_T_ATELIER_CFG/gh/author"
+printf 'WRITE\n' > "$PHASE_T_ATELIER_CFG/gh/admin/perm"
+printf 'ADMIN\n' > "$PHASE_T_ATELIER_CFG/gh/author/perm"
+
+EXISTING_INFO_ONLY_JSON="$TMP/existing_info_only.json"
+cat > "$EXISTING_INFO_ONLY_JSON" << 'EOF'
+{
+  "url": "https://api.github.com/repos/testowner/testrepo/branches/main/protection",
+  "required_status_checks": {
+    "url": "https://api.github.com/repos/testowner/testrepo/branches/main/protection/required_status_checks",
+    "contexts_url": "https://api.github.com/repos/testowner/testrepo/branches/main/protection/required_status_checks/contexts",
+    "strict": false,
+    "contexts": []
+  },
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "url": "https://api.github.com/repos/testowner/testrepo/branches/main/protection/required_pull_request_reviews",
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null
+}
+EOF
+
+PUT_PAYLOAD_CAPTURE_T="$TMP/put_payload_t.json"
+rm -f "$PUT_PAYLOAD_CAPTURE_T"
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_INFO_ONLY_JSON}"
+PUT_PAYLOAD_CAPTURE="${PUT_PAYLOAD_CAPTURE_T}"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    prev=""
+    for a in "\$@"; do
+      if [ "\$prev" = "--input" ]; then
+        cp "\$a" "\$PUT_PAYLOAD_CAPTURE"
+        break
+      fi
+      prev="\$a"
+    done
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_t="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_T_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
+rc_t=$?
+
+[ "$rc_t" -eq 0 ] \
+  && pass "T0: --apply exits 0 when the only extra fields are informational url/*_url siblings" \
+  || fail "T0: --apply exited $rc_t, expected 0 (output: $out_t)"
+
+status_t="$(printf '%s' "$out_t" | jq -r '.status // empty' 2>/dev/null)"
+[ "$status_t" = "applied" ] \
+  && pass "T1: reported status = 'applied' (informational-only extra keys never refuse)" \
+  || fail "T1: expected status 'applied', got '$status_t' (output: $out_t)"
+
+if [ -f "$PUT_PAYLOAD_CAPTURE_T" ]; then
+  pass "T2: a PUT was made (the informational keys did not trip refusal)"
+else
+  fail "T2: THE OVER-CORRECTION REGRESSION — no PUT was made; informational-only keys must never refuse"
+fi
+
+# =============================================================================
+# Phase U — #45 CYCLE-5: emit_result's --json branch emits enforce_admins_
+# relaxed + message (finding 2), mirroring the text-mode note Phase N already
+# pins. Reuses EXISTING_ENFORCE_TRUE_JSON / EXISTING_ENFORCE_FALSE_JSON from
+# Phase N — same fixtures, JSON-mode assertions.
+# =============================================================================
+
+echo ""
+echo "Phase U: --json emits enforce_admins_relaxed + message (#45 review finding 2)"
+
+# --- U1: existing enforce_admins.enabled=true -> enforce_admins_relaxed:
+#     true, message names the relaxation. ---
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_ENFORCE_TRUE_JSON}"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_u1="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_N_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
+rc_u1=$?
+
+[ "$rc_u1" -eq 0 ] \
+  && pass "U0: --apply --json exits 0 when the existing rule has enforce_admins.enabled=true" \
+  || fail "U0: --apply exited $rc_u1, expected 0 (output: $out_u1)"
+
+relaxed_u1="$(printf '%s' "$out_u1" | jq -r '.enforce_admins_relaxed' 2>/dev/null)"
+[ "$relaxed_u1" = "true" ] \
+  && pass "U1: JSON enforce_admins_relaxed = true" \
+  || fail "U1: expected JSON enforce_admins_relaxed 'true', got '$relaxed_u1' (output: $out_u1)"
+
+message_u1="$(printf '%s' "$out_u1" | jq -r '.message // empty' 2>/dev/null)"
+case "$message_u1" in
+  *"enforce_admins was true on the existing rule and is kept false"*)
+    pass "U2: JSON message names the relaxation (got: '$message_u1')" ;;
+  *)
+    fail "U2: expected JSON message naming the relaxation, got '$message_u1' (output: $out_u1)" ;;
+esac
+
+# --- U3: existing enforce_admins.enabled=false -> enforce_admins_relaxed:
+#     false, message null/empty. ---
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_ENFORCE_FALSE_JSON}"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_u3="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_N_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
+rc_u3=$?
+
+[ "$rc_u3" -eq 0 ] \
+  && pass "U0b: --apply --json exits 0 when the existing rule has enforce_admins.enabled=false" \
+  || fail "U0b: --apply exited $rc_u3, expected 0 (output: $out_u3)"
+
+relaxed_u3="$(printf '%s' "$out_u3" | jq -r '.enforce_admins_relaxed' 2>/dev/null)"
+[ "$relaxed_u3" = "false" ] \
+  && pass "U3: JSON enforce_admins_relaxed = false when the existing rule already had it false" \
+  || fail "U3: expected JSON enforce_admins_relaxed 'false', got '$relaxed_u3' (output: $out_u3)"
+
+message_u3="$(printf '%s' "$out_u3" | jq -r '.message // empty' 2>/dev/null)"
+[ -z "$message_u3" ] \
+  && pass "U4: JSON message is null/empty when enforce_admins was not relaxed" \
+  || fail "U4: expected empty JSON message, got '$message_u3' (output: $out_u3)"
+
+# =============================================================================
+# Phase V — #45 CYCLE-5: present-but-empty dismissal_restrictions / bypass_
+# pull_request_allowances (all three arrays empty) also refuse — the same
+# presence-not-content reasoning L1/L2 already pin for top-level
+# restrictions. No existing fixture pinned this either way before this
+# cycle. Reuses run_unmergeable_case() from Phase I.
+# =============================================================================
+
+echo ""
+echo "Phase V: present-but-empty dismissal_restrictions / bypass_pull_request_allowances also refuse (presence, not content)"
+
+PHASE_V_ATELIER_CFG="$TMP/phase-v-atelier-cfg"
+mkdir -p "$PHASE_V_ATELIER_CFG/gh/admin" "$PHASE_V_ATELIER_CFG/gh/author"
+printf 'WRITE\n' > "$PHASE_V_ATELIER_CFG/gh/admin/perm"
+printf 'ADMIN\n' > "$PHASE_V_ATELIER_CFG/gh/author/perm"
+
+# --- V1: dismissal_restrictions present, all three arrays empty ---
+EXISTING_EMPTY_DISMISSAL_JSON="$TMP/existing_empty_dismissal.json"
+cat > "$EXISTING_EMPTY_DISMISSAL_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0,
+    "dismissal_restrictions": {"users": [], "teams": [], "apps": []}
+  },
+  "restrictions": null
+}
+EOF
+
+call_log_v1="$(run_unmergeable_case "$EXISTING_EMPTY_DISMISSAL_JSON" "v1")"
+
+out_v1="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_V_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_v1=$?
+
+[ "$rc_v1" -eq 3 ] \
+  && pass "V1: --apply exits 3 when dismissal_restrictions is present with all arrays empty" \
+  || fail "V1: expected exit 3, got $rc_v1 (output: $out_v1)"
+
+if printf '%s' "$out_v1" | grep -q "dismissal_restrictions"; then
+  pass "V1: print_unmergeable_block's text on stdout names dismissal_restrictions"
+else
+  fail "V1: expected 'dismissal_restrictions' on stdout (got: $out_v1)"
+fi
+
+if [ -f "$call_log_v1" ] && grep -q -- "-X PUT" "$call_log_v1"; then
+  fail "V1: THE CLASS THIS CYCLE CLOSES — a PUT was made despite a present-but-empty dismissal_restrictions (call log: $(cat "$call_log_v1"))"
+else
+  pass "V1: no PUT was made"
+fi
+
+# --- V2: bypass_pull_request_allowances present, all three arrays empty ---
+EXISTING_EMPTY_BYPASS_JSON="$TMP/existing_empty_bypass.json"
+cat > "$EXISTING_EMPTY_BYPASS_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0,
+    "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": []}
+  },
+  "restrictions": null
+}
+EOF
+
+call_log_v2="$(run_unmergeable_case "$EXISTING_EMPTY_BYPASS_JSON" "v2")"
+
+out_v2="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_V_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_v2=$?
+
+[ "$rc_v2" -eq 3 ] \
+  && pass "V2: --apply exits 3 when bypass_pull_request_allowances is present with all arrays empty" \
+  || fail "V2: expected exit 3, got $rc_v2 (output: $out_v2)"
+
+if printf '%s' "$out_v2" | grep -q "bypass_pull_request_allowances"; then
+  pass "V2: print_unmergeable_block's text on stdout names bypass_pull_request_allowances"
+else
+  fail "V2: expected 'bypass_pull_request_allowances' on stdout (got: $out_v2)"
+fi
+
+if [ -f "$call_log_v2" ] && grep -q -- "-X PUT" "$call_log_v2"; then
+  fail "V2: THE CLASS THIS CYCLE CLOSES — a PUT was made despite a present-but-empty bypass_pull_request_allowances (call log: $(cat "$call_log_v2"))"
+else
+  pass "V2: no PUT was made"
 fi
 
 # =============================================================================

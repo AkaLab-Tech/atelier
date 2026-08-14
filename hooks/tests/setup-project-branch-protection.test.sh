@@ -55,6 +55,15 @@
 #     0/3/4 arms. D3 (negative companion): when $out carries no parseable
 #     .message at all, the bare "helper exited $rc" fallback text is used.
 #
+#   Phase E — #45 REVIEW CYCLE 5, finding 2's setup-project-side half: the
+#     "applied" arm reads $out's .enforce_admins_relaxed / .message and
+#     warn()s the message when relaxed (the helper's own --json emission of
+#     these fields is pinned in branch-protection-helper.test.sh's Phase U).
+#     E1/E2/E3: enforce_admins_relaxed:true -> warn() fires with the message,
+#     BRANCH_PROTECTION_STATUS still reads "applied ...". E4/E5 (negative
+#     companion): enforce_admins_relaxed:false + message:null -> warn() must
+#     NOT fire at all.
+#
 # Hermetic: gh and atelier-branch-protection are stubbed on PATH throughout;
 # no network calls, no real gh api. macOS bash 3.2 compatible.
 #
@@ -335,6 +344,20 @@ case "\${HELPER_MODE:-applied}" in
     printf '{"status":"applied","repo":"testowner/testrepo","branch":"main","class":"protected-sufficient","identity":"fake-admin","gh_dir":"/tmp/fake-admin"}\n'
     exit 0
     ;;
+  applied-relaxed)
+    # #45 review finding 2: enforce_admins_relaxed + message are the JSON
+    # counterpart of the helper's text-only relaxation note (see the real
+    # helper's emit_result --json branch). This mode exercises the arm in
+    # step_branch_protection() that reads them and warn()s the message.
+    printf '{"status":"applied","repo":"testowner/testrepo","branch":"main","class":"protected-insufficient","identity":"fake-admin","gh_dir":"/tmp/fake-admin","enforce_admins_relaxed":true,"message":"enforce_admins was true on the existing rule and is kept false so the bot can still squash-merge its own PRs"}\n'
+    exit 0
+    ;;
+  applied-not-relaxed)
+    # Negative companion: enforce_admins_relaxed:false + message:null must
+    # NOT produce a warn() call — only a true relaxation is worth surfacing.
+    printf '{"status":"applied","repo":"testowner/testrepo","branch":"main","class":"protected-insufficient","identity":"fake-admin","gh_dir":"/tmp/fake-admin","enforce_admins_relaxed":false,"message":null}\n'
+    exit 0
+    ;;
   no-admin)
     printf 'No admin identity available to apply branch protection on testowner/testrepo/main.\n'
     printf 'Tried: /tmp/a,/tmp/b,/tmp/c,/tmp/d\n'
@@ -576,6 +599,67 @@ if [ "$BRANCH_PROTECTION_STATUS" = "skipped (branch protection helper exited 2)"
   pass "D3: BRANCH_PROTECTION_STATUS falls back to the bare 'helper exited 2' text when \$out has no .message"
 else
   fail "D3: BRANCH_PROTECTION_STATUS: expected 'skipped (branch protection helper exited 2)', got '$BRANCH_PROTECTION_STATUS'"
+fi
+
+unset HELPER_MODE
+
+# =============================================================================
+# Phase E — #45 CYCLE-5: the "applied" arm reads $out's .enforce_admins_
+# relaxed / .message and warn()s the message when relaxed. Finding 2 fixed
+# the helper's --json branch to emit these fields at all (see the branch-
+# protection-helper.test.sh Phase U companion); this phase pins the
+# atelier-setup-project side that consumes them.
+# =============================================================================
+
+echo ""
+echo "Phase E: step_branch_protection()'s applied arm warns enforce_admins_relaxed's message"
+
+# --- E1: enforce_admins_relaxed:true -> warn() fires with the message ---
+rm -f "$HELPER_INVOKED" "$WARN_OUT"
+export HELPER_MODE="applied-relaxed"
+NO_BRANCH_PROTECTION_FLAG=false
+BRANCH_PROTECTION_STATUS=""
+step_branch_protection
+step_rc=$?
+
+if [ "$step_rc" -eq 0 ]; then
+  pass "E1: step_branch_protection() returns 0 on the applied+relaxed path"
+else
+  fail "E1: step_branch_protection() returned $step_rc, expected 0"
+fi
+
+if [ -f "$WARN_OUT" ] && grep -q "enforce_admins was true on the existing rule and is kept false" "$WARN_OUT"; then
+  pass "E2: warn() fired with the enforce_admins_relaxed message"
+else
+  fail "E2: expected warn() to fire with the relaxation message (got: $(cat "$WARN_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+case "$BRANCH_PROTECTION_STATUS" in
+  applied*)
+    pass "E3: BRANCH_PROTECTION_STATUS = '$BRANCH_PROTECTION_STATUS' (contains 'applied') even when relaxed" ;;
+  *)
+    fail "E3: BRANCH_PROTECTION_STATUS: expected 'applied ...', got '$BRANCH_PROTECTION_STATUS'" ;;
+esac
+
+# --- E4 (negative companion): enforce_admins_relaxed:false + message:null ->
+#     warn() must NOT fire at all. ---
+rm -f "$HELPER_INVOKED" "$WARN_OUT"
+export HELPER_MODE="applied-not-relaxed"
+NO_BRANCH_PROTECTION_FLAG=false
+BRANCH_PROTECTION_STATUS=""
+step_branch_protection
+step_rc=$?
+
+if [ "$step_rc" -eq 0 ]; then
+  pass "E4: step_branch_protection() returns 0 on the applied+not-relaxed path"
+else
+  fail "E4: step_branch_protection() returned $step_rc, expected 0"
+fi
+
+if [ ! -f "$WARN_OUT" ]; then
+  pass "E5: warn() was never called when enforce_admins_relaxed is false"
+else
+  fail "E5: warn() unexpectedly fired when enforce_admins was not relaxed (got: $(cat "$WARN_OUT"))"
 fi
 
 unset HELPER_MODE
