@@ -33,6 +33,10 @@
 #     require_code_owner_reviews from the existing rule while FORCING
 #     required_approving_review_count=1, enforce_admins=false (load-bearing:
 #     true would block the bot's own squash-merges), restrictions=null.
+#     #45 CYCLE 6: C2 was repointed — the fixture's required_status_checks
+#     never had a `checks` key, so the payload now synthesizes {context,
+#     app_id: null} per contexts entry rather than emitting the now-removed
+#     `contexts` key; C2 asserts required_status_checks.checks instead.
 #
 #   Phase D — exit code 3 + the manual instruction block on stdout when no
 #     admin identity resolves at all — asserted both with and without
@@ -156,8 +160,17 @@
 #     unusable must never be treated as "no rule exists" either. P1: rc 0 +
 #     an EMPTY body (previously fell through both existing guards with no
 #     check at all — the review's "more reachable" door). P2: rc 0 + a body
-#     that is not valid JSON (jq cannot build a merge payload from it). Both
-#     -> --apply exits 2, JSON status "read-failed", zero PUT.
+#     that is not valid JSON. Both -> --apply exits 2, JSON status
+#     "read-failed", zero PUT. #45 CYCLE 6: P2's stderr diagnostic was
+#     repointed — the same unparseable body now fails EARLIER, inside
+#     find_unmodeled_keys() itself (jq cannot parse it to scan for unmodeled
+#     fields), so the message changed from the old "could not build a merge
+#     payload" to "could not scan the existing ... for unmodeled fields".
+#     P2b additionally pins CYCLE 6 ITEM 5 (the jq gate fails CLOSED — a
+#     scan failure is caught by find_unmodeled_keys()'s own exit code and
+#     treated as "could not verify", never silently read by the caller as
+#     "nothing unmodeled found", which is what discarding that exit code
+#     used to do).
 #
 #   Phase Q — allow_fork_syncing carry-through, the field that was silently
 #     omitted and reset to its API default (false) on every PUT. Q1 uses
@@ -180,18 +193,38 @@
 #     protection booleans, AND the informational "url"/"*_url" siblings
 #     GitHub's real GET always includes) must still apply, not refuse.
 #     Asserts status "applied", exit 0, and several fields of the built
-#     merge payload.
+#     merge payload. #45 CYCLE 6: R3 was repointed the same way as C2 —
+#     asserts required_status_checks.checks (synthesized from the fixture's
+#     contexts-only shape) instead of the now-removed `contexts` key.
 #
 #   Phase S — THE TEST THAT PINS THE WHOLE CLASS: a hypothetical/future
-#     top-level field (required_signatures) that is not in MODELED_TOP_KEYS,
-#     not informational, not null — must refuse, exit 3, and the message
-#     must NAME that key. Designed to fail if find_unmodeled_keys() ever
-#     silently no-ops, the exact failure mode the implementer's own first jq
-#     draft hit (`$modeled_top | index(.)` rebinds `.` before evaluating, so
-#     it matched nothing and every unmodeled field silently passed through).
+#     top-level field (required_maintenance_windows — a name GitHub does not
+#     return today; see #45 cycle 6 below for why this was swapped in from
+#     required_signatures) that is not in MODELED_TOP_KEYS, not
+#     informational, not null — must refuse, exit 3, and the message must
+#     NAME that key. Designed to fail if find_unmodeled_keys() ever silently
+#     no-ops, the exact failure mode the implementer's own first jq draft
+#     hit (`$modeled_top | index(.)` rebinds `.` before evaluating, so it
+#     matched nothing and every unmodeled field silently passed through).
 #     Unlike the dismissal_restrictions/bypass_pull_request_allowances/
 #     restrictions fixtures elsewhere, this fixture needs nothing named to
 #     be caught — it pins the mechanism itself.
+#
+#   #45 cycle 6 — a real GET (hooks/tests/fixtures/branch-protection-real-
+#   get.json, captured from AkaLab-Tech/atelier's own protected `main`)
+#   found required_signatures present UNCONDITIONALLY (enabled:false, not
+#   null) on every real rule — the exact key Phase S had been using as its
+#   stand-in for "a field this helper has never heard of". That made Phase S
+#   pin a false invariant: required_signatures is real and now modeled (see
+#   MODELED_TOP_KEYS in scripts/atelier-branch-protection), so Phase S was
+#   repointed to required_maintenance_windows, a name GitHub does not return
+#   today. The same capture also exposed required_status_checks.checks
+#   (context + app_id pinning) silently dropped because find_unmodeled_keys()
+#   never descended into required_status_checks — closed together with the
+#   required_signatures fix since removing required_signatures from a
+#   real-shaped fixture is what exposes the checks drop (see scripts/
+#   atelier-branch-protection's MODELED_STATUS_CHECKS_SUBKEYS comment for the
+#   checks-vs-contexts decision).
 #
 #   Phase T — informational url/*_url keys never trigger refusal ON THEIR
 #     OWN, isolated from Phase R's broader fixture: this fixture's only
@@ -212,6 +245,41 @@
 #     presence-not-content reasoning L1/L2 already pin for top-level
 #     restrictions, but no existing fixture pinned it for these two fields
 #     either way before this cycle.
+#
+#   Phases W-Y were added in #45 CYCLE 6, alongside the C2/R3/P2 repoints
+#   above and the Phase S swap, to cover what the real capture found that no
+#   fixture in this suite (hand-written up to cycle 5) had ever exercised:
+#
+#   Phase W — THE SINGLE MOST VALUABLE TEST THIS CYCLE: drives hooks/tests/
+#     fixtures/branch-protection-real-get.json — the real captured GET,
+#     loaded from the committed file itself, never re-inlined, so refreshing
+#     the capture updates this test automatically — through --apply end to
+#     end, with only required_approving_review_count forced below 1 (the
+#     real capture already has it at 1, which would short-circuit at
+#     "already-sufficient" before ever reaching the payload builder).
+#     Against the pre-cycle-6 script this fails closed on exactly the
+#     regression the capture surfaced: required_signatures was not in
+#     MODELED_TOP_KEYS, so find_unmodeled_keys() named it and --apply
+#     exited 3 with zero PUTs on every real protected-insufficient rule
+#     shaped like this.
+#
+#   Phase X — the checks-vs-contexts decision from both sides. X1: an
+#     existing rule that already has `checks` with a non-null, NON-DEFAULT
+#     app_id (99913, chosen so a payload that silently nulled it out or
+#     fell back to synthesizing from `contexts` would be caught) must
+#     round-trip context + app_id UNCHANGED. X2: an existing rule that
+#     predates `checks` and only ever set `contexts` must synthesize
+#     {context, app_id: null} per entry ("any app", the same meaning a
+#     contexts-only rule already had) and must NOT also emit a top-level
+#     `contexts` key in the PUT.
+#
+#   Phase Y — find_unmodeled_keys() must descend into required_status_checks
+#     the same way it already does for required_pull_request_reviews
+#     (MODELED_STATUS_CHECKS_SUBKEYS = strict, contexts, checks only). An
+#     invented unmodeled sub-key (required_status_checks.enforcement_mode —
+#     not a real GitHub field) must refuse, exit 3, and be named dotted on
+#     stdout, mirroring the Phase I/O/V pattern for the other nested objects
+#     this helper scans.
 #
 # Hermetic: gh is stubbed on PATH throughout; no network calls, no writes
 # outside $TMP, no dependency on the operator's real ~/.config/gh (HOME,
@@ -568,10 +636,15 @@ else
     && pass "C1: required_status_checks.strict preserved (true)" \
     || fail "C1: required_status_checks.strict: expected 'true', got '$strict'"
 
-  contexts="$(jq -c '.required_status_checks.contexts' "$PUT_PAYLOAD_CAPTURE")"
-  [ "$contexts" = '["ci/build","ci/test"]' ] \
-    && pass "C2: required_status_checks.contexts preserved" \
-    || fail "C2: required_status_checks.contexts: expected '[\"ci/build\",\"ci/test\"]', got '$contexts'"
+  # C2 (#45 CYCLE 6): the payload builder no longer emits `contexts` at all
+  # (see MODELED_STATUS_CHECKS_SUBKEYS / the checks-vs-contexts decision in
+  # scripts/atelier-branch-protection) — this fixture's required_status_
+  # checks has no `checks` key of its own, so each contexts entry is
+  # synthesized into {context, app_id: null}.
+  checks="$(jq -c '.required_status_checks.checks' "$PUT_PAYLOAD_CAPTURE")"
+  [ "$checks" = '[{"context":"ci/build","app_id":null},{"context":"ci/test","app_id":null}]' ] \
+    && pass "C2: required_status_checks.checks synthesized from contexts (app_id: null — 'any app')" \
+    || fail "C2: required_status_checks.checks: expected null-app_id entries synthesized from contexts, got '$checks'"
 
   dismiss="$(jq -r '.required_pull_request_reviews.dismiss_stale_reviews' "$PUT_PAYLOAD_CAPTURE")"
   [ "$dismiss" = "true" ] \
@@ -1921,10 +1994,26 @@ status_p2="$(printf '%s' "$out_p2" | jq -r '.status // empty' 2>/dev/null)"
   && pass "P2: JSON status = 'read-failed'" \
   || fail "P2: expected JSON status 'read-failed', got '$status_p2' (output: $out_p2)"
 
-if grep -q "could not build a merge payload" "$P2_STDERR"; then
-  pass "P2: apply_protection()'s own diagnostic ('could not build a merge payload') is surfaced on stderr"
+# P2 (#45 CYCLE 6): the same unparseable body now fails EARLIER — inside
+# find_unmodeled_keys() itself, which cannot parse it to scan for unmodeled
+# fields — so the diagnostic changed from the old "could not build a merge
+# payload" (the later merge-payload jq call, no longer reached) to this
+# one.
+if grep -q "could not scan the existing .* for unmodeled fields" "$P2_STDERR"; then
+  pass "P2: apply_protection()'s own diagnostic ('could not scan the existing ... for unmodeled fields') is surfaced on stderr"
 else
-  fail "P2: expected the unparseable-body diagnostic on stderr (got: $(cat "$P2_STDERR"))"
+  fail "P2: expected the jq-scan-failure diagnostic on stderr (got: $(cat "$P2_STDERR"))"
+fi
+
+# P2b (#45 CYCLE 6 ITEM 5): the jq gate fails CLOSED — find_unmodeled_keys()'s
+# non-zero exit code (a jq parse error on the unparseable body) is caught by
+# apply_protection() and treated as "could not verify this rule", never
+# silently discarded and read as "nothing unmodeled found" (which is exactly
+# what ignoring that exit code used to do).
+if grep -q "refusing rather than guessing" "$P2_STDERR"; then
+  pass "P2b: the jq gate fails CLOSED on a scan failure (not silently treated as 'nothing unmodeled found')"
+else
+  fail "P2b: THE REGRESSION THIS CYCLE FIXES — expected 'refusing rather than guessing' on stderr, the jq gate may be failing OPEN (got: $(cat "$P2_STDERR"))"
 fi
 
 if [ -f "$GH_CALL_LOG_P2" ] && grep -q -- "-X PUT" "$GH_CALL_LOG_P2"; then
@@ -2133,10 +2222,14 @@ else
     && pass "R2: required_status_checks.strict preserved (true)" \
     || fail "R2: required_status_checks.strict: expected 'true', got '$strict_r'"
 
-  contexts_r="$(jq -c '.required_status_checks.contexts' "$PUT_PAYLOAD_CAPTURE_R")"
-  [ "$contexts_r" = '["ci/build","ci/test"]' ] \
-    && pass "R3: required_status_checks.contexts preserved" \
-    || fail "R3: required_status_checks.contexts: expected '[\"ci/build\",\"ci/test\"]', got '$contexts_r'"
+  # R3 (#45 CYCLE 6): repointed the same way as C2 — this fixture's
+  # required_status_checks has no `checks` key of its own, so the payload
+  # synthesizes {context, app_id: null} entries from contexts instead of
+  # emitting the now-removed `contexts` key.
+  checks_r="$(jq -c '.required_status_checks.checks' "$PUT_PAYLOAD_CAPTURE_R")"
+  [ "$checks_r" = '[{"context":"ci/build","app_id":null},{"context":"ci/test","app_id":null}]' ] \
+    && pass "R3: required_status_checks.checks synthesized from contexts (app_id: null — 'any app')" \
+    || fail "R3: required_status_checks.checks: expected null-app_id entries synthesized from contexts, got '$checks_r'"
 
   count_r="$(jq -r '.required_pull_request_reviews.required_approving_review_count' "$PUT_PAYLOAD_CAPTURE_R")"
   [ "$count_r" = "1" ] \
@@ -2160,24 +2253,33 @@ else
 fi
 
 # =============================================================================
-# Phase S — #45 CYCLE-5: THE TEST THAT PINS THE WHOLE CLASS. A hypothetical/
-# future top-level field this helper has never heard of (required_signatures
-# — not in MODELED_TOP_KEYS, not informational, not null) must refuse, exit
-# 3, and NAME that key. This is the fixture designed to fail if
-# find_unmodeled_keys() ever silently no-ops — exactly the failure mode the
-# implementer's own first jq draft hit (`$modeled_top | index(.)` rebinds
-# `.` to the array itself before `index(.)` evaluates, so it always matched
-# nothing and every unmodeled field silently passed through). Every other
-# unmodeled-field fixture in this suite (dismissal_restrictions, bypass_
-# pull_request_allowances, restrictions) is DELIBERATELY excluded from the
-# modeled sets by name, so a no-op'd find_unmodeled_keys would still need
-# those specific names to leak through elsewhere to be caught; this fixture
-# needs nothing named — it proves the mechanism itself, not a specific
-# exclusion.
+# Phase S — #45 CYCLE-5/6: THE TEST THAT PINS THE WHOLE CLASS. A
+# hypothetical/future top-level field this helper has never heard of
+# (required_maintenance_windows — not in MODELED_TOP_KEYS, not
+# informational, not null) must refuse, exit 3, and NAME that key. This is
+# the fixture designed to fail if find_unmodeled_keys() ever silently
+# no-ops — exactly the failure mode the implementer's own first jq draft hit
+# (`$modeled_top | index(.)` rebinds `.` to the array itself before
+# `index(.)` evaluates, so it always matched nothing and every unmodeled
+# field silently passed through). Every other unmodeled-field fixture in
+# this suite (dismissal_restrictions, bypass_pull_request_allowances,
+# restrictions) is DELIBERATELY excluded from the modeled sets by name, so a
+# no-op'd find_unmodeled_keys would still need those specific names to leak
+# through elsewhere to be caught; this fixture needs nothing named — it
+# proves the mechanism itself, not a specific exclusion.
+#
+# CYCLE 6: this fixture used required_signatures until a real captured GET
+# (hooks/tests/fixtures/branch-protection-real-get.json) showed
+# required_signatures is present on every real rule, enabled or not — the
+# opposite of "hypothetical/never heard of". required_signatures is now
+# modeled (MODELED_TOP_KEYS in scripts/atelier-branch-protection); Phase S
+# was repointed to required_maintenance_windows, a field name GitHub does
+# not return today, so this phase again pins the mechanism rather than a
+# field that turned out to be real.
 # =============================================================================
 
 echo ""
-echo "Phase S: a hypothetical unmodeled top-level field (required_signatures) refuses and names itself — pins the whole refusal mechanism"
+echo "Phase S: a hypothetical unmodeled top-level field (required_maintenance_windows) refuses and names itself — pins the whole refusal mechanism"
 
 PHASE_S_ATELIER_CFG="$TMP/phase-s-atelier-cfg"
 mkdir -p "$PHASE_S_ATELIER_CFG/gh/admin" "$PHASE_S_ATELIER_CFG/gh/author"
@@ -2195,7 +2297,7 @@ cat > "$EXISTING_FUTURE_FIELD_JSON" << 'EOF'
     "required_approving_review_count": 0
   },
   "restrictions": null,
-  "required_signatures": {"enabled": true}
+  "required_maintenance_windows": {"enabled": true}
 }
 EOF
 
@@ -2206,17 +2308,17 @@ out_s="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_
 rc_s=$?
 
 [ "$rc_s" -eq 3 ] \
-  && pass "S1: --apply exits 3 when the existing rule sets a hypothetical unmodeled field (required_signatures)" \
+  && pass "S1: --apply exits 3 when the existing rule sets a hypothetical unmodeled field (required_maintenance_windows)" \
   || fail "S1: expected exit 3, got $rc_s (output: $out_s)"
 
-if printf '%s' "$out_s" | grep -q "required_signatures"; then
-  pass "S2: print_unmergeable_block's text on stdout names required_signatures"
+if printf '%s' "$out_s" | grep -q "required_maintenance_windows"; then
+  pass "S2: print_unmergeable_block's text on stdout names required_maintenance_windows"
 else
-  fail "S2: THE CLASS THIS CYCLE CLOSES — expected 'required_signatures' on stdout, find_unmodeled_keys() may have silently no-op'd (got: $out_s)"
+  fail "S2: THE CLASS THIS CYCLE CLOSES — expected 'required_maintenance_windows' on stdout, find_unmodeled_keys() may have silently no-op'd (got: $out_s)"
 fi
 
 if [ -f "$call_log_s" ] && grep -q -- "-X PUT" "$call_log_s"; then
-  fail "S3: THE CRITICAL REGRESSION — a PUT was made despite the unmodeled required_signatures field (call log: $(cat "$call_log_s"))"
+  fail "S3: THE CRITICAL REGRESSION — a PUT was made despite the unmodeled required_maintenance_windows field (call log: $(cat "$call_log_s"))"
 else
   pass "S3: no PUT was made"
 fi
@@ -2510,6 +2612,338 @@ if [ -f "$call_log_v2" ] && grep -q -- "-X PUT" "$call_log_v2"; then
   fail "V2: THE CLASS THIS CYCLE CLOSES — a PUT was made despite a present-but-empty bypass_pull_request_allowances (call log: $(cat "$call_log_v2"))"
 else
   pass "V2: no PUT was made"
+fi
+
+# =============================================================================
+# Phase W — #45 CYCLE 6: THE SINGLE MOST VALUABLE TEST THIS CYCLE. Drives the
+# REAL captured GET (hooks/tests/fixtures/branch-protection-real-get.json —
+# not a hand-written fixture) through --apply end to end. Loaded directly
+# from the committed file (never re-inlined) so refreshing the capture
+# updates this test automatically. The only edit made to it at test time is
+# forcing required_approving_review_count below 1 (the real capture already
+# has it at 1 — already-sufficient — which would short-circuit before ever
+# reaching the payload builder); everything else, including the
+# unconditionally-present required_signatures (enabled: false) and the
+# required_status_checks.checks array, is verbatim.
+#
+# Against the pre-cycle-6 script this fails: required_signatures was not in
+# MODELED_TOP_KEYS, so find_unmodeled_keys() named it and --apply exited 3
+# with zero PUTs on every real protected-insufficient rule shaped like this
+# — the regression the real capture surfaced.
+# =============================================================================
+
+echo ""
+echo "Phase W: the real captured GET (fixtures/branch-protection-real-get.json) applies cleanly end to end"
+
+REAL_FIXTURE="$REPO_ROOT/hooks/tests/fixtures/branch-protection-real-get.json"
+
+if [ ! -f "$REAL_FIXTURE" ]; then
+  fail "W: real fixture not found at $REAL_FIXTURE"
+else
+  EXISTING_REAL_JSON="$TMP/existing_real_forced.json"
+  jq '.required_pull_request_reviews.required_approving_review_count = 0' \
+    "$REAL_FIXTURE" > "$EXISTING_REAL_JSON"
+
+  PHASE_W_ATELIER_CFG="$TMP/phase-w-atelier-cfg"
+  mkdir -p "$PHASE_W_ATELIER_CFG/gh/admin" "$PHASE_W_ATELIER_CFG/gh/author"
+  printf 'WRITE\n' > "$PHASE_W_ATELIER_CFG/gh/admin/perm"
+  printf 'ADMIN\n' > "$PHASE_W_ATELIER_CFG/gh/author/perm"
+
+  PUT_PAYLOAD_CAPTURE_W="$TMP/put_payload_w.json"
+  rm -f "$PUT_PAYLOAD_CAPTURE_W"
+
+  cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_REAL_JSON}"
+PUT_PAYLOAD_CAPTURE="${PUT_PAYLOAD_CAPTURE_W}"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    prev=""
+    for a in "\$@"; do
+      if [ "\$prev" = "--input" ]; then
+        cp "\$a" "\$PUT_PAYLOAD_CAPTURE"
+        break
+      fi
+      prev="\$a"
+    done
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+  chmod +x "$TMP/bin/gh"
+
+  out_w="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_W_ATELIER_CFG" \
+    bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
+  rc_w=$?
+
+  [ "$rc_w" -eq 0 ] \
+    && pass "W0: --apply exits 0 on the real captured GET forced below the sufficient-review-count threshold" \
+    || fail "W0: THE REGRESSION THIS CYCLE FIXES — expected exit 0, got $rc_w (output: $out_w)"
+
+  status_w="$(printf '%s' "$out_w" | jq -r '.status // empty' 2>/dev/null)"
+  [ "$status_w" = "applied" ] \
+    && pass "W1: JSON status = 'applied' (required_signatures no longer trips refusal)" \
+    || fail "W1: THE REGRESSION THIS CYCLE FIXES — expected status 'applied', got '$status_w' (output: $out_w)"
+
+  if [ ! -f "$PUT_PAYLOAD_CAPTURE_W" ]; then
+    fail "W: THE REGRESSION THIS CYCLE FIXES — PUT payload was never captured, meaning --apply refused the real captured rule"
+  else
+    sig_w="$(jq -r '.required_signatures' "$PUT_PAYLOAD_CAPTURE_W")"
+    [ "$sig_w" = "false" ] \
+      && pass "W2: required_signatures carried through as plain boolean (false, from the real fixture's enabled:false)" \
+      || fail "W2: required_signatures: expected 'false', got '$sig_w'"
+
+    checks_w="$(jq -c '.required_status_checks.checks' "$PUT_PAYLOAD_CAPTURE_W")"
+    [ "$checks_w" = '[{"context":"structural","app_id":15368}]' ] \
+      && pass "W3: required_status_checks.checks round-tripped verbatim from the real fixture's own checks array" \
+      || fail "W3: required_status_checks.checks: expected '[{\"context\":\"structural\",\"app_id\":15368}]', got '$checks_w'"
+
+    count_w="$(jq -r '.required_pull_request_reviews.required_approving_review_count' "$PUT_PAYLOAD_CAPTURE_W")"
+    [ "$count_w" = "1" ] \
+      && pass "W4: required_approving_review_count forced to 1 (existing was forced to 0)" \
+      || fail "W4: required_approving_review_count: expected '1', got '$count_w'"
+  fi
+fi
+
+# =============================================================================
+# Phase X — #45 CYCLE 6: the checks-vs-contexts decision from both sides.
+# X1: an existing rule that already has `checks` with a non-null,
+# NON-DEFAULT app_id (99913 — chosen so a payload that silently nulled it
+# out, or fell back to synthesizing from `contexts`, would be caught) must
+# round-trip context + app_id UNCHANGED. X2: an existing rule that predates
+# `checks` and only ever set `contexts` must synthesize {context,
+# app_id: null} per entry ("any app", the same meaning a contexts-only rule
+# already had) and must NOT also emit a top-level `contexts` key.
+# =============================================================================
+
+echo ""
+echo "Phase X: required_status_checks.checks round-trips verbatim (non-default app_id); contexts-only rules synthesize {context, app_id: null}"
+
+PHASE_X_ATELIER_CFG="$TMP/phase-x-atelier-cfg"
+mkdir -p "$PHASE_X_ATELIER_CFG/gh/admin" "$PHASE_X_ATELIER_CFG/gh/author"
+printf 'WRITE\n' > "$PHASE_X_ATELIER_CFG/gh/admin/perm"
+printf 'ADMIN\n' > "$PHASE_X_ATELIER_CFG/gh/author/perm"
+
+# --- X1: existing `checks` with a non-null, non-default app_id ---
+EXISTING_CHECKS_JSON="$TMP/existing_checks.json"
+cat > "$EXISTING_CHECKS_JSON" << 'EOF'
+{
+  "required_status_checks": {
+    "strict": false,
+    "contexts": ["ci/build"],
+    "checks": [{"context": "ci/build", "app_id": 99913}]
+  },
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null
+}
+EOF
+
+PUT_PAYLOAD_CAPTURE_X1="$TMP/put_payload_x1.json"
+rm -f "$PUT_PAYLOAD_CAPTURE_X1"
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_CHECKS_JSON}"
+PUT_PAYLOAD_CAPTURE="${PUT_PAYLOAD_CAPTURE_X1}"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    prev=""
+    for a in "\$@"; do
+      if [ "\$prev" = "--input" ]; then
+        cp "\$a" "\$PUT_PAYLOAD_CAPTURE"
+        break
+      fi
+      prev="\$a"
+    done
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_x1="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_X_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
+rc_x1=$?
+
+[ "$rc_x1" -eq 0 ] \
+  && pass "X0: --apply exits 0 when the existing rule already has a checks array" \
+  || fail "X0: --apply exited $rc_x1, expected 0 (output: $out_x1)"
+
+if [ ! -f "$PUT_PAYLOAD_CAPTURE_X1" ]; then
+  fail "X1: PUT payload was never captured"
+else
+  checks_x1="$(jq -c '.required_status_checks.checks' "$PUT_PAYLOAD_CAPTURE_X1")"
+  [ "$checks_x1" = '[{"context":"ci/build","app_id":99913}]' ] \
+    && pass "X1: required_status_checks.checks round-tripped verbatim, including the non-default app_id (99913)" \
+    || fail "X1: required_status_checks.checks: expected '[{\"context\":\"ci/build\",\"app_id\":99913}]', got '$checks_x1'"
+fi
+
+# --- X2: existing rule predates `checks`, only `contexts` ---
+EXISTING_CONTEXTS_ONLY_JSON="$TMP/existing_contexts_only.json"
+cat > "$EXISTING_CONTEXTS_ONLY_JSON" << 'EOF'
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": ["legacy/check-a", "legacy/check-b"]
+  },
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null
+}
+EOF
+
+PUT_PAYLOAD_CAPTURE_X2="$TMP/put_payload_x2.json"
+rm -f "$PUT_PAYLOAD_CAPTURE_X2"
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_CONTEXTS_ONLY_JSON}"
+PUT_PAYLOAD_CAPTURE="${PUT_PAYLOAD_CAPTURE_X2}"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    prev=""
+    for a in "\$@"; do
+      if [ "\$prev" = "--input" ]; then
+        cp "\$a" "\$PUT_PAYLOAD_CAPTURE"
+        break
+      fi
+      prev="\$a"
+    done
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_x2="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_X_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
+rc_x2=$?
+
+[ "$rc_x2" -eq 0 ] \
+  && pass "X0b: --apply exits 0 on a contexts-only existing rule" \
+  || fail "X0b: --apply exited $rc_x2, expected 0 (output: $out_x2)"
+
+if [ ! -f "$PUT_PAYLOAD_CAPTURE_X2" ]; then
+  fail "X2: PUT payload was never captured"
+else
+  checks_x2="$(jq -c '.required_status_checks.checks' "$PUT_PAYLOAD_CAPTURE_X2")"
+  [ "$checks_x2" = '[{"context":"legacy/check-a","app_id":null},{"context":"legacy/check-b","app_id":null}]' ] \
+    && pass "X2: contexts-only existing rule synthesizes {context, app_id: null} per entry" \
+    || fail "X2: required_status_checks.checks: expected null-app_id entries synthesized from contexts, got '$checks_x2'"
+
+  has_contexts_x2="$(jq -r '.required_status_checks | has("contexts")' "$PUT_PAYLOAD_CAPTURE_X2")"
+  [ "$has_contexts_x2" = "false" ] \
+    && pass "X3: PUT payload does not also emit a top-level required_status_checks.contexts (checks is the sole emitted form)" \
+    || fail "X3: expected required_status_checks.contexts absent from the PUT payload, got has-key='$has_contexts_x2'"
+fi
+
+# =============================================================================
+# Phase Y — #45 CYCLE 6, ITEM 4: find_unmodeled_keys() must descend into
+# required_status_checks the same way it already does for required_pull_
+# request_reviews (MODELED_STATUS_CHECKS_SUBKEYS = strict, contexts, checks
+# only). An invented unmodeled sub-key (required_status_checks.
+# enforcement_mode — not a real GitHub field) must refuse, exit 3, and be
+# named dotted on stdout, mirroring the Phase I/O/V pattern for the other
+# nested objects this helper scans.
+# =============================================================================
+
+echo ""
+echo "Phase Y: find_unmodeled_keys() descends into required_status_checks — an unmodeled sub-key refuses and names itself dotted"
+
+PHASE_Y_ATELIER_CFG="$TMP/phase-y-atelier-cfg"
+mkdir -p "$PHASE_Y_ATELIER_CFG/gh/admin" "$PHASE_Y_ATELIER_CFG/gh/author"
+printf 'WRITE\n' > "$PHASE_Y_ATELIER_CFG/gh/admin/perm"
+printf 'ADMIN\n' > "$PHASE_Y_ATELIER_CFG/gh/author/perm"
+
+EXISTING_RSC_UNMODELED_JSON="$TMP/existing_rsc_unmodeled.json"
+cat > "$EXISTING_RSC_UNMODELED_JSON" << 'EOF'
+{
+  "required_status_checks": {
+    "strict": false,
+    "contexts": ["ci/build"],
+    "enforcement_mode": "strict-recheck"
+  },
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null
+}
+EOF
+
+call_log_y="$(run_unmergeable_case "$EXISTING_RSC_UNMODELED_JSON" "y")"
+
+out_y="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_Y_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_y=$?
+
+[ "$rc_y" -eq 3 ] \
+  && pass "Y1: --apply exits 3 when required_status_checks has an unmodeled sub-key (enforcement_mode)" \
+  || fail "Y1: expected exit 3, got $rc_y (output: $out_y)"
+
+if printf '%s' "$out_y" | grep -q "required_status_checks.enforcement_mode"; then
+  pass "Y2: print_unmergeable_block's text on stdout names required_status_checks.enforcement_mode (dotted, mirroring required_pull_request_reviews.*)"
+else
+  fail "Y2: THE CLASS THIS PHASE CLOSES — expected 'required_status_checks.enforcement_mode' on stdout, find_unmodeled_keys() may not be descending into required_status_checks (got: $out_y)"
+fi
+
+if [ -f "$call_log_y" ] && grep -q -- "-X PUT" "$call_log_y"; then
+  fail "Y3: THE REGRESSION THIS PHASE GUARDS — a PUT was made despite the unmodeled required_status_checks.enforcement_mode field (call log: $(cat "$call_log_y"))"
+else
+  pass "Y3: no PUT was made"
 fi
 
 # =============================================================================

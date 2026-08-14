@@ -57,12 +57,12 @@
 #      printed to stderr.
 #   3  --apply only: no admin identity resolved, OR an admin identity was
 #      found but the existing rule has a field outside the explicit modeled
-#      set (MODELED_TOP_KEYS / MODELED_PR_REVIEW_SUBKEYS below — e.g.
-#      dismissal_restrictions, bypass_pull_request_allowances, or ANY
-#      present top-level restrictions, even with every array empty) and it
-#      refuses to guess. The copy-pasteable manual `gh api -X PUT ...` block
-#      is printed on stdout regardless of --json, naming the offending
-#      field(s) when the reason is an unmodeled field.
+#      set (MODELED_TOP_KEYS / MODELED_PR_REVIEW_SUBKEYS / MODELED_STATUS_
+#      CHECKS_SUBKEYS below — e.g. dismissal_restrictions, bypass_pull_
+#      request_allowances, or ANY present top-level restrictions, even with
+#      every array empty) and it refuses to guess. The copy-pasteable manual
+#      `gh api -X PUT ...` block is printed on stdout regardless of --json,
+#      naming the offending field(s) when the reason is an unmodeled field.
 #   4  --apply only: an admin identity was found but the PUT itself failed.
 
 set -uo pipefail
@@ -149,21 +149,44 @@ command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
 
 MIN_PAYLOAD='{"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null}'
 
-# ---------- modeled / informational / unmodeled field sets (#45 cycle 5) ----------
-# Four consecutive review cycles each found a NEW field the full-replace PUT
+# ---------- modeled / informational / unmodeled field sets (#45 cycle 6) ----------
+# Five consecutive review cycles each found a NEW field the full-replace PUT
 # silently dropped while apply_protection() still reported "applied" — a
 # completeness gap, not any one field's fault. Rather than keep chasing
 # individual fields, the default is inverted here: apply_protection() only
-# considers a GET body's field understood if it is named in one of the two
+# considers a GET body's field understood if it is named in one of the three
 # lists below; anything else present with real content makes it refuse
 # instead of guess (see find_unmodeled_keys()). These lists are the single
 # place that question is answered — do not re-answer it ad hoc elsewhere.
+#
+# Cycle 6 fixed these lists against a REAL GET, not an invented one: every
+# fixture in this suite up to cycle 5 was hand-written, so it validated
+# find_unmodeled_keys() against an imagined shape. hooks/tests/fixtures/
+# branch-protection-real-get.json is `GET /repos/<owner>/<repo>/branches/
+# <branch>/protection` captured from AkaLab-Tech/atelier's own `main`
+# (protected, admin read via the operator's personal gh identity — neither
+# bot identity has admin there) on 2026-08-14, with only the owner/repo
+# segment of its embedded URLs scrubbed to a neutral placeholder; every key
+# and value shape is otherwise verbatim. To refresh: re-run the same GET
+# against any real protected branch under an admin-capable gh identity,
+# scrub the same way, and diff the key set against MODELED_TOP_KEYS /
+# MODELED_PR_REVIEW_SUBKEYS / MODELED_STATUS_CHECKS_SUBKEYS below. That
+# capture is what surfaced two gaps cycle 5 missed:
+#   - required_signatures is present UNCONDITIONALLY (even with
+#     enabled:false) and was not in MODELED_TOP_KEYS, so --apply refused
+#     every real protected-insufficient rule (regression, zero PUTs).
+#   - required_status_checks carries a `checks` array (context + app_id
+#     pinning) that find_unmodeled_keys() never looked at because it only
+#     ever descended into required_pull_request_reviews — so `checks` was
+#     silently dropped by the payload builder (which only round-tripped
+#     `contexts`) while apply_protection() still reported "applied".
 #
 # MODELED_TOP_KEYS — top-level fields the merge-payload builder in
 # apply_protection() explicitly reads and writes back.
 MODELED_TOP_KEYS=(
   required_status_checks
   required_pull_request_reviews
+  required_signatures
   enforce_admins
   required_linear_history
   required_conversation_resolution
@@ -186,6 +209,40 @@ MODELED_PR_REVIEW_SUBKEYS=(
   require_code_owner_reviews
   require_last_push_approval
   required_approving_review_count
+)
+
+# MODELED_STATUS_CHECKS_SUBKEYS — keys of the required_status_checks object
+# the builder round-trips (#45 cycle 6). Added alongside the fix that makes
+# find_unmodeled_keys() descend into required_status_checks the same way it
+# already does for required_pull_request_reviews — before this cycle a
+# real-world `checks` array (status-check context pinned to a specific
+# reporting app via app_id) was invisible to both the refusal scan and the
+# payload builder, so it was silently dropped from every PUT.
+#
+# checks-vs-contexts (deliberate call, not a blind carry of both — see #45
+# task finding 3): `contexts` is the deprecated string-array form; `checks`
+# is its replacement, an object array that additionally pins app_id (which
+# reporting app/check-run is trusted for that context). A prior review cycle
+# read "GitHub re-derives app pinning from the most recent setter" as reason
+# not to worry about contexts-only round-tripping — but that reasoning does
+# not survive a real GET returning `checks` with a live, non-null app_id:
+# building the payload from `contexts` alone would submit no `checks` at
+# all, and GitHub's own docs describe `contexts`-only requests as pinning
+# app_id to "any app", which silently loosens an existing pin rather than
+# preserving it. So the merge payload always emits `checks`: when the
+# existing rule already has a `checks` array, it is round-tripped verbatim
+# (context + app_id, preserving any pin); when it does not (an older-style
+# rule that only ever set `contexts`), each context string is mapped to
+# {context, app_id: null} — "any app", which is exactly what a contexts-only
+# rule already meant, so this is not a behavior change for that case. Plain
+# `contexts` is intentionally NOT also emitted in the payload — GitHub's
+# write API treats `checks` as the canonical form and folding both fields in
+# blindly (per the "do not carry both blindly" instruction) has no
+# additional preservation benefit once `checks` covers the data.
+MODELED_STATUS_CHECKS_SUBKEYS=(
+  strict
+  contexts
+  checks
 )
 
 # Informational fields (checked inline by find_unmodeled_keys(), not listed
@@ -223,13 +280,26 @@ jq_array_literal() {
 # to nobody", not "no restriction" — presence, not content, is the load-
 # bearing signal, which is why this checks nullness rather than emptiness.
 # Sub-keys are reported dotted (required_pull_request_reviews.
-# dismissal_restrictions) so the refusal message names exactly what it
-# found. Empty output = fully modeled, safe to build a merge payload from.
+# dismissal_restrictions, required_status_checks.checks) so the refusal
+# message names exactly what it found. Empty output = fully modeled, safe to
+# build a merge payload from.
+#
+# jq's own stderr is deliberately NOT swallowed here (#45 cycle 6, finding
+# 4) — a jq failure (malformed body, a jq bug) must be visible and, more
+# importantly, must propagate this function's exit code so the CALLER can
+# fail closed. See apply_protection()'s handling of this function's return
+# code immediately below for the other half of that fix: this function on
+# its own already returns jq's exit status (the whole script runs under
+# `set -o pipefail`), but the caller used to only inspect the printed output
+# and never checked that exit code at all — a jq failure produced no output,
+# which the caller read as "nothing unmodeled found", the opposite of fail-
+# closed.
 find_unmodeled_keys() {
   local existing="$1"
   printf '%s' "$existing" | jq -r \
     --argjson modeled_top "$(jq_array_literal "${MODELED_TOP_KEYS[@]}")" \
-    --argjson modeled_rpr "$(jq_array_literal "${MODELED_PR_REVIEW_SUBKEYS[@]}")" '
+    --argjson modeled_rpr "$(jq_array_literal "${MODELED_PR_REVIEW_SUBKEYS[@]}")" \
+    --argjson modeled_rsc "$(jq_array_literal "${MODELED_STATUS_CHECKS_SUBKEYS[@]}")" '
     def informational: (. == "url") or test("_url$");
     ( [ to_entries[]
         | select(.value != null)
@@ -247,8 +317,17 @@ find_unmodeled_keys() {
             | "required_pull_request_reviews." + .
           ]
       ) as $rpr_sub
-    | ($top + $rpr_sub)[]
-  ' 2>/dev/null
+    | ( (.required_status_checks // {}) as $rsc
+        | [ $rsc | to_entries[]
+            | select(.value != null)
+            | .key
+            | select(IN($modeled_rsc[]) | not)
+            | select(informational | not)
+            | "required_status_checks." + .
+          ]
+      ) as $rsc_sub
+    | ($top + $rpr_sub + $rsc_sub)[]
+  '
 }
 
 # ---------- classify_branch_protection <gh_dir> <owner_repo> <branch> ----------
@@ -369,9 +448,13 @@ resolve_admin_gh_dir() {
 # OTHER than a confirmed-unprotected 404 (transient 5xx, secondary rate
 # limit, network error, or a 404 whose branch-detail companion read itself
 # failed), OR an rc-0 read that came back empty, OR an rc-0 read that could
-# not be turned into a merge payload (unparseable body) — never treat any of
-# these as "no rule exists" (#45 review, critical + important findings). The
-# caller is expected to abort without any PUT in this case.
+# not be turned into a merge payload (unparseable body), OR find_unmodeled_
+# keys() itself failing to scan the body (a jq error — #45 cycle 6, finding
+# 4: joins this bucket, not the return-2 unmodeled-field bucket, because a
+# scan failure means this call could not reliably determine what fields the
+# rule even has) — never treat any of these as "no rule exists" (#45 review,
+# critical + important findings). The caller is expected to abort without
+# any PUT in this case.
 apply_protection() {
   local gh_dir="$1" owner_repo="$2" branch="$3"
 
@@ -408,8 +491,25 @@ apply_protection() {
     # silently omitted here would reset (or, for restrictions, phantom-
     # clear) to the API default. Refuse rather than guess; the offending key
     # name(s) are printed on stdout for the caller to relay.
-    local unmodeled_keys
-    unmodeled_keys="$(find_unmodeled_keys "$existing")"
+    #
+    # #45 cycle 6, finding 4: the jq scan itself can fail (malformed body, a
+    # jq bug) — its exit code MUST be checked, not just its output, and a
+    # failure must fail CLOSED, never be read as "found nothing" (which is
+    # what silently discarding this exit code used to do — see
+    # find_unmodeled_keys()'s own comment for the other half of this fix).
+    # This joins the SAME bucket as an unparseable/empty read (return 3,
+    # below and above) rather than the unmodeled-field bucket (return 2):
+    # a jq failure here means this call could not reliably determine what
+    # fields the existing rule even has, which is a "could not verify" state
+    # identical in kind to P1/P2's rc-0-empty / rc-0-unparseable cases, not
+    # "verified the rule and found a field we don't model".
+    local unmodeled_keys unmodeled_rc
+    unmodeled_keys="$(find_unmodeled_keys "$existing")"; unmodeled_rc=$?
+    if [ "$unmodeled_rc" -ne 0 ]; then
+      printf 'could not scan the existing %s/%s protection rule for unmodeled fields (jq exited %s) — refusing rather than guessing\n' \
+        "$owner_repo" "$branch" "$unmodeled_rc" >&2
+      return 3
+    fi
     if [ -n "$unmodeled_keys" ]; then
       printf '%s' "$unmodeled_keys"
       return 2
@@ -455,12 +555,36 @@ apply_protection() {
     # branch is the one case where a full-replace MIN_PAYLOAD is safe.
     payload="$MIN_PAYLOAD"
   else
+    # required_status_checks.checks vs .contexts (#45 cycle 6, finding 3 —
+    # see the MODELED_STATUS_CHECKS_SUBKEYS comment above for the full
+    # rationale): always emit `checks`, round-tripping the existing rule's
+    # own checks array verbatim (context + app_id) when present so an
+    # existing app_id pin is never silently loosened, and synthesizing
+    # {context, app_id: null} entries from `contexts` when the existing rule
+    # predates `checks` — null app_id means "any app", the same meaning a
+    # contexts-only rule already had. `contexts` itself is deliberately not
+    # also emitted (do not carry both blindly): `checks` is the superset.
+    #
+    # required_signatures (#45 cycle 6, finding 2): carried the same way as
+    # its six enabled-boolean neighbours below so its universal presence in
+    # the real GET (see hooks/tests/fixtures/branch-protection-real-get.json
+    # — present even with enabled:false) stops tripping the unmodeled-field
+    # refusal. This endpoint cannot itself toggle commit-signature
+    # requirements (GitHub exposes a separate POST/DELETE .../protection/
+    # required_signatures pair for that); this key is inert in the PUT body,
+    # carried purely so the modeled/refusal accounting stays truthful.
     payload="$(printf '%s' "$existing" | jq --argjson count "$review_count" '{
       required_status_checks: (
         if .required_status_checks == null then null
         else {
           strict: (.required_status_checks.strict // false),
-          contexts: (.required_status_checks.contexts // [])
+          checks: (
+            if (.required_status_checks.checks // null) != null then
+              [ .required_status_checks.checks[] | {context: .context, app_id: (.app_id // null)} ]
+            else
+              [ (.required_status_checks.contexts // [])[] | {context: ., app_id: null} ]
+            end
+          )
         } end
       ),
       enforce_admins: false,
@@ -471,6 +595,7 @@ apply_protection() {
         required_approving_review_count: $count
       },
       restrictions: null,
+      required_signatures: (.required_signatures.enabled // false),
       required_linear_history: (.required_linear_history.enabled // false),
       required_conversation_resolution: (.required_conversation_resolution.enabled // false),
       allow_force_pushes: (.allow_force_pushes.enabled // false),
