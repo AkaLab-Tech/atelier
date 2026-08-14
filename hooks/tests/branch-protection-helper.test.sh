@@ -263,6 +263,18 @@
 #     exited 3 with zero PUTs on every real protected-insufficient rule
 #     shaped like this.
 #
+#     #45 CYCLE 7: required_signatures is NOT a body parameter of the real
+#     PUT endpoint (see the "PUT CONTRACT UNVERIFIED" block above
+#     apply_protection() in the helper) — W2 was repointed from "carried
+#     through as a plain boolean" to "ABSENT from the PUT payload". W2b is
+#     new: it pins the other half of the split directly against find_
+#     unmodeled_keys() itself (extracted the same way Phase A extracts
+#     classify_branch_protection) — required_signatures stays MODELED on
+#     the READ side, so a real body containing it (this fixture,
+#     unconditionally, enabled:false) still does not trip the unmodeled-
+#     field refusal. Without W2b that split was only provable indirectly
+#     (W0/W1 not refusing).
+#
 #   Phase X — the checks-vs-contexts decision from both sides. X1: an
 #     existing rule that already has `checks` with a non-null, NON-DEFAULT
 #     app_id (99913, chosen so a payload that silently nulled it out or
@@ -2702,10 +2714,17 @@ SHIMEOF
   if [ ! -f "$PUT_PAYLOAD_CAPTURE_W" ]; then
     fail "W: THE REGRESSION THIS CYCLE FIXES — PUT payload was never captured, meaning --apply refused the real captured rule"
   else
-    sig_w="$(jq -r '.required_signatures' "$PUT_PAYLOAD_CAPTURE_W")"
-    [ "$sig_w" = "false" ] \
-      && pass "W2: required_signatures carried through as plain boolean (false, from the real fixture's enabled:false)" \
-      || fail "W2: required_signatures: expected 'false', got '$sig_w'"
+    # #45 cycle 7: required_signatures is NOT a body parameter of this PUT
+    # endpoint at all (see the "PUT CONTRACT UNVERIFIED" block above
+    # apply_protection() in the helper) — it must be ABSENT from the PUT
+    # payload, not carried through as a boolean. W2b (below) pins the other
+    # half: it must still be treated as MODELED on the read side, so a real
+    # body containing it (this fixture) never trips the unmodeled-field
+    # refusal.
+    has_sig_w="$(jq 'has("required_signatures")' "$PUT_PAYLOAD_CAPTURE_W")"
+    [ "$has_sig_w" = "false" ] \
+      && pass "W2: required_signatures is ABSENT from the PUT payload (#45 cycle 7 — not a body parameter of this endpoint)" \
+      || fail "W2: required_signatures: expected the key absent from the PUT payload, got present (value: $(jq -c '.required_signatures // "MISSING"' "$PUT_PAYLOAD_CAPTURE_W"))"
 
     checks_w="$(jq -c '.required_status_checks.checks' "$PUT_PAYLOAD_CAPTURE_W")"
     [ "$checks_w" = '[{"context":"structural","app_id":15368}]' ] \
@@ -2716,6 +2735,43 @@ SHIMEOF
     [ "$count_w" = "1" ] \
       && pass "W4: required_approving_review_count forced to 1 (existing was forced to 0)" \
       || fail "W4: required_approving_review_count: expected '1', got '$count_w'"
+
+    # W2b (#45 cycle 7): the read/write split is the subtle part of this
+    # change — required_signatures is excluded from the WRITE payload (W2
+    # above) but stays in MODELED_TOP_KEYS so find_unmodeled_keys() (the
+    # function that decides refusal, both for --status's classification and
+    # for apply_protection()'s own guard) still treats it as MODELED on the
+    # READ side. Extract find_unmodeled_keys() + the MODELED_* arrays it
+    # depends on directly (the same awk-range technique Phase A uses for
+    # classify_branch_protection) and call it against the real fixture body,
+    # which carries required_signatures unconditionally (enabled:false, not
+    # null) — it must report nothing unmodeled. W0/W1 already prove this
+    # indirectly (apply_protection() would have refused otherwise), but
+    # nothing before this cycle asserted it directly against the function
+    # that actually makes the decision.
+    FN_UNMODELED_W="$TMP/find_unmodeled_keys_w.sh"
+    awk '
+      /^# ---------- classify_branch_protection/{ if (f) exit }
+      /^MODELED_TOP_KEYS=\(/ { f=1 }
+      f { print }
+    ' "$HELPER_SCRIPT" > "$FN_UNMODELED_W"
+    if ! grep -q 'find_unmodeled_keys()' "$FN_UNMODELED_W"; then
+      fail "W2b: could not extract find_unmodeled_keys() from $HELPER_SCRIPT"
+    else
+      # shellcheck disable=SC1090
+      ( unset MODELED_TOP_KEYS MODELED_PR_REVIEW_SUBKEYS MODELED_STATUS_CHECKS_SUBKEYS
+        source "$FN_UNMODELED_W"
+        unmodeled_w2b="$(find_unmodeled_keys "$(cat "$EXISTING_REAL_JSON")")"
+        rc_unmodeled_w2b=$?
+        printf '%s\n' "$rc_unmodeled_w2b" > "$TMP/w2b_rc"
+        printf '%s' "$unmodeled_w2b" > "$TMP/w2b_out"
+      )
+      rc_w2b="$(cat "$TMP/w2b_rc" 2>/dev/null || printf '1')"
+      out_w2b="$(cat "$TMP/w2b_out" 2>/dev/null || true)"
+      [ "$rc_w2b" -eq 0 ] && [ -z "$out_w2b" ] \
+        && pass "W2b: find_unmodeled_keys() treats required_signatures as MODELED on the real fixture body (empty output, i.e. no refusal) — the read/write split is preserved" \
+        || fail "W2b: expected find_unmodeled_keys() to report nothing unmodeled (rc 0, empty output) on the real fixture, got rc=$rc_w2b output='$out_w2b'"
+    fi
   fi
 fi
 

@@ -9,6 +9,13 @@
 # 404s. This binary is the one place that logic lives now; both callers
 # delegate to it instead of hand-copying it a third time.
 #
+# #45 cycle 7: --apply's write path (the PUT payload apply_protection()
+# builds) is UNVERIFIED against GitHub's real API contract — see the "PUT
+# CONTRACT UNVERIFIED" block right above apply_protection() below for the
+# three known divergences. Both callers gate reaching --apply behind an
+# explicit operator opt-in as a result; --status (read-only) is grounded
+# against a real captured GET and is NOT gated.
+#
 # Usage:
 #   atelier-branch-protection --status [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
 #   atelier-branch-protection --apply  [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
@@ -64,6 +71,9 @@
 #      `gh api -X PUT ...` block is printed on stdout regardless of --json,
 #      naming the offending field(s) when the reason is an unmodeled field.
 #   4  --apply only: an admin identity was found but the PUT itself failed.
+#      The PUT's real stderr (e.g. a 422 body) is captured and relayed —
+#      in --json output on .message, on this script's own stderr otherwise
+#      — never discarded (#45 cycle 7).
 
 set -uo pipefail
 
@@ -419,6 +429,42 @@ resolve_admin_gh_dir() {
   return 1
 }
 
+# ---------- PUT CONTRACT UNVERIFIED (#45 cycle 7) — READ BEFORE TOUCHING apply_protection() ----------
+# This is the only function in this file that issues a real PUT. Six
+# consecutive review cycles found a new gap in it, one at a time — the read
+# side (classify_branch_protection(), find_unmodeled_keys()) was finally
+# validated against a real captured GET (hooks/tests/fixtures/branch-
+# protection-real-get.json, cycle 6), but NO test or manual run in this
+# codebase has ever executed a real PUT against this endpoint. Every proof
+# to date ran against a stub `gh` that accepts any body. Checked against
+# GitHub's published OpenAPI schema (github/rest-api-description), the
+# merge-payload builder below has (at least) three concrete divergences from
+# the real PUT contract:
+#   1. checks[].app_id: null is off-type. The PUT schema declares app_id a
+#      NON-nullable integer (omit the field = "any app"; -1 = explicitly
+#      "any"); the GET schema declares it nullable. The round-trip this
+#      function performs (see the required_status_checks.checks block below)
+#      is type-invalid in the write direction.
+#   2. required_signatures is NOT a body parameter of this PUT endpoint at
+#      all — see the comment at its removal, below, in the payload builder.
+#      (Cycle 6 had added it; cycle 7 removed it from the payload while
+#      keeping it modeled for reading.)
+#   3. required_status_checks is emitted without `contexts`, which the PUT
+#      schema still lists as required. The payload only emits `checks` (see
+#      the checks-vs-contexts rationale below) — an assumption that was
+#      never verified against the real endpoint.
+# Because of this, callers (atelier-setup-project, atelier-doctor) gate
+# reaching this function behind an explicit operator opt-in
+# (--apply-branch-protection) rather than running it by default — see
+# step_branch_protection() in atelier-setup-project and check_branch_
+# protection() in atelier-doctor. DO NOT attempt to fix the three
+# divergences above as a drive-by here: fixing them requires verifying the
+# corrected payload against the real endpoint, which is exactly the step
+# every prior cycle skipped. That verification is a follow-up item (#45
+# again, "verify the branch-protection PUT contract and re-enable
+# default-on application"), not a rewrite made blind the same way the last
+# six were.
+#
 # ---------- apply_protection <gh_dir> <owner_repo> <branch> ----------
 # Merge-not-overwrite payload builder + PUT + re-verify classify. Assumes
 # the caller already confirmed gh_dir has admin on owner_repo — but that
@@ -565,14 +611,22 @@ apply_protection() {
     # contexts-only rule already had. `contexts` itself is deliberately not
     # also emitted (do not carry both blindly): `checks` is the superset.
     #
-    # required_signatures (#45 cycle 6, finding 2): carried the same way as
-    # its six enabled-boolean neighbours below so its universal presence in
-    # the real GET (see hooks/tests/fixtures/branch-protection-real-get.json
-    # — present even with enabled:false) stops tripping the unmodeled-field
-    # refusal. This endpoint cannot itself toggle commit-signature
-    # requirements (GitHub exposes a separate POST/DELETE .../protection/
-    # required_signatures pair for that); this key is inert in the PUT body,
-    # carried purely so the modeled/refusal accounting stays truthful.
+    # required_signatures — MODELED FOR READING, EXCLUDED FROM THE WRITE
+    # PAYLOAD (#45 cycle 7 finding 2). It stays in MODELED_TOP_KEYS above so
+    # its universal presence in the real GET (see hooks/tests/fixtures/
+    # branch-protection-real-get.json — present even with enabled:false)
+    # does not trip the unmodeled-field refusal (that was the cycle-6
+    # regression: real bodies always carry this key, so treating it as
+    # unmodeled refused every real protected-insufficient rule). But per
+    # GitHub's published OpenAPI schema (github/rest-api-description),
+    # required_signatures is NOT a body parameter of this PUT endpoint at
+    # all — commit-signature requirements are toggled through a separate
+    # POST/DELETE .../protection/required_signatures pair. Cycle 6 added it
+    # to the merge payload anyway (an unverified guess that this endpoint
+    # would just ignore an unknown key); it is deliberately NOT emitted here
+    # — an apply-path PR whose existing rule sets it would otherwise likely
+    # 422. Read-side classification (find_unmodeled_keys(), --status) still
+    # sees and accepts the field; only the PUT body omits it.
     payload="$(printf '%s' "$existing" | jq --argjson count "$review_count" '{
       required_status_checks: (
         if .required_status_checks == null then null
@@ -595,7 +649,6 @@ apply_protection() {
         required_approving_review_count: $count
       },
       restrictions: null,
-      required_signatures: (.required_signatures.enabled // false),
       required_linear_history: (.required_linear_history.enabled // false),
       required_conversation_resolution: (.required_conversation_resolution.enabled // false),
       allow_force_pushes: (.allow_force_pushes.enabled // false),
@@ -614,18 +667,29 @@ apply_protection() {
     fi
   fi
 
-  local tmp_payload
+  local tmp_payload put_err_file put_err
   tmp_payload="$(mktemp)"
   printf '%s\n' "$payload" > "$tmp_payload"
+  put_err_file="$(mktemp)"
   if env GH_CONFIG_DIR="$gh_dir" gh api -X PUT \
       "repos/$owner_repo/branches/$branch/protection" \
-      --input "$tmp_payload" >/dev/null 2>&1; then
-    rm -f "$tmp_payload"
+      --input "$tmp_payload" >/dev/null 2>"$put_err_file"; then
+    rm -f "$tmp_payload" "$put_err_file"
     printf 'applied\n%s\n%s' "$(classify_branch_protection "$gh_dir" "$owner_repo" "$branch")" \
       "$existing_enforce_admins"
     return 0
   fi
-  rm -f "$tmp_payload"
+  # #45 cycle 7: the PUT's stderr used to be discarded outright
+  # (>/dev/null 2>&1), so a real failure (e.g. a 422 from a payload the
+  # endpoint rejects) surfaced to the caller as a bare rc with no reason,
+  # and the generic "check the resolved identity has repo-admin" message a
+  # caller built from that bare rc actively misdirected. Capture it the same
+  # way the read paths above already do (mktemp + <file), and print it on
+  # stdout so the caller (this script's own --apply path, below) can relay
+  # the real error instead of guessing.
+  put_err="$(<"$put_err_file")"
+  rm -f "$tmp_payload" "$put_err_file"
+  printf '%s' "$put_err"
   return 1
 }
 
@@ -818,12 +882,17 @@ if [ "$apply_rc" -eq 3 ]; then
 fi
 
 identity_login="$(env GH_CONFIG_DIR="$admin_dir" gh api user --jq .login 2>/dev/null || true)"
+# apply_out is apply_protection()'s captured PUT stderr on this path (rc 1
+# from that function, see its own comment above) — relay it rather than the
+# bare failure the caller previously had no way to diagnose (#45 cycle 7).
 if $JSON; then
   jq -n --arg repo "$REPO" --arg branch "$BRANCH" --arg class "$class" \
-    --arg identity "$identity_login" --arg gh_dir "$admin_dir" \
+    --arg identity "$identity_login" --arg gh_dir "$admin_dir" --arg message "$apply_out" \
     '{status: "put-failed", repo: $repo, branch: $branch, class: $class,
-      identity: $identity, gh_dir: $gh_dir}'
+      identity: $identity, gh_dir: $gh_dir,
+      message: (if ($message | length) > 0 then $message else null end)}'
 else
   printf 'failed to apply branch protection on %s/%s (as %s)\n' "$REPO" "$BRANCH" "$identity_login" >&2
+  [ -n "$apply_out" ] && printf '%s\n' "$apply_out" >&2
 fi
 exit 4

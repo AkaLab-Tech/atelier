@@ -6,19 +6,58 @@
 # verify block) out of atelier-setup-project entirely; it now lives only in
 # the shared helper scripts/atelier-branch-protection, and
 # step_branch_protection() delegates to it as an external binary via
-# resolve_branch_protection_helper(). #45 also promoted the step to
-# default-on: the old flag -> policy -> TTY-prompt ladder is gone, and
-# --apply-branch-protection is now a deprecated no-op (accepted, ignored);
-# only --no-branch-protection opts out.
+# resolve_branch_protection_helper().
+#
+# #45 CYCLE 7 (DESCOPE): the write path (the PUT payload apply_protection()
+# builds) is UNVERIFIED against GitHub's real API contract — see the "PUT
+# CONTRACT UNVERIFIED" comment above that function in the helper. The
+# default is no longer "apply automatically" — it is "classify and report
+# only" (`--status`, never PUTs). --apply-branch-protection flips from a
+# deprecated no-op to the real, functional opt-in that reaches --apply.
+# --no-branch-protection is unchanged (skips the step entirely, detect and
+# apply both). This repoint touches every phase below except A and C:
+#   - APPLY_BRANCH_PROTECTION_FLAG must now be seeded (see the "Set required
+#     globals" block) — step_branch_protection() reads it under `set -uo
+#     pipefail`, and this harness sources only the extracted fragment, never
+#     the whole script where the flag is normally declared.
+#   - B1 is repointed from "default-on applies" to "default path only
+#     classifies (--status), never applies"; the old B1 content (apply
+#     opt-in) survives as B1-apply-opt-in, now explicitly gated behind
+#     APPLY_BRANCH_PROTECTION_FLAG=true.
+#   - B4, and every case in Phase D and Phase E, are ONLY reachable via
+#     --apply (rc 2/3/4 never occur on the --status-only default path, which
+#     the real helper always exits 0 for) — each now explicitly sets
+#     APPLY_BRANCH_PROTECTION_FLAG=true before calling step_branch_
+#     protection() and resets it to false afterward. Before this fix the
+#     whole file crashed at Phase B with "APPLY_BRANCH_PROTECTION_FLAG:
+#     unbound variable", so B2/B3/B4/D*/E* had not actually run since the
+#     descope landed — re-verified here, all green.
+#   - Phase F (new) — the real-error path: a PUT failure (rc 4) surfaces the
+#     helper's captured stderr VERBATIM through BRANCH_PROTECTION_STATUS and
+#     warn(), replacing the old generic "check the resolved identity has
+#     repo-admin" guess.
+#   - Phase G (new) — the single most important guarantee of the descope,
+#     pinned directly rather than inferred from status wording: end to end
+#     against the REAL atelier-branch-protection helper (not the stub), the
+#     default path's own `gh` call log contains zero "-X PUT" invocations.
 #
 # COVERAGE
 #   Phase A — classify_branch_protection() : all classification states,
-#     now extracted from scripts/atelier-branch-protection (the new single
-#     source of truth), not scripts/atelier-setup-project (deleted there).
+#     extracted from scripts/atelier-branch-protection (the single source of
+#     truth), not scripts/atelier-setup-project (deleted there). Unaffected
+#     by cycle 7.
 #
 #   Phase B — step_branch_protection() delegation to the external helper:
-#     B1  default-on: applies WITHOUT any flag being set (no
-#         APPLY_BRANCH_PROTECTION_FLAG needed any more)
+#     B1  default path (APPLY_BRANCH_PROTECTION_FLAG=false, the default):
+#         invokes the helper with --status (NEVER --apply — zero PUTs by
+#         construction), BRANCH_PROTECTION_STATUS = "detected: <class> on
+#         <repo>/<branch> (not applied — pass --apply-branch-protection to
+#         apply now)" for a gap class.
+#     B1-ok  negative companion: an already-sufficient class on the default
+#         path reports "ok (...)", not "detected: ...".
+#     B1-apply-opt-in  APPLY_BRANCH_PROTECTION_FLAG=true reaches the
+#         helper's --apply mode and reports "applied ..." — this is what B1
+#         used to cover under the old default-on assumption.
 #     B2  --no-branch-protection: step is skipped, the helper is never
 #         invoked, BRANCH_PROTECTION_STATUS = "declined (--no-branch-protection)"
 #     B3  helper-not-found path: when atelier-branch-protection is on none
@@ -27,8 +66,9 @@
 #         helper not found)" and the step still returns 0 — silently
 #         skipping protection on every fresh install would be the worst
 #         failure of this task, so this path is explicitly asserted.
-#     B4  no admin identity resolves (helper exits 3): the step still
-#         returns 0 (advisory-never-fails), BRANCH_PROTECTION_STATUS is the
+#     B4  no admin identity resolves (helper exits 3, under
+#         APPLY_BRANCH_PROTECTION_FLAG=true): the step still returns 0
+#         (advisory-never-fails), BRANCH_PROTECTION_STATUS is the
 #         reason-agnostic "unprotected (could not apply automatically — see
 #         warning for manual fix)" — rc 3 now covers both "no admin
 #         identity resolved" AND "an admin identity resolved but the
@@ -40,32 +80,53 @@
 #   Phase C — CLI arg-parse acceptance (real script binary, --help
 #     short-circuit so no project work runs, mirrors
 #     setup-project-backend-flag.test.sh's strategy):
-#     C1  --apply-branch-protection is still accepted (deprecated no-op)
+#     C1  --apply-branch-protection is accepted (#45 cycle 7: the real,
+#         functional opt-in now, not a deprecated no-op)
 #     C2  --no-branch-protection is accepted
 #
 #   Phase D — #45 REVIEW CYCLE-3: step_branch_protection()'s catch-all `*)`
 #     case arm (any helper exit code other than 0/3/4 — in practice always 2)
-#     was previously untested entirely; before this cycle's fix it also
-#     discarded the helper's stderr (2>/dev/null) and ignored $out, collapsing
-#     BOTH of the helper's distinct rc-2 reasons into a bare "skipped (branch
-#     protection helper exited 2)". D1: the classifier's skip:<msg> shape
-#     (e.g. a transient gh 5xx during the initial classify). D2: the new
-#     read-failed shape (an unusable admin re-read). Both must fold $out's
-#     .message into BRANCH_PROTECTION_STATUS and warn() it, mirroring the
-#     0/3/4 arms. D3 (negative companion): when $out carries no parseable
-#     .message at all, the bare "helper exited $rc" fallback text is used.
+#     — only reachable via --apply (APPLY_BRANCH_PROTECTION_FLAG=true in
+#     every case here, cycle 7). Before cycle 3's fix it also discarded the
+#     helper's stderr (2>/dev/null) and ignored $out, collapsing BOTH of the
+#     helper's distinct rc-2 reasons into a bare "skipped (branch protection
+#     helper exited 2)". D1: the classifier's skip:<msg> shape (e.g. a
+#     transient gh 5xx during the initial classify). D2: the read-failed
+#     shape (an unusable admin re-read). Both must fold $out's .message into
+#     BRANCH_PROTECTION_STATUS and warn() it, mirroring the 0/3/4 arms. D3
+#     (negative companion): when $out carries no parseable .message at all,
+#     the bare "helper exited $rc" fallback text is used.
 #
 #   Phase E — #45 REVIEW CYCLE 5, finding 2's setup-project-side half: the
 #     "applied" arm reads $out's .enforce_admins_relaxed / .message and
 #     warn()s the message when relaxed (the helper's own --json emission of
-#     these fields is pinned in branch-protection-helper.test.sh's Phase U).
-#     E1/E2/E3: enforce_admins_relaxed:true -> warn() fires with the message,
-#     BRANCH_PROTECTION_STATUS still reads "applied ...". E4/E5 (negative
-#     companion): enforce_admins_relaxed:false + message:null -> warn() must
-#     NOT fire at all.
+#     these fields is pinned in branch-protection-helper.test.sh's Phase U)
+#     — only reachable via --apply (APPLY_BRANCH_PROTECTION_FLAG=true,
+#     cycle 7). E1/E2/E3: enforce_admins_relaxed:true -> warn() fires with
+#     the message, BRANCH_PROTECTION_STATUS still reads "applied ...".
+#     E4/E5 (negative companion): enforce_admins_relaxed:false +
+#     message:null -> warn() must NOT fire at all.
 #
-# Hermetic: gh and atelier-branch-protection are stubbed on PATH throughout;
-# no network calls, no real gh api. macOS bash 3.2 compatible.
+#   Phase F (#45 cycle 7, new) — the rc-4 PUT-failure path relays the
+#     helper's captured stderr VERBATIM through BRANCH_PROTECTION_STATUS and
+#     warn(), instead of the old generic "check the resolved identity has
+#     repo-admin" guess that used to misdirect a real failure (e.g. a 422
+#     from a payload the endpoint rejects) toward a permissions problem that
+#     may not exist.
+#
+#   Phase G (#45 cycle 7, new) — THE ZERO-PUT-BY-DEFAULT GUARANTEE, pinned
+#     directly against the REAL atelier-branch-protection helper (not the
+#     stub used everywhere else in this file — PATH is temporarily patched
+#     and PLUGIN_ROOT pointed at the real repo so resolve_branch_protection_
+#     helper() falls through to the actual script), asserting from `gh`'s
+#     own call log that the default path issues zero "-X PUT" calls — this
+#     is the single most important guarantee of the descope; every other
+#     phase infers it from status wording or a stubbed intermediary, this
+#     one pins it at the real `gh` boundary.
+#
+# Hermetic: gh and atelier-branch-protection are stubbed on PATH throughout
+# (Phase G is the one exception — it stubs only gh, against the real
+# helper); no network calls, no real gh api. macOS bash 3.2 compatible.
 #
 # Run:  hooks/tests/setup-project-branch-protection.test.sh
 # Exit: 0 = all assertions pass, 1 = at least one failed.
@@ -306,9 +367,15 @@ PROJ_DIR="$TMP/step_project"
 mkdir -p "$PROJ_DIR"
 ( cd "$PROJ_DIR" && git init >/dev/null 2>&1 ) || true
 
-# Set required globals.
+# Set required globals. #45 cycle 7: APPLY_BRANCH_PROTECTION_FLAG must be
+# seeded here — step_branch_protection() now reads it under `set -uo
+# pipefail`, and this harness sources only the extracted function fragment
+# (never the whole script, which is where the flag is normally declared),
+# so without this line every call below dies "unbound variable" before any
+# assertion runs.
 PROJECT="$PROJ_DIR"
 NO_BRANCH_PROTECTION_FLAG=false
+APPLY_BRANCH_PROTECTION_FLAG=false
 BRANCH_PROTECTION_STATUS=""
 PLUGIN_ROOT="$TMP/no-such-plugin-root"  # only consulted when PATH lookup fails
 
@@ -332,13 +399,25 @@ esac
 SHIMEOF
 chmod +x "$TMP/bin/gh"
 
-# Fake atelier-branch-protection binary, dispatched on $HELPER_MODE.
-# Writes a marker file recording the exact invocation so B1 can assert the
-# runnable shape of the delegated command.
+# Fake atelier-branch-protection binary. Writes a marker file recording the
+# exact invocation so B1/B1-apply can assert the runnable shape of the
+# delegated command. #45 cycle 7: dispatch now branches FIRST on whether the
+# real caller passed --status or --apply (the two are no longer
+# interchangeable — the default path only ever calls --status, which the
+# real helper always exits 0 for; the case/rc-driven modes below are only
+# reachable via --apply, which is now opt-in). --status is dispatched on
+# $HELPER_STATUS_CLASS; --apply keeps the existing $HELPER_MODE dispatch.
 HELPER_INVOKED="$TMP/helper_invoked"
 cat > "$TMP/bin/atelier-branch-protection" << SHIMEOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "${HELPER_INVOKED}"
+case "\$*" in
+  *"--status"*)
+    printf '{"repo":"testowner/testrepo","branch":"main","class":"%s","gh_dir":"/tmp/probe","admin_gh_dir":null}\n' \
+      "\${HELPER_STATUS_CLASS:-protected-insufficient}"
+    exit 0
+    ;;
+esac
 case "\${HELPER_MODE:-applied}" in
   applied)
     printf '{"status":"applied","repo":"testowner/testrepo","branch":"main","class":"protected-sufficient","identity":"fake-admin","gh_dir":"/tmp/fake-admin"}\n'
@@ -385,42 +464,118 @@ case "\${HELPER_MODE:-applied}" in
     printf 'not valid json at all\n'
     exit 2
     ;;
+  put-failed)
+    # #45 cycle 7, the real-error path: the PUT itself failed and the
+    # helper's captured stderr is relayed verbatim via .message — must
+    # surface through BRANCH_PROTECTION_STATUS / warn() as-is, not the old
+    # generic "check the resolved identity has repo-admin" guess.
+    printf '{"status":"put-failed","repo":"testowner/testrepo","branch":"main","class":"protected-insufficient","identity":"fake-admin","gh_dir":"/tmp/fake-admin","message":"HTTP 422: Validation Failed: required_signatures is not a permitted key for this endpoint"}\n'
+    exit 4
+    ;;
 esac
 SHIMEOF
 chmod +x "$TMP/bin/atelier-branch-protection"
 
-# --- B1: default-on — applies WITHOUT APPLY_BRANCH_PROTECTION_FLAG ever
-#     being set (that global does not exist in this extracted fragment at
-#     all, proving step_branch_protection() no longer reads it). ---
+# --- B1 (#45 cycle 7, REPOINTED): the default path — no flag, or
+#     APPLY_BRANCH_PROTECTION_FLAG explicitly false — never mutates. It must
+#     invoke the helper with --status (NOT --apply — zero PUTs by
+#     construction, since the real helper's --status mode never PUTs), and
+#     produce the "detected: <class> ... not applied ..." wording that tells
+#     the operator remediation exists but was not run. This replaces the
+#     pre-cycle-7 assertion that the default path applied automatically —
+#     that behaviour is deliberately gone; B1-apply-opt-in below covers what
+#     used to be here, now gated behind the explicit flag. ---
 rm -f "$HELPER_INVOKED"
 NO_BRANCH_PROTECTION_FLAG=false
-export HELPER_MODE="applied"
+APPLY_BRANCH_PROTECTION_FLAG=false
+export HELPER_STATUS_CLASS="protected-insufficient"
+BRANCH_PROTECTION_STATUS=""
 step_branch_protection
 step_rc=$?
 
 if [ "$step_rc" -eq 0 ]; then
-  pass "B1: step_branch_protection() returns 0 on the default-on apply path"
+  pass "B1: step_branch_protection() returns 0 on the default (detect-only) path"
 else
   fail "B1: step_branch_protection() returned $step_rc, expected 0"
+fi
+
+if [ -f "$HELPER_INVOKED" ] \
+  && grep -q -- "--status" "$HELPER_INVOKED" \
+  && grep -q -- "--repo testowner/testrepo" "$HELPER_INVOKED" \
+  && grep -q -- "--branch main" "$HELPER_INVOKED"; then
+  pass "B1: default path invokes the helper with --status --repo --branch"
+else
+  fail "B1: helper was not invoked with the expected args (got: $(cat "$HELPER_INVOKED" 2>/dev/null || printf '<not invoked>'))"
+fi
+
+if [ -f "$HELPER_INVOKED" ] && ! grep -q -- "--apply" "$HELPER_INVOKED"; then
+  pass "B1: default path NEVER invokes the helper with --apply (zero PUTs by construction)"
+else
+  fail "B1: default path unexpectedly invoked --apply (got: $(cat "$HELPER_INVOKED" 2>/dev/null))"
+fi
+
+if [ "$BRANCH_PROTECTION_STATUS" = "detected: protected-insufficient on testowner/testrepo/main (not applied — pass --apply-branch-protection to apply now)" ]; then
+  pass "B1: BRANCH_PROTECTION_STATUS = '$BRANCH_PROTECTION_STATUS'"
+else
+  fail "B1: BRANCH_PROTECTION_STATUS: expected the 'detected: ... not applied ...' wording, got '$BRANCH_PROTECTION_STATUS'"
+fi
+
+# --- B1-ok: default path negative companion — an already-sufficient class
+#     reports "ok (...)", not "detected: ...". Cheap regression guard that
+#     the detect-only rewrite didn't collapse every class to the same
+#     wording. ---
+rm -f "$HELPER_INVOKED"
+export HELPER_STATUS_CLASS="protected-sufficient"
+BRANCH_PROTECTION_STATUS=""
+step_branch_protection
+step_rc=$?
+
+if [ "$step_rc" -eq 0 ] && [ "$BRANCH_PROTECTION_STATUS" = "ok (required_approving_review_count >= 1)" ]; then
+  pass "B1-ok: default path reports 'ok (...)' for an already-sufficient rule, not 'detected: ...'"
+else
+  fail "B1-ok: expected 'ok (required_approving_review_count >= 1)', got '$BRANCH_PROTECTION_STATUS' (rc=$step_rc)"
+fi
+
+unset HELPER_STATUS_CLASS
+
+# --- B1-apply-opt-in (#45 cycle 7, item (c)): APPLY_BRANCH_PROTECTION_FLAG=
+#     true is the explicit opt-in that reaches the helper's --apply mode —
+#     this is the behaviour B1 used to cover under the old default-on
+#     assumption; pinning it here keeps the gated machinery itself covered,
+#     not just the fact that it is gated. ---
+rm -f "$HELPER_INVOKED"
+APPLY_BRANCH_PROTECTION_FLAG=true
+export HELPER_MODE="applied"
+BRANCH_PROTECTION_STATUS=""
+step_branch_protection
+step_rc=$?
+APPLY_BRANCH_PROTECTION_FLAG=false
+
+if [ "$step_rc" -eq 0 ]; then
+  pass "B1-apply-opt-in: step_branch_protection() returns 0 when --apply-branch-protection is set"
+else
+  fail "B1-apply-opt-in: step_branch_protection() returned $step_rc, expected 0"
 fi
 
 if [ -f "$HELPER_INVOKED" ] \
   && grep -q -- "--apply" "$HELPER_INVOKED" \
   && grep -q -- "--repo testowner/testrepo" "$HELPER_INVOKED" \
   && grep -q -- "--branch main" "$HELPER_INVOKED"; then
-  pass "B1: default-on (no flag set) still invokes the helper with --apply --repo --branch"
+  pass "B1-apply-opt-in: APPLY_BRANCH_PROTECTION_FLAG=true invokes the helper with --apply --repo --branch"
 else
-  fail "B1: helper was not invoked with the expected args (got: $(cat "$HELPER_INVOKED" 2>/dev/null || printf '<not invoked>'))"
+  fail "B1-apply-opt-in: helper was not invoked with the expected args (got: $(cat "$HELPER_INVOKED" 2>/dev/null || printf '<not invoked>'))"
 fi
 
 case "$BRANCH_PROTECTION_STATUS" in
   applied*)
-    pass "B1: BRANCH_PROTECTION_STATUS = '$BRANCH_PROTECTION_STATUS' (contains 'applied')"
+    pass "B1-apply-opt-in: BRANCH_PROTECTION_STATUS = '$BRANCH_PROTECTION_STATUS' (contains 'applied')"
     ;;
   *)
-    fail "B1: BRANCH_PROTECTION_STATUS: expected 'applied ...', got '$BRANCH_PROTECTION_STATUS'"
+    fail "B1-apply-opt-in: BRANCH_PROTECTION_STATUS: expected 'applied ...', got '$BRANCH_PROTECTION_STATUS'"
     ;;
 esac
+
+unset HELPER_MODE
 
 # --- B2: --no-branch-protection skips the step entirely; the helper is
 #     never invoked. ---
@@ -481,13 +636,20 @@ mv "$TMP/bin/atelier-branch-protection.disabled" "$TMP/bin/atelier-branch-protec
 #     covers the unmergeable-fields refusal, not just no-admin — #45
 #     review), and the operator-facing warning contains a COMPLETE
 #     copy-pasteable `printf ... | gh api -X PUT ...` block, not just a bare
-#     "no admin" message. ---
+#     "no admin" message. #45 cycle 7: this outcome (helper exit 3) is only
+#     reachable via --apply, which is opt-in now, so this run must set
+#     APPLY_BRANCH_PROTECTION_FLAG=true (re-verified per item 3d — this test
+#     has not run since the default-path change; with the flag left false it
+#     would silently take the --status branch instead and never reach any
+#     of these assertions). ---
 rm -f "$HELPER_INVOKED" "$WARN_OUT"
 export HELPER_MODE="no-admin"
 NO_BRANCH_PROTECTION_FLAG=false
+APPLY_BRANCH_PROTECTION_FLAG=true
 BRANCH_PROTECTION_STATUS=""
 step_branch_protection
 step_rc=$?
+APPLY_BRANCH_PROTECTION_FLAG=false
 
 if [ "$step_rc" -eq 0 ]; then
   pass "B4: step_branch_protection() returns 0 when no admin identity resolves (advisory, never fails)"
@@ -524,14 +686,17 @@ unset HELPER_MODE
 
 echo ""
 echo "Phase D: step_branch_protection()'s catch-all *) arm reads \$out's .message on rc 2"
+echo "  (#45 cycle 7: rc 2 is only reachable via --apply, so every case below sets APPLY_BRANCH_PROTECTION_FLAG=true)"
 
 # --- D1: the classifier's skip:<msg> shape (rc 2) ---
 rm -f "$HELPER_INVOKED" "$WARN_OUT"
 export HELPER_MODE="skip-message"
 NO_BRANCH_PROTECTION_FLAG=false
+APPLY_BRANCH_PROTECTION_FLAG=true
 BRANCH_PROTECTION_STATUS=""
 step_branch_protection
 step_rc=$?
+APPLY_BRANCH_PROTECTION_FLAG=false
 
 if [ "$step_rc" -eq 0 ]; then
   pass "D1: step_branch_protection() returns 0 on the classifier's skip:<msg> rc-2 shape (advisory, never fails)"
@@ -558,9 +723,11 @@ fi
 rm -f "$HELPER_INVOKED" "$WARN_OUT"
 export HELPER_MODE="read-failed-message"
 NO_BRANCH_PROTECTION_FLAG=false
+APPLY_BRANCH_PROTECTION_FLAG=true
 BRANCH_PROTECTION_STATUS=""
 step_branch_protection
 step_rc=$?
+APPLY_BRANCH_PROTECTION_FLAG=false
 
 if [ "$step_rc" -eq 0 ]; then
   pass "D2: step_branch_protection() returns 0 on the read-failed rc-2 shape (advisory, never fails)"
@@ -585,9 +752,11 @@ fi
 rm -f "$HELPER_INVOKED" "$WARN_OUT"
 export HELPER_MODE="rc2-no-message"
 NO_BRANCH_PROTECTION_FLAG=false
+APPLY_BRANCH_PROTECTION_FLAG=true
 BRANCH_PROTECTION_STATUS=""
 step_branch_protection
 step_rc=$?
+APPLY_BRANCH_PROTECTION_FLAG=false
 
 if [ "$step_rc" -eq 0 ]; then
   pass "D3: step_branch_protection() returns 0 on an rc-2 outcome with no parseable message"
@@ -613,14 +782,17 @@ unset HELPER_MODE
 
 echo ""
 echo "Phase E: step_branch_protection()'s applied arm warns enforce_admins_relaxed's message"
+echo "  (#45 cycle 7: the 'applied' status is only reachable via --apply, so E1/E4 set APPLY_BRANCH_PROTECTION_FLAG=true)"
 
 # --- E1: enforce_admins_relaxed:true -> warn() fires with the message ---
 rm -f "$HELPER_INVOKED" "$WARN_OUT"
 export HELPER_MODE="applied-relaxed"
 NO_BRANCH_PROTECTION_FLAG=false
+APPLY_BRANCH_PROTECTION_FLAG=true
 BRANCH_PROTECTION_STATUS=""
 step_branch_protection
 step_rc=$?
+APPLY_BRANCH_PROTECTION_FLAG=false
 
 if [ "$step_rc" -eq 0 ]; then
   pass "E1: step_branch_protection() returns 0 on the applied+relaxed path"
@@ -646,9 +818,11 @@ esac
 rm -f "$HELPER_INVOKED" "$WARN_OUT"
 export HELPER_MODE="applied-not-relaxed"
 NO_BRANCH_PROTECTION_FLAG=false
+APPLY_BRANCH_PROTECTION_FLAG=true
 BRANCH_PROTECTION_STATUS=""
 step_branch_protection
 step_rc=$?
+APPLY_BRANCH_PROTECTION_FLAG=false
 
 if [ "$step_rc" -eq 0 ]; then
   pass "E4: step_branch_protection() returns 0 on the applied+not-relaxed path"
@@ -663,6 +837,136 @@ else
 fi
 
 unset HELPER_MODE
+
+# =============================================================================
+# Phase F — #45 CYCLE 7, THE REAL-ERROR PATH: a PUT failure surfaces the
+# helper's captured stderr (.message) VERBATIM through BRANCH_PROTECTION_
+# STATUS and warn(), replacing the old generic "check the resolved identity
+# has repo-admin" guess that used to misdirect a real failure (e.g. a 422
+# from a payload the endpoint rejects) toward a permissions problem that may
+# not exist. Only reachable via --apply (rc 4), so APPLY_BRANCH_PROTECTION_
+# FLAG=true here too.
+# =============================================================================
+
+echo ""
+echo "Phase F: rc-4 PUT-failure path relays the real gh error verbatim, not the old generic guess"
+
+PUT_ERROR_TEXT="HTTP 422: Validation Failed: required_signatures is not a permitted key for this endpoint"
+
+rm -f "$HELPER_INVOKED" "$WARN_OUT"
+export HELPER_MODE="put-failed"
+NO_BRANCH_PROTECTION_FLAG=false
+APPLY_BRANCH_PROTECTION_FLAG=true
+BRANCH_PROTECTION_STATUS=""
+step_branch_protection
+step_rc=$?
+APPLY_BRANCH_PROTECTION_FLAG=false
+
+if [ "$step_rc" -eq 0 ]; then
+  pass "F1: step_branch_protection() returns 0 on a PUT failure (advisory, never fails)"
+else
+  fail "F1: step_branch_protection() returned $step_rc, expected 0"
+fi
+
+case "$BRANCH_PROTECTION_STATUS" in
+  *"$PUT_ERROR_TEXT"*)
+    pass "F2: BRANCH_PROTECTION_STATUS contains the real gh error verbatim ('$PUT_ERROR_TEXT')" ;;
+  *)
+    fail "F2: BRANCH_PROTECTION_STATUS: expected it to contain '$PUT_ERROR_TEXT', got '$BRANCH_PROTECTION_STATUS'" ;;
+esac
+
+case "$BRANCH_PROTECTION_STATUS" in
+  *"check the resolved identity has repo-admin"*)
+    fail "F3: BRANCH_PROTECTION_STATUS still contains the old generic guess (should be gone)" ;;
+  *)
+    pass "F3: BRANCH_PROTECTION_STATUS does NOT contain the old generic 'check the resolved identity has repo-admin' guess" ;;
+esac
+
+if [ -f "$WARN_OUT" ] && grep -qF "$PUT_ERROR_TEXT" "$WARN_OUT"; then
+  pass "F4: warn() fired with the real gh error verbatim"
+else
+  fail "F4: expected warn() to fire with '$PUT_ERROR_TEXT' (got: $(cat "$WARN_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+unset HELPER_MODE
+
+# =============================================================================
+# Phase G — #45 CYCLE 7, ZERO-PUT-BY-DEFAULT: the single most important
+# guarantee of the descope, pinned end to end against the REAL
+# atelier-branch-protection helper (not the stub above) so nothing about the
+# real script's own --status/--apply dispatch is assumed. The stubbed
+# atelier-branch-protection binary is temporarily removed from PATH and
+# PLUGIN_ROOT is pointed at the real repo so resolve_branch_protection_
+# helper() falls through to the actual scripts/atelier-branch-protection;
+# only `gh` is stubbed, and its call log is asserted to contain zero
+# "-X PUT" invocations for the default (APPLY_BRANCH_PROTECTION_FLAG=false)
+# path — the guarantee is pinned directly from the call log, never inferred
+# from status wording (which Phase B already covers separately).
+# =============================================================================
+
+echo ""
+echo "Phase G: default path issues zero -X PUT calls end-to-end against the REAL helper"
+
+GH_CALL_LOG_G="$TMP/gh_call_log_g"
+rm -f "$GH_CALL_LOG_G"
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${GH_CALL_LOG_G}"
+case "\$*" in
+  *"nameWithOwner,defaultBranchRef"*)
+    printf '{"nameWithOwner":"testowner/testrepo","defaultBranchRef":{"name":"main"}}\n'
+    ;;
+  *"-X PUT"*"protection"*)
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    printf '{"required_pull_request_reviews":{"required_approving_review_count":0}}\n'
+    ;;
+  *"viewerPermission"*)
+    printf 'NONE\n'
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-login\n'
+    ;;
+  *)
+    printf 'gh-stub-g: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+mv "$TMP/bin/atelier-branch-protection" "$TMP/bin/atelier-branch-protection.disabled.g"
+SAVED_PLUGIN_ROOT_G="$PLUGIN_ROOT"
+PLUGIN_ROOT="$REPO_ROOT"
+unset ATELIER_CONFIG_DIR ATELIER_ADMIN_GH_CONFIG_DIR
+NO_BRANCH_PROTECTION_FLAG=false
+APPLY_BRANCH_PROTECTION_FLAG=false
+BRANCH_PROTECTION_STATUS=""
+step_branch_protection
+step_rc=$?
+
+PLUGIN_ROOT="$SAVED_PLUGIN_ROOT_G"
+mv "$TMP/bin/atelier-branch-protection.disabled.g" "$TMP/bin/atelier-branch-protection"
+
+if [ "$step_rc" -eq 0 ]; then
+  pass "G1: step_branch_protection() returns 0 against the real helper on the default path"
+else
+  fail "G1: step_branch_protection() returned $step_rc, expected 0"
+fi
+
+if [ -f "$GH_CALL_LOG_G" ] && ! grep -q -- "-X PUT" "$GH_CALL_LOG_G"; then
+  pass "G2: zero '-X PUT' calls in gh's call log on the default path (the descope's central guarantee)"
+else
+  fail "G2: expected zero '-X PUT' calls, got: $(cat "$GH_CALL_LOG_G" 2>/dev/null || printf '<no call log>')"
+fi
+
+case "$BRANCH_PROTECTION_STATUS" in
+  detected:*)
+    pass "G3: BRANCH_PROTECTION_STATUS = '$BRANCH_PROTECTION_STATUS' (the real helper's --status classification, detect-only)" ;;
+  *)
+    fail "G3: BRANCH_PROTECTION_STATUS: expected a 'detected: ...' classification from the real helper, got '$BRANCH_PROTECTION_STATUS'" ;;
+esac
 
 # =============================================================================
 # Phase C — CLI arg-parse acceptance (real script binary via --help
@@ -684,7 +988,7 @@ OUT_C1="$TMP/out_c1"; ERR_C1="$TMP/err_c1"
 run_help "$OUT_C1" "$ERR_C1" --apply-branch-protection
 
 if [ "$rc" -eq 0 ] && ! grep -q "unknown option" "$ERR_C1"; then
-  pass "C1: --apply-branch-protection is still accepted (deprecated no-op)"
+  pass "C1: --apply-branch-protection is accepted (#45 cycle 7: the real, functional opt-in now, not a no-op — see B1-apply-opt-in for its behaviour)"
 else
   fail "C1: --apply-branch-protection rejected (rc=$rc, stderr: $(cat "$ERR_C1" 2>/dev/null))"
 fi

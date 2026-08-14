@@ -1604,9 +1604,11 @@ phase_c_1_setup_project_helper() {
   _phase_c_1_symlink_helper atelier-pr-size-check
   # #45: atelier-branch-protection is the single source of truth for
   # branch-protection classification and application, shared by
-  # atelier-setup-project (default-on at setup) and atelier-doctor
-  # (--fix). Replaces the two hand-copied inline classifiers those
-  # scripts used to carry.
+  # atelier-setup-project and atelier-doctor. Both report by default;
+  # applying is an explicit opt-in on each caller (--apply-branch-protection
+  # / a manual `--apply` run) pending write-path verification (#45 cycle 7).
+  # Replaces the two hand-copied inline classifiers those scripts used to
+  # carry.
   _phase_c_1_symlink_helper atelier-branch-protection
   # M6.1.a: atelier-update pulls origin/main on the clone, refreshes the
   # instantiated templates in $ATELIER_CONFIG_DIR, and triggers

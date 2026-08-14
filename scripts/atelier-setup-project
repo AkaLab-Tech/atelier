@@ -89,21 +89,25 @@ OPTIONS:
                          reviewer already has access or no reviewer identity is
                          configured.
   --apply-branch-protection
-                         Deprecated no-op, accepted for backward compatibility
-                         (#45). Branch protection (>=1 required approving
-                         review on the default branch) is now applied by
-                         default at setup — without it GitHub never computes
-                         reviewDecision, so auto-merge guardrail #2 holds
-                         forever despite a real APPROVED review. Applying is
-                         delegated to the atelier-branch-protection helper,
-                         which tries a fixed list of gh identities (atelier
-                         admin, atelier author/bot, then the operator's
-                         personal gh config) and names whichever one it used.
-                         No-op when the rule already requires at least 1
-                         review. Use --no-branch-protection to opt out.
+                         Explicit opt-in to APPLY branch protection (>=1
+                         required approving review on the default branch),
+                         not just detect and report it (#45 cycle 7). Without
+                         a rule requiring approving reviews, GitHub never
+                         computes reviewDecision, so auto-merge guardrail #2
+                         holds forever despite a real APPROVED review — but
+                         the write path (the branch-protection PUT payload)
+                         is UNVERIFIED against GitHub's real API contract, so
+                         it no longer runs by default; pass this flag to run
+                         it anyway. Applying is delegated to the
+                         atelier-branch-protection helper, which tries a
+                         fixed list of gh identities (atelier admin, atelier
+                         author/bot, then the operator's personal gh config)
+                         and names whichever one it used. No-op when the rule
+                         already requires at least 1 review.
   --no-branch-protection
-                         Skip the branch-protection step entirely (#45).
-                         BRANCH_PROTECTION_STATUS reports "declined".
+                         Skip the branch-protection step entirely, including
+                         the default detect-and-report (#45). BRANCH_PROTECTION_STATUS
+                         reports "declined".
   --scaffold-ci          Headless opt-in, consumed by the /setup-project slash
                          command (not this bash helper), to write a baseline
                          GitHub Actions workflow when CI/CD is detected as
@@ -183,9 +187,8 @@ SKIP_POLICY=false          # M4.26.b: --skip-policy skips the interactive decisi
 RECONFIGURE_FLAG=false     # M7.1.F59: --reconfigure allows headless re-setup of an already-configured project
 OVERRIDE_FLAG=false        # M7.1.F63: --override overwrites a legacy non-atelier settings.json headlessly (with backup)
 GRANT_REVIEWER_FLAG=false  # M7.1.F65: --grant-reviewer grants the reviewer identity read access headlessly (author must be admin)
-# shellcheck disable=SC2034  # set but never read — kept only so --apply-branch-protection doesn't trip the "unknown option" guard, see its case arm below
-APPLY_BRANCH_PROTECTION_FLAG=false  # #45: deprecated no-op; branch protection is applied by default now, see --no-branch-protection
-NO_BRANCH_PROTECTION_FLAG=false     # #45: opt out of the default-on branch-protection step
+APPLY_BRANCH_PROTECTION_FLAG=false  # #45 cycle 7: explicit opt-in to APPLY (default is detect-and-report only; write contract unverified)
+NO_BRANCH_PROTECTION_FLAG=false     # #45: opt out of the branch-protection step entirely (no detect, no apply)
 # shellcheck disable=SC2034  # set but never read by this script — accepted only so the arg-parse loop below doesn't die on "unknown option" when the /setup-project slash command passes $ARGUMENTS through verbatim; the actual scaffold decision lives entirely in the slash command
 SCAFFOLD_CI_FLAG=false
 BACKEND_FLAG=""            # audit#70: --backend <files|linear|github-project> — accepted and validated here so the /setup-project slash command's verbatim $ARGUMENTS pass-through doesn't die; the actual backend selection lives in commands/setup-project.md Phase 4a, which re-parses $ARGUMENTS itself
@@ -259,14 +262,13 @@ while [ $# -gt 0 ]; do
       # reviewer identity) — the same invite+accept the interactive prompt does.
       GRANT_REVIEWER_FLAG=true; shift ;;
     --apply-branch-protection)
-      # #45: deprecated no-op, kept so existing callers/docs don't break.
-      # Branch protection is applied by default now (delegated to the
-      # atelier-branch-protection helper); use --no-branch-protection to
-      # opt out instead.
-      # shellcheck disable=SC2034  # never read, see declaration comment above
+      # #45 cycle 7: real, explicit opt-in. Default is detect-and-report
+      # only — see step_branch_protection() for why (the PUT payload shape
+      # is unverified against GitHub's real branch-protection endpoint).
       APPLY_BRANCH_PROTECTION_FLAG=true; shift ;;
     --no-branch-protection)
-      # #45: opt out of the default-on branch-protection step.
+      # #45: opt out of the branch-protection step entirely (no detect, no
+      # apply).
       NO_BRANCH_PROTECTION_FLAG=true; shift ;;
     --scaffold-ci)
       # Consumed here only so this flag doesn't trip the "unknown option"
@@ -1383,9 +1385,15 @@ resolve_branch_protection_helper() {
 
 # Without a branch protection rule that requires at least 1 approving review,
 # GitHub never computes reviewDecision — so auto-merge guardrail #2 holds
-# forever even after a genuine APPROVED review. Default-on: apply unless the
-# operator declined via --no-branch-protection. Advisory-never-fails posture
-# mirrors step_reviewer_access.
+# forever even after a genuine APPROVED review. #45 cycle 7: applying is no
+# longer default-on — the branch-protection PUT payload atelier-branch-
+# protection builds is unverified against GitHub's real API contract (see the
+# "PUT CONTRACT UNVERIFIED" comment on that helper's apply_protection()), so
+# by default this step only DETECTS and REPORTS the current classification;
+# --apply-branch-protection is the explicit opt-in to actually apply it.
+# --no-branch-protection still skips the step (both detect and apply)
+# entirely. Advisory-never-fails posture mirrors step_reviewer_access either
+# way.
 step_branch_protection() {
   BRANCH_PROTECTION_STATUS="skipped"
 
@@ -1415,9 +1423,32 @@ step_branch_protection() {
   [ -n "$owner_repo" ] && [ -n "$default_branch" ] \
     || { BRANCH_PROTECTION_STATUS="skipped (could not resolve repo or branch)"; return 0; }
 
-  # --json only covers the rc 0 / rc 4 outcomes; on rc 3 the helper always
-  # prints the plain-text copy-pasteable manual block on stdout (see its
-  # header comment), so $out is consumed directly rather than parsed as JSON.
+  if ! $APPLY_BRANCH_PROTECTION_FLAG; then
+    # #45 cycle 7: default path — classify only, never mutate (--status
+    # never PUTs).
+    local out class
+    out="$(bash "$helper" --status --repo "$owner_repo" --branch "$default_branch" --json 2>/dev/null || true)"
+    class="$(printf '%s' "$out" | jq -r '.class // empty' 2>/dev/null)"
+    case "$class" in
+      protected-sufficient)
+        BRANCH_PROTECTION_STATUS="ok (required_approving_review_count >= 1)" ;;
+      protected-noadmin)
+        BRANCH_PROTECTION_STATUS="ok (protected; admin token needed to verify the review-count requirement)" ;;
+      protected-insufficient|unprotected|no-admin)
+        BRANCH_PROTECTION_STATUS="detected: $class on $owner_repo/$default_branch (not applied — pass --apply-branch-protection to apply now)" ;;
+      skip:*)
+        BRANCH_PROTECTION_STATUS="skipped (${class#skip:})" ;;
+      *)
+        BRANCH_PROTECTION_STATUS="skipped (atelier-branch-protection returned no classification)" ;;
+    esac
+    return 0
+  fi
+
+  # --apply-branch-protection: explicit opt-in, delegates to the helper's
+  # --apply mode. --json only covers the rc 0 / rc 4 outcomes; on rc 3 the
+  # helper always prints the plain-text copy-pasteable manual block on
+  # stdout (see its header comment), so $out is consumed directly rather
+  # than parsed as JSON.
   local out rc
   out="$(bash "$helper" --apply --repo "$owner_repo" --branch "$default_branch" --json 2>/dev/null)" && rc=0 || rc=$?
 
@@ -1459,11 +1490,22 @@ step_branch_protection() {
       BRANCH_PROTECTION_STATUS="unprotected (could not apply automatically — see warning for manual fix)"
       ;;
     4)
-      local class identity
+      # #45 cycle 7: relay the helper's captured PUT stderr (.message)
+      # instead of the old generic "check the resolved identity has
+      # repo-admin" guess — that guess actively misdirected a real failure
+      # (e.g. a 422 from a payload the endpoint rejects) toward a permissions
+      # problem that may not exist.
+      local class identity message
       class="$(printf '%s' "$out" | jq -r '.class // empty' 2>/dev/null)"
       identity="$(printf '%s' "$out" | jq -r '.identity // empty' 2>/dev/null)"
-      warn "Failed to apply branch protection on $owner_repo/$default_branch (as ${identity:-unknown})."
-      BRANCH_PROTECTION_STATUS="${class:-unknown} (apply failed — check the resolved identity has repo-admin)"
+      message="$(printf '%s' "$out" | jq -r '.message // empty' 2>/dev/null)"
+      if [ -n "$message" ]; then
+        warn "Failed to apply branch protection on $owner_repo/$default_branch (as ${identity:-unknown}): $message"
+        BRANCH_PROTECTION_STATUS="${class:-unknown} (apply failed: $message)"
+      else
+        warn "Failed to apply branch protection on $owner_repo/$default_branch (as ${identity:-unknown})."
+        BRANCH_PROTECTION_STATUS="${class:-unknown} (apply failed)"
+      fi
       ;;
     *)
       # Covers the helper's "skip:<msg>" classify errors (rc 2, e.g. a

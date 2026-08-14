@@ -20,23 +20,27 @@
 #         → SKIP row mentions the message; no fix registered
 #   D4  unprotected + admin identity resolves
 #         → FAIL row mentions "no required approving reviews"
-#         → push_fix_auto (NOT push_fix_manual) registered with the runnable
-#           command `... atelier-branch-protection --apply --repo <o/r>
-#           --branch <b>` — deliberately WITHOUT --quiet (#45 review, finding
-#           4): the doctor's --fix loop now folds the command's stdout into
-#           the OK line so the applying identity is surfaced, which needs
-#           the command to actually print something.
+#         → #45 cycle 7: push_fix_auto is NEVER registered here, even though
+#           an admin identity resolves — the helper's write path (the PUT
+#           payload apply_protection() builds) is UNVERIFIED against
+#           GitHub's real API contract, so check_branch_protection() no
+#           longer queues a runnable `--apply` fix under any circumstance.
+#           push_fix_manual (sourced from the helper's --manual mode) is
+#           registered instead, and the call log proves atelier-branch-
+#           protection was never invoked with --apply at all — this is the
+#           whole point of the gate, not just an absence of push_fix_auto.
 #   D5  unprotected + NO admin identity resolves
 #         → FAIL row
 #         → push_fix_manual (NOT push_fix_auto) registered with the
 #           instruction text, sourced from the helper's --manual mode (NOT
-#           --apply — #45 review, finding 2: a diagnostic-only doctor run
-#           must never risk a second, successful admin-identity resolution
-#           PUTting a rule); no fix_auto is ever queued (nothing the caller
-#           could actually run)
+#           --apply — #45 review, finding 2, and now unconditional as of
+#           cycle 7: a diagnostic-only doctor run must never risk a second,
+#           successful admin-identity resolution PUTting a rule); no
+#           fix_auto is ever queued (nothing the caller could actually run)
 #   D6  protected-insufficient + admin identity resolves
-#         → same fix_auto path as D4 (regression: the "insufficient" class
-#           must route through the same remediation as "unprotected")
+#         → same push_fix_manual-only path as D4 (regression: the
+#           "insufficient" class must route through the same gated
+#           remediation as "unprotected", never push_fix_auto)
 #   D7  no-admin (403-classified)
 #         → its OWN $SKIP row (NOT the generic FAIL + push_fix_manual path
 #           D5 exercises): a 403 reading the protection detail is evidence
@@ -118,15 +122,21 @@ fi
 #   atelier-branch-protection stub, dispatched on $HELPER_CLASS:
 #     --status ... --json → {"class": $HELPER_CLASS, "admin_gh_dir": ...}
 #       admin_gh_dir is "/tmp/fake-admin" when $HELPER_ADMIN_DIR=1, else null
-#     --apply ...          → mimics the real helper's applied path (only
-#       reached when check_branch_protection() queues push_fix_auto and the
-#       caller — i.e. atelier-doctor --fix's execution loop, not this
-#       suite — actually runs the queued command)
+#       (kept for fixture parity with the real --status JSON shape, even
+#       though #45 cycle 7 removed atelier-doctor's own admin_dir variable —
+#       check_branch_protection() no longer reads this field at all)
+#     --apply ...          → #45 cycle 7: check_branch_protection() must
+#       NEVER invoke this mode, with or without an admin identity resolving
+#       (the helper's write path is unverified against GitHub's real API
+#       contract). Every invocation is appended to $APPLY_CALL_LOG so D4/D6
+#       can assert zero --apply calls directly from the call log, not just
+#       infer it from push_fix_auto's absence — then still returns a
+#       plausible response so a regression doesn't hang the suite.
 #     --manual ...         → mimics the real helper's --manual mode: prints
 #       the copy-pasteable manual block on stdout, exits 0 (this is what
-#       check_branch_protection() now invokes synchronously to build the
-#       push_fix_manual text, per #45 review finding 2 — --apply is never
-#       called from the read-only doctor path)
+#       check_branch_protection() now invokes synchronously, unconditionally,
+#       to build the push_fix_manual text — --apply is never called from the
+#       read-only doctor path, #45 review finding 2 / cycle 7)
 # =============================================================================
 
 mkdir -p "$TMP/bin"
@@ -160,6 +170,10 @@ case "$*" in
     exit 0
     ;;
   *"--apply"*)
+    # #45 cycle 7: check_branch_protection() must never reach this mode.
+    # Log every call so tests can assert the call log stays empty, rather
+    # than only inferring "never called" from push_fix_auto's absence.
+    printf '%s\n' "$*" >> "${APPLY_CALL_LOG:-/dev/null}"
     if [ "${HELPER_ADMIN_DIR:-0}" = "1" ]; then
       printf 'applied: testowner/testrepo/main now requires >=1 approving review (as fake-admin)\n'
       exit 0
@@ -196,6 +210,7 @@ chmod +x "$TMP/bin/atelier-branch-protection"
 HOST_OUT="$TMP/host_out"
 FIX_AUTO_OUT="$TMP/fix_auto_out"
 FIX_MANUAL_OUT="$TMP/fix_manual_out"
+export APPLY_CALL_LOG="$TMP/apply_call_log"
 
 push_host()       { printf '%s\n' "$*" >> "$HOST_OUT"; }
 push_fix_auto()   { printf '%s\n' "$*" >> "$FIX_AUTO_OUT"; }
@@ -206,7 +221,7 @@ OK="✓"
 FAIL="✗"
 SKIP="–"
 
-reset_capture() { rm -f "$HOST_OUT" "$FIX_AUTO_OUT" "$FIX_MANUAL_OUT"; unset HELPER_CLASS HELPER_ADMIN_DIR; }
+reset_capture() { rm -f "$HOST_OUT" "$FIX_AUTO_OUT" "$FIX_MANUAL_OUT" "$APPLY_CALL_LOG"; unset HELPER_CLASS HELPER_ADMIN_DIR; }
 
 # Run check_branch_protection() in the current shell (CWD is the git repo,
 # stubs are on PATH, infrastructure functions are defined above).
@@ -285,10 +300,16 @@ else
 fi
 
 # =============================================================================
-# D4 — unprotected + admin identity resolves: FAIL row + push_fix_auto
-#      (THE central assertion: push_fix_auto, NOT push_fix_manual, and the
-#      queued command is the runnable atelier-branch-protection --apply
-#      invocation.)
+# D4 — unprotected + admin identity resolves: FAIL row + push_fix_manual,
+#      NEVER push_fix_auto (#45 cycle 7 — THE central assertion, repointed:
+#      the helper's write path is gated behind an explicit operator opt-in
+#      that doctor never passes, so no runnable PUT is ever queued here even
+#      though an admin identity resolves. Asserted three ways: no
+#      push_fix_auto call, push_fix_manual registered instead, AND the
+#      atelier-branch-protection stub's own call log proves --apply was
+#      never invoked at all — the strongest form of "no runnable PUT is ever
+#      queued", since it does not rely on doctor's push_fix_auto wiring
+#      alone.)
 # =============================================================================
 
 reset_capture
@@ -301,32 +322,28 @@ else
   fail "D4: unprotected → expected 'no required approving reviews' in host output (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
 fi
 
-if [ -f "$FIX_AUTO_OUT" ]; then
-  pass "D4: unprotected + admin resolves → push_fix_auto registered"
+if [ ! -f "$FIX_AUTO_OUT" ]; then
+  pass "D4: unprotected + admin resolves → push_fix_auto is NOT registered (#45 cycle 7: write path gated, never queued even when admin resolves)"
 else
-  fail "D4: unprotected + admin resolves → expected push_fix_auto to be registered but it was not"
+  fail "D4: unprotected + admin resolves → unexpected push_fix_auto: $(cat "$FIX_AUTO_OUT")"
 fi
 
-if [ ! -f "$FIX_MANUAL_OUT" ]; then
-  pass "D4: unprotected + admin resolves → push_fix_manual is NOT registered"
+if [ -f "$FIX_MANUAL_OUT" ]; then
+  pass "D4: unprotected + admin resolves → push_fix_manual IS registered instead"
 else
-  fail "D4: unprotected + admin resolves → unexpected push_fix_manual: $(cat "$FIX_MANUAL_OUT")"
+  fail "D4: unprotected + admin resolves → expected push_fix_manual to be registered but it was not"
 fi
 
-if [ -f "$FIX_AUTO_OUT" ] \
-  && grep -q "atelier-branch-protection" "$FIX_AUTO_OUT" \
-  && grep -q -- "--apply" "$FIX_AUTO_OUT" \
-  && grep -q -- "--repo" "$FIX_AUTO_OUT" \
-  && grep -q -- "--branch" "$FIX_AUTO_OUT"; then
-  pass "D4: fix_auto command is the runnable 'atelier-branch-protection --apply --repo ... --branch ...'"
+if [ -f "$FIX_MANUAL_OUT" ] && grep -q "gh api -X PUT" "$FIX_MANUAL_OUT"; then
+  pass "D4: fix_manual command is the non-mutating copy-pasteable 'gh api -X PUT' instruction block"
 else
-  fail "D4: fix_auto command missing expected shape (got: $(cat "$FIX_AUTO_OUT" 2>/dev/null || printf '<nothing>'))"
+  fail "D4: fix_manual command missing expected shape (got: $(cat "$FIX_MANUAL_OUT" 2>/dev/null || printf '<nothing>'))"
 fi
 
-if [ -f "$FIX_AUTO_OUT" ] && ! grep -q -- "--quiet" "$FIX_AUTO_OUT"; then
-  pass "D4: fix_auto command deliberately omits --quiet (#45 review finding 4: the --fix loop needs the command's stdout to surface the applying identity)"
+if [ ! -s "$APPLY_CALL_LOG" ]; then
+  pass "D4: atelier-branch-protection --apply was never invoked (call log empty) — no runnable PUT is ever queued even when an admin identity resolves"
 else
-  fail "D4: fix_auto command unexpectedly contains --quiet (got: $(cat "$FIX_AUTO_OUT" 2>/dev/null || printf '<nothing>'))"
+  fail "D4: atelier-branch-protection --apply WAS invoked (call log: $(cat "$APPLY_CALL_LOG"))"
 fi
 
 # =============================================================================
@@ -364,23 +381,31 @@ else
 fi
 
 # =============================================================================
-# D6 — protected-insufficient + admin resolves: same fix_auto path as D4
+# D6 — protected-insufficient + admin resolves: same push_fix_manual-only
+#      path as D4, never push_fix_auto (regression guard: the "insufficient"
+#      class must route through the same gate as "unprotected")
 # =============================================================================
 
 reset_capture
 export HELPER_CLASS="protected-insufficient" HELPER_ADMIN_DIR="1"
 run_check
 
-if [ -f "$FIX_AUTO_OUT" ]; then
-  pass "D6: protected-insufficient + admin resolves → push_fix_auto registered"
+if [ ! -f "$FIX_AUTO_OUT" ]; then
+  pass "D6: protected-insufficient + admin resolves → push_fix_auto is NOT registered (#45 cycle 7)"
 else
-  fail "D6: protected-insufficient + admin resolves → expected push_fix_auto but none registered"
+  fail "D6: protected-insufficient + admin resolves → unexpected push_fix_auto: $(cat "$FIX_AUTO_OUT")"
 fi
 
-if [ ! -f "$FIX_MANUAL_OUT" ]; then
-  pass "D6: protected-insufficient + admin resolves → push_fix_manual is NOT registered"
+if [ ! -s "$APPLY_CALL_LOG" ]; then
+  pass "D6: atelier-branch-protection --apply was never invoked (call log empty)"
 else
-  fail "D6: protected-insufficient + admin resolves → unexpected push_fix_manual"
+  fail "D6: atelier-branch-protection --apply WAS invoked (call log: $(cat "$APPLY_CALL_LOG"))"
+fi
+
+if [ -f "$FIX_MANUAL_OUT" ] && grep -q "gh api -X PUT" "$FIX_MANUAL_OUT"; then
+  pass "D6: protected-insufficient + admin resolves → push_fix_manual IS registered instead (same gate as D4)"
+else
+  fail "D6: protected-insufficient + admin resolves → expected push_fix_manual with 'gh api -X PUT' (got: $(cat "$FIX_MANUAL_OUT" 2>/dev/null || printf '<nothing>'))"
 fi
 
 # =============================================================================

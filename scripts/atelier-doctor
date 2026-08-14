@@ -999,10 +999,13 @@ inv=\$(env GH_CONFIG_DIR=\"$reviewer_dir\" gh api user/repository_invitations --
 check_branch_protection() {
   # M7.1.F31 / #45 — without a rule requiring at least 1 approving review,
   # GitHub never computes reviewDecision; auto-merge guardrail #2 holds
-  # forever even after a real APPROVED review. Classification and, when
-  # --fix is used, application are delegated to the shared helper
-  # atelier-branch-protection (#45) — see that script for the classifier
-  # states and the admin-identity resolution order this check now uses.
+  # forever even after a real APPROVED review. Classification is delegated
+  # to the shared helper atelier-branch-protection (#45) — see that script
+  # for the classifier states and the admin-identity resolution order this
+  # check uses. #45 cycle 7: this check never queues a runnable `--apply`
+  # fix, with or without --fix — the helper's write path is unverified
+  # against GitHub's real API contract, so the only fix this check ever
+  # offers is the manual, non-mutating `--manual` block.
   if ! command -v gh >/dev/null 2>&1; then
     push_host "$SKIP branch protection check (gh not on PATH)"
     return
@@ -1028,10 +1031,9 @@ check_branch_protection() {
     return
   fi
 
-  local out class admin_dir
+  local out class
   out="$(bash "$helper" --status --repo "$owner_repo" --branch "$default_branch" --json 2>/dev/null)"
   class="$(printf '%s' "$out" | jq -r '.class // empty' 2>/dev/null)"
-  admin_dir="$(printf '%s' "$out" | jq -r '.admin_gh_dir // empty' 2>/dev/null)"
 
   case "$class" in
     protected-sufficient)
@@ -1071,18 +1073,17 @@ check_branch_protection() {
   # protected-insufficient | unprotected
   push_host "$FAIL branch protection: $owner_repo/$default_branch has no required approving reviews — auto-merge guardrail #2 (reviewDecision == APPROVED) holds forever"
 
-  if [ -n "$admin_dir" ]; then
-    push_fix_auto "bash \"$helper\" --apply --repo \"$owner_repo\" --branch \"$default_branch\""
-  else
-    # --manual only (never --apply): --apply re-resolves an admin identity
-    # itself and, on the current plain (no --fix) doctor run, that second
-    # resolution is expected to fail again — but a single transient failure
-    # on the EARLIER --status call above (rate limit, 5xx) could leave
-    # admin_dir empty here while the second resolution now succeeds, PUTting
-    # a branch-protection rule from a diagnostic-only invocation (#45
-    # review, finding 2). --manual never probes an admin identity at all.
-    push_fix_manual "$(bash "$helper" --manual --repo "$owner_repo" --branch "$default_branch" 2>&1 || true)"
-  fi
+  # #45 cycle 7: never queue a runnable `--apply` fix here, even under
+  # --fix, even when an admin identity resolved. The write path (the PUT
+  # payload apply_protection() builds) is UNVERIFIED against GitHub's real
+  # API contract — see the "PUT CONTRACT UNVERIFIED" comment on that
+  # function in atelier-branch-protection for the three known divergences.
+  # push_fix_manual with the copy-pasteable block is the correct terminal
+  # until that contract is verified: --manual never probes an admin identity
+  # or reads the protection endpoint at all, so it is the only call shape
+  # guaranteed non-mutating regardless of which identities happen to
+  # resolve at call time.
+  push_fix_manual "$(bash "$helper" --manual --repo "$owner_repo" --branch "$default_branch" 2>&1 || true)"
 }
 
 check_atelier_auto_mode() {

@@ -145,15 +145,17 @@ If you ever want to retire a project from atelier (no more `task` will run on it
 
 ### Branch protection
 
-Setup also applies a minimal branch protection rule (requiring at least 1 approving review) on your default branch — **by default, no flag needed**. Without this rule GitHub never computes a PR's review decision, so the auto-merge gate holds forever even after a genuine approval.
+Setup **detects and reports** whether your default branch has a branch protection rule requiring at least 1 approving review — **by default, no flag needed**. Without this rule GitHub never computes a PR's review decision, so the auto-merge gate holds forever even after a genuine approval.
 
-Applying the rule needs a GitHub identity with admin rights on the repo. Setup tries, in order: a dedicated atelier admin identity (if you've configured one), the atelier **author** account (a free win on repos it already owns), and finally your own **personal** GitHub login. Whichever identity actually applied the rule is named in the setup output, e.g. `applied as <your-login> (…)`. If none of them has admin rights, setup still finishes normally and prints a copy-pasteable `gh api -X PUT …` command for you to run yourself. The command it prints is always a minimal all-or-nothing rule, so if a rule already exists, read it first (the printed instructions tell you how) and merge by hand rather than pasting it blind.
+It does **not apply** the rule by default. The write path (the API call that would create or update the rule) has not yet been verified against GitHub's real branch-protection endpoint, so applying it is gated behind an explicit opt-in: pass `--apply-branch-protection` to `atelier-setup-project` if you want it applied now. Without that flag, setup reports what it found (e.g. "detected: unprotected …") and tells you the flag to pass.
+
+Applying the rule (with `--apply-branch-protection`) needs a GitHub identity with admin rights on the repo. Setup tries, in order: a dedicated atelier admin identity (if you've configured one), the atelier **author** account (a free win on repos it already owns), and finally your own **personal** GitHub login. Whichever identity actually applied the rule is named in the setup output, e.g. `applied as <your-login> (…)`. If none of them has admin rights, setup still finishes normally and prints a copy-pasteable `gh api -X PUT …` command for you to run yourself. The command it prints is always a minimal all-or-nothing rule, so if a rule already exists, read it first (the printed instructions tell you how) and merge by hand rather than pasting it blind.
 
 Before applying anything, the admin identity re-reads whatever rule is already there so it can merge into it rather than overwrite it. If that re-read itself fails for a reason other than "no rule exists" (a transient GitHub error, a rate limit, …), setup never guesses — it skips applying, reports the failure, and leaves the existing rule untouched.
 
-Pass `--no-branch-protection` to `atelier-setup-project` if you don't want this rule applied — there's no interactive prompt to skip any more, the step runs unconditionally otherwise. `--apply-branch-protection` still works but is now a no-op — it's kept only so older scripts and docs don't break.
+Pass `--no-branch-protection` to `atelier-setup-project` if you don't want this check to run at all — no detection, no report, no apply.
 
-`atelier-doctor` (without `--fix`) reports the same check read-only — including a copy-pasteable manual command when no admin identity is available — and never applies anything itself; only `atelier-doctor --fix` and `atelier-setup-project` ever PUT a rule.
+`atelier-doctor` reports the same check read-only, including a copy-pasteable manual command to apply it yourself — it never applies anything itself, even with `--fix`, for the same write-path-unverified reason above.
 
 ### Already have a roadmap? Adopt it instead of rewriting it
 
