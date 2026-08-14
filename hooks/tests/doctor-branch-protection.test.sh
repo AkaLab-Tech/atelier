@@ -1,24 +1,66 @@
 #!/usr/bin/env bash
 #
-# Tests for task #31 (M7.1.F31) — doctor check_branch_protection().
+# Tests for task #31 (M7.1.F31) / #45 — doctor check_branch_protection().
+#
+# #45 rewrote check_branch_protection() to delegate classification AND
+# application to the shared external helper scripts/atelier-branch-protection
+# (`bash "$helper" --status ... --json` / `--apply ...`) instead of shelling
+# out to `gh` and classifying inline. This suite therefore stubs the HELPER
+# binary, not `gh` — `gh` is only stubbed for the two calls
+# check_branch_protection() still makes directly (nameWithOwner /
+# defaultBranchRef repo resolution).
 #
 # COVERAGE
-#   C1  protected-sufficient (200, count=1)
-#         → push_host receives OK row mentioning "requires approving reviews"
-#         → no fix block registered
-#   C2  unprotected (404 "Branch not protected")
-#         → push_host receives FAIL row mentioning "no required approving reviews"
-#         → push_fix_auto registered (perm=ADMIN path)
-#   C3  no-admin (403 "Must have admin")
-#         → push_host receives SKIP row
-#         → no fix block registered
-#   C4  protected-insufficient (200, count=0)
-#         → push_host receives FAIL row mentioning "no required approving reviews"
-#         → push_fix_auto registered (perm=ADMIN path)
+#   D1  protected-sufficient
+#         → OK row mentions "requires approving reviews"; no fix registered
+#   D2  protected-noadmin
+#         → OK row mentions "is protected"; no fix registered; does NOT
+#           report the "no required approving reviews" failure
+#   D3  skip:<msg>
+#         → SKIP row mentions the message; no fix registered
+#   D4  unprotected + admin identity resolves
+#         → FAIL row mentions "no required approving reviews"
+#         → #45 cycle 7: push_fix_auto is NEVER registered here, even though
+#           an admin identity resolves — the helper's write path (the PUT
+#           payload apply_protection() builds) is UNVERIFIED against
+#           GitHub's real API contract, so check_branch_protection() no
+#           longer queues a runnable `--apply` fix under any circumstance.
+#           push_fix_manual (sourced from the helper's --manual mode) is
+#           registered instead, and the call log proves atelier-branch-
+#           protection was never invoked with --apply at all — this is the
+#           whole point of the gate, not just an absence of push_fix_auto.
+#   D5  unprotected + NO admin identity resolves
+#         → FAIL row
+#         → push_fix_manual (NOT push_fix_auto) registered with the
+#           instruction text, sourced from the helper's --manual mode (NOT
+#           --apply — #45 review, finding 2, and now unconditional as of
+#           cycle 7: a diagnostic-only doctor run must never risk a second,
+#           successful admin-identity resolution PUTting a rule); no
+#           fix_auto is ever queued (nothing the caller could actually run)
+#   D6  protected-insufficient + admin identity resolves
+#         → same push_fix_manual-only path as D4 (regression: the
+#           "insufficient" class must route through the same gated
+#           remediation as "unprotected", never push_fix_auto)
+#   D7  no-admin (403-classified)
+#         → its OWN $SKIP row (NOT the generic FAIL + push_fix_manual path
+#           D5 exercises): a 403 reading the protection detail is evidence
+#           of nothing about the required-review count, so asserting FAIL
+#           would repeat, for the 403 path, exactly the false-failure #284
+#           fixed for the 404 path (#45 review, finding 3) — no fix
+#           (auto or manual) is registered
+#   D8  atelier-branch-protection helper not found on PATH
+#         → SKIP row mentions the helper is missing; no fix registered
+#   E1  the top-level `--fix` execution loop (extracted separately, since it
+#       is plain script code after all checks run, not a function): a
+#       successful fix command's non-empty stdout is folded into the same
+#       line as the ✓ OK marker (#45 review, finding 4 — the applying
+#       identity must never go silent); a successful command with EMPTY
+#       stdout still prints the bare "✓ OK" line unchanged.
 #
-# Hermetic: gh is stubbed on PATH; no network calls.
-# The git rev-parse check inside check_branch_protection() relies on CWD being
-# inside a git repo — this file cd's into $TMP/repo at the start of the test.
+# Hermetic: gh AND atelier-branch-protection are stubbed on PATH; no network
+# calls, no real gh api, no dependency on the operator's ~/.config/gh.
+# The git rev-parse check inside check_branch_protection() relies on CWD
+# being inside a git repo — this file cd's into $TMP/repo at the start.
 # macOS bash 3.2 compatible.
 #
 # Run:  hooks/tests/doctor-branch-protection.test.sh
@@ -56,20 +98,45 @@ if ! grep -q 'no required approving reviews' "$FN_CHECK_BP"; then
   exit 1
 fi
 
+# Extract the top-level `--fix` execution loop (plain script code, not a
+# function — it runs once after every check has populated FIX_AUTO_COMMANDS,
+# so there is nothing to `awk`-match by a `name() {` header). Bounded by the
+# `APPLIED_OK=0` init line through the column-0 `fi` closing the
+# `if [ ${#FIX_AUTO_COMMANDS[@]} -gt 0 ]; then` block — verified stable by
+# the grep below, same style as this file's other extraction guards.
+FN_FIX_LOOP="$TMP/fix_loop.sh"
+awk '/^APPLIED_OK=0$/{f=1} f{print} f&&/^fi$/{exit}' "$DOCTOR" > "$FN_FIX_LOOP"
+if ! grep -q 'finding 4' "$FN_FIX_LOOP" || ! grep -q 'APPLIED_OK=\$(( APPLIED_OK + 1 ))' "$FN_FIX_LOOP"; then
+  echo "  FAIL: could not extract the --fix execution loop from $DOCTOR"
+  exit 1
+fi
+
 # =============================================================================
-# Stub the gh binary and doctor infrastructure.
+# Stub gh (only the two direct calls check_branch_protection() still makes)
+# and atelier-branch-protection (the delegated classify/apply calls).
 #
-# The stub dispatches on $* (all args as a string):
-#   *"nameWithOwner --jq"*    → output "testowner/testrepo"
-#   *"defaultBranchRef --jq"* → output "main"
-#   *"viewerPermission"*      → output "ADMIN"
-#   *"protection"*            → behaviour controlled by $PROTECT_RESPONSE env var
-#     "200-sufficient"        → exit 0, JSON with count=1
-#     "200-insufficient"      → exit 0, JSON with count=0
-#     "404"                   → exit 1, "Branch not protected" on stderr
-#     "403"                   → exit 1, "Must have admin" on stderr
+#   gh stub:
+#     *"nameWithOwner --jq"*    → "testowner/testrepo"
+#     *"defaultBranchRef --jq"* → "main"
 #
-# The PROTECT_RESPONSE env var must be exported before each test run.
+#   atelier-branch-protection stub, dispatched on $HELPER_CLASS:
+#     --status ... --json → {"class": $HELPER_CLASS, "admin_gh_dir": ...}
+#       admin_gh_dir is "/tmp/fake-admin" when $HELPER_ADMIN_DIR=1, else null
+#       (kept for fixture parity with the real --status JSON shape, even
+#       though #45 cycle 7 removed atelier-doctor's own admin_dir variable —
+#       check_branch_protection() no longer reads this field at all)
+#     --apply ...          → #45 cycle 7: check_branch_protection() must
+#       NEVER invoke this mode, with or without an admin identity resolving
+#       (the helper's write path is unverified against GitHub's real API
+#       contract). Every invocation is appended to $APPLY_CALL_LOG so D4/D6
+#       can assert zero --apply calls directly from the call log, not just
+#       infer it from push_fix_auto's absence — then still returns a
+#       plausible response so a regression doesn't hang the suite.
+#     --manual ...         → mimics the real helper's --manual mode: prints
+#       the copy-pasteable manual block on stdout, exits 0 (this is what
+#       check_branch_protection() now invokes synchronously, unconditionally,
+#       to build the push_fix_manual text — --apply is never called from the
+#       read-only doctor path, #45 review finding 2 / cycle 7)
 # =============================================================================
 
 mkdir -p "$TMP/bin"
@@ -77,46 +144,12 @@ export PATH="$TMP/bin:$PATH"
 
 cat > "$TMP/bin/gh" << 'SHIMEOF'
 #!/usr/bin/env bash
-PROTECT_RESPONSE="${PROTECT_RESPONSE:-404}"
 case "$*" in
   *"nameWithOwner --jq"*)
     printf 'testowner/testrepo\n'
     ;;
   *"defaultBranchRef --jq"*)
     printf 'main\n'
-    ;;
-  *"viewerPermission"*)
-    printf 'ADMIN\n'
-    ;;
-  *".protected"*)
-    # No-admin-safe branch-detail endpoint the doctor consults to disambiguate
-    # a 404 from the protection endpoint. Driven by $BRANCH_PROTECTED.
-    case "${BRANCH_PROTECTED:-false}" in
-      true) printf 'true\n' ;;
-      *)    printf 'false\n' ;;
-    esac
-    ;;
-  *"protection"*)
-    case "$PROTECT_RESPONSE" in
-      200-sufficient)
-        printf '{"required_pull_request_reviews":{"required_approving_review_count":1}}\n'
-        ;;
-      200-insufficient)
-        printf '{"required_pull_request_reviews":{"required_approving_review_count":0}}\n'
-        ;;
-      404)
-        printf 'Branch not protected\n' >&2
-        exit 1
-        ;;
-      403)
-        printf 'Must have admin rights to Repository.\n' >&2
-        exit 1
-        ;;
-      *)
-        printf 'gh-stub: unknown PROTECT_RESPONSE: %s\n' "$PROTECT_RESPONSE" >&2
-        exit 1
-        ;;
-    esac
     ;;
   *)
     printf 'gh-stub: unexpected args: %s\n' "$*" >&2
@@ -126,11 +159,58 @@ esac
 SHIMEOF
 chmod +x "$TMP/bin/gh"
 
+cat > "$TMP/bin/atelier-branch-protection" << 'SHIMEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"--status"*)
+    admin_gh_dir="null"
+    [ "${HELPER_ADMIN_DIR:-0}" = "1" ] && admin_gh_dir='"/tmp/fake-admin"'
+    printf '{"repo":"testowner/testrepo","branch":"main","class":"%s","gh_dir":"/tmp/probe","admin_gh_dir":%s}\n' \
+      "${HELPER_CLASS:-protected-sufficient}" "$admin_gh_dir"
+    exit 0
+    ;;
+  *"--apply"*)
+    # #45 cycle 7: check_branch_protection() must never reach this mode.
+    # Log every call so tests can assert the call log stays empty, rather
+    # than only inferring "never called" from push_fix_auto's absence.
+    printf '%s\n' "$*" >> "${APPLY_CALL_LOG:-/dev/null}"
+    if [ "${HELPER_ADMIN_DIR:-0}" = "1" ]; then
+      printf 'applied: testowner/testrepo/main now requires >=1 approving review (as fake-admin)\n'
+      exit 0
+    else
+      printf 'No admin identity available to apply branch protection on testowner/testrepo/main.\n'
+      printf 'Tried: /tmp/a,/tmp/b,/tmp/c,/tmp/d\n'
+      printf 'Apply manually with a repo-admin token:\n'
+      printf "  printf '%%s\\\\n' '{\"required_status_checks\":null}' | \\\\\n"
+      printf '    gh api -X PUT "repos/testowner/testrepo/branches/main/protection" --input -\n'
+      exit 3
+    fi
+    ;;
+  *"--manual"*)
+    # The real --manual mode never probes an admin identity — it always
+    # prints the same manual block regardless of $HELPER_ADMIN_DIR — and
+    # always exits 0 (there is nothing to fail at; it is pure text output).
+    printf 'No admin identity available to apply branch protection on testowner/testrepo/main.\n'
+    printf 'Tried: /tmp/a,/tmp/b,/tmp/c,/tmp/d\n'
+    printf 'Apply manually with a repo-admin token:\n'
+    printf "  printf '%%s\\\\n' '{\"required_status_checks\":null}' | \\\\\n"
+    printf '    gh api -X PUT "repos/testowner/testrepo/branches/main/protection" --input -\n'
+    exit 0
+    ;;
+  *)
+    printf 'atelier-branch-protection-stub: unexpected args: %s\n' "$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/atelier-branch-protection"
+
 # Provide doctor infrastructure stubs that check_branch_protection() calls.
 # Each stub appends its argument to a capture file so assertions can inspect it.
 HOST_OUT="$TMP/host_out"
 FIX_AUTO_OUT="$TMP/fix_auto_out"
 FIX_MANUAL_OUT="$TMP/fix_manual_out"
+export APPLY_CALL_LOG="$TMP/apply_call_log"
 
 push_host()       { printf '%s\n' "$*" >> "$HOST_OUT"; }
 push_fix_auto()   { printf '%s\n' "$*" >> "$FIX_AUTO_OUT"; }
@@ -141,11 +221,7 @@ OK="✓"
 FAIL="✗"
 SKIP="–"
 
-# Set ATELIER_CONFIG_DIR so check_branch_protection() resolves author_dir.
-ATELIER_CONFIG_DIR="$TMP/atelier"
-mkdir -p "$ATELIER_CONFIG_DIR/gh/author"
-
-reset_capture() { rm -f "$HOST_OUT" "$FIX_AUTO_OUT" "$FIX_MANUAL_OUT"; }
+reset_capture() { rm -f "$HOST_OUT" "$FIX_AUTO_OUT" "$FIX_MANUAL_OUT" "$APPLY_CALL_LOG"; unset HELPER_CLASS HELPER_ADMIN_DIR; }
 
 # Run check_branch_protection() in the current shell (CWD is the git repo,
 # stubs are on PATH, infrastructure functions are defined above).
@@ -155,128 +231,284 @@ run_check() {
   check_branch_protection
 }
 
-# =============================================================================
-# C1 — protected-sufficient: OK row, no fix
-# =============================================================================
+echo "Phase D: check_branch_protection() delegates to atelier-branch-protection"
 
-echo "Phase C: check_branch_protection() output scenarios"
+# =============================================================================
+# D1 — protected-sufficient: OK row, no fix
+# =============================================================================
 
 reset_capture
-export PROTECT_RESPONSE="200-sufficient"
+export HELPER_CLASS="protected-sufficient"
 run_check
 
 if [ -f "$HOST_OUT" ] && grep -q "requires approving reviews" "$HOST_OUT"; then
-  pass "C1: protected-sufficient → host row mentions 'requires approving reviews'"
+  pass "D1: protected-sufficient → host row mentions 'requires approving reviews'"
 else
-  fail "C1: protected-sufficient → expected 'requires approving reviews' in host output (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
+  fail "D1: protected-sufficient → expected 'requires approving reviews' in host output (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
 fi
 
-if [ ! -f "$FIX_AUTO_OUT" ]; then
-  pass "C1: protected-sufficient → no fix_auto registered"
+if [ ! -f "$FIX_AUTO_OUT" ] && [ ! -f "$FIX_MANUAL_OUT" ]; then
+  pass "D1: protected-sufficient → no fix registered"
 else
-  fail "C1: protected-sufficient → unexpected fix_auto: $(cat "$FIX_AUTO_OUT")"
-fi
-
-if [ ! -f "$FIX_MANUAL_OUT" ]; then
-  pass "C1: protected-sufficient → no fix_manual registered"
-else
-  fail "C1: protected-sufficient → unexpected fix_manual: $(cat "$FIX_MANUAL_OUT")"
+  fail "D1: protected-sufficient → unexpected fix registered (auto: $(cat "$FIX_AUTO_OUT" 2>/dev/null); manual: $(cat "$FIX_MANUAL_OUT" 2>/dev/null))"
 fi
 
 # =============================================================================
-# C2 — unprotected (404 + branch NOT protected): FAIL row + fix_auto (admin path)
+# D2 — protected-noadmin: OK row ("is protected"), no fix, no false failure
 # =============================================================================
 
 reset_capture
-export PROTECT_RESPONSE="404" BRANCH_PROTECTED="false"
-run_check
-
-if [ -f "$HOST_OUT" ] && grep -q "no required approving reviews" "$HOST_OUT"; then
-  pass "C2: unprotected → host row mentions 'no required approving reviews'"
-else
-  fail "C2: unprotected → expected 'no required approving reviews' in host output (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
-fi
-
-if [ -f "$FIX_AUTO_OUT" ]; then
-  pass "C2: unprotected → fix_auto registered (admin path)"
-else
-  fail "C2: unprotected → expected fix_auto to be registered but it was not"
-fi
-
-# The registered fix_auto command must include the correct PUT endpoint.
-if [ -f "$FIX_AUTO_OUT" ] && grep -q "gh api -X PUT" "$FIX_AUTO_OUT"; then
-  pass "C2: fix_auto contains 'gh api -X PUT'"
-else
-  fail "C2: fix_auto does not contain 'gh api -X PUT' (got: $(cat "$FIX_AUTO_OUT" 2>/dev/null || printf '<nothing>'))"
-fi
-
-# =============================================================================
-# C3 — no-admin (403): SKIP row, no fix
-# =============================================================================
-
-reset_capture
-export PROTECT_RESPONSE="403"
-run_check
-
-if [ -f "$HOST_OUT" ] && grep -q "token lacks repo-admin" "$HOST_OUT"; then
-  pass "C3: no-admin → host row mentions 'token lacks repo-admin'"
-else
-  fail "C3: no-admin → expected 'token lacks repo-admin' in host output (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
-fi
-
-if [ ! -f "$FIX_AUTO_OUT" ]; then
-  pass "C3: no-admin → no fix_auto registered (cannot apply without admin)"
-else
-  fail "C3: no-admin → unexpected fix_auto: $(cat "$FIX_AUTO_OUT")"
-fi
-
-# =============================================================================
-# C4 — protected-insufficient (200, count=0): FAIL row + fix_auto (admin path)
-# =============================================================================
-
-reset_capture
-export PROTECT_RESPONSE="200-insufficient"
-run_check
-
-if [ -f "$HOST_OUT" ] && grep -q "no required approving reviews" "$HOST_OUT"; then
-  pass "C4: protected-insufficient → host row mentions 'no required approving reviews'"
-else
-  fail "C4: protected-insufficient → expected 'no required approving reviews' in host output (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
-fi
-
-if [ -f "$FIX_AUTO_OUT" ]; then
-  pass "C4: protected-insufficient → fix_auto registered (admin path)"
-else
-  fail "C4: protected-insufficient → expected fix_auto to be registered but it was not"
-fi
-
-# =============================================================================
-# C5 — protected-noadmin (404 from protection endpoint, but branch IS protected):
-#      the disambiguation fix. GitHub returns 404 (not 403) to a non-admin token
-#      even when the branch is protected; the doctor must consult the no-admin
-#      .protected flag and report OK, NOT a false ✗ with an unrunnable fix.
-# =============================================================================
-
-reset_capture
-export PROTECT_RESPONSE="404" BRANCH_PROTECTED="true"
+export HELPER_CLASS="protected-noadmin"
 run_check
 
 if [ -f "$HOST_OUT" ] && grep -q "is protected" "$HOST_OUT"; then
-  pass "C5: 404 + protected → host row reports 'is protected' (no false ✗)"
+  pass "D2: protected-noadmin → host row mentions 'is protected'"
 else
-  fail "C5: 404 + protected → expected 'is protected' in host output (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
+  fail "D2: protected-noadmin → expected 'is protected' in host output (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
 fi
 
 if [ -f "$HOST_OUT" ] && grep -q "no required approving reviews" "$HOST_OUT"; then
-  fail "C5: 404 + protected → must NOT report the '✗ no required approving reviews' failure"
+  fail "D2: protected-noadmin → must NOT report the '✗ no required approving reviews' failure"
 else
-  pass "C5: 404 + protected → does not report the false failure row"
+  pass "D2: protected-noadmin → does not report the false failure row"
+fi
+
+if [ ! -f "$FIX_AUTO_OUT" ] && [ ! -f "$FIX_MANUAL_OUT" ]; then
+  pass "D2: protected-noadmin → no fix registered (nothing to fix; would be unrunnable)"
+else
+  fail "D2: protected-noadmin → unexpected fix registered"
+fi
+
+# =============================================================================
+# D3 — skip:<msg>: SKIP row, no fix
+# =============================================================================
+
+reset_capture
+export HELPER_CLASS="skip:rate limit exceeded"
+run_check
+
+if [ -f "$HOST_OUT" ] && grep -q "rate limit exceeded" "$HOST_OUT"; then
+  pass "D3: skip:* → host row mentions the skip message"
+else
+  fail "D3: skip:* → expected skip message in host output (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+if [ ! -f "$FIX_AUTO_OUT" ] && [ ! -f "$FIX_MANUAL_OUT" ]; then
+  pass "D3: skip:* → no fix registered"
+else
+  fail "D3: skip:* → unexpected fix registered"
+fi
+
+# =============================================================================
+# D4 — unprotected + admin identity resolves: FAIL row + push_fix_manual,
+#      NEVER push_fix_auto (#45 cycle 7 — THE central assertion, repointed:
+#      the helper's write path is gated behind an explicit operator opt-in
+#      that doctor never passes, so no runnable PUT is ever queued here even
+#      though an admin identity resolves. Asserted three ways: no
+#      push_fix_auto call, push_fix_manual registered instead, AND the
+#      atelier-branch-protection stub's own call log proves --apply was
+#      never invoked at all — the strongest form of "no runnable PUT is ever
+#      queued", since it does not rely on doctor's push_fix_auto wiring
+#      alone.)
+# =============================================================================
+
+reset_capture
+export HELPER_CLASS="unprotected" HELPER_ADMIN_DIR="1"
+run_check
+
+if [ -f "$HOST_OUT" ] && grep -q "no required approving reviews" "$HOST_OUT"; then
+  pass "D4: unprotected → host row mentions 'no required approving reviews'"
+else
+  fail "D4: unprotected → expected 'no required approving reviews' in host output (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
 fi
 
 if [ ! -f "$FIX_AUTO_OUT" ]; then
-  pass "C5: 404 + protected → no fix_auto (nothing to fix; would be unrunnable)"
+  pass "D4: unprotected + admin resolves → push_fix_auto is NOT registered (#45 cycle 7: write path gated, never queued even when admin resolves)"
 else
-  fail "C5: 404 + protected → unexpected fix_auto: $(cat "$FIX_AUTO_OUT")"
+  fail "D4: unprotected + admin resolves → unexpected push_fix_auto: $(cat "$FIX_AUTO_OUT")"
+fi
+
+if [ -f "$FIX_MANUAL_OUT" ]; then
+  pass "D4: unprotected + admin resolves → push_fix_manual IS registered instead"
+else
+  fail "D4: unprotected + admin resolves → expected push_fix_manual to be registered but it was not"
+fi
+
+if [ -f "$FIX_MANUAL_OUT" ] && grep -q "gh api -X PUT" "$FIX_MANUAL_OUT"; then
+  pass "D4: fix_manual command is the non-mutating copy-pasteable 'gh api -X PUT' instruction block"
+else
+  fail "D4: fix_manual command missing expected shape (got: $(cat "$FIX_MANUAL_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+if [ ! -s "$APPLY_CALL_LOG" ]; then
+  pass "D4: atelier-branch-protection --apply was never invoked (call log empty) — no runnable PUT is ever queued even when an admin identity resolves"
+else
+  fail "D4: atelier-branch-protection --apply WAS invoked (call log: $(cat "$APPLY_CALL_LOG"))"
+fi
+
+# =============================================================================
+# D5 — unprotected + NO admin identity resolves: FAIL row + push_fix_manual
+#      (the inverse of D4: no PUT the caller cannot run is ever queued)
+# =============================================================================
+
+reset_capture
+export HELPER_CLASS="unprotected"
+unset HELPER_ADMIN_DIR
+run_check
+
+if [ -f "$HOST_OUT" ] && grep -q "no required approving reviews" "$HOST_OUT"; then
+  pass "D5: unprotected, no admin → host row mentions 'no required approving reviews'"
+else
+  fail "D5: unprotected, no admin → expected 'no required approving reviews' in host output (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+if [ ! -f "$FIX_AUTO_OUT" ]; then
+  pass "D5: unprotected, no admin → push_fix_auto is NOT registered (nothing runnable)"
+else
+  fail "D5: unprotected, no admin → unexpected push_fix_auto: $(cat "$FIX_AUTO_OUT")"
+fi
+
+if [ -f "$FIX_MANUAL_OUT" ] && grep -q "gh api -X PUT" "$FIX_MANUAL_OUT"; then
+  pass "D5: unprotected, no admin → push_fix_manual registered with a 'gh api -X PUT' instruction"
+else
+  fail "D5: unprotected, no admin → expected push_fix_manual with 'gh api -X PUT' (got: $(cat "$FIX_MANUAL_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+if [ -f "$FIX_MANUAL_OUT" ] && grep -q "No admin identity available" "$FIX_MANUAL_OUT"; then
+  pass "D5: push_fix_manual explains why (no admin identity available)"
+else
+  fail "D5: push_fix_manual does not explain the no-admin situation (got: $(cat "$FIX_MANUAL_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+# =============================================================================
+# D6 — protected-insufficient + admin resolves: same push_fix_manual-only
+#      path as D4, never push_fix_auto (regression guard: the "insufficient"
+#      class must route through the same gate as "unprotected")
+# =============================================================================
+
+reset_capture
+export HELPER_CLASS="protected-insufficient" HELPER_ADMIN_DIR="1"
+run_check
+
+if [ ! -f "$FIX_AUTO_OUT" ]; then
+  pass "D6: protected-insufficient + admin resolves → push_fix_auto is NOT registered (#45 cycle 7)"
+else
+  fail "D6: protected-insufficient + admin resolves → unexpected push_fix_auto: $(cat "$FIX_AUTO_OUT")"
+fi
+
+if [ ! -s "$APPLY_CALL_LOG" ]; then
+  pass "D6: atelier-branch-protection --apply was never invoked (call log empty)"
+else
+  fail "D6: atelier-branch-protection --apply WAS invoked (call log: $(cat "$APPLY_CALL_LOG"))"
+fi
+
+if [ -f "$FIX_MANUAL_OUT" ] && grep -q "gh api -X PUT" "$FIX_MANUAL_OUT"; then
+  pass "D6: protected-insufficient + admin resolves → push_fix_manual IS registered instead (same gate as D4)"
+else
+  fail "D6: protected-insufficient + admin resolves → expected push_fix_manual with 'gh api -X PUT' (got: $(cat "$FIX_MANUAL_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+# =============================================================================
+# D7 — no-admin (403-classified): its OWN $SKIP row, no fix registered at all
+#      (#45 review, finding 3 — a 403 on the protection read is evidence of
+#      NOTHING about the review count; asserting FAIL here would repeat, for
+#      the 403 path, the exact false-failure #284 fixed for the 404 path)
+# =============================================================================
+
+reset_capture
+export HELPER_CLASS="no-admin"
+unset HELPER_ADMIN_DIR
+run_check
+
+if [ -f "$HOST_OUT" ] && grep -q "lacks permission to read the protection rule" "$HOST_OUT"; then
+  pass "D7: no-admin class → SKIP row mentions the token lacks permission to read the rule"
+else
+  fail "D7: no-admin class → expected a SKIP row about lacking permission (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+if [ -f "$HOST_OUT" ] && grep -q "no required approving reviews" "$HOST_OUT"; then
+  fail "D7: no-admin class → must NOT report the '✗ no required approving reviews' false failure"
+else
+  pass "D7: no-admin class → does not report the false failure row"
+fi
+
+if [ ! -f "$FIX_AUTO_OUT" ] && [ ! -f "$FIX_MANUAL_OUT" ]; then
+  pass "D7: no-admin class → no fix registered (auto or manual) — there is nothing runnable and no evidence to advise on"
+else
+  fail "D7: no-admin class → unexpected fix registered (auto: $(cat "$FIX_AUTO_OUT" 2>/dev/null); manual: $(cat "$FIX_MANUAL_OUT" 2>/dev/null))"
+fi
+
+# =============================================================================
+# D8 — atelier-branch-protection helper not found on PATH: SKIP row, no fix
+# =============================================================================
+
+reset_capture
+rm -f "$TMP/bin/atelier-branch-protection"
+unset CLAUDE_PLUGIN_ROOT
+run_check
+
+if [ -f "$HOST_OUT" ] && grep -q "helper not found" "$HOST_OUT"; then
+  pass "D8: helper missing → host row mentions the helper is missing"
+else
+  fail "D8: helper missing → expected 'helper not found' in host output (got: $(cat "$HOST_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+if [ ! -f "$FIX_AUTO_OUT" ] && [ ! -f "$FIX_MANUAL_OUT" ]; then
+  pass "D8: helper missing → no fix registered"
+else
+  fail "D8: helper missing → unexpected fix registered"
+fi
+
+# Restore the helper (Phase E below no longer needs it — it exercises the
+# --fix execution loop directly — but keep the fixture tidy).
+cat > "$TMP/bin/atelier-branch-protection" << 'SHIMEOF'
+#!/usr/bin/env bash
+exit 1
+SHIMEOF
+chmod +x "$TMP/bin/atelier-branch-protection"
+
+# =============================================================================
+# Phase E — the top-level `--fix` execution loop: a successful fix command's
+# non-empty stdout is folded into the OK line (#45 review, finding 4 — some
+# runnables, e.g. atelier-branch-protection --apply, name the identity they
+# actually used, and that must never go silent). A silent successful command
+# still prints the bare "✓ OK" line unchanged.
+# =============================================================================
+
+echo ""
+echo "Phase E: --fix execution loop folds a fix command's stdout into the OK line"
+
+run_fix_loop() {
+  # shellcheck disable=SC1090,SC2034
+  source "$FN_FIX_LOOP"
+}
+
+# E1 — a fix command that prints identity text on success: the OK line must
+# contain that text verbatim, not just a bare "OK".
+FIX_AUTO_COMMANDS=("printf 'applied: testowner/testrepo/main now requires >=1 approving review (as fake-admin)'")
+LOOP_OUT="$(run_fix_loop)"
+
+if printf '%s' "$LOOP_OUT" | grep -qF "$OK applied: testowner/testrepo/main now requires >=1 approving review (as fake-admin)"; then
+  pass "E1: successful command's non-empty stdout is folded into the OK line"
+else
+  fail "E1: expected the OK line to include the command's stdout (got: $LOOP_OUT)"
+fi
+
+if ! printf '%s' "$LOOP_OUT" | grep -qF "$OK OK"; then
+  pass "E1: the bare '✓ OK' line is NOT printed when the command produced output"
+else
+  fail "E1: unexpectedly printed the bare '✓ OK' line alongside the folded output (got: $LOOP_OUT)"
+fi
+
+# E2 — a fix command with EMPTY stdout on success still prints the bare
+# "✓ OK" line (regression guard: the fold must not swallow the plain case).
+FIX_AUTO_COMMANDS=("true")
+LOOP_OUT="$(run_fix_loop)"
+
+if printf '%s' "$LOOP_OUT" | grep -qF "$OK OK"; then
+  pass "E2: empty stdout on success still prints the bare '✓ OK' line"
+else
+  fail "E2: expected the bare '✓ OK' line for a silent successful command (got: $LOOP_OUT)"
 fi
 
 # =============================================================================
@@ -284,9 +516,9 @@ fi
 # =============================================================================
 echo ""
 if [ "$fails" -eq 0 ]; then
-  echo "doctor-branch-protection (#31): all assertions passed."
+  echo "doctor-branch-protection (#31/#45): all assertions passed."
   exit 0
 else
-  echo "doctor-branch-protection (#31): $fails assertion(s) failed."
+  echo "doctor-branch-protection (#31/#45): $fails assertion(s) failed."
   exit 1
 fi

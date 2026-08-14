@@ -1,0 +1,898 @@
+#!/usr/bin/env bash
+#
+# atelier-branch-protection — single source of truth for branch-protection
+# classification and application (#45). Extracted from the two hand-copied
+# variants that used to live in atelier-setup-project and atelier-doctor:
+# the setup-project copy never disambiguated a 404 (mapped it straight to
+# "unprotected"), and both copies always PUT as the author (bot) identity,
+# which lacks repo-admin on every AkaLab-Tech member repo, so the PUT always
+# 404s. This binary is the one place that logic lives now; both callers
+# delegate to it instead of hand-copying it a third time.
+#
+# #45 cycle 7: --apply's write path (the PUT payload apply_protection()
+# builds) is UNVERIFIED against GitHub's real API contract — see the "PUT
+# CONTRACT UNVERIFIED" block right above apply_protection() below for the
+# three known divergences. Both callers gate reaching --apply behind an
+# explicit operator opt-in as a result; --status (read-only) is grounded
+# against a real captured GET and is NOT gated.
+#
+# Usage:
+#   atelier-branch-protection --status [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
+#   atelier-branch-protection --apply  [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
+#   atelier-branch-protection --manual [--repo <owner/name>] [--branch <b>]
+#   atelier-branch-protection --help
+#
+# --repo / --branch default to `gh repo view` on the current directory's repo.
+#
+# --status classifies the branch's current protection and, when the class
+# needs remediation (unprotected / protected-insufficient / no-admin), also
+# probes for an admin-capable identity (see resolve_admin_gh_dir below) and
+# reports it — this lets a caller (atelier-doctor) decide whether a fix is
+# runnable without performing one.
+#
+# --apply classifies first under a (possibly unprivileged) probe identity,
+# then, if remediation looks needed, resolves an admin identity and re-reads
+# the rule UNDER THAT IDENTITY before touching anything — the probe identity
+# may have 403'd or 404'd on a rule that is actually already sufficient, and
+# only the admin identity can answer that question. Never PUTs a rule it can
+# already see is sufficient; when it does PUT, it merges into the existing
+# rule rather than overwriting it, and refuses (rather than guesses) whenever
+# the existing rule has a top-level field (or a required_pull_request_reviews
+# sub-field) that is not one of the explicit, named fields this helper models
+# — see MODELED_TOP_KEYS / MODELED_PR_REVIEW_SUBKEYS below. If the admin
+# identity's re-read itself fails for any reason other than a confirmed-
+# unprotected 404, --apply aborts without ever PUTting — a failed read is
+# never treated as "no rule exists".
+#
+# --manual prints the copy-pasteable manual remediation block without ever
+# probing an admin identity or reading the protection endpoint — the only
+# call shape that is guaranteed non-mutating regardless of which identities
+# happen to resolve at call time. Use this (never --apply) from a read-only
+# caller, e.g. atelier-doctor without --fix, that only wants the instruction
+# text.
+#
+# Exit codes:
+#   0  --status: classification succeeded (any class).
+#      --apply:  already sufficient, already protected, or applied.
+#      --manual: block printed.
+#   2  prerequisite missing (no gh/jq/git, not a git repo, no GitHub remote,
+#      or an unexpected classify error) — advisory, never treat as fatal.
+#      --apply also uses this code when an admin identity was found but its
+#      re-read of the existing rule failed for a reason other than a
+#      confirmed-unprotected 404 (transient error, secondary rate limit,
+#      etc.) — no PUT is attempted in that case; the underlying gh error is
+#      printed to stderr.
+#   3  --apply only: no admin identity resolved, OR an admin identity was
+#      found but the existing rule has a field outside the explicit modeled
+#      set (MODELED_TOP_KEYS / MODELED_PR_REVIEW_SUBKEYS / MODELED_STATUS_
+#      CHECKS_SUBKEYS below — e.g. dismissal_restrictions, bypass_pull_
+#      request_allowances, or ANY present top-level restrictions, even with
+#      every array empty) and it refuses to guess. The copy-pasteable manual
+#      `gh api -X PUT ...` block is printed on stdout regardless of --json,
+#      naming the offending field(s) when the reason is an unmodeled field.
+#   4  --apply only: an admin identity was found but the PUT itself failed.
+#      The PUT's real stderr (e.g. a 422 body) is captured and relayed —
+#      in --json output on .message, on this script's own stderr otherwise
+#      — never discarded (#45 cycle 7).
+
+set -uo pipefail
+
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+die() { printf '!!  ERROR: %s\n' "$*" >&2; exit 2; }
+
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} — classify and apply branch protection on a repo's default branch.
+
+USAGE:
+  ${SCRIPT_NAME} --status [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
+  ${SCRIPT_NAME} --apply  [--repo <owner/name>] [--branch <b>] [--json] [--quiet]
+  ${SCRIPT_NAME} --manual [--repo <owner/name>] [--branch <b>]
+  ${SCRIPT_NAME} --help
+
+OPTIONS:
+  --status         Report the current classification (never mutates).
+  --apply          Apply a minimal rule (>=1 required approving review) if
+                    the branch needs it. Idempotent; never lowers an
+                    existing rule (merges rather than overwrites); re-reads
+                    the rule under the resolved admin identity before
+                    deciding, so it never downgrades a rule the admin
+                    identity can see is already sufficient.
+  --manual         Print the manual remediation block only. Never probes an
+                    admin identity or reads the protection endpoint —
+                    guaranteed non-mutating regardless of which identities
+                    resolve at call time. For read-only callers that only
+                    want the instruction text (use instead of --apply).
+  --repo <o/name>  Repo to target. Default: \`gh repo view\` on the cwd repo.
+  --branch <b>     Branch to target. Default: the repo's default branch.
+  --json           Emit machine-readable JSON on stdout instead of text.
+                    (--manual always prints plain text; there is nothing to
+                    classify.)
+  --quiet          Suppress the human-readable success line (errors and the
+                    manual instruction block, when applicable, still print).
+  --help, -h       Show this help and exit.
+
+ADMIN IDENTITY RESOLUTION (--apply, in order):
+  1. \$ATELIER_ADMIN_GH_CONFIG_DIR      (explicit override / test seam)
+  2. \$ATELIER_CONFIG_DIR/gh/admin      (dedicated atelier admin identity)
+  3. \$ATELIER_CONFIG_DIR/gh/author     (free win on bot-owned repos)
+  4. \${XDG_CONFIG_HOME:-\$HOME/.config}/gh  (the operator's personal gh config,
+                                          tried last, used only to read
+                                          viewerPermission and to PUT)
+
+EXIT CODES:
+  0  status classified, apply succeeded / already sufficient, or manual block printed
+  2  prerequisite missing (advisory); or --apply: admin identity found but its
+     re-read of the existing rule failed for a reason other than a confirmed-
+     unprotected 404 — no PUT attempted, underlying gh error on stderr
+  3  --apply: no admin identity resolved, or the existing rule uses a field
+     this helper does not model (manual block printed on stdout either way)
+  4  --apply: admin identity found but the PUT failed
+EOF
+}
+
+MODE=""
+REPO=""
+BRANCH=""
+JSON=false
+QUIET=false
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --status) MODE="status"; shift ;;
+    --apply)  MODE="apply"; shift ;;
+    --manual) MODE="manual"; shift ;;
+    --repo)   [ -n "${2:-}" ] || die "--repo requires a value"; REPO="$2"; shift 2 ;;
+    --repo=*) REPO="${1#--repo=}"; shift ;;
+    --branch)   [ -n "${2:-}" ] || die "--branch requires a value"; BRANCH="$2"; shift 2 ;;
+    --branch=*) BRANCH="${1#--branch=}"; shift ;;
+    --json)   JSON=true; shift ;;
+    --quiet)  QUIET=true; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "unknown arg: $1 (run --help for usage)" ;;
+  esac
+done
+
+[ -n "$MODE" ] || die "must pass --status, --apply, or --manual (run --help for usage)"
+command -v gh >/dev/null 2>&1 || die "gh not found on PATH"
+command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
+
+MIN_PAYLOAD='{"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null}'
+
+# ---------- modeled / informational / unmodeled field sets (#45 cycle 6) ----------
+# Five consecutive review cycles each found a NEW field the full-replace PUT
+# silently dropped while apply_protection() still reported "applied" — a
+# completeness gap, not any one field's fault. Rather than keep chasing
+# individual fields, the default is inverted here: apply_protection() only
+# considers a GET body's field understood if it is named in one of the three
+# lists below; anything else present with real content makes it refuse
+# instead of guess (see find_unmodeled_keys()). These lists are the single
+# place that question is answered — do not re-answer it ad hoc elsewhere.
+#
+# Cycle 6 fixed these lists against a REAL GET, not an invented one: every
+# fixture in this suite up to cycle 5 was hand-written, so it validated
+# find_unmodeled_keys() against an imagined shape. hooks/tests/fixtures/
+# branch-protection-real-get.json is `GET /repos/<owner>/<repo>/branches/
+# <branch>/protection` captured from AkaLab-Tech/atelier's own `main`
+# (protected, admin read via the operator's personal gh identity — neither
+# bot identity has admin there) on 2026-08-14, with only the owner/repo
+# segment of its embedded URLs scrubbed to a neutral placeholder; every key
+# and value shape is otherwise verbatim. To refresh: re-run the same GET
+# against any real protected branch under an admin-capable gh identity,
+# scrub the same way, and diff the key set against MODELED_TOP_KEYS /
+# MODELED_PR_REVIEW_SUBKEYS / MODELED_STATUS_CHECKS_SUBKEYS below. That
+# capture is what surfaced two gaps cycle 5 missed:
+#   - required_signatures is present UNCONDITIONALLY (even with
+#     enabled:false) and was not in MODELED_TOP_KEYS, so --apply refused
+#     every real protected-insufficient rule (regression, zero PUTs).
+#   - required_status_checks carries a `checks` array (context + app_id
+#     pinning) that find_unmodeled_keys() never looked at because it only
+#     ever descended into required_pull_request_reviews — so `checks` was
+#     silently dropped by the payload builder (which only round-tripped
+#     `contexts`) while apply_protection() still reported "applied".
+#
+# MODELED_TOP_KEYS — top-level fields the merge-payload builder in
+# apply_protection() explicitly reads and writes back.
+MODELED_TOP_KEYS=(
+  required_status_checks
+  required_pull_request_reviews
+  required_signatures
+  enforce_admins
+  required_linear_history
+  required_conversation_resolution
+  allow_force_pushes
+  allow_deletions
+  block_creations
+  lock_branch
+  allow_fork_syncing
+)
+
+# MODELED_PR_REVIEW_SUBKEYS — keys of the required_pull_request_reviews
+# object the builder round-trips. dismissal_restrictions and
+# bypass_pull_request_allowances live here too but are deliberately left
+# off: GET returns user/team OBJECTS for them, PUT wants login/slug ID
+# LISTS, and reformatting blind risks silently dropping who they cover — so
+# they fall through to "unmodeled" via the same mechanism as everything
+# else, one level down.
+MODELED_PR_REVIEW_SUBKEYS=(
+  dismiss_stale_reviews
+  require_code_owner_reviews
+  require_last_push_approval
+  required_approving_review_count
+)
+
+# MODELED_STATUS_CHECKS_SUBKEYS — keys of the required_status_checks object
+# the builder round-trips (#45 cycle 6). Added alongside the fix that makes
+# find_unmodeled_keys() descend into required_status_checks the same way it
+# already does for required_pull_request_reviews — before this cycle a
+# real-world `checks` array (status-check context pinned to a specific
+# reporting app via app_id) was invisible to both the refusal scan and the
+# payload builder, so it was silently dropped from every PUT.
+#
+# checks-vs-contexts (deliberate call, not a blind carry of both — see #45
+# task finding 3): `contexts` is the deprecated string-array form; `checks`
+# is its replacement, an object array that additionally pins app_id (which
+# reporting app/check-run is trusted for that context). A prior review cycle
+# read "GitHub re-derives app pinning from the most recent setter" as reason
+# not to worry about contexts-only round-tripping — but that reasoning does
+# not survive a real GET returning `checks` with a live, non-null app_id:
+# building the payload from `contexts` alone would submit no `checks` at
+# all, and GitHub's own docs describe `contexts`-only requests as pinning
+# app_id to "any app", which silently loosens an existing pin rather than
+# preserving it. So the merge payload always emits `checks`: when the
+# existing rule already has a `checks` array, it is round-tripped verbatim
+# (context + app_id, preserving any pin); when it does not (an older-style
+# rule that only ever set `contexts`), each context string is mapped to
+# {context, app_id: null} — "any app", which is exactly what a contexts-only
+# rule already meant, so this is not a behavior change for that case. Plain
+# `contexts` is intentionally NOT also emitted in the payload — GitHub's
+# write API treats `checks` as the canonical form and folding both fields in
+# blindly (per the "do not carry both blindly" instruction) has no
+# additional preservation benefit once `checks` covers the data.
+MODELED_STATUS_CHECKS_SUBKEYS=(
+  strict
+  contexts
+  checks
+)
+
+# Informational fields (checked inline by find_unmodeled_keys(), not listed
+# as data): GitHub's GET response includes a top-level "url" and "*_url"
+# siblings inside several nested objects (contexts_url, users_url, ...) —
+# these carry no policy meaning and are rejected outright by PUT, so they
+# must never trip the unmodeled-field refusal.
+
+# ---------- jq_array_literal <item...> ----------
+# Renders a bash array as a JSON array literal, so MODELED_TOP_KEYS /
+# MODELED_PR_REVIEW_SUBKEYS stay plain bash data instead of being re-typed
+# inside a jq program string.
+jq_array_literal() {
+  local out="[" first=true item
+  for item in "$@"; do
+    $first || out="$out,"
+    out="$out$(printf '%s' "$item" | jq -R .)"
+    first=false
+  done
+  printf '%s]' "$out"
+}
+
+# ---------- find_unmodeled_keys <existing_json> ----------
+# Prints, one per line, every field apply_protection()'s merge payload would
+# silently drop from a full-replace PUT: any top-level key of $existing_json
+# (and, one level down, any key of its required_pull_request_reviews
+# object) that is (a) not in the modeled sets above, (b) not the
+# informational "url" / "*_url" shape, and (c) not null. A null value is
+# treated the same as absent — GitHub's own GET convention for a disabled
+# optional field (required_status_checks: null, restrictions: null when no
+# rule is configured) — so it carries no policy content to lose. This is
+# what makes a PRESENT restrictions (even with every array empty) refuse:
+# on the real GET, restrictions is only present at all when push
+# restriction is enabled, so an empty allowlist means "enabled, restricted
+# to nobody", not "no restriction" — presence, not content, is the load-
+# bearing signal, which is why this checks nullness rather than emptiness.
+# Sub-keys are reported dotted (required_pull_request_reviews.
+# dismissal_restrictions, required_status_checks.checks) so the refusal
+# message names exactly what it found. Empty output = fully modeled, safe to
+# build a merge payload from.
+#
+# jq's own stderr is deliberately NOT swallowed here (#45 cycle 6, finding
+# 4) — a jq failure (malformed body, a jq bug) must be visible and, more
+# importantly, must propagate this function's exit code so the CALLER can
+# fail closed. See apply_protection()'s handling of this function's return
+# code immediately below for the other half of that fix: this function on
+# its own already returns jq's exit status (the whole script runs under
+# `set -o pipefail`), but the caller used to only inspect the printed output
+# and never checked that exit code at all — a jq failure produced no output,
+# which the caller read as "nothing unmodeled found", the opposite of fail-
+# closed.
+find_unmodeled_keys() {
+  local existing="$1"
+  printf '%s' "$existing" | jq -r \
+    --argjson modeled_top "$(jq_array_literal "${MODELED_TOP_KEYS[@]}")" \
+    --argjson modeled_rpr "$(jq_array_literal "${MODELED_PR_REVIEW_SUBKEYS[@]}")" \
+    --argjson modeled_rsc "$(jq_array_literal "${MODELED_STATUS_CHECKS_SUBKEYS[@]}")" '
+    def informational: (. == "url") or test("_url$");
+    ( [ to_entries[]
+        | select(.value != null)
+        | .key
+        | select(IN($modeled_top[]) | not)
+        | select(informational | not)
+      ]
+    ) as $top
+    | ( (.required_pull_request_reviews // {}) as $rpr
+        | [ $rpr | to_entries[]
+            | select(.value != null)
+            | .key
+            | select(IN($modeled_rpr[]) | not)
+            | select(informational | not)
+            | "required_pull_request_reviews." + .
+          ]
+      ) as $rpr_sub
+    | ( (.required_status_checks // {}) as $rsc
+        | [ $rsc | to_entries[]
+            | select(.value != null)
+            | .key
+            | select(IN($modeled_rsc[]) | not)
+            | select(informational | not)
+            | "required_status_checks." + .
+          ]
+      ) as $rsc_sub
+    | ($top + $rpr_sub + $rsc_sub)[]
+  '
+}
+
+# ---------- classify_branch_protection <gh_dir> <owner_repo> <branch> ----------
+# Post-#284 classifier (verbatim from the doctor's inline copy — kept
+# extractable by name for hooks/tests/*.test.sh, same as the two copies it
+# replaces). Prints one of:
+#   protected-sufficient   — required_approving_review_count >= 1
+#   protected-noadmin      — 404 on the protection endpoint, but the no-admin-
+#                             safe branch endpoint confirms .protected == true
+#                             (the token can't read the detail, but the rule
+#                             exists — never propose a PUT the identity can't run)
+#   protected-insufficient — protection exists but no required approving reviews
+#   unprotected             — genuinely no rule (branch endpoint .protected == false)
+#   no-admin                — token lacks repo-admin (GitHub 403)
+#   skip:<msg>              — unexpected error; treat as advisory skip
+classify_branch_protection() {
+  local auth_dir="$1" owner_repo="$2" branch="$3"
+  local out rc err_file err_msg
+  err_file="$(mktemp)"
+  out="$(env GH_CONFIG_DIR="$auth_dir" \
+    gh api "repos/$owner_repo/branches/$branch/protection" 2>"$err_file")" && rc=0 || rc=$?
+  err_msg="$(<"$err_file")"
+  rm -f "$err_file"
+  if [ "$rc" -eq 0 ]; then
+    local count
+    count="$(printf '%s' "$out" | \
+      jq -r '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null || printf '0')"
+    count="${count:-0}"
+    if [ "$count" -ge 1 ]; then
+      printf 'protected-sufficient'
+    else
+      printf 'protected-insufficient'
+    fi
+    return
+  fi
+  case "$err_msg" in
+    *"Must have admin"*|*"Resource not accessible"*|*"HTTP 403"*)
+      printf 'no-admin'
+      ;;
+    *"Branch not protected"*|*"HTTP 404"*|*"Not Found"*)
+      # A 404 here is AMBIGUOUS: the branch may be genuinely unprotected, OR
+      # it may be protected while this (non-admin) token simply lacks access
+      # to read the protection detail — GitHub returns 404, not 403, in that
+      # second case. Disambiguate via the no-admin-safe branch endpoint,
+      # whose `.protected` flag every collaborator can read.
+      local protected_flag
+      protected_flag="$(env GH_CONFIG_DIR="$auth_dir" \
+        gh api "repos/$owner_repo/branches/$branch" --jq '.protected' 2>/dev/null)"
+      if [ "$protected_flag" = "true" ]; then
+        printf 'protected-noadmin'
+      else
+        printf 'unprotected'
+      fi
+      ;;
+    *) printf 'skip:%s' "$(printf '%s' "$err_msg" | head -1 2>/dev/null)" ;;
+  esac
+}
+
+# ---------- admin_candidate_dirs ----------
+# Emits the fixed candidate list, one per line, in resolution order. Shared
+# by resolve_admin_gh_dir() and the manual-instruction block so both agree
+# on which identities were tried.
+admin_candidate_dirs() {
+  [ -n "${ATELIER_ADMIN_GH_CONFIG_DIR:-}" ] && printf '%s\n' "$ATELIER_ADMIN_GH_CONFIG_DIR"
+  [ -n "${ATELIER_CONFIG_DIR:-}" ] && printf '%s\n' "$ATELIER_CONFIG_DIR/gh/admin"
+  [ -n "${ATELIER_CONFIG_DIR:-}" ] && printf '%s\n' "$ATELIER_CONFIG_DIR/gh/author"
+  printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/gh"
+}
+
+# ---------- resolve_admin_gh_dir <owner_repo> ----------
+# Walks admin_candidate_dirs() and returns (on stdout, rc 0) the first
+# GH_CONFIG_DIR that both exists and reports viewerPermission == ADMIN for
+# owner_repo. Returns rc 1 with no output when none qualifies. Candidate 4
+# (the operator's personal gh config) is spelled literally here — NOT
+# reached by unsetting GH_CONFIG_DIR — because atelier sessions export
+# GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author, so "unset" would not
+# reliably land on the personal config.
+resolve_admin_gh_dir() {
+  local owner_repo="$1" candidate perm
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] && [ -d "$candidate" ] || continue
+    perm="$(env GH_CONFIG_DIR="$candidate" \
+      gh repo view "$owner_repo" --json viewerPermission --jq .viewerPermission 2>/dev/null || true)"
+    if [ "$perm" = "ADMIN" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done < <(admin_candidate_dirs)
+  return 1
+}
+
+# ---------- PUT CONTRACT UNVERIFIED (#45 cycle 7) — READ BEFORE TOUCHING apply_protection() ----------
+# This is the only function in this file that issues a real PUT. Six
+# consecutive review cycles found a new gap in it, one at a time — the read
+# side (classify_branch_protection(), find_unmodeled_keys()) was finally
+# validated against a real captured GET (hooks/tests/fixtures/branch-
+# protection-real-get.json, cycle 6), but NO test or manual run in this
+# codebase has ever executed a real PUT against this endpoint. Every proof
+# to date ran against a stub `gh` that accepts any body. Checked against
+# GitHub's published OpenAPI schema (github/rest-api-description), the
+# merge-payload builder below has (at least) three concrete divergences from
+# the real PUT contract:
+#   1. checks[].app_id: null is off-type. The PUT schema declares app_id a
+#      NON-nullable integer (omit the field = "any app"; -1 = explicitly
+#      "any"); the GET schema declares it nullable. The round-trip this
+#      function performs (see the required_status_checks.checks block below)
+#      is type-invalid in the write direction.
+#   2. required_signatures is NOT a body parameter of this PUT endpoint at
+#      all — see the comment at its removal, below, in the payload builder.
+#      (Cycle 6 had added it; cycle 7 removed it from the payload while
+#      keeping it modeled for reading.)
+#   3. required_status_checks is emitted without `contexts`, which the PUT
+#      schema still lists as required. The payload only emits `checks` (see
+#      the checks-vs-contexts rationale below) — an assumption that was
+#      never verified against the real endpoint.
+# Because of this, callers (atelier-setup-project, atelier-doctor) gate
+# reaching this function behind an explicit operator opt-in
+# (--apply-branch-protection) rather than running it by default — see
+# step_branch_protection() in atelier-setup-project and check_branch_
+# protection() in atelier-doctor. DO NOT attempt to fix the three
+# divergences above as a drive-by here: fixing them requires verifying the
+# corrected payload against the real endpoint, which is exactly the step
+# every prior cycle skipped. That verification is a follow-up item (#45
+# again, "verify the branch-protection PUT contract and re-enable
+# default-on application"), not a rewrite made blind the same way the last
+# six were.
+#
+# ---------- apply_protection <gh_dir> <owner_repo> <branch> ----------
+# Merge-not-overwrite payload builder + PUT + re-verify classify. Assumes
+# the caller already confirmed gh_dir has admin on owner_repo — but that
+# confirmation is only about permission, not about the rule's current
+# strength, so the FIRST thing this function does is re-read the rule under
+# gh_dir and re-decide from that read (#45 review, critical finding): the
+# earlier classification that got us here may have come from a less-
+# privileged probe identity that 403'd or 404'd on a rule that is actually
+# already sufficient. Never PUT a rule this identity can see is sufficient.
+#
+# On stdout: for "already-sufficient", one line ("already-sufficient\n
+# protected-sufficient"). For "applied", three lines: "applied\n<class>\n
+# <existing_enforce_admins>", the third line being the existing rule's
+# enforce_admins.enabled BEFORE this call forced it back to false (used by
+# the caller to note the relaxation in the success line — see #45 review,
+# critical finding sub-point (a)). Returns 0 for either.
+#
+# Returns 1 if a PUT was attempted and failed.
+#
+# Returns 2 (stdout: the offending unmodeled key name(s), one per line —
+# see find_unmodeled_keys()) if the existing rule sets a field this helper
+# does not model and refuses to guess at it — the caller is expected to
+# print the manual block, naming those keys, in that case.
+#
+# Returns 3 (no stdout; a message is written to this function's own stderr)
+# if the re-read under gh_dir was unusable for any reason: a non-zero rc
+# OTHER than a confirmed-unprotected 404 (transient 5xx, secondary rate
+# limit, network error, or a 404 whose branch-detail companion read itself
+# failed), OR an rc-0 read that came back empty, OR an rc-0 read that could
+# not be turned into a merge payload (unparseable body), OR find_unmodeled_
+# keys() itself failing to scan the body (a jq error — #45 cycle 6, finding
+# 4: joins this bucket, not the return-2 unmodeled-field bucket, because a
+# scan failure means this call could not reliably determine what fields the
+# rule even has) — never treat any of these as "no rule exists" (#45 review,
+# critical + important findings). The caller is expected to abort without
+# any PUT in this case.
+apply_protection() {
+  local gh_dir="$1" owner_repo="$2" branch="$3"
+
+  local existing existing_rc=0 err_file err_msg
+  err_file="$(mktemp)"
+  existing="$(env GH_CONFIG_DIR="$gh_dir" \
+    gh api "repos/$owner_repo/branches/$branch/protection" 2>"$err_file")" || existing_rc=$?
+  err_msg="$(<"$err_file")"
+  rm -f "$err_file"
+
+  local existing_count=0 existing_enforce_admins=false
+  if [ "$existing_rc" -eq 0 ] && [ -z "$existing" ]; then
+    # A successful-but-empty read is exactly as unusable as a failed one —
+    # not evidence that no rule exists (#45 review, important finding).
+    # Refuse rather than fall through to a MIN_PAYLOAD full replace.
+    printf 'admin re-read of %s/%s protection succeeded but returned an empty body\n' "$owner_repo" "$branch" >&2
+    return 3
+  elif [ "$existing_rc" -eq 0 ]; then
+    existing_count="$(printf '%s' "$existing" | \
+      jq -r '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null || printf '0')"
+    existing_count="${existing_count:-0}"
+    existing_enforce_admins="$(printf '%s' "$existing" | \
+      jq -r '.enforce_admins.enabled // false' 2>/dev/null || printf 'false')"
+
+    if [ "$existing_count" -ge 1 ]; then
+      printf 'already-sufficient\nprotected-sufficient'
+      return 0
+    fi
+
+    # Structural refusal (#45 cycle 5): any field of the existing rule this
+    # helper does not model — see find_unmodeled_keys() above for exactly
+    # which fields that is and why restrictions is among them even when
+    # every array is empty. PUT is a full replace, so any unmodeled field
+    # silently omitted here would reset (or, for restrictions, phantom-
+    # clear) to the API default. Refuse rather than guess; the offending key
+    # name(s) are printed on stdout for the caller to relay.
+    #
+    # #45 cycle 6, finding 4: the jq scan itself can fail (malformed body, a
+    # jq bug) — its exit code MUST be checked, not just its output, and a
+    # failure must fail CLOSED, never be read as "found nothing" (which is
+    # what silently discarding this exit code used to do — see
+    # find_unmodeled_keys()'s own comment for the other half of this fix).
+    # This joins the SAME bucket as an unparseable/empty read (return 3,
+    # below and above) rather than the unmodeled-field bucket (return 2):
+    # a jq failure here means this call could not reliably determine what
+    # fields the existing rule even has, which is a "could not verify" state
+    # identical in kind to P1/P2's rc-0-empty / rc-0-unparseable cases, not
+    # "verified the rule and found a field we don't model".
+    local unmodeled_keys unmodeled_rc
+    unmodeled_keys="$(find_unmodeled_keys "$existing")"; unmodeled_rc=$?
+    if [ "$unmodeled_rc" -ne 0 ]; then
+      printf 'could not scan the existing %s/%s protection rule for unmodeled fields (jq exited %s) — refusing rather than guessing\n' \
+        "$owner_repo" "$branch" "$unmodeled_rc" >&2
+      return 3
+    fi
+    if [ -n "$unmodeled_keys" ]; then
+      printf '%s' "$unmodeled_keys"
+      return 2
+    fi
+  elif [ "$existing_rc" -ne 0 ]; then
+    # A non-zero read is either "genuinely no rule" (404, confirmed by the
+    # no-admin-safe branch-detail endpoint's .protected == false — the same
+    # disambiguation classify_branch_protection() performs) or some other
+    # failure (transient 5xx, secondary rate limit, network error). Only the
+    # first case is safe to start a MIN_PAYLOAD full-replace from. This
+    # identity was already confirmed admin-capable by the caller, so any
+    # other read failure here can never be read as "the rule doesn't exist"
+    # — guessing wrong risks a full-replace PUT that wipes a rule this call
+    # simply failed to read (#45 review, critical finding).
+    local confirmed_unprotected=false protected_flag
+    case "$err_msg" in
+      *"Branch not protected"*|*"HTTP 404"*|*"Not Found"*)
+        protected_flag="$(env GH_CONFIG_DIR="$gh_dir" \
+          gh api "repos/$owner_repo/branches/$branch" --jq '.protected' 2>/dev/null)"
+        [ "$protected_flag" = "false" ] && confirmed_unprotected=true
+        ;;
+    esac
+    if ! $confirmed_unprotected; then
+      printf '%s\n' "$err_msg" >&2
+      return 3
+    fi
+  fi
+
+  local review_count=1
+  [ "$existing_count" -ge 1 ] && review_count="$existing_count"
+
+  # Build payload: for an existing-but-insufficient rule, merge rather than
+  # overwrite so stronger settings (status checks, code-owner reviews, and
+  # the boolean protection flags PUT resets by default) are preserved.
+  # enforce_admins=false lets the AtelierAuthor bot squash-merge its own
+  # approved PRs — set this to true and auto-merge breaks in a new way,
+  # because the bot itself would then be blocked by the rule it needs to
+  # pass through. restrictions=null imposes no push restrictions.
+  local payload=""
+  if [ "$existing_rc" -ne 0 ]; then
+    # Only reachable via confirmed_unprotected=true above (any other
+    # existing_rc-ne-0 outcome already returned 3) — a genuinely unprotected
+    # branch is the one case where a full-replace MIN_PAYLOAD is safe.
+    payload="$MIN_PAYLOAD"
+  else
+    # required_status_checks.checks vs .contexts (#45 cycle 6, finding 3 —
+    # see the MODELED_STATUS_CHECKS_SUBKEYS comment above for the full
+    # rationale): always emit `checks`, round-tripping the existing rule's
+    # own checks array verbatim (context + app_id) when present so an
+    # existing app_id pin is never silently loosened, and synthesizing
+    # {context, app_id: null} entries from `contexts` when the existing rule
+    # predates `checks` — null app_id means "any app", the same meaning a
+    # contexts-only rule already had. `contexts` itself is deliberately not
+    # also emitted (do not carry both blindly): `checks` is the superset.
+    #
+    # required_signatures — MODELED FOR READING, EXCLUDED FROM THE WRITE
+    # PAYLOAD (#45 cycle 7 finding 2). It stays in MODELED_TOP_KEYS above so
+    # its universal presence in the real GET (see hooks/tests/fixtures/
+    # branch-protection-real-get.json — present even with enabled:false)
+    # does not trip the unmodeled-field refusal (that was the cycle-6
+    # regression: real bodies always carry this key, so treating it as
+    # unmodeled refused every real protected-insufficient rule). But per
+    # GitHub's published OpenAPI schema (github/rest-api-description),
+    # required_signatures is NOT a body parameter of this PUT endpoint at
+    # all — commit-signature requirements are toggled through a separate
+    # POST/DELETE .../protection/required_signatures pair. Cycle 6 added it
+    # to the merge payload anyway (an unverified guess that this endpoint
+    # would just ignore an unknown key); it is deliberately NOT emitted here
+    # — an apply-path PR whose existing rule sets it would otherwise likely
+    # 422. Read-side classification (find_unmodeled_keys(), --status) still
+    # sees and accepts the field; only the PUT body omits it.
+    payload="$(printf '%s' "$existing" | jq --argjson count "$review_count" '{
+      required_status_checks: (
+        if .required_status_checks == null then null
+        else {
+          strict: (.required_status_checks.strict // false),
+          checks: (
+            if (.required_status_checks.checks // null) != null then
+              [ .required_status_checks.checks[] | {context: .context, app_id: (.app_id // null)} ]
+            else
+              [ (.required_status_checks.contexts // [])[] | {context: ., app_id: null} ]
+            end
+          )
+        } end
+      ),
+      enforce_admins: false,
+      required_pull_request_reviews: {
+        dismiss_stale_reviews: (.required_pull_request_reviews.dismiss_stale_reviews // false),
+        require_code_owner_reviews: (.required_pull_request_reviews.require_code_owner_reviews // false),
+        require_last_push_approval: (.required_pull_request_reviews.require_last_push_approval // false),
+        required_approving_review_count: $count
+      },
+      restrictions: null,
+      required_linear_history: (.required_linear_history.enabled // false),
+      required_conversation_resolution: (.required_conversation_resolution.enabled // false),
+      allow_force_pushes: (.allow_force_pushes.enabled // false),
+      allow_deletions: (.allow_deletions.enabled // false),
+      block_creations: (.block_creations.enabled // false),
+      lock_branch: (.lock_branch.enabled // false),
+      allow_fork_syncing: (.allow_fork_syncing.enabled // false)
+    }' 2>/dev/null || printf '')"
+    if [ -z "$payload" ]; then
+      # A read that succeeded but could not be turned into a merge payload
+      # (unparseable body) is exactly as unusable as a failed read — refuse
+      # rather than silently full-replacing with MIN_PAYLOAD (#45 review,
+      # important finding).
+      printf 'could not build a merge payload from the existing %s/%s protection rule\n' "$owner_repo" "$branch" >&2
+      return 3
+    fi
+  fi
+
+  local tmp_payload put_err_file put_err
+  tmp_payload="$(mktemp)"
+  printf '%s\n' "$payload" > "$tmp_payload"
+  put_err_file="$(mktemp)"
+  if env GH_CONFIG_DIR="$gh_dir" gh api -X PUT \
+      "repos/$owner_repo/branches/$branch/protection" \
+      --input "$tmp_payload" >/dev/null 2>"$put_err_file"; then
+    rm -f "$tmp_payload" "$put_err_file"
+    printf 'applied\n%s\n%s' "$(classify_branch_protection "$gh_dir" "$owner_repo" "$branch")" \
+      "$existing_enforce_admins"
+    return 0
+  fi
+  # #45 cycle 7: the PUT's stderr used to be discarded outright
+  # (>/dev/null 2>&1), so a real failure (e.g. a 422 from a payload the
+  # endpoint rejects) surfaced to the caller as a bare rc with no reason,
+  # and the generic "check the resolved identity has repo-admin" message a
+  # caller built from that bare rc actively misdirected. Capture it the same
+  # way the read paths above already do (mktemp + <file), and print it on
+  # stdout so the caller (this script's own --apply path, below) can relay
+  # the real error instead of guessing.
+  put_err="$(<"$put_err_file")"
+  rm -f "$tmp_payload" "$put_err_file"
+  printf '%s' "$put_err"
+  return 1
+}
+
+# ---------- default_gh_dir ----------
+# Identity used for the (never-mutating) initial classify probe: prefer the
+# atelier author identity when configured, else gh's own default resolution
+# order, spelled literally so it is always a concrete path.
+default_gh_dir() {
+  if [ -n "${ATELIER_CONFIG_DIR:-}" ] && [ -d "$ATELIER_CONFIG_DIR/gh/author" ]; then
+    printf '%s' "$ATELIER_CONFIG_DIR/gh/author"
+  else
+    printf '%s' "${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}"
+  fi
+}
+
+print_manual_block() {
+  local owner_repo="$1" branch="$2"
+  local tried
+  tried="$(admin_candidate_dirs | paste -sd, - 2>/dev/null || admin_candidate_dirs | tr '\n' ',' | sed 's/,$//')"
+  printf 'No admin identity available to apply branch protection on %s/%s.\n' "$owner_repo" "$branch"
+  printf 'Tried: %s\n' "$tried"
+  printf 'WARNING: the branch protection PUT endpoint is a full replace. If %s/%s\n' "$owner_repo" "$branch"
+  printf 'already has a protection rule, pasting the command below as-is will\n'
+  printf 'silently overwrite it down to this minimal rule. Read the existing rule\n'
+  printf 'first (gh api "repos/%s/branches/%s/protection") and merge by hand if one exists.\n' "$owner_repo" "$branch"
+  printf 'Apply manually with a repo-admin token:\n'
+  printf "  printf '%%s\\\\n' '%s' | \\\\\n" "$MIN_PAYLOAD"
+  printf '    gh api -X PUT "repos/%s/branches/%s/protection" --input -\n' "$owner_repo" "$branch"
+}
+
+print_unmergeable_block() {
+  local owner_repo="$1" branch="$2" keys="${3:-}"
+  local keys_csv
+  keys_csv="$(printf '%s' "$keys" | paste -sd, - 2>/dev/null || printf '%s' "$keys" | tr '\n' ',' | sed 's/,$//')"
+  [ -n "$keys_csv" ] || keys_csv="a field this helper does not model"
+  printf 'Existing branch protection on %s/%s sets %s —\n' "$owner_repo" "$branch" "$keys_csv"
+  printf 'this helper does not model it and refuses to PUT a payload that\n'
+  printf 'would silently drop it (the branch protection PUT endpoint is a\n'
+  printf 'full replace).\n'
+  printf 'Review the existing rule and update it manually:\n'
+  printf '  gh api "repos/%s/branches/%s/protection"\n' "$owner_repo" "$branch"
+}
+
+# ---------- resolve --repo/--branch when not given ----------
+if [ -z "$REPO" ] || [ -z "$BRANCH" ]; then
+  command -v git >/dev/null 2>&1 || die "git not found on PATH (or pass --repo and --branch)"
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || die "not inside a git repo (pass --repo and --branch)"
+  detect_dir="$(default_gh_dir)"
+  repo_json="$(env GH_CONFIG_DIR="$detect_dir" \
+    gh repo view --json nameWithOwner,defaultBranchRef 2>/dev/null || true)"
+  [ -n "$repo_json" ] || die "could not resolve repo via gh repo view (pass --repo and --branch)"
+  [ -n "$REPO" ] || REPO="$(printf '%s' "$repo_json" | jq -r '.nameWithOwner // empty')"
+  [ -n "$BRANCH" ] || BRANCH="$(printf '%s' "$repo_json" | jq -r '.defaultBranchRef.name // empty')"
+fi
+[ -n "$REPO" ] && [ -n "$BRANCH" ] || die "could not resolve owner/repo or branch"
+
+# ---------- --manual ----------
+if [ "$MODE" = "manual" ]; then
+  print_manual_block "$REPO" "$BRANCH"
+  exit 0
+fi
+
+# ---------- --status ----------
+if [ "$MODE" = "status" ]; then
+  gh_dir="$(default_gh_dir)"
+  class="$(classify_branch_protection "$gh_dir" "$REPO" "$BRANCH")"
+
+  admin_dir=""
+  case "$class" in
+    unprotected|protected-insufficient|no-admin)
+      admin_dir="$(resolve_admin_gh_dir "$REPO" || true)" ;;
+  esac
+
+  if $JSON; then
+    jq -n --arg repo "$REPO" --arg branch "$BRANCH" --arg class "$class" \
+      --arg gh_dir "$gh_dir" --arg admin_gh_dir "$admin_dir" \
+      '{repo: $repo, branch: $branch, class: $class, gh_dir: $gh_dir,
+        admin_gh_dir: (if ($admin_gh_dir | length) > 0 then $admin_gh_dir else null end)}'
+  elif ! $QUIET; then
+    printf '%s/%s: %s\n' "$REPO" "$BRANCH" "$class"
+  fi
+  exit 0
+fi
+
+# ---------- --apply ----------
+probe_dir="$(default_gh_dir)"
+class="$(classify_branch_protection "$probe_dir" "$REPO" "$BRANCH")"
+
+emit_result() {
+  local status="$1" identity="${2:-}" gh_dir="${3:-}" enforce_relaxed="${4:-false}"
+  if $JSON; then
+    # enforce_admins is always kept false (load-bearing: it lets the bot
+    # squash-merge its own approved PRs) — but when the existing rule had it
+    # true, that is a silent weakening of an operator-set control. This used
+    # to be text-only (see the elif branch below), which meant it never
+    # reached callers that invoke --json (atelier-setup-project does,
+    # #45 review finding 2) — enforce_admins_relaxed + message make it
+    # machine-readable from JSON too.
+    local relaxed_json="false" relaxed_message=""
+    if [ "$status" = "applied" ] && [ "$enforce_relaxed" = "true" ]; then
+      relaxed_json="true"
+      relaxed_message="enforce_admins was true on the existing rule and is kept false (required for the bot's own squash-merges)"
+    fi
+    jq -n --arg status "$status" --arg repo "$REPO" --arg branch "$BRANCH" \
+      --arg class "$class" --arg identity "$identity" --arg gh_dir "$gh_dir" \
+      --argjson enforce_admins_relaxed "$relaxed_json" --arg message "$relaxed_message" \
+      '{status: $status, repo: $repo, branch: $branch, class: $class,
+        identity: (if ($identity | length) > 0 then $identity else null end),
+        gh_dir: (if ($gh_dir | length) > 0 then $gh_dir else null end),
+        enforce_admins_relaxed: $enforce_admins_relaxed,
+        message: (if ($message | length) > 0 then $message else null end)}'
+  elif ! $QUIET; then
+    case "$status" in
+      already-sufficient) printf 'already sufficient: %s/%s requires >=1 approving review\n' "$REPO" "$BRANCH" ;;
+      already-protected)  printf 'already protected: %s/%s (admin token needed to verify the exact review count)\n' "$REPO" "$BRANCH" ;;
+      applied)
+        printf 'applied: %s/%s now requires >=1 approving review (as %s)\n' "$REPO" "$BRANCH" "$identity"
+        # enforce_admins is always kept false (load-bearing: it lets the bot
+        # squash-merge its own approved PRs) — but when the existing rule had
+        # it true, that is a silent weakening of an operator-set control, so
+        # name it here rather than only in the source comment (#45 review,
+        # critical finding sub-point (a)).
+        if [ "$enforce_relaxed" = "true" ]; then
+          printf '  note: enforce_admins was true on the existing rule and is kept false (required for the bot'"'"'s own squash-merges)\n'
+        fi
+        ;;
+    esac
+  fi
+}
+
+case "$class" in
+  protected-sufficient)
+    emit_result "already-sufficient"
+    exit 0
+    ;;
+  protected-noadmin)
+    emit_result "already-protected"
+    exit 0
+    ;;
+  skip:*)
+    msg="${class#skip:}"
+    if $JSON; then
+      jq -n --arg repo "$REPO" --arg branch "$BRANCH" --arg msg "$msg" \
+        '{status: "skip", repo: $repo, branch: $branch, message: $msg}'
+    else
+      printf 'branch protection check skipped: %s\n' "$msg" >&2
+    fi
+    exit 2
+    ;;
+esac
+
+# unprotected | protected-insufficient | no-admin — needs an admin identity.
+if ! admin_dir="$(resolve_admin_gh_dir "$REPO")"; then
+  print_manual_block "$REPO" "$BRANCH"
+  exit 3
+fi
+
+apply_out="$(apply_protection "$admin_dir" "$REPO" "$BRANCH")"; apply_rc=$?
+
+if [ "$apply_rc" -eq 0 ]; then
+  apply_status="$(printf '%s\n' "$apply_out" | sed -n '1p')"
+  verify_class="$(printf '%s\n' "$apply_out" | sed -n '2p')"
+  enforce_relaxed="$(printf '%s\n' "$apply_out" | sed -n '3p')"
+  identity_login="$(env GH_CONFIG_DIR="$admin_dir" gh api user --jq .login 2>/dev/null || true)"
+  class="$verify_class"
+  emit_result "$apply_status" "$identity_login" "$admin_dir" "$enforce_relaxed"
+  exit 0
+fi
+
+if [ "$apply_rc" -eq 2 ]; then
+  print_unmergeable_block "$REPO" "$BRANCH" "$apply_out"
+  exit 3
+fi
+
+if [ "$apply_rc" -eq 3 ]; then
+  # The admin identity's re-read of the existing rule failed for a reason
+  # that is NOT a confirmed-unprotected 404 — never treat that as license to
+  # PUT a MIN_PAYLOAD full-replace over a rule we simply failed to read
+  # (#45 review, critical finding). apply_protection() already wrote the
+  # underlying gh error to stderr.
+  if $JSON; then
+    jq -n --arg repo "$REPO" --arg branch "$BRANCH" --arg class "$class" \
+      '{status: "read-failed", repo: $repo, branch: $branch, class: $class,
+        message: "could not verify the existing rule under the admin identity; refusing to apply without reading it first"}'
+  else
+    printf 'could not verify existing branch protection on %s/%s under the admin identity — refusing to apply without reading it first (see stderr for the underlying error)\n' "$REPO" "$BRANCH" >&2
+  fi
+  exit 2
+fi
+
+identity_login="$(env GH_CONFIG_DIR="$admin_dir" gh api user --jq .login 2>/dev/null || true)"
+# apply_out is apply_protection()'s captured PUT stderr on this path (rc 1
+# from that function, see its own comment above) — relay it rather than the
+# bare failure the caller previously had no way to diagnose (#45 cycle 7).
+if $JSON; then
+  jq -n --arg repo "$REPO" --arg branch "$BRANCH" --arg class "$class" \
+    --arg identity "$identity_login" --arg gh_dir "$admin_dir" --arg message "$apply_out" \
+    '{status: "put-failed", repo: $repo, branch: $branch, class: $class,
+      identity: $identity, gh_dir: $gh_dir,
+      message: (if ($message | length) > 0 then $message else null end)}'
+else
+  printf 'failed to apply branch protection on %s/%s (as %s)\n' "$REPO" "$BRANCH" "$identity_login" >&2
+  [ -n "$apply_out" ] && printf '%s\n' "$apply_out" >&2
+fi
+exit 4

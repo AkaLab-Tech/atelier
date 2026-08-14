@@ -997,12 +997,15 @@ inv=\$(env GH_CONFIG_DIR=\"$reviewer_dir\" gh api user/repository_invitations --
 }
 
 check_branch_protection() {
-  # M7.1.F31 — without a rule requiring at least 1 approving review, GitHub
-  # never computes reviewDecision; auto-merge guardrail #2 holds forever even
-  # after a real APPROVED review. Classify and surface a runnable fix (when
-  # the author identity has admin) or a manual instruction (when it does not).
-  local author_dir="$ATELIER_CONFIG_DIR/gh/author"
-
+  # M7.1.F31 / #45 — without a rule requiring at least 1 approving review,
+  # GitHub never computes reviewDecision; auto-merge guardrail #2 holds
+  # forever even after a real APPROVED review. Classification is delegated
+  # to the shared helper atelier-branch-protection (#45) — see that script
+  # for the classifier states and the admin-identity resolution order this
+  # check uses. #45 cycle 7: this check never queues a runnable `--apply`
+  # fix, with or without --fix — the helper's write path is unverified
+  # against GitHub's real API contract, so the only fix this check ever
+  # offers is the manual, non-mutating `--manual` block.
   if ! command -v gh >/dev/null 2>&1; then
     push_host "$SKIP branch protection check (gh not on PATH)"
     return
@@ -1011,64 +1014,26 @@ check_branch_protection() {
     push_host "$SKIP branch protection check (not inside a git repo)"
     return
   fi
-  if [ ! -d "$author_dir" ]; then
-    push_host "$SKIP branch protection check (author identity not configured at $author_dir)"
+
+  local helper
+  helper="$(command -v atelier-branch-protection 2>/dev/null || true)"
+  [ -n "$helper" ] || helper="${CLAUDE_PLUGIN_ROOT:-}/scripts/atelier-branch-protection"
+  if [ ! -x "$helper" ]; then
+    push_host "$SKIP branch protection check (atelier-branch-protection helper not found)"
     return
   fi
 
   local owner_repo default_branch
-  owner_repo="$(env GH_CONFIG_DIR="$author_dir" \
-    gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
-  default_branch="$(env GH_CONFIG_DIR="$author_dir" \
-    gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null || true)"
+  owner_repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+  default_branch="$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null || true)"
   if [ -z "$owner_repo" ] || [ -z "$default_branch" ]; then
     push_host "$SKIP branch protection check (no GitHub remote resolved for current repo)"
     return
   fi
 
-  # Inline classifier (same logic as classify_branch_protection in atelier-setup-project)
-  local class out rc err_file err_msg
-  err_file="$(mktemp)"
-  out="$(env GH_CONFIG_DIR="$author_dir" \
-    gh api "repos/$owner_repo/branches/$default_branch/protection" 2>"$err_file")" && rc=0 || rc=$?
-  err_msg="$(<"$err_file")"
-  rm -f "$err_file"
-  if [ "$rc" -eq 0 ]; then
-    local count
-    count="$(printf '%s' "$out" | \
-      jq -r '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null || printf '0')"
-    count="${count:-0}"
-    if [ "$count" -ge 1 ]; then
-      class="protected-sufficient"
-    else
-      class="protected-insufficient"
-    fi
-  else
-    case "$err_msg" in
-      *"Must have admin"*|*"Resource not accessible"*|*"HTTP 403"*)
-        class="no-admin"
-        ;;
-      *"Branch not protected"*|*"HTTP 404"*|*"Not Found"*)
-        # A 404 from the protection endpoint is AMBIGUOUS: the branch may be
-        # genuinely unprotected, OR it may be protected while this (non-admin)
-        # token simply lacks the access to read the protection detail — GitHub
-        # returns 404, not 403, in that second case. Disambiguate via the
-        # no-admin-safe branch endpoint, whose `.protected` flag every
-        # collaborator can read. Without this, a repo the operator had just
-        # protected still reported "✗ … no required approving reviews" and
-        # offered a fix the author (bot) identity cannot even run.
-        local protected_flag
-        protected_flag="$(env GH_CONFIG_DIR="$author_dir" \
-          gh api "repos/$owner_repo/branches/$default_branch" --jq '.protected' 2>/dev/null)"
-        if [ "$protected_flag" = "true" ]; then
-          class="protected-noadmin"
-        else
-          class="unprotected"
-        fi
-        ;;
-      *) class="skip:$(printf '%s' "$err_msg" | head -1 2>/dev/null)" ;;
-    esac
-  fi
+  local out class
+  out="$(bash "$helper" --status --repo "$owner_repo" --branch "$default_branch" --json 2>/dev/null)"
+  class="$(printf '%s' "$out" | jq -r '.class // empty' 2>/dev/null)"
 
   case "$class" in
     protected-sufficient)
@@ -1077,7 +1042,7 @@ check_branch_protection() {
       ;;
     protected-noadmin)
       # Branch IS protected (confirmed via the no-admin .protected flag) but the
-      # author token can't read the protection detail, so we can't verify the
+      # probing token can't read the protection detail, so we can't verify the
       # exact required-review count. Report clean — NOT a ✗ — and emit no fix:
       # the branch is protected and reviewDecision computes; over-claiming a
       # false failure here (the pre-fix behaviour) also proposed a PUT the bot
@@ -1086,33 +1051,39 @@ check_branch_protection() {
       return
       ;;
     no-admin)
-      push_host "$SKIP branch protection check: $owner_repo/$default_branch (token lacks repo-admin to read protection)"
+      # The probing token got a 403 reading the protection detail — we have
+      # NO evidence either way about the required-review count (#45 review,
+      # finding 3). Asserting FAIL here would repeat, for the 403 path,
+      # exactly the false-failure #284 fixed for the 404 path above. Any fix
+      # offered here also risks weakening an already-sufficient rule the
+      # probe identity simply can't see — report SKIP, not FAIL.
+      push_host "$SKIP branch protection check: $owner_repo/$default_branch — token lacks permission to read the protection rule, cannot verify the review count"
       return
       ;;
     skip:*)
       push_host "$SKIP branch protection check: ${class#skip:}"
       return
       ;;
+    "")
+      push_host "$SKIP branch protection check: atelier-branch-protection returned no classification"
+      return
+      ;;
   esac
 
-  # protected-insufficient or unprotected
+  # protected-insufficient | unprotected
   push_host "$FAIL branch protection: $owner_repo/$default_branch has no required approving reviews — auto-merge guardrail #2 (reviewDecision == APPROVED) holds forever"
 
-  local min_payload='{"required_status_checks":null,"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":1},"restrictions":null}'
-
-  local perm
-  perm="$(env GH_CONFIG_DIR="$author_dir" \
-    gh repo view --json viewerPermission --jq .viewerPermission 2>/dev/null || true)"
-  if [ "$perm" = "ADMIN" ]; then
-    push_fix_auto "printf '%s\n' '$min_payload' | env GH_CONFIG_DIR=\"$author_dir\" gh api -X PUT \"repos/$owner_repo/branches/$default_branch/protection\" --input -"
-  else
-    push_fix_manual "# Branch protection: $owner_repo/$default_branch is missing required approving reviews.
-# Auto-merge guardrail #2 (reviewDecision == APPROVED) will hold forever without it.
-# Apply as a repo admin (the author identity at $author_dir lacks admin rights):
-printf '%s\n' '$min_payload' | \\
-  gh api -X PUT \"repos/$owner_repo/branches/$default_branch/protection\" --input -
-# Use GH_CONFIG_DIR or GH_TOKEN pointing to a repo-admin token."
-  fi
+  # #45 cycle 7: never queue a runnable `--apply` fix here, even under
+  # --fix, even when an admin identity resolved. The write path (the PUT
+  # payload apply_protection() builds) is UNVERIFIED against GitHub's real
+  # API contract — see the "PUT CONTRACT UNVERIFIED" comment on that
+  # function in atelier-branch-protection for the three known divergences.
+  # push_fix_manual with the copy-pasteable block is the correct terminal
+  # until that contract is verified: --manual never probes an admin identity
+  # or reads the protection endpoint at all, so it is the only call shape
+  # guaranteed non-mutating regardless of which identities happen to
+  # resolve at call time.
+  push_fix_manual "$(bash "$helper" --manual --repo "$owner_repo" --branch "$default_branch" 2>&1 || true)"
 }
 
 check_atelier_auto_mode() {
@@ -1316,10 +1287,17 @@ if [ ${#FIX_AUTO_COMMANDS[@]} -gt 0 ]; then
     # var the runnable used a literal $... for). The command originates
     # from this script's own check functions — not from user input — so
     # the eval surface is bounded by what we ourselves call push_fix_auto
-    # with. We capture and suppress the command's normal output, then
-    # surface a one-line OK / FAIL summary.
+    # with. We capture the command's output; on success we fold any
+    # non-empty output into the OK line rather than discard it — some
+    # runnables (e.g. atelier-branch-protection --apply) name the identity
+    # they actually used, and that must never go silent (#45 review,
+    # finding 4).
     if output="$(eval "$cmd" 2>&1)"; then
-      printf '    %s OK\n' "$OK"
+      if [ -n "$output" ]; then
+        printf '    %s %s\n' "$OK" "$output"
+      else
+        printf '    %s OK\n' "$OK"
+      fi
       APPLIED_OK=$(( APPLIED_OK + 1 ))
     else
       rc=$?

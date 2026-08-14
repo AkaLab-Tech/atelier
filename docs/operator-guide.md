@@ -143,6 +143,20 @@ You can run `atelier /atelier:setup-project .` on as many projects as you like �
 
 If you ever want to retire a project from atelier (no more `task` will run on it), `cd` into the project and run `atelier-remove-project .` — it deregisters the project but keeps your files. Add `--purge` to also strip the few `.gitignore` and `.npmrc` entries atelier added during setup. Both flows have a Claude-session equivalent under `/atelier:remove-project`.
 
+### Branch protection
+
+Setup **detects and reports** whether your default branch has a branch protection rule requiring at least 1 approving review — **by default, no flag needed**. Without this rule GitHub never computes a PR's review decision, so the auto-merge gate holds forever even after a genuine approval.
+
+It does **not apply** the rule by default. The write path (the API call that would create or update the rule) has not yet been verified against GitHub's real branch-protection endpoint, so applying it is gated behind an explicit opt-in: pass `--apply-branch-protection` to `atelier-setup-project` if you want it applied now. Without that flag, setup reports what it found (e.g. "detected: unprotected …") and tells you the flag to pass.
+
+Applying the rule (with `--apply-branch-protection`) needs a GitHub identity with admin rights on the repo. Setup tries, in order: a dedicated atelier admin identity (if you've configured one), the atelier **author** account (a free win on repos it already owns), and finally your own **personal** GitHub login. Whichever identity actually applied the rule is named in the setup output, e.g. `applied as <your-login> (…)`. If none of them has admin rights, setup still finishes normally and prints a copy-pasteable `gh api -X PUT …` command for you to run yourself. The command it prints is always a minimal all-or-nothing rule, so if a rule already exists, read it first (the printed instructions tell you how) and merge by hand rather than pasting it blind.
+
+Before applying anything, the admin identity re-reads whatever rule is already there so it can merge into it rather than overwrite it. If that re-read itself fails for a reason other than "no rule exists" (a transient GitHub error, a rate limit, …), setup never guesses — it skips applying, reports the failure, and leaves the existing rule untouched.
+
+Pass `--no-branch-protection` to `atelier-setup-project` if you don't want this check to run at all — no detection, no report, no apply.
+
+`atelier-doctor` reports the same check read-only, including a copy-pasteable manual command to apply it yourself — it never applies anything itself, even with `--fix`, for the same write-path-unverified reason above.
+
 ### Already have a roadmap? Adopt it instead of rewriting it
 
 If your project already tracks its work in `ROADMAP.md` — its own priority names, ids like `TASK-12`, maybe another language — atelier won't recognize those tasks: the picker only reads the exact format shown in Step 5. Don't convert it by hand. In the project folder, run:
@@ -593,4 +607,4 @@ Each `atelier-*` helper also has a Claude-session equivalent under `/atelier:*` 
 - `~/.claude-work/` — atelier's own configuration, separate from your personal Claude config. (This path is `$ATELIER_CONFIG_DIR`; helpers and slash commands always read/write here, never your personal `~/.claude/`.)
 - `~/.claude-work/projects.json` — the registry of your atelier projects. `~/.claude-work/workspaces.json` — your multi-repo workspaces (only present once you create one).
 - `~/.claude-work/atelier-help.txt` — the cheatsheet shown by `atelier --help` (written at install time, refreshed by `atelier-update`).
-- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, `atelier-list-projects`, `atelier-remove-project`, `atelier-import-conversations`, `atelier-setup-workspace`, `atelier-resolve-dep`, `atelier-workspace-status`, `atelier-list-workspaces`, `atelier-remove-workspace`, `atelier-update`, `atelier-permission-diff`, `atelier-pr-size-check`, `atelier-measure-merge-rate`, and `atelier-housekeeping` commands.
+- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, `atelier-list-projects`, `atelier-remove-project`, `atelier-import-conversations`, `atelier-setup-workspace`, `atelier-resolve-dep`, `atelier-workspace-status`, `atelier-list-workspaces`, `atelier-remove-workspace`, `atelier-update`, `atelier-permission-diff`, `atelier-pr-size-check`, `atelier-measure-merge-rate`, `atelier-branch-protection`, and `atelier-housekeeping` commands.
