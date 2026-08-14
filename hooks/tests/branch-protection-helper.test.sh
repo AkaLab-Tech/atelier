@@ -127,6 +127,37 @@
 #     WARNING about the PUT being a full replace is part of the block D1
 #     already captures; nothing previously asserted that line's presence.
 #
+#   Phases O-Q were added after #45 review CYCLE 3, whose reviewer note
+#   flagged coverage gaps that let three fresh instances of the same
+#   "silent destructive full-replace, reported as applied/exit 0" class
+#   through cycle 2: H4/H5/H6 were vacuous (fixed above), and no fixture
+#   covered dismissal_restrictions.apps, an unparseable-but-rc-0 read, or
+#   setup-project's exit-2 arm (that last one lives in
+#   setup-project-branch-protection.test.sh, not here).
+#
+#   Phase O — the has_unmodeled_restrictions clauses must be symmetric: all
+#     three (dismissal_restrictions / bypass_pull_request_allowances /
+#     top-level restrictions) enumerate users+teams+apps. Before this cycle's
+#     fix, dismissal_restrictions only counted users+teams — an apps-only
+#     dismissal_restrictions escaped refusal entirely (applied, exit 0, PUT
+#     silently omitted the field). O1/O2/O3 pin an apps-only fixture against
+#     all three clauses so the asymmetry that caused the bug cannot recur in
+#     any of them, not just the one that was empirically found broken.
+#
+#   Phase P — an admin re-read that returns rc 0 (success) but is otherwise
+#     unusable must never be treated as "no rule exists" either. P1: rc 0 +
+#     an EMPTY body (previously fell through both existing guards with no
+#     check at all — the review's "more reachable" door). P2: rc 0 + a body
+#     that is not valid JSON (jq cannot build a merge payload from it). Both
+#     -> --apply exits 2, JSON status "read-failed", zero PUT.
+#
+#   Phase Q — allow_fork_syncing carry-through, the field that was silently
+#     omitted and reset to its API default (false) on every PUT. Q1 uses
+#     enabled: true on the existing rule specifically because it is the
+#     non-default value — a fixture asserting false would pass even if the
+#     field were dropped entirely (the same gap Phase H's fixture had before
+#     this cycle's correction to H4/H5/H6).
+#
 # Hermetic: gh is stubbed on PATH throughout; no network calls, no writes
 # outside $TMP, no dependency on the operator's real ~/.config/gh (HOME,
 # XDG_CONFIG_HOME, and ATELIER_CONFIG_DIR are all pinned inside $TMP for
@@ -755,9 +786,9 @@ cat > "$EXISTING_BOOLEANS_JSON" << 'EOF'
   "required_linear_history": {"enabled": true},
   "required_conversation_resolution": {"enabled": true},
   "allow_force_pushes": {"enabled": true},
-  "allow_deletions": {"enabled": false},
-  "block_creations": {"enabled": false},
-  "lock_branch": {"enabled": false}
+  "allow_deletions": {"enabled": true},
+  "block_creations": {"enabled": true},
+  "lock_branch": {"enabled": true}
 }
 EOF
 
@@ -824,20 +855,24 @@ else
     && pass "H3: allow_force_pushes carried through as plain boolean true" \
     || fail "H3: allow_force_pushes: expected 'true', got '$afp'"
 
+  # H4-H6 fixture values are true (non-default) so these assertions actually
+  # discriminate: with a false fixture matching the field's own API default,
+  # the assertion would pass even if the field's carry-through were broken
+  # (#45 review, test-assertion gap).
   ad="$(jq -r '.allow_deletions' "$PUT_PAYLOAD_CAPTURE_H")"
-  [ "$ad" = "false" ] \
-    && pass "H4: allow_deletions carried through as plain boolean false" \
-    || fail "H4: allow_deletions: expected 'false', got '$ad'"
+  [ "$ad" = "true" ] \
+    && pass "H4: allow_deletions carried through as plain boolean true (not reset to false)" \
+    || fail "H4: allow_deletions: expected 'true', got '$ad'"
 
   bc="$(jq -r '.block_creations' "$PUT_PAYLOAD_CAPTURE_H")"
-  [ "$bc" = "false" ] \
-    && pass "H5: block_creations carried through as plain boolean false" \
-    || fail "H5: block_creations: expected 'false', got '$bc'"
+  [ "$bc" = "true" ] \
+    && pass "H5: block_creations carried through as plain boolean true (not reset to false)" \
+    || fail "H5: block_creations: expected 'true', got '$bc'"
 
   lb="$(jq -r '.lock_branch' "$PUT_PAYLOAD_CAPTURE_H")"
-  [ "$lb" = "false" ] \
-    && pass "H6: lock_branch carried through as plain boolean false" \
-    || fail "H6: lock_branch: expected 'false', got '$lb'"
+  [ "$lb" = "true" ] \
+    && pass "H6: lock_branch carried through as plain boolean true (not reset to false)" \
+    || fail "H6: lock_branch: expected 'true', got '$lb'"
 fi
 
 # =============================================================================
@@ -1587,6 +1622,369 @@ if printf '%s' "$out_n2" | grep -q "note: enforce_admins was true"; then
   fail "N2: relaxation note unexpectedly present when the existing rule already had enforce_admins=false (got: $out_n2)"
 else
   pass "N2: relaxation note absent when the existing rule already had enforce_admins=false"
+fi
+
+# =============================================================================
+# Phase O — #45 REVIEW CYCLE-3: has_unmodeled_restrictions must be symmetric
+# across all three clauses (dismissal_restrictions / bypass_pull_request_
+# allowances / top-level restrictions) — each enumerates users+teams+apps.
+# An apps-only fixture on EACH clause, reusing run_unmergeable_case() from
+# Phase I. Before this cycle's fix, dismissal_restrictions counted only
+# users+teams, so O1 (apps-only) would have escaped refusal entirely:
+# applied, exit 0, the apps-only field silently dropped from the PUT.
+# =============================================================================
+
+echo ""
+echo "Phase O: apps-only unmodeled restrictions are refused symmetrically on all three clauses"
+
+PHASE_O_ATELIER_CFG="$TMP/phase-o-atelier-cfg"
+mkdir -p "$PHASE_O_ATELIER_CFG/gh/admin" "$PHASE_O_ATELIER_CFG/gh/author"
+printf 'WRITE\n' > "$PHASE_O_ATELIER_CFG/gh/admin/perm"
+printf 'ADMIN\n' > "$PHASE_O_ATELIER_CFG/gh/author/perm"
+
+# --- O1: dismissal_restrictions with ONLY apps populated (users/teams empty)
+#     — the exact shape that previously escaped refusal. ---
+EXISTING_DISMISSAL_APPS_JSON="$TMP/existing_dismissal_apps.json"
+cat > "$EXISTING_DISMISSAL_APPS_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0,
+    "dismissal_restrictions": {"users": [], "teams": [], "apps": [{"slug": "my-app", "id": 123}]}
+  },
+  "restrictions": null
+}
+EOF
+
+call_log_o1="$(run_unmergeable_case "$EXISTING_DISMISSAL_APPS_JSON" "o1")"
+
+out_o1="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_O_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_o1=$?
+
+[ "$rc_o1" -eq 3 ] \
+  && pass "O1: --apply exits 3 when dismissal_restrictions has ONLY apps populated (users/teams empty)" \
+  || fail "O1: expected exit 3, got $rc_o1 (output: $out_o1)"
+
+if printf '%s' "$out_o1" | grep -q "dismissal_restrictions"; then
+  pass "O1: print_unmergeable_block's text on stdout names dismissal_restrictions"
+else
+  fail "O1: expected 'dismissal_restrictions' on stdout (got: $out_o1)"
+fi
+
+if [ -f "$call_log_o1" ] && grep -q -- "-X PUT" "$call_log_o1"; then
+  fail "O1: THE CRITICAL REGRESSION — a PUT was made despite an apps-only dismissal_restrictions (call log: $(cat "$call_log_o1"))"
+else
+  pass "O1: no PUT was made"
+fi
+
+# --- O2: bypass_pull_request_allowances with ONLY apps populated ---
+EXISTING_BYPASS_APPS_JSON="$TMP/existing_bypass_apps.json"
+cat > "$EXISTING_BYPASS_APPS_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0,
+    "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": [{"slug": "my-app", "id": 123}]}
+  },
+  "restrictions": null
+}
+EOF
+
+call_log_o2="$(run_unmergeable_case "$EXISTING_BYPASS_APPS_JSON" "o2")"
+
+out_o2="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_O_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_o2=$?
+
+[ "$rc_o2" -eq 3 ] \
+  && pass "O2: --apply exits 3 when bypass_pull_request_allowances has ONLY apps populated" \
+  || fail "O2: expected exit 3, got $rc_o2 (output: $out_o2)"
+
+if printf '%s' "$out_o2" | grep -q "bypass_pull_request_allowances"; then
+  pass "O2: print_unmergeable_block's text on stdout names bypass_pull_request_allowances"
+else
+  fail "O2: expected 'bypass_pull_request_allowances' on stdout (got: $out_o2)"
+fi
+
+if [ -f "$call_log_o2" ] && grep -q -- "-X PUT" "$call_log_o2"; then
+  fail "O2: THE CRITICAL REGRESSION — a PUT was made despite an apps-only bypass_pull_request_allowances (call log: $(cat "$call_log_o2"))"
+else
+  pass "O2: no PUT was made"
+fi
+
+# --- O3: top-level restrictions with ONLY apps populated ---
+EXISTING_RESTRICTIONS_APPS_JSON="$TMP/existing_restrictions_apps.json"
+cat > "$EXISTING_RESTRICTIONS_APPS_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": {"users": [], "teams": [], "apps": [{"slug": "my-app", "id": 123}]}
+}
+EOF
+
+call_log_o3="$(run_unmergeable_case "$EXISTING_RESTRICTIONS_APPS_JSON" "o3")"
+
+out_o3="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_O_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" 2>&1)"
+rc_o3=$?
+
+[ "$rc_o3" -eq 3 ] \
+  && pass "O3: --apply exits 3 when top-level restrictions has ONLY apps populated" \
+  || fail "O3: expected exit 3, got $rc_o3 (output: $out_o3)"
+
+if printf '%s' "$out_o3" | grep -q "restrictions"; then
+  pass "O3: print_unmergeable_block's text on stdout names restrictions"
+else
+  fail "O3: expected 'restrictions' on stdout (got: $out_o3)"
+fi
+
+if [ -f "$call_log_o3" ] && grep -q -- "-X PUT" "$call_log_o3"; then
+  fail "O3: THE CRITICAL REGRESSION — a PUT was made despite an apps-only top-level restrictions (call log: $(cat "$call_log_o3"))"
+else
+  pass "O3: no PUT was made"
+fi
+
+# =============================================================================
+# Phase P — #45 REVIEW CYCLE-3: an admin re-read that returns rc 0 but is
+# otherwise unusable must never be treated as "no rule exists" either — the
+# non-404-error and failed-companion-read doors were pinned in Phase K, but
+# an rc-0 read that comes back empty or unparseable fell through BOTH
+# existing guards untouched (the review's "more reachable" door).
+# =============================================================================
+
+echo ""
+echo "Phase P: apply_protection() aborts instead of PUTting when the admin re-read returns rc 0 but an unusable body"
+
+PHASE_P_ATELIER_CFG="$TMP/phase-p-atelier-cfg"
+GH_AUTHOR_DIR_P="$PHASE_P_ATELIER_CFG/gh/author"   # PROBE identity — always 403s, never admin
+GH_ADMIN_DIR_P="$PHASE_P_ATELIER_CFG/gh/admin"     # ADMIN identity — re-read behavior varies per case
+mkdir -p "$GH_AUTHOR_DIR_P" "$GH_ADMIN_DIR_P"
+printf 'WRITE\n' > "$GH_AUTHOR_DIR_P/perm"
+printf 'ADMIN\n' > "$GH_ADMIN_DIR_P/perm"
+
+# --- P1: rc 0, EMPTY body ---
+GH_CALL_LOG_P1="$TMP/gh_call_log_p1"
+rm -f "$GH_CALL_LOG_P1"
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+CALL_LOG="${GH_CALL_LOG_P1}"
+ADMIN_DIR="${GH_ADMIN_DIR_P}"
+printf '%s\n' "\$*" >> "\$CALL_LOG"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    printf 'UNEXPECTED PUT INVOKED\n' >> "\$CALL_LOG"
+    printf '{}\n'
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *"branches/"*"/protection"*)
+    if [ "\${GH_CONFIG_DIR:-}" = "\$ADMIN_DIR" ]; then
+      : # rc 0, deliberately no stdout at all
+    else
+      printf 'Must have admin rights to Repository.\n' >&2
+      exit 1
+    fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+P1_STDERR="$TMP/p1.stderr"
+out_p1="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_P_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>"$P1_STDERR")"
+rc_p1=$?
+
+[ "$rc_p1" -eq 2 ] \
+  && pass "P1: rc-0-but-empty admin re-read -> --apply exits 2 (not treated as 'no rule exists')" \
+  || fail "P1: expected exit 2, got $rc_p1 (output: $out_p1)"
+
+status_p1="$(printf '%s' "$out_p1" | jq -r '.status // empty' 2>/dev/null)"
+[ "$status_p1" = "read-failed" ] \
+  && pass "P1: JSON status = 'read-failed'" \
+  || fail "P1: expected JSON status 'read-failed', got '$status_p1' (output: $out_p1)"
+
+if grep -q "empty body" "$P1_STDERR"; then
+  pass "P1: apply_protection()'s own diagnostic ('empty body') is surfaced on stderr"
+else
+  fail "P1: expected the empty-body diagnostic on stderr (got: $(cat "$P1_STDERR"))"
+fi
+
+if [ -f "$GH_CALL_LOG_P1" ] && grep -q -- "-X PUT" "$GH_CALL_LOG_P1"; then
+  fail "P1: THE CRITICAL REGRESSION — a PUT was made despite an rc-0-but-empty admin re-read (call log: $(cat "$GH_CALL_LOG_P1"))"
+else
+  pass "P1: no PUT was ever made"
+fi
+
+# --- P2: rc 0, body that is NOT valid JSON (jq cannot build a merge payload
+#     from it) ---
+GH_CALL_LOG_P2="$TMP/gh_call_log_p2"
+rm -f "$GH_CALL_LOG_P2"
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+CALL_LOG="${GH_CALL_LOG_P2}"
+ADMIN_DIR="${GH_ADMIN_DIR_P}"
+printf '%s\n' "\$*" >> "\$CALL_LOG"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    printf 'UNEXPECTED PUT INVOKED\n' >> "\$CALL_LOG"
+    printf '{}\n'
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *"branches/"*"/protection"*)
+    if [ "\${GH_CONFIG_DIR:-}" = "\$ADMIN_DIR" ]; then
+      printf '<html>oops</html>\n'
+    else
+      printf 'Must have admin rights to Repository.\n' >&2
+      exit 1
+    fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+P2_STDERR="$TMP/p2.stderr"
+out_p2="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_P_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>"$P2_STDERR")"
+rc_p2=$?
+
+[ "$rc_p2" -eq 2 ] \
+  && pass "P2: rc-0-but-unparseable admin re-read -> --apply exits 2 (not treated as 'no rule exists')" \
+  || fail "P2: expected exit 2, got $rc_p2 (output: $out_p2)"
+
+status_p2="$(printf '%s' "$out_p2" | jq -r '.status // empty' 2>/dev/null)"
+[ "$status_p2" = "read-failed" ] \
+  && pass "P2: JSON status = 'read-failed'" \
+  || fail "P2: expected JSON status 'read-failed', got '$status_p2' (output: $out_p2)"
+
+if grep -q "could not build a merge payload" "$P2_STDERR"; then
+  pass "P2: apply_protection()'s own diagnostic ('could not build a merge payload') is surfaced on stderr"
+else
+  fail "P2: expected the unparseable-body diagnostic on stderr (got: $(cat "$P2_STDERR"))"
+fi
+
+if [ -f "$GH_CALL_LOG_P2" ] && grep -q -- "-X PUT" "$GH_CALL_LOG_P2"; then
+  fail "P2: THE CRITICAL REGRESSION — a PUT was made despite an unparseable admin re-read body (call log: $(cat "$GH_CALL_LOG_P2"))"
+else
+  pass "P2: no PUT was ever made"
+fi
+
+# =============================================================================
+# Phase Q — #45 REVIEW CYCLE-3: allow_fork_syncing carry-through, the field
+# that was silently omitted from the merge payload and reset to its API
+# default (false) on every PUT. Q1 uses enabled: true specifically because
+# it is the NON-default value — a fixture asserting false would pass even
+# if the field were dropped entirely (the same gap Phase H's fixture had
+# before this cycle's H4/H5/H6 correction).
+# =============================================================================
+
+echo ""
+echo "Phase Q: apply_protection() carries through allow_fork_syncing"
+
+PHASE_Q_ATELIER_CFG="$TMP/phase-q-atelier-cfg"
+mkdir -p "$PHASE_Q_ATELIER_CFG/gh/admin" "$PHASE_Q_ATELIER_CFG/gh/author"
+printf 'WRITE\n' > "$PHASE_Q_ATELIER_CFG/gh/admin/perm"
+printf 'ADMIN\n' > "$PHASE_Q_ATELIER_CFG/gh/author/perm"
+
+EXISTING_FORKSYNC_JSON="$TMP/existing_forksync.json"
+cat > "$EXISTING_FORKSYNC_JSON" << 'EOF'
+{
+  "required_status_checks": null,
+  "enforce_admins": {"enabled": false},
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null,
+  "allow_fork_syncing": {"enabled": true}
+}
+EOF
+
+PUT_PAYLOAD_CAPTURE_Q="$TMP/put_payload_q.json"
+rm -f "$PUT_PAYLOAD_CAPTURE_Q"
+
+cat > "$TMP/bin/gh" << SHIMEOF
+#!/usr/bin/env bash
+EXISTING_JSON="${EXISTING_FORKSYNC_JSON}"
+PUT_PAYLOAD_CAPTURE="${PUT_PAYLOAD_CAPTURE_Q}"
+case "\$*" in
+  *"-X PUT"*"protection"*)
+    prev=""
+    for a in "\$@"; do
+      if [ "\$prev" = "--input" ]; then
+        cp "\$a" "\$PUT_PAYLOAD_CAPTURE"
+        break
+      fi
+      prev="\$a"
+    done
+    printf '{}\n'
+    ;;
+  *"branches/"*"/protection"*)
+    cat "\$EXISTING_JSON"
+    ;;
+  *"api user --jq .login"*)
+    printf 'fake-admin-login\n'
+    ;;
+  *"viewerPermission"*)
+    permfile="\${GH_CONFIG_DIR:-}/perm"
+    if [ -f "\$permfile" ]; then cat "\$permfile"; else printf 'NONE\n'; fi
+    ;;
+  *)
+    printf 'gh-stub: unexpected args: %s\n' "\$*" >&2
+    exit 1
+    ;;
+esac
+SHIMEOF
+chmod +x "$TMP/bin/gh"
+
+out_q="$(HOME="$CLI_HOME" XDG_CONFIG_HOME="$CLI_XDG" ATELIER_CONFIG_DIR="$PHASE_Q_ATELIER_CFG" \
+  bash "$HELPER_SCRIPT" --apply --repo "$OWNER_REPO" --branch "$BRANCH" --json 2>&1)"
+rc_q=$?
+
+[ "$rc_q" -eq 0 ] \
+  && pass "Q0: --apply exits 0 on a protected-insufficient branch with allow_fork_syncing.enabled=true" \
+  || fail "Q0: --apply exited $rc_q, expected 0 (output: $out_q)"
+
+if [ ! -f "$PUT_PAYLOAD_CAPTURE_Q" ]; then
+  fail "Q: PUT payload was never captured — gh -X PUT was not called"
+else
+  afs="$(jq -r '.allow_fork_syncing' "$PUT_PAYLOAD_CAPTURE_Q")"
+  [ "$afs" = "true" ] \
+    && pass "Q1: allow_fork_syncing carried through as plain boolean true (non-default value; a false fixture would not discriminate)" \
+    || fail "Q1: allow_fork_syncing: expected 'true', got '$afs'"
 fi
 
 # =============================================================================

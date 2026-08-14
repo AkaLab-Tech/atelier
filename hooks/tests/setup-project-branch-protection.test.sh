@@ -43,6 +43,18 @@
 #     C1  --apply-branch-protection is still accepted (deprecated no-op)
 #     C2  --no-branch-protection is accepted
 #
+#   Phase D — #45 REVIEW CYCLE-3: step_branch_protection()'s catch-all `*)`
+#     case arm (any helper exit code other than 0/3/4 — in practice always 2)
+#     was previously untested entirely; before this cycle's fix it also
+#     discarded the helper's stderr (2>/dev/null) and ignored $out, collapsing
+#     BOTH of the helper's distinct rc-2 reasons into a bare "skipped (branch
+#     protection helper exited 2)". D1: the classifier's skip:<msg> shape
+#     (e.g. a transient gh 5xx during the initial classify). D2: the new
+#     read-failed shape (an unusable admin re-read). Both must fold $out's
+#     .message into BRANCH_PROTECTION_STATUS and warn() it, mirroring the
+#     0/3/4 arms. D3 (negative companion): when $out carries no parseable
+#     .message at all, the bare "helper exited $rc" fallback text is used.
+#
 # Hermetic: gh and atelier-branch-protection are stubbed on PATH throughout;
 # no network calls, no real gh api. macOS bash 3.2 compatible.
 #
@@ -331,6 +343,25 @@ case "\${HELPER_MODE:-applied}" in
     printf '    gh api -X PUT "repos/testowner/testrepo/branches/main/protection" --input -\n'
     exit 3
     ;;
+  skip-message)
+    # The classifier's rc-2 shape (#45): an unexpected error during the
+    # initial classify (e.g. a transient gh 5xx), --json still emitted.
+    printf '{"status":"skip","repo":"testowner/testrepo","branch":"main","message":"rate limit exceeded"}\n'
+    exit 2
+    ;;
+  read-failed-message)
+    # The apply_protection() rc-2 shape (#45 review cycle 3): an unusable
+    # admin re-read of the existing rule (empty/unparseable/non-404-error).
+    printf '{"status":"read-failed","repo":"testowner/testrepo","branch":"main","class":"protected-insufficient","message":"could not verify the existing rule under the admin identity; refusing to apply without reading it first"}\n'
+    exit 2
+    ;;
+  rc2-no-message)
+    # Negative companion: an rc-2 outcome whose stdout carries no parseable
+    # .message at all (e.g. jq itself failed) — the bare "helper exited \$rc"
+    # fallback text must still be used, not a blank/empty status string.
+    printf 'not valid json at all\n'
+    exit 2
+    ;;
 esac
 SHIMEOF
 chmod +x "$TMP/bin/atelier-branch-protection"
@@ -455,6 +486,96 @@ if [ -f "$WARN_OUT" ] \
   pass "B4: warning contains a complete copy-pasteable 'printf ... | gh api -X PUT ...' block"
 else
   fail "B4: warning missing the complete manual block (got: $(cat "$WARN_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+unset HELPER_MODE
+
+# =============================================================================
+# Phase D — #45 REVIEW CYCLE-3: step_branch_protection()'s catch-all `*)` arm
+# (any helper exit code other than 0/3/4) was previously untested entirely.
+# Before this cycle's fix it also discarded stderr (2>/dev/null) and ignored
+# $out, collapsing BOTH of the helper's distinct rc-2 reasons into a bare
+# "skipped (branch protection helper exited 2)" — losing the operator-facing
+# reason in both cases.
+# =============================================================================
+
+echo ""
+echo "Phase D: step_branch_protection()'s catch-all *) arm reads \$out's .message on rc 2"
+
+# --- D1: the classifier's skip:<msg> shape (rc 2) ---
+rm -f "$HELPER_INVOKED" "$WARN_OUT"
+export HELPER_MODE="skip-message"
+NO_BRANCH_PROTECTION_FLAG=false
+BRANCH_PROTECTION_STATUS=""
+step_branch_protection
+step_rc=$?
+
+if [ "$step_rc" -eq 0 ]; then
+  pass "D1: step_branch_protection() returns 0 on the classifier's skip:<msg> rc-2 shape (advisory, never fails)"
+else
+  fail "D1: step_branch_protection() returned $step_rc, expected 0"
+fi
+
+if [ "$BRANCH_PROTECTION_STATUS" = "skipped (rate limit exceeded)" ]; then
+  pass "D1: BRANCH_PROTECTION_STATUS folds \$out's .message into the skipped(...) text"
+else
+  fail "D1: BRANCH_PROTECTION_STATUS: expected 'skipped (rate limit exceeded)', got '$BRANCH_PROTECTION_STATUS'"
+fi
+
+if [ -f "$WARN_OUT" ] && grep -q "rate limit exceeded" "$WARN_OUT"; then
+  pass "D1: warn() fired with the classifier's message"
+else
+  fail "D1: expected warn() to fire with 'rate limit exceeded' (got: $(cat "$WARN_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+# --- D2: the apply_protection() read-failed shape (rc 2) — the specific
+#     regression this task's fix cycle targeted: previously this and D1
+#     collapsed to the SAME bare "helper exited 2" text, discarding which of
+#     the two distinct reasons actually happened. ---
+rm -f "$HELPER_INVOKED" "$WARN_OUT"
+export HELPER_MODE="read-failed-message"
+NO_BRANCH_PROTECTION_FLAG=false
+BRANCH_PROTECTION_STATUS=""
+step_branch_protection
+step_rc=$?
+
+if [ "$step_rc" -eq 0 ]; then
+  pass "D2: step_branch_protection() returns 0 on the read-failed rc-2 shape (advisory, never fails)"
+else
+  fail "D2: step_branch_protection() returned $step_rc, expected 0"
+fi
+
+if [ "$BRANCH_PROTECTION_STATUS" = "skipped (could not verify the existing rule under the admin identity; refusing to apply without reading it first)" ]; then
+  pass "D2: BRANCH_PROTECTION_STATUS folds the read-failed .message into the skipped(...) text (distinct from D1's classifier message)"
+else
+  fail "D2: BRANCH_PROTECTION_STATUS: got '$BRANCH_PROTECTION_STATUS'"
+fi
+
+if [ -f "$WARN_OUT" ] && grep -q "could not verify the existing rule under the admin identity" "$WARN_OUT"; then
+  pass "D2: warn() fired with the read-failed message"
+else
+  fail "D2: expected warn() to fire with the read-failed message (got: $(cat "$WARN_OUT" 2>/dev/null || printf '<nothing>'))"
+fi
+
+# --- D3 (negative companion): rc 2 with no parseable .message at all -> the
+#     bare "helper exited $rc" fallback text is used, not an empty status. ---
+rm -f "$HELPER_INVOKED" "$WARN_OUT"
+export HELPER_MODE="rc2-no-message"
+NO_BRANCH_PROTECTION_FLAG=false
+BRANCH_PROTECTION_STATUS=""
+step_branch_protection
+step_rc=$?
+
+if [ "$step_rc" -eq 0 ]; then
+  pass "D3: step_branch_protection() returns 0 on an rc-2 outcome with no parseable message"
+else
+  fail "D3: step_branch_protection() returned $step_rc, expected 0"
+fi
+
+if [ "$BRANCH_PROTECTION_STATUS" = "skipped (branch protection helper exited 2)" ]; then
+  pass "D3: BRANCH_PROTECTION_STATUS falls back to the bare 'helper exited 2' text when \$out has no .message"
+else
+  fail "D3: BRANCH_PROTECTION_STATUS: expected 'skipped (branch protection helper exited 2)', got '$BRANCH_PROTECTION_STATUS'"
 fi
 
 unset HELPER_MODE

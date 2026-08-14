@@ -1456,7 +1456,19 @@ step_branch_protection() {
       BRANCH_PROTECTION_STATUS="${class:-unknown} (apply failed — check the resolved identity has repo-admin)"
       ;;
     *)
-      BRANCH_PROTECTION_STATUS="skipped (branch protection helper exited $rc)"
+      # Covers the helper's "skip:<msg>" classify errors (rc 2, e.g. a
+      # transient gh 5xx) and its "read-failed" state (rc 2, an unusable
+      # admin re-read) — both already carry their reason in $out's .message
+      # (--json is always passed above); read it instead of collapsing every
+      # non-0/3/4 outcome to a bare exit code (#45 review, important finding).
+      local message
+      message="$(printf '%s' "$out" | jq -r '.message // empty' 2>/dev/null)"
+      if [ -n "$message" ]; then
+        warn "$message"
+        BRANCH_PROTECTION_STATUS="skipped ($message)"
+      else
+        BRANCH_PROTECTION_STATUS="skipped (branch protection helper exited $rc)"
+      fi
       ;;
   esac
 }

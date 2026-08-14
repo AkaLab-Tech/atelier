@@ -258,12 +258,14 @@ resolve_admin_gh_dir() {
 # non-empty top-level restrictions) and refuses to guess at it — the caller
 # is expected to print the manual block in that case.
 #
-# Returns 3 (no stdout; the raw gh stderr is written to this function's own
-# stderr) if the re-read under gh_dir failed for a reason OTHER than a
-# confirmed-unprotected 404 (transient 5xx, secondary rate limit, network
-# error, or a 404 whose branch-detail companion read itself failed) — never
-# treat a failed read as "no rule exists" (#45 review, critical finding).
-# The caller is expected to abort without any PUT in this case.
+# Returns 3 (no stdout; a message is written to this function's own stderr)
+# if the re-read under gh_dir was unusable for any reason: a non-zero rc
+# OTHER than a confirmed-unprotected 404 (transient 5xx, secondary rate
+# limit, network error, or a 404 whose branch-detail companion read itself
+# failed), OR an rc-0 read that came back empty, OR an rc-0 read that could
+# not be turned into a merge payload (unparseable body) — never treat any of
+# these as "no rule exists" (#45 review, critical + important findings). The
+# caller is expected to abort without any PUT in this case.
 apply_protection() {
   local gh_dir="$1" owner_repo="$2" branch="$3"
 
@@ -275,7 +277,13 @@ apply_protection() {
   rm -f "$err_file"
 
   local existing_count=0 existing_enforce_admins=false
-  if [ "$existing_rc" -eq 0 ] && [ -n "$existing" ]; then
+  if [ "$existing_rc" -eq 0 ] && [ -z "$existing" ]; then
+    # A successful-but-empty read is exactly as unusable as a failed one —
+    # not evidence that no rule exists (#45 review, important finding).
+    # Refuse rather than fall through to a MIN_PAYLOAD full replace.
+    printf 'admin re-read of %s/%s protection succeeded but returned an empty body\n' "$owner_repo" "$branch" >&2
+    return 3
+  elif [ "$existing_rc" -eq 0 ]; then
     existing_count="$(printf '%s' "$existing" | \
       jq -r '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null || printf '0')"
     existing_count="${existing_count:-0}"
@@ -295,7 +303,7 @@ apply_protection() {
     local has_unmodeled_restrictions
     has_unmodeled_restrictions="$(printf '%s' "$existing" | jq -r '
       ((.required_pull_request_reviews.dismissal_restrictions // {}) as $d
-       | (($d.users // []) | length) + (($d.teams // []) | length) > 0)
+       | (($d.users // []) | length) + (($d.teams // []) | length) + (($d.apps // []) | length) > 0)
       or
       ((.required_pull_request_reviews.bypass_pull_request_allowances // {}) as $b
        | (($b.users // []) | length) + (($b.teams // []) | length) + (($b.apps // []) | length) > 0)
@@ -339,7 +347,12 @@ apply_protection() {
   # because the bot itself would then be blocked by the rule it needs to
   # pass through. restrictions=null imposes no push restrictions.
   local payload=""
-  if [ "$existing_rc" -eq 0 ] && [ -n "$existing" ]; then
+  if [ "$existing_rc" -ne 0 ]; then
+    # Only reachable via confirmed_unprotected=true above (any other
+    # existing_rc-ne-0 outcome already returned 3) — a genuinely unprotected
+    # branch is the one case where a full-replace MIN_PAYLOAD is safe.
+    payload="$MIN_PAYLOAD"
+  else
     payload="$(printf '%s' "$existing" | jq --argjson count "$review_count" '{
       required_status_checks: (
         if .required_status_checks == null then null
@@ -361,10 +374,18 @@ apply_protection() {
       allow_force_pushes: (.allow_force_pushes.enabled // false),
       allow_deletions: (.allow_deletions.enabled // false),
       block_creations: (.block_creations.enabled // false),
-      lock_branch: (.lock_branch.enabled // false)
+      lock_branch: (.lock_branch.enabled // false),
+      allow_fork_syncing: (.allow_fork_syncing.enabled // false)
     }' 2>/dev/null || printf '')"
+    if [ -z "$payload" ]; then
+      # A read that succeeded but could not be turned into a merge payload
+      # (unparseable body) is exactly as unusable as a failed read — refuse
+      # rather than silently full-replacing with MIN_PAYLOAD (#45 review,
+      # important finding).
+      printf 'could not build a merge payload from the existing %s/%s protection rule\n' "$owner_repo" "$branch" >&2
+      return 3
+    fi
   fi
-  [ -n "$payload" ] || payload="$MIN_PAYLOAD"
 
   local tmp_payload
   tmp_payload="$(mktemp)"
