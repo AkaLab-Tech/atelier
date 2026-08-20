@@ -280,7 +280,10 @@ Three rules, in order of how much they save:
    subagent running `gh project item-list` / `listTasks` over the whole board to
    find its task, or to allocate an id. Pass the task content inline in the
    briefing where you already have it, or point the agent at
-   `atelier-project-cache body <id>`; only the driving session refreshes the cache.
+   `atelier-project-cache body <id> --no-refresh`. The `--no-refresh` is not
+   optional in that instruction: without it a stale cache makes the read fall
+   through to a full `gh project item-list`, which is the exact call this rule
+   exists to prevent. Only the driving session refreshes the cache.
    Three planners dispatched in parallel, each listing the board a handful of
    times, is enough to exhaust the hourly budget on its own — that is the failure
    mode this rule exists to prevent.

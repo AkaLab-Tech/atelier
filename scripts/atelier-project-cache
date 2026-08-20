@@ -99,36 +99,64 @@ TTL="${ATELIER_PROJECT_CACHE_TTL:-900}"
 # as get_mtime in hooks/tests/notification-hook-materialize.test.sh.
 mtime() { [ -f "$1" ] && { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }; }
 age() { local m; m="$(mtime "$INDEX")" || return 1; [ -n "$m" ] || return 1; printf '%s' "$(( $(date +%s) - m ))"; }
+# Freshness must consider the WHOLE cache, not just the index. Checking only
+# index.json means a cache whose bodies/ went missing looks fresh for the rest of
+# the TTL and answers "no body" for every item — it cannot self-heal.
 is_fresh() {
   [ -f "$INDEX" ] || return 1
+  [ -d "$BODIES" ] || return 1
   [ -f "$DIR/.stale" ] && return 1
   local a; a="$(age)" || return 1
   [ "$a" -lt "$TTL" ]
 }
 
 # ---------------------------------------------------------------- refresh
+RAW=""; BODIES_TMP=""; HOLD_LOCK=0
+_cache_cleanup() {
+  [ -n "$RAW" ] && rm -f "$RAW"
+  [ -n "$BODIES_TMP" ] && rm -rf "$BODIES_TMP"
+  [ "$HOLD_LOCK" -eq 1 ] && rmdir "$DIR/.lock" 2>/dev/null
+  return 0
+}
+
 # One `gh project item-list` for the whole board, split into a body-free index
 # plus one file per body. $ATELIER_PROJECT_CACHE_FIXTURE substitutes a local
 # JSON file for the network call, which is how the test suite stays hermetic.
 refresh() {
-  mkdir -p "$BODIES" || die "cannot create $BODIES"
-  local raw cost=null before=0 after=0
-  raw="$(mktemp)" || die "mktemp failed"
-  # shellcheck disable=SC2064
-  trap "rm -f '$raw'" RETURN
+  mkdir -p "$DIR" || die "cannot create $DIR"
+
+  # Serialise refreshes. Two overlapping refreshes used to interleave through a
+  # shared scratch directory and could leave bodies/ deleted while index.json
+  # stayed fresh — a corrupted cache that then served "no body" for every item
+  # until the TTL expired. `mkdir` is the portable atomic test-and-set; a waiter
+  # that cannot get the lock serves the existing cache rather than racing it.
+  local waited=0
+  while ! mkdir "$DIR/.lock" 2>/dev/null; do
+    if [ -f "$INDEX" ] && [ -d "$BODIES" ]; then return 0; fi   # someone else is rebuilding; the old cache still answers
+    waited=$((waited + 1))
+    [ "$waited" -gt 50 ] && die "another refresh holds the lock ($DIR/.lock); remove it if it is stale" 2
+    sleep 0.2
+  done
+
+  # EXIT, not RETURN: `die` exits the process, and a RETURN trap does not run on
+  # that path — which is how the lock leaked and blocked every later refresh.
+  RAW=""; BODIES_TMP=""; HOLD_LOCK=1
+  trap '_cache_cleanup' EXIT
+  local cost=null before=0 after=0
+  RAW="$(mktemp)" || die "mktemp failed"
 
   if [ -n "${ATELIER_PROJECT_CACHE_FIXTURE:-}" ]; then
     [ -f "$ATELIER_PROJECT_CACHE_FIXTURE" ] || die "fixture not found: $ATELIER_PROJECT_CACHE_FIXTURE"
-    cat "$ATELIER_PROJECT_CACHE_FIXTURE" > "$raw"
+    cat "$ATELIER_PROJECT_CACHE_FIXTURE" > "$RAW"
   else
     command -v gh >/dev/null 2>&1 || die "gh is required" 2
     before="$(gh api rate_limit --jq '.resources.graphql.used' 2>/dev/null || printf 0)"
-    gh project item-list "$NUMBER" --owner "$OWNER" --limit 1000 --format json > "$raw" 2>/dev/null \
+    gh project item-list "$NUMBER" --owner "$OWNER" --limit 1000 --format json > "$RAW" 2>/dev/null \
       || die "gh project item-list failed (rate limit, auth, or missing 'project' scope)" 2
     after="$(gh api rate_limit --jq '.resources.graphql.used' 2>/dev/null || printf 0)"
     [ "$after" -ge "$before" ] && cost=$(( after - before ))
   fi
-  jq -e '.items | type == "array"' "$raw" >/dev/null 2>&1 || die "unexpected item-list payload" 2
+  jq -e '.items | type == "array"' "$RAW" >/dev/null 2>&1 || die "unexpected item-list payload" 2
 
   # index: everything except the body. `id` is the canonical atelier id, taken
   # from the Atelier ID field and falling back to a `#NNN` title prefix.
@@ -142,8 +170,15 @@ refresh() {
       #   1. the `Atelier ID` field (normalised: may arrive number-typed or bare)
       #   2. a `#NNN` token immediately before the `~estimate` — the PLAN.md §5
       #      shape `<kind> <title> #<id> ~<est>` that boards render into the title
-      #   3. a `#NNN` token at the very start of the title (the prefix convention)
-      #   4. nothing. An item with no parseable id gets "", never a guess.
+      #   3. a `#NNN` directly after a leading kind word — `bug #44a <title> ~2h`,
+      #      the shape sub-task ids take
+      #   4. a `#NNN` token at the very start of the title (the prefix convention)
+      #   5. nothing. An item with no parseable id gets "", never a guess.
+      #
+      # A trailing `#NNN` with no estimate was considered as a fifth anchor and
+      # rejected on measurement: across 592 real items it would have resolved
+      # exactly one more title, and that one duplicates an id another item already
+      # owns — a false collision for zero real recall.
       #
       # Anything looser mis-fires on the two shapes that are NOT the item id:
       # a back-reference ("… Items sin Status #12 ~S audit#900") and a mention
@@ -153,11 +188,13 @@ refresh() {
       id:       ( ((."atelier ID" // "" | tostring) | sub("^\\s+";"") | sub("\\s+$";"")) as $f
                   | (.title // "") as $t
                   | ((($t | capture("(?<![A-Za-z0-9_])#(?<n>[0-9]+[a-z]?)\\s*(?=~)")?) // null) as $est
+                  | ((($t | capture("^\\s*(feat|fix|bug|chore|docs|refactor|perf|test|style|build|ci)\\s+#(?<n>[0-9]+[a-z]?)\\b")?) // null) as $kind
                   | ((($t | capture("^\\s*#(?<n>[0-9]+[a-z]?)\\b")?) // null) as $lead
                   | if $f != "" and $f != "null" then ( if ($f | test("^#")) then $f else "#" + $f end )
                     elif $est != null then "#" + $est.n
+                    elif $kind != null then "#" + $kind.n
                     elif $lead != null then "#" + $lead.n
-                    else "" end ) ) ),
+                    else "" end ) ) ) ),
       status:   (.status // null),
       ready:    (.ready // null),
       kind:     (.kind // null),
@@ -166,18 +203,24 @@ refresh() {
       repo:     (."target Repo" // null),
       bodyBytes: ((.content.body // "") | length)
     } ]
-  }' "$raw" > "$INDEX.tmp" 2>/dev/null || die "failed to build index"
+  }' "$RAW" > "$INDEX.tmp" 2>/dev/null || die "failed to build index"
   mv "$INDEX.tmp" "$INDEX"
 
   # bodies, one file per item, keyed by item node id (always present and unique).
-  # Built beside the live dir and swapped in, so a crash mid-write cannot leave a
-  # half-populated body set behind.
-  rm -rf "$BODIES.new"; mkdir -p "$BODIES.new"
-  jq -r '.items[] | select((.content.body // "") != "") | "\(.id)\t\(.content.body | @base64)"' "$raw" \
+  # Built in a PRIVATE scratch dir (never a shared fixed name) and swapped in
+  # under the lock, so neither a crash nor a concurrent refresh can leave the
+  # live bodies/ missing.
+  BODIES_TMP="$(mktemp -d "$DIR/.bodies.XXXXXX")" || die "cannot create a scratch bodies dir"
+  jq -r '.items[] | select((.content.body // "") != "") | "\(.id)\t\(.content.body | @base64)"' "$RAW" \
   | while IFS=$'\t' read -r iid b64; do
-      printf '%s' "$b64" | base64 --decode > "$BODIES.new/$iid.md" 2>/dev/null
+      printf '%s' "$b64" | base64 --decode > "$BODIES_TMP/$iid.md" 2>/dev/null
     done
-  rm -rf "$BODIES"; mv "$BODIES.new" "$BODIES"
+  local bodies_old="$DIR/.bodies.old.$$"
+  rm -rf "$bodies_old"
+  [ -d "$BODIES" ] && mv "$BODIES" "$bodies_old"
+  mv "$BODIES_TMP" "$BODIES" || { [ -d "$bodies_old" ] && mv "$bodies_old" "$BODIES"; die "failed to swap in the body cache"; }
+  BODIES_TMP=""
+  rm -rf "$bodies_old"
 
   jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg owner "$OWNER" --arg number "$NUMBER" \
         --argjson count "$(jq '.items | length' "$INDEX")" --argjson cost "${cost:-null}" \

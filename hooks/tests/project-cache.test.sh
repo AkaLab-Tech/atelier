@@ -52,7 +52,9 @@ mkfixture() {  # $1 = file
   { "id": "PVTI_f", "atelier ID": 17, "title": "chore number-typed field id", "status": "Todo",
     "content": { "id": "DI_f", "type": "DraftIssue", "title": "chore number-typed field id", "body": "f" } },
   { "id": "PVTI_g", "atelier ID": "", "title": "fix Guardrail #3 rejects SKIPPED conclusion", "status": "Todo",
-    "content": { "id": "DI_g", "type": "DraftIssue", "title": "fix Guardrail #3 rejects SKIPPED conclusion", "body": "g" } }
+    "content": { "id": "DI_g", "type": "DraftIssue", "title": "fix Guardrail #3 rejects SKIPPED conclusion", "body": "g" } },
+  { "id": "PVTI_h", "atelier ID": "", "title": "bug #44a Generalize the orchestrator, reframe pr-opener ~2h", "status": "Todo",
+    "content": { "id": "DI_h", "type": "DraftIssue", "title": "bug #44a Generalize the orchestrator, reframe pr-opener ~2h", "body": "h" } }
 ] }
 JSON
 }
@@ -65,7 +67,7 @@ P="$T/proj"; mkproj "$P"
 
 # --- refresh builds a cache ---
 out="$(bash "$PC" refresh "$P" 2>&1)"
-printf '%s' "$out" | grep -q '7 items' && pass "refresh reports the item count" || fail "refresh output: $out"
+printf '%s' "$out" | grep -q '8 items' && pass "refresh reports the item count" || fail "refresh output: $out"
 [ -f "$ATELIER_CONFIG_DIR/cache/project-AcmeOrg-7/index.json" ] && pass "index.json written to the config cache dir" || fail "index.json missing"
 
 # --- the index is body-free (that is the whole point of the split) ---
@@ -93,6 +95,13 @@ bash "$PC" get 12 "$P" --no-refresh 2>/dev/null | jq -e '.itemId == "PVTI_e"' >/
 # shape that produced 130 phantom duplicate groups on a real board.
 jq -e '.items[6].id == ""' "$idx" >/dev/null 2>&1 && pass "a mid-title mention resolves to no id" || fail "mention wrongly adopted: $(jq -c '.items[6].id' "$idx")"
 jq -e '[ .items[] | select(.id == "#3") ] | length == 0' "$idx" >/dev/null 2>&1 && pass "the mentioned #3 is claimed by nobody" || fail "#3 was adopted"
+
+# --- a kind-prefixed sub-task id: `bug #44a <title> ~2h` ---
+# The estimate anchor does not fire here (the id is not adjacent to the ~), and
+# neither does the leading anchor (the title starts with the kind word). Without
+# a dedicated anchor these resolve to "" and become invisible to get/next-id.
+jq -e '.items[7].id == "#44a"' "$idx" >/dev/null 2>&1 && pass "kind-prefixed sub-task id resolves (#44a)" || fail "kind-prefixed id wrong: $(jq -c '.items[7].id' "$idx")"
+bash "$PC" get 44a "$P" --no-refresh 2>/dev/null | jq -e '.itemId == "PVTI_h"' >/dev/null 2>&1 && pass "get resolves a letter-suffixed id" || fail "get 44a failed"
 
 # --- a NUMBER-typed, unprefixed Atelier ID must normalise, not crash ---
 jq -e '.items[5].id == "#17"' "$idx" >/dev/null 2>&1 && pass "number-typed Atelier ID normalises to #17" || fail "number id wrong: $(jq -c '.items[5].id' "$idx")"
@@ -168,6 +177,20 @@ cat > "$P5/.roadmap.json" <<'JSON'
 JSON
 esc_out="$(bash "$PC" index "$P5" 2>&1)"
 printf '%s' "$esc_out" | grep -q 'unsafe githubProject.owner' && pass "a path-traversing owner is refused" || fail "unsafe owner accepted: $esc_out"
+
+# --- concurrent refreshes must never leave bodies/ missing ---
+CDIR="$ATELIER_CONFIG_DIR/cache/project-AcmeOrg-7"
+for _ in 1 2 3 4 5 6; do ( bash "$PC" refresh "$P" >/dev/null 2>&1 ) & done
+wait
+[ -d "$CDIR/bodies" ] && pass "6 concurrent refreshes leave bodies/ present" || fail "bodies/ destroyed by concurrent refresh"
+[ -f "$CDIR/bodies/PVTI_a.md" ] && pass "concurrent refreshes leave the body files intact" || fail "body files lost"
+ls -d "$CDIR"/.bodies.* >/dev/null 2>&1 && fail "scratch body dirs leaked" || pass "no scratch body dirs left behind"
+[ -d "$CDIR/.lock" ] && fail "refresh lock leaked" || pass "the refresh lock is released"
+
+# --- a cache whose bodies/ went missing must NOT look fresh ---
+rm -rf "$CDIR/bodies"
+ATELIER_PROJECT_CACHE_FIXTURE="$FIX" bash "$PC" body 10 "$P" >/dev/null 2>&1
+[ "$?" -eq 0 ] && pass "a missing bodies/ self-heals on the next read" || fail "missing bodies/ did not trigger a refresh"
 
 # --- a failed refresh must leave the previous cache intact ---
 before_id="$(bash "$PC" next-id "$P" --no-refresh 2>&1)"
