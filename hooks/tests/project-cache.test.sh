@@ -187,6 +187,39 @@ wait
 ls -d "$CDIR"/.bodies.* >/dev/null 2>&1 && fail "scratch body dirs leaked" || pass "no scratch body dirs left behind"
 [ -d "$CDIR/.lock" ] && fail "refresh lock leaked" || pass "the refresh lock is released"
 
+# --- a SIGKILLed holder must not freeze the cache forever ---
+# No trap runs on SIGKILL, so .lock survives. A waiter that silently serves the
+# cache would make `refresh` report success while fetching nothing, and next-id
+# would keep answering from pre-write state.
+mkdir -p "$CDIR/.lock"; echo 999999 > "$CDIR/.lock/pid"     # a pid that cannot be alive
+kill_out="$(ATELIER_PROJECT_CACHE_FIXTURE="$FIX" bash "$PC" refresh "$P" 2>&1)"
+kill_rc=$?
+[ "$kill_rc" -eq 0 ] && pass "a lock held by a dead pid is broken, not waited on" || fail "refresh wedged on a dead holder: $kill_out"
+printf '%s' "$kill_out" | grep -q 'breaking a stale lock' && pass "breaking a stale lock is announced on stderr" || fail "stale-lock break was silent"
+[ -d "$CDIR/.lock" ] && fail "lock survived the refresh" || pass "the broken lock is released again"
+
+# --- an age-expired lock is also stale, even with no pid recorded ---
+mkdir -p "$CDIR/.lock"
+age_out="$(ATELIER_PROJECT_CACHE_LOCK_MAX_AGE=0 ATELIER_PROJECT_CACHE_FIXTURE="$FIX" bash "$PC" refresh "$P" 2>&1)"
+[ "$?" -eq 0 ] && pass "an age-expired lock is broken" || fail "age-expired lock wedged: $age_out"
+rm -rf "$CDIR/.lock"
+
+# --- an explicit refresh must never report success without fetching ---
+# A live holder that is NOT stale: refresh must fail loudly rather than return 0.
+mkdir -p "$CDIR/.lock"; echo $$ > "$CDIR/.lock/pid"          # this test process is alive
+live_out="$(ATELIER_PROJECT_CACHE_LOCK_MAX_AGE=9999 ATELIER_PROJECT_CACHE_FIXTURE="$FIX" bash "$PC" refresh "$P" 2>&1)"
+live_rc=$?
+[ "$live_rc" -ne 0 ] && pass "an explicit refresh fails rather than silently not fetching" || fail "refresh returned 0 without fetching: $live_out"
+printf '%s' "$live_out" | grep -q 'not stale' && pass "the refusal names the live lock" || fail "unclear refusal: $live_out"
+rm -rf "$CDIR/.lock"
+
+# --- --no-refresh must distinguish a damaged cache from a body-less item ---
+ATELIER_PROJECT_CACHE_FIXTURE="$FIX" bash "$PC" refresh "$P" >/dev/null 2>&1
+mv "$CDIR/bodies" "$CDIR/bodies.hidden"
+dmg_out="$(bash "$PC" body 10 "$P" --no-refresh 2>&1)"
+printf '%s' "$dmg_out" | grep -q 'damaged' && pass "--no-refresh reports a damaged cache distinctly" || fail "damaged cache masqueraded as no-body: $dmg_out"
+mv "$CDIR/bodies.hidden" "$CDIR/bodies"
+
 # --- a cache whose bodies/ went missing must NOT look fresh ---
 rm -rf "$CDIR/bodies"
 ATELIER_PROJECT_CACHE_FIXTURE="$FIX" bash "$PC" body 10 "$P" >/dev/null 2>&1
