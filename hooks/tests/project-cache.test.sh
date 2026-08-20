@@ -46,7 +46,13 @@ mkfixture() {  # $1 = file
   { "id": "PVTI_c", "atelier ID": "#10", "title": "#10 Colliding duplicate", "status": "Todo",
     "content": { "id": "DI_c", "type": "DraftIssue", "title": "#10 Colliding duplicate", "body": "" } },
   { "id": "PVTI_d", "atelier ID": "", "title": "feat trailing id convention #55 ~2h", "status": "Todo",
-    "content": { "id": "DI_d", "type": "DraftIssue", "title": "feat trailing id convention #55 ~2h", "body": "d" } }
+    "content": { "id": "DI_d", "type": "DraftIssue", "title": "feat trailing id convention #55 ~2h", "body": "d" } },
+  { "id": "PVTI_e", "atelier ID": "", "title": "bug roadmap-tools: Items sin Status #12 ~S audit#900", "status": "Todo",
+    "content": { "id": "DI_e", "type": "DraftIssue", "title": "bug roadmap-tools: Items sin Status #12 ~S audit#900", "body": "e" } },
+  { "id": "PVTI_f", "atelier ID": 17, "title": "chore number-typed field id", "status": "Todo",
+    "content": { "id": "DI_f", "type": "DraftIssue", "title": "chore number-typed field id", "body": "f" } },
+  { "id": "PVTI_g", "atelier ID": "", "title": "fix Guardrail #3 rejects SKIPPED conclusion", "status": "Todo",
+    "content": { "id": "DI_g", "type": "DraftIssue", "title": "fix Guardrail #3 rejects SKIPPED conclusion", "body": "g" } }
 ] }
 JSON
 }
@@ -59,7 +65,7 @@ P="$T/proj"; mkproj "$P"
 
 # --- refresh builds a cache ---
 out="$(bash "$PC" refresh "$P" 2>&1)"
-printf '%s' "$out" | grep -q '4 items' && pass "refresh reports the item count" || fail "refresh output: $out"
+printf '%s' "$out" | grep -q '7 items' && pass "refresh reports the item count" || fail "refresh output: $out"
 [ -f "$ATELIER_CONFIG_DIR/cache/project-AcmeOrg-7/index.json" ] && pass "index.json written to the config cache dir" || fail "index.json missing"
 
 # --- the index is body-free (that is the whole point of the split) ---
@@ -74,9 +80,26 @@ jq -e '.items[1].id == "#40"' "$idx" >/dev/null 2>&1 && pass "id falls back to t
 # --- ids at the END of the title (the convention atelier's own board uses) ---
 jq -e '.items[3].id == "#55"' "$idx" >/dev/null 2>&1 && pass "id read from a trailing #NNN token" || fail "trailing id wrong: $(jq -c '.items[3].id' "$idx")"
 
-# --- next-id must see BOTH the title-prefix #40 and the trailing #55 ---
+# --- a #NNN inside a back-reference is NOT this item's id ---
+# "…Items sin Status #12 ~S audit#900" is item #12; without a left boundary the
+# scan matches inside "audit#900" and (taking the last token) adopts #900.
+jq -e '.items[4].id == "#12"' "$idx" >/dev/null 2>&1 && pass "back-reference audit#900 is not mistaken for the id" || fail "back-ref id wrong: $(jq -c '.items[4].id' "$idx")"
+jq -e '[ .items[].id ] | index("#900") == null' "$idx" >/dev/null 2>&1 && pass "no item anywhere adopts the back-referenced #900" || fail "#900 leaked as an id"
+bash "$PC" get 12 "$P" --no-refresh 2>/dev/null | jq -e '.itemId == "PVTI_e"' >/dev/null 2>&1 && pass "get resolves the back-referencing item by its real id" || fail "get 12 failed"
+
+# --- a bare mention of another item is not an id at all ---
+# "fix Guardrail #3 rejects SKIPPED conclusion" has no estimate anchor and no
+# leading token, so it must resolve to "" rather than claiming #3. This is the
+# shape that produced 130 phantom duplicate groups on a real board.
+jq -e '.items[6].id == ""' "$idx" >/dev/null 2>&1 && pass "a mid-title mention resolves to no id" || fail "mention wrongly adopted: $(jq -c '.items[6].id' "$idx")"
+jq -e '[ .items[] | select(.id == "#3") ] | length == 0' "$idx" >/dev/null 2>&1 && pass "the mentioned #3 is claimed by nobody" || fail "#3 was adopted"
+
+# --- a NUMBER-typed, unprefixed Atelier ID must normalise, not crash ---
+jq -e '.items[5].id == "#17"' "$idx" >/dev/null 2>&1 && pass "number-typed Atelier ID normalises to #17" || fail "number id wrong: $(jq -c '.items[5].id' "$idx")"
+
+# --- next-id must span prefix (#40) and suffix (#55), and ignore audit#900 ---
 n="$(bash "$PC" next-id "$P" --no-refresh 2>&1)"
-[ "$n" = "#56" ] && pass "next-id spans prefix and suffix ids (#56)" || fail "next-id returned '$n', expected #56"
+[ "$n" = "#56" ] && pass "next-id spans prefix and suffix ids, ignoring back-refs (#56)" || fail "next-id returned '$n', expected #56"
 
 # --- a populated board with no §5 ids must refuse to invent one ---
 FIX2="$T/fixture-noids.json"
@@ -124,6 +147,27 @@ bash "$PC" invalidate "$P" >/dev/null 2>&1
 # with the marker set and refresh allowed, the fixture is re-read and the marker cleared
 bash "$PC" next-id "$P" >/dev/null 2>&1
 [ ! -f "$ATELIER_CONFIG_DIR/cache/project-AcmeOrg-7/.stale" ] && pass "a refresh clears the stale marker" || fail "stale marker survived a refresh"
+
+# --- a fresh cache is served without re-reading the source ---
+# If is_fresh() were broken (the classic GNU-vs-BSD `stat` ordering bug), this
+# read would try to refresh and die on the unreadable fixture instead.
+fresh_out="$(ATELIER_PROJECT_CACHE_FIXTURE="$T/does-not-exist.json" bash "$PC" next-id "$P" 2>&1)"
+[ "$fresh_out" = "#56" ] && pass "a fresh cache is served without refreshing" || fail "is_fresh broken: got '$fresh_out'"
+# and once past the TTL it does refresh (here: fails, proving it tried)
+ATELIER_PROJECT_CACHE_TTL=0 ATELIER_PROJECT_CACHE_FIXTURE="$T/does-not-exist.json" bash "$PC" next-id "$P" >/dev/null 2>&1
+[ "$?" -ne 0 ] && pass "past the TTL it does attempt a refresh" || fail "TTL=0 did not trigger a refresh"
+
+# --- refresh --no-refresh is contradictory and must be refused ---
+bash "$PC" refresh "$P" --no-refresh >/dev/null 2>&1
+[ "$?" -eq 1 ] && pass "refresh --no-refresh is refused" || fail "refresh --no-refresh should fail"
+
+# --- an unsafe owner must never reach the rm -rf path ---
+P5="$T/proj5"; mkproj "$P5"
+cat > "$P5/.roadmap.json" <<'JSON'
+{ "backend": "github-project", "githubProject": { "owner": "../../escape", "projectNumber": 1 } }
+JSON
+esc_out="$(bash "$PC" index "$P5" 2>&1)"
+printf '%s' "$esc_out" | grep -q 'unsafe githubProject.owner' && pass "a path-traversing owner is refused" || fail "unsafe owner accepted: $esc_out"
 
 # --- a failed refresh must leave the previous cache intact ---
 before_id="$(bash "$PC" next-id "$P" --no-refresh 2>&1)"

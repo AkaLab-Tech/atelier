@@ -79,12 +79,25 @@ OWNER="$(jq -r '.githubProject.owner // empty' "$RC")"
 NUMBER="$(jq -r '.githubProject.projectNumber // empty' "$RC")"
 [ -n "$OWNER" ] && [ -n "$NUMBER" ] || die "'.githubProject.owner' / '.projectNumber' missing from .roadmap.json"
 
+# owner/number land in a filesystem path that refresh() removes with `rm -rf`,
+# so they are validated before use — a slug carrying `/` or `..` would otherwise
+# steer that removal outside the cache directory.
+case "$OWNER" in *[!A-Za-z0-9._-]*|''|.|..) die "refusing unsafe githubProject.owner: '$OWNER'" ;; esac
+case "$NUMBER" in *[!0-9]*|'') die "refusing non-numeric githubProject.projectNumber: '$NUMBER'" ;; esac
+
 CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
 DIR="$CONFIG_DIR/cache/project-$OWNER-$NUMBER"
 INDEX="$DIR/index.json"; META="$DIR/meta.json"; BODIES="$DIR/bodies"
 TTL="${ATELIER_PROJECT_CACHE_TTL:-900}"
 
-mtime() { [ -f "$1" ] && { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }; }
+# GNU coreutils FIRST, BSD/macOS as fallback. Order matters: `stat -f %m` is BSD
+# syntax, but on GNU stat `-f` means --file-system, so it prints a multi-line
+# filesystem block to stdout before failing on the %m operand. BSD-first would
+# leak that non-numeric output on Linux, making age() blow up under `set -u` and
+# is_fresh() permanently false — every read would then refresh over the network,
+# which is the exact cost this cache exists to avoid. Same trap and same ordering
+# as get_mtime in hooks/tests/notification-hook-materialize.test.sh.
+mtime() { [ -f "$1" ] && { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }; }
 age() { local m; m="$(mtime "$INDEX")" || return 1; [ -n "$m" ] || return 1; printf '%s' "$(( $(date +%s) - m ))"; }
 is_fresh() {
   [ -f "$INDEX" ] || return 1
@@ -125,20 +138,26 @@ refresh() {
       draftId:  (.content.id // null),
       type:     (.content.type // null),
       title:    (.title // ""),
-      # Canonical id: the Atelier ID field when set; else a #NNN token in the
-      # title. Boards differ on where that token sits — some prefix it
-      # ("#343 Redesign the picker"), some suffix it ("feat redesign #3 ~4h") —
-      # so prefer a leading token and fall back to the last one.
-      id:       ( if (."atelier ID" // "") != "" then (."atelier ID")
-                  else ( (((.title // "") | capture("^\\s*#(?<n>[0-9]+[a-z]?)\\b")? | "#" + .n))
-                         // (((.title // "") | [ scan("#[0-9]+[a-z]?\\b") ] | last)
-                         // "") )
-                  end ),
-      # Every #NNN token this item could plausibly be claiming, field included.
-      # next-id takes the max over the union: over-counting is safe, missing an
-      # id that is already taken is not.
-      idCandidates: ( [ (."atelier ID" // "") ] + ((.title // "") | [ scan("#[0-9]+[a-z]?\\b") ])
-                      | map(select(. != "")) | unique ),
+      # Canonical id. Precedence, most explicit first:
+      #   1. the `Atelier ID` field (normalised: may arrive number-typed or bare)
+      #   2. a `#NNN` token immediately before the `~estimate` — the PLAN.md §5
+      #      shape `<kind> <title> #<id> ~<est>` that boards render into the title
+      #   3. a `#NNN` token at the very start of the title (the prefix convention)
+      #   4. nothing. An item with no parseable id gets "", never a guess.
+      #
+      # Anything looser mis-fires on the two shapes that are NOT the item id:
+      # a back-reference ("… Items sin Status #12 ~S audit#900") and a mention
+      # ("fix Guardrail #3 rejects SKIPPED conclusion"). Measured on a real
+      # 591-item board, "first standalone token" adopted 130 phantom ids; the
+      # estimate anchor and the leading anchor together resolve 0.
+      id:       ( ((."atelier ID" // "" | tostring) | sub("^\\s+";"") | sub("\\s+$";"")) as $f
+                  | (.title // "") as $t
+                  | ((($t | capture("(?<![A-Za-z0-9_])#(?<n>[0-9]+[a-z]?)\\s*(?=~)")?) // null) as $est
+                  | ((($t | capture("^\\s*#(?<n>[0-9]+[a-z]?)\\b")?) // null) as $lead
+                  | if $f != "" and $f != "null" then ( if ($f | test("^#")) then $f else "#" + $f end )
+                    elif $est != null then "#" + $est.n
+                    elif $lead != null then "#" + $lead.n
+                    else "" end ) ) ),
       status:   (.status // null),
       ready:    (.ready // null),
       kind:     (.kind // null),
@@ -190,7 +209,8 @@ case "$CMD" in
   # first. refresh() writes through a .tmp and swaps on success, so a fetch that
   # fails (rate limit, auth) leaves the previous cache intact — which is exactly
   # when a stale cache is most useful.
-  refresh) refresh
+  refresh) [ "$NO_REFRESH" -eq 1 ] && die "refresh --no-refresh is contradictory: refresh always fetches"
+    refresh
     jq -r '"refreshed \(.items) items · index \(.indexBytes) bytes · \(.graphqlPoints // "?") graphql points"' "$META" ;;
 
   stats)
@@ -226,14 +246,14 @@ index:   \(.indexBytes) bytes"' "$META" ;;
 
   next-id) ensure
     total="$(jq '.items | length' "$INDEX")"
-    tagged="$(jq '[ .items[] | select((.idCandidates | length) > 0) ] | length' "$INDEX")"
+    tagged="$(jq '[ .items[] | select(.id != null and .id != "") ] | length' "$INDEX")"
     # A populated board on which nothing carries an id is not an empty board: it
     # is a board that does not use §5 ids at all. Returning "#1" there would hand
     # out an id that means nothing to this project, so say so instead.
     if [ "$total" -gt 0 ] && [ "$tagged" -eq 0 ]; then
-      die "board has $total items but none carry a §5 id (no Atelier ID field, no #NNN in any title) — this project does not use numeric task ids"
+      die "board has $total items but none carry a §5 id (no Atelier ID field, no #NNN before an estimate, no #NNN title prefix) — this project does not use numeric task ids"
     fi
-    jq -r '[ .items[].idCandidates[] | capture("^#(?<n>[0-9]+)").n | tonumber ] | (max // 0) + 1 | "#\(.)"' "$INDEX" ;;
+    jq -r '[ .items[].id | select(. != null and . != "") | (capture("^#(?<n>[0-9]+)")? | .n | tonumber) ] | (max // 0) + 1 | "#\(.)"' "$INDEX" ;;
 
   duplicates) ensure
     dups="$(jq -r '[ .items[] | select(.id != null and .id != "") ] | group_by(.id) | map(select(length > 1)) | .[] | "\(.[0].id)\n" + (map("    \(.status // "?")  \(.title)") | join("\n"))' "$INDEX")"
