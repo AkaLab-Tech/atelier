@@ -1648,6 +1648,12 @@ phase_c_1_setup_project_helper() {
   # M9.1: atelier-task-backend resolves a project's roadmap backend from
   # .roadmap.json so the task provider (next-task) can drive non-files backends.
   _phase_c_1_symlink_helper atelier-task-backend
+  # atelier-project-cache: a disposable read cache over a github-project board.
+  # A full `gh project item-list` costs ~200 of the 5000 hourly GraphQL points,
+  # so sessions and subagents read the cached index instead of re-listing. Also
+  # the canonical next-id / duplicates id allocator (ids live in the Atelier ID
+  # field AND as a #NNN title prefix; reading one source hands out taken ids).
+  _phase_c_1_symlink_helper atelier-project-cache
   # M4.23 / M4.27 / M4.28: atelier-setup-{coolify,vercel,neon} install +
   # configure the optional integration plugins. Invoked by the Phase C.2 opt-in
   # prompts and by /atelier:setup-{coolify,vercel,neon}.
