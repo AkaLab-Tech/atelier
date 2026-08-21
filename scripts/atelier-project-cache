@@ -1,0 +1,354 @@
+#!/usr/bin/env bash
+#
+# atelier-project-cache — a local read cache for a `github-project` backend, so
+# a session and its subagents stop paying for the same board listing over and over.
+#
+# Why this exists: GitHub's GraphQL budget is 5000 *points* per hour and the cost
+# is computed from nodes requested, not requests made. `gh project item-list` pulls
+# every item with every field value nested, so one full listing of a ~180-item board
+# measures at ~200 points — about 24 listings per hour, total, across every agent.
+# Writes are cheap by comparison (a field update is 1). The budget goes on reads.
+#
+# Two properties make the cache worth having beyond the point count:
+#   * Under `planStorage: resident` the task plans live in the item bodies, so the
+#     raw listing is dominated by plan text (measured: 90% of a 1.0 MB dump). The
+#     cache splits a body-free `index.json` from per-item bodies, so the common
+#     questions (next free id, what is in Todo, are there duplicate ids) read ~10%
+#     of the bytes and none of the network.
+#   * `next-id` and `duplicates` read ids from BOTH the `Atelier ID` field and a
+#     `#NNN` title prefix. Reading only the field silently under-reports the max
+#     and hands out an id that is already taken.
+#
+# Usage:
+#   atelier-project-cache refresh     [<project>] [--force]
+#   atelier-project-cache index       [<project>] [--no-refresh]
+#   atelier-project-cache get <id>    [<project>] [--no-refresh]
+#   atelier-project-cache body <id>   [<project>] [--no-refresh]
+#   atelier-project-cache next-id     [<project>] [--no-refresh]
+#   atelier-project-cache duplicates  [<project>] [--no-refresh]
+#   atelier-project-cache invalidate  [<project>]
+#   atelier-project-cache stats       [<project>]
+#   atelier-project-cache path        [<project>]
+#
+# <project> defaults to $PWD. Ids are given with or without the leading `#`.
+#
+# Staleness: a cache older than $ATELIER_PROJECT_CACHE_TTL seconds (default 900)
+# is refreshed automatically by the read subcommands. `--no-refresh` forbids the
+# network and reads whatever is on disk, failing if there is nothing.
+#
+# After ANY write to the board (item-create, item-edit), call `invalidate` — the
+# next read then refetches instead of serving state you just changed.
+#
+# Cache lives in $ATELIER_CONFIG_DIR/cache/project-<owner>-<number>/ and is
+# disposable: delete it and the next read rebuilds it. It is never a source of
+# truth, and it is unrelated to the backend's `offlineMirror` (which writes
+# ROADMAP.md / IN_PROGRESS.md / HISTORY.md as tracking files).
+#
+# Exit: 0 ok · 1 usage/config error · 2 backend unavailable · 3 duplicates found
+set -uo pipefail
+
+usage() { sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+die() { printf 'atelier-project-cache: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+case "${1:-}" in --help|-h|'') usage; exit 0 ;; esac
+CMD="$1"; shift
+
+# ---------------------------------------------------------------- args
+PROJECT="" ; FORCE=0 ; NO_REFRESH=0 ; ID_ARG=""
+case "$CMD" in get|body) ID_ARG="${1:-}"; [ -n "$ID_ARG" ] || die "$CMD needs a task id"; shift ;; esac
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --force) FORCE=1 ;;
+    --no-refresh) NO_REFRESH=1 ;;
+    -*) die "unknown flag: $1" ;;
+    *) PROJECT="$1" ;;
+  esac
+  shift
+done
+PROJECT="${PROJECT:-$PWD}"
+PROJECT="$(cd "$PROJECT" 2>/dev/null && pwd -P)" || die "no such directory"
+
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+# ---------------------------------------------------------------- config
+RC="$PROJECT/.roadmap.json"
+[ -f "$RC" ] || die "no .roadmap.json in $PROJECT"
+BACKEND="$(jq -r '.backend // "files"' "$RC")"
+[ "$BACKEND" = "github-project" ] || die "backend is '$BACKEND'; this cache only serves github-project"
+OWNER="$(jq -r '.githubProject.owner // empty' "$RC")"
+NUMBER="$(jq -r '.githubProject.projectNumber // empty' "$RC")"
+[ -n "$OWNER" ] && [ -n "$NUMBER" ] || die "'.githubProject.owner' / '.projectNumber' missing from .roadmap.json"
+
+# owner/number land in a filesystem path that refresh() removes with `rm -rf`,
+# so they are validated before use — a slug carrying `/` or `..` would otherwise
+# steer that removal outside the cache directory.
+case "$OWNER" in *[!A-Za-z0-9._-]*|''|.|..) die "refusing unsafe githubProject.owner: '$OWNER'" ;; esac
+case "$NUMBER" in *[!0-9]*|'') die "refusing non-numeric githubProject.projectNumber: '$NUMBER'" ;; esac
+
+CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+DIR="$CONFIG_DIR/cache/project-$OWNER-$NUMBER"
+INDEX="$DIR/index.json"; META="$DIR/meta.json"; BODIES="$DIR/bodies"
+TTL="${ATELIER_PROJECT_CACHE_TTL:-900}"
+
+# GNU coreutils FIRST, BSD/macOS as fallback. Order matters: `stat -f %m` is BSD
+# syntax, but on GNU stat `-f` means --file-system, so it prints a multi-line
+# filesystem block to stdout before failing on the %m operand. BSD-first would
+# leak that non-numeric output on Linux, making age() blow up under `set -u` and
+# is_fresh() permanently false — every read would then refresh over the network,
+# which is the exact cost this cache exists to avoid. Same trap and same ordering
+# as get_mtime in hooks/tests/notification-hook-materialize.test.sh.
+# -e, not -f: this is also called on the lock DIRECTORY, and a -f guard silently
+# skipped the lock-age check entirely, leaving age-expired locks undetectable.
+mtime() { [ -e "$1" ] && { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }; }
+age() { local m; m="$(mtime "$INDEX")" || return 1; [ -n "$m" ] || return 1; printf '%s' "$(( $(date +%s) - m ))"; }
+# Freshness must consider the WHOLE cache, not just the index. Checking only
+# index.json means a cache whose bodies/ went missing looks fresh for the rest of
+# the TTL and answers "no body" for every item — it cannot self-heal.
+is_fresh() {
+  [ -f "$INDEX" ] || return 1
+  [ -d "$BODIES" ] || return 1
+  [ -f "$DIR/.stale" ] && return 1
+  local a; a="$(age)" || return 1
+  [ "$a" -lt "$TTL" ]
+}
+
+# ---------------------------------------------------------------- refresh
+RAW=""; BODIES_TMP=""; HOLD_LOCK=0
+LOCK_MAX_AGE="${ATELIER_PROJECT_CACHE_LOCK_MAX_AGE:-120}"
+
+# A lock is stale when its recorded holder is gone, or when it has simply been
+# held too long. Without this, a SIGKILL (or an OOM, or a container restart)
+# leaves .lock behind forever — no trap can run on SIGKILL — and every later
+# refresh is blocked. That is worse than the race it guards: a permanently
+# frozen cache still answers reads, so `next-id` keeps handing out ids computed
+# from pre-write state, which is precisely the incident this tool exists to stop.
+_lock_is_stale() {
+  [ -d "$DIR/.lock" ] || return 1
+  local pid held now
+  pid="$(cat "$DIR/.lock/pid" 2>/dev/null)"
+  if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then return 0; fi
+  held="$(mtime "$DIR/.lock")" || return 1
+  [ -n "$held" ] || return 1
+  now="$(date +%s)"
+  [ "$(( now - held ))" -gt "$LOCK_MAX_AGE" ]
+}
+
+_acquire_lock() {
+  local waited=0
+  while ! mkdir "$DIR/.lock" 2>/dev/null; do
+    if _lock_is_stale; then
+      printf 'atelier-project-cache: breaking a stale lock at %s\n' "$DIR/.lock" >&2
+      rm -rf "$DIR/.lock"
+      continue
+    fi
+    waited=$((waited + 1))
+    [ "$waited" -gt 50 ] && return 1
+    sleep 0.2
+  done
+  printf '%s' "$$" > "$DIR/.lock/pid" 2>/dev/null
+  HOLD_LOCK=1
+  return 0
+}
+
+_cache_cleanup() {
+  [ -n "$RAW" ] && rm -f "$RAW"
+  [ -n "$BODIES_TMP" ] && rm -rf "$BODIES_TMP"
+  # rm -rf, not rmdir: the lock dir carries a pid file, so rmdir fails and the
+  # lock leaks — which is the very failure this cleanup exists to prevent.
+  [ "$HOLD_LOCK" -eq 1 ] && rm -rf "$DIR/.lock"
+  return 0
+}
+
+# One `gh project item-list` for the whole board, split into a body-free index
+# plus one file per body. $ATELIER_PROJECT_CACHE_FIXTURE substitutes a local
+# JSON file for the network call, which is how the test suite stays hermetic.
+refresh() {
+  mkdir -p "$DIR" || die "cannot create $DIR"
+
+  # $1: "required"      — an explicit `refresh`; must actually fetch or fail loudly
+  #     "opportunistic" — an implicit refresh behind a read; may fall back to the
+  #                       existing cache, but says so on stderr
+  local mode="${1:-required}"
+
+  if ! _acquire_lock; then
+    if [ "$mode" = opportunistic ] && [ -f "$INDEX" ] && [ -d "$BODIES" ]; then
+      printf 'atelier-project-cache: warning: another refresh holds the lock; serving the existing cache\n' >&2
+      return 0
+    fi
+    die "another refresh holds the lock ($DIR/.lock) and it is not stale; retry, or remove it if you know the holder is gone" 2
+  fi
+
+  # EXIT, not RETURN: `die` exits the process, and a RETURN trap does not run on
+  # that path — which is how the lock leaked and blocked every later refresh.
+  RAW=""; BODIES_TMP=""; HOLD_LOCK=1
+  trap '_cache_cleanup' EXIT
+  local cost=null before=0 after=0
+  RAW="$(mktemp)" || die "mktemp failed"
+
+  if [ -n "${ATELIER_PROJECT_CACHE_FIXTURE:-}" ]; then
+    [ -f "$ATELIER_PROJECT_CACHE_FIXTURE" ] || die "fixture not found: $ATELIER_PROJECT_CACHE_FIXTURE"
+    cat "$ATELIER_PROJECT_CACHE_FIXTURE" > "$RAW"
+  else
+    command -v gh >/dev/null 2>&1 || die "gh is required" 2
+    before="$(gh api rate_limit --jq '.resources.graphql.used' 2>/dev/null || printf 0)"
+    gh project item-list "$NUMBER" --owner "$OWNER" --limit 1000 --format json > "$RAW" 2>/dev/null \
+      || die "gh project item-list failed (rate limit, auth, or missing 'project' scope)" 2
+    after="$(gh api rate_limit --jq '.resources.graphql.used' 2>/dev/null || printf 0)"
+    [ "$after" -ge "$before" ] && cost=$(( after - before ))
+  fi
+  jq -e '.items | type == "array"' "$RAW" >/dev/null 2>&1 || die "unexpected item-list payload" 2
+
+  # index: everything except the body. `id` is the canonical atelier id, taken
+  # from the Atelier ID field and falling back to a `#NNN` title prefix.
+  jq '{
+    items: [ .items[] | {
+      itemId:   .id,
+      draftId:  (.content.id // null),
+      type:     (.content.type // null),
+      title:    (.title // ""),
+      # Canonical id. Precedence, most explicit first:
+      #   1. the `Atelier ID` field (normalised: may arrive number-typed or bare)
+      #   2. a `#NNN` token immediately before the `~estimate` — the PLAN.md §5
+      #      shape `<kind> <title> #<id> ~<est>` that boards render into the title
+      #   3. a `#NNN` directly after a leading kind word — `bug #44a <title> ~2h`,
+      #      the shape sub-task ids take
+      #   4. a `#NNN` token at the very start of the title (the prefix convention)
+      #   5. nothing. An item with no parseable id gets "", never a guess.
+      #
+      # A trailing `#NNN` with no estimate was considered as a further anchor and
+      # rejected: it would adopt any end-of-title back-reference ("… closes #281")
+      # as the item id, and a title is not a safe place to guess from once the
+      # three anchored positions have all missed. Measured on 592 real items it
+      # resolved exactly one additional title — too thin a sample to generalise
+      # from, and the id in that one title is contested on the board anyway.
+      #
+      # Anything looser mis-fires on the two shapes that are NOT the item id:
+      # a back-reference ("… Items sin Status #12 ~S audit#900") and a mention
+      # ("fix Guardrail #3 rejects SKIPPED conclusion"). Measured on a real
+      # 591-item board, "first standalone token" adopted 130 phantom ids; the
+      # estimate anchor and the leading anchor together resolve 0.
+      id:       ( ((."atelier ID" // "" | tostring) | sub("^\\s+";"") | sub("\\s+$";"")) as $f
+                  | (.title // "") as $t
+                  | ((($t | capture("(?<![A-Za-z0-9_])#(?<n>[0-9]+[a-z]?)\\s*(?=~)")?) // null) as $est
+                  | ((($t | capture("^\\s*(feat|fix|bug|chore|docs|refactor|perf|test|style|build|ci)\\s+#(?<n>[0-9]+[a-z]?)\\b")?) // null) as $kind
+                  | ((($t | capture("^\\s*#(?<n>[0-9]+[a-z]?)\\b")?) // null) as $lead
+                  | if $f != "" and $f != "null" then ( if ($f | test("^#")) then $f else "#" + $f end )
+                    elif $est != null then "#" + $est.n
+                    elif $kind != null then "#" + $kind.n
+                    elif $lead != null then "#" + $lead.n
+                    else "" end ) ) ) ),
+      status:   (.status // null),
+      ready:    (.ready // null),
+      kind:     (.kind // null),
+      priority: (.priority // null),
+      estimate: (.estimate // null),
+      repo:     (."target Repo" // null),
+      bodyBytes: ((.content.body // "") | length)
+    } ]
+  }' "$RAW" > "$INDEX.tmp" 2>/dev/null || die "failed to build index"
+  mv "$INDEX.tmp" "$INDEX"
+
+  # bodies, one file per item, keyed by item node id (always present and unique).
+  # Built in a PRIVATE scratch dir (never a shared fixed name) and swapped in
+  # under the lock, so neither a crash nor a concurrent refresh can leave the
+  # live bodies/ missing.
+  BODIES_TMP="$(mktemp -d "$DIR/.bodies.XXXXXX")" || die "cannot create a scratch bodies dir"
+  jq -r '.items[] | select((.content.body // "") != "") | "\(.id)\t\(.content.body | @base64)"' "$RAW" \
+  | while IFS=$'\t' read -r iid b64; do
+      printf '%s' "$b64" | base64 --decode > "$BODIES_TMP/$iid.md" 2>/dev/null
+    done
+  local bodies_old="$DIR/.bodies.old.$$"
+  rm -rf "$bodies_old"
+  [ -d "$BODIES" ] && mv "$BODIES" "$bodies_old"
+  mv "$BODIES_TMP" "$BODIES" || { [ -d "$bodies_old" ] && mv "$bodies_old" "$BODIES"; die "failed to swap in the body cache"; }
+  BODIES_TMP=""
+  rm -rf "$bodies_old"
+
+  jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg owner "$OWNER" --arg number "$NUMBER" \
+        --argjson count "$(jq '.items | length' "$INDEX")" --argjson cost "${cost:-null}" \
+        --argjson bytes "$(wc -c < "$INDEX" | tr -d ' ')" \
+        '{fetchedAt:$at, owner:$owner, projectNumber:$number, items:$count, graphqlPoints:$cost, indexBytes:$bytes}' \
+        > "$META"
+  rm -f "$DIR/.stale"
+}
+
+ensure() {
+  # --no-refresh wins over --force: it is the "do not touch the network" promise.
+  # It must still distinguish a DAMAGED cache from a legitimately empty answer —
+  # operator-rules.md points every subagent at `body <id> --no-refresh`, so this
+  # is the path that most needs to say "the cache is broken" rather than silently
+  # behaving like the item has no body.
+  if [ "$NO_REFRESH" -eq 1 ]; then
+    [ -f "$INDEX" ] && [ -d "$BODIES" ] && return 0
+    [ -f "$INDEX" ] && die "cache at $DIR is damaged (index present, bodies/ missing); re-run without --no-refresh to rebuild it"
+    die "no cache and --no-refresh given"
+  fi
+  if [ "$FORCE" -eq 0 ] && is_fresh; then return 0; fi
+  refresh opportunistic
+}
+
+norm_id() { case "$1" in \#*) printf '%s' "$1" ;; *) printf '#%s' "$1" ;; esac; }
+
+# ---------------------------------------------------------------- commands
+case "$CMD" in
+  path) printf '%s\n' "$DIR" ;;
+
+  invalidate) mkdir -p "$DIR"; : > "$DIR/.stale"; printf 'cache marked stale: %s\n' "$DIR" ;;
+
+  # --force only bypasses the freshness check; it must NOT delete the index
+  # first. refresh() writes through a .tmp and swaps on success, so a fetch that
+  # fails (rate limit, auth) leaves the previous cache intact — which is exactly
+  # when a stale cache is most useful.
+  refresh) [ "$NO_REFRESH" -eq 1 ] && die "refresh --no-refresh is contradictory: refresh always fetches"
+    refresh required
+    jq -r '"refreshed \(.items) items · index \(.indexBytes) bytes · \(.graphqlPoints // "?") graphql points"' "$META" ;;
+
+  stats)
+    [ -f "$META" ] || die "no cache yet — run: atelier-project-cache refresh"
+    a="$(age || printf '?')"
+    stale=no; [ -f "$DIR/.stale" ] && stale=yes
+    bodies=$(find "$BODIES" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+    jq -r --arg age "$a" --arg ttl "$TTL" --arg stale "$stale" --arg bodies "$bodies" \
+      '"board:   \(.owner) #\(.projectNumber)
+items:   \(.items)  (bodies cached: \($bodies))
+fetched: \(.fetchedAt)  (\($age)s ago, ttl \($ttl)s, stale-flag \($stale))
+cost:    \(.graphqlPoints // "?") graphql points for that refresh
+index:   \(.indexBytes) bytes"' "$META" ;;
+
+  index) ensure; cat "$INDEX" ;;
+
+  get) ensure
+    want="$(norm_id "$ID_ARG")"
+    n="$(jq --arg id "$want" '[ .items[] | select(.id == $id) ] | length' "$INDEX")"
+    [ "$n" -gt 0 ] || die "no item with id $want"
+    # A board can carry the same id twice (it happens). Emit the first match so
+    # callers stay simple, but say so loudly — a silent pick is how the wrong
+    # item gets edited.
+    [ "$n" -gt 1 ] && printf 'atelier-project-cache: warning: %s matches %s items; showing the first. Run the duplicates subcommand to see them all.\n' "$want" "$n" >&2
+    jq --arg id "$want" 'first(.items[] | select(.id == $id))' "$INDEX" ;;
+
+  body) ensure
+    want="$(norm_id "$ID_ARG")"
+    iid="$(jq -r --arg id "$want" '.items[] | select(.id == $id) | .itemId' "$INDEX" | head -1)"
+    [ -n "$iid" ] || die "no item with id $want"
+    [ -f "$BODIES/$iid.md" ] || die "item $want has no body"
+    cat "$BODIES/$iid.md" ;;
+
+  next-id) ensure
+    total="$(jq '.items | length' "$INDEX")"
+    tagged="$(jq '[ .items[] | select(.id != null and .id != "") ] | length' "$INDEX")"
+    # A populated board on which nothing carries an id is not an empty board: it
+    # is a board that does not use §5 ids at all. Returning "#1" there would hand
+    # out an id that means nothing to this project, so say so instead.
+    if [ "$total" -gt 0 ] && [ "$tagged" -eq 0 ]; then
+      die "board has $total items but none carry a §5 id (no Atelier ID field, no #NNN before an estimate, no #NNN title prefix) — this project does not use numeric task ids"
+    fi
+    jq -r '[ .items[].id | select(. != null and . != "") | (capture("^#(?<n>[0-9]+)")? | .n | tonumber) ] | (max // 0) + 1 | "#\(.)"' "$INDEX" ;;
+
+  duplicates) ensure
+    dups="$(jq -r '[ .items[] | select(.id != null and .id != "") ] | group_by(.id) | map(select(length > 1)) | .[] | "\(.[0].id)\n" + (map("    \(.status // "?")  \(.title)") | join("\n"))' "$INDEX")"
+    [ -n "$dups" ] || { printf 'no duplicate ids\n'; exit 0; }
+    printf '%s\n' "$dups"; exit 3 ;;
+
+  *) die "unknown subcommand: $CMD (try --help)" ;;
+esac

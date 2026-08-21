@@ -259,6 +259,58 @@ Entry point: the `/atelier:next-task` slash command picks the highest-priority
 unblocked item from the project's `ROADMAP.md` and routes it through this
 chain.
 
+## Reading a `github-project` board without burning the API budget
+
+Applies to any project whose `.roadmap.json` declares `backend: "github-project"`.
+
+GitHub's GraphQL budget is **5000 points per hour**, and the cost is computed from
+the nodes a query requests, not from the number of requests. `gh project item-list`
+pulls every item with every field value nested, so **one full listing of a ~180-item
+board costs ~200 points** — roughly 24 listings per hour for the whole account,
+shared across every session and every subagent. Field updates cost 1 point each and
+are not the problem. Reads are.
+
+Three rules, in order of how much they save:
+
+1. **Subagents never LIST the board.** The expensive call is the full listing, not
+   a single-item read. A specialist reading its own task through the backend's
+   task-read primitive (`getTask(id)`, concretely `mcp__github__issue_read` on a
+   `github-project` repo) costs a point or two and is exactly what `planner` and
+   `task-decomposer` are told to do — that stays. What must not happen is a
+   subagent running `gh project item-list` / `listTasks` over the whole board to
+   find its task, or to allocate an id. Pass the task content inline in the
+   briefing where you already have it, or point the agent at
+   `atelier-project-cache body <id> --no-refresh`. The `--no-refresh` is not
+   optional in that instruction: without it a stale cache makes the read fall
+   through to a full `gh project item-list`, which is the exact call this rule
+   exists to prevent. Only the driving session refreshes the cache.
+   Three planners dispatched in parallel, each listing the board a handful of
+   times, is enough to exhaust the hourly budget on its own — that is the failure
+   mode this rule exists to prevent.
+
+2. **Read through `atelier-project-cache`.** It fetches once and serves
+   `index` / `get` / `body` / `next-id` / `duplicates` from disk. The index is
+   body-free, which matters under `planStorage: resident` where plans live in the item
+   bodies and dominate the payload (measured on a real board: bodies were 90% of a
+   1.0 MB dump). It auto-refreshes past its TTL; `--no-refresh` forbids the network.
+
+3. **Invalidate after every write.** Run `atelier-project-cache invalidate`
+   immediately after any `item-create` / `item-edit`, so the next read refetches
+   instead of serving state you just changed.
+
+**Allocate a task id with `atelier-project-cache next-id`, never by eye.** Ids live in
+the `Atelier ID` field, and — when that field is absent — in the title, either as a
+leading `#NNN` or as the `#NNN` immediately before the `~estimate` of the §5 shape.
+Scanning one source silently under-reports the maximum and hands back an id that is
+already taken. Reading the title too loosely is the opposite failure: a back-reference
+(`… #12 ~S audit#900`) or a plain mention (`fix Guardrail #3 rejects …`) is not an id,
+and treating it as one both inflates the next id and invents duplicates. `duplicates`
+(exit 3 on a collision) reports ids genuinely claimed twice — worth running before a
+batch of item creations, since a board that has already drifted will keep drifting.
+
+The cache is disposable and is **not** the backend's `offlineMirror` — it writes no
+tracking files and is never a source of truth. Delete it and the next read rebuilds it.
+
 ## Invoking `claude` from atelier scripts
 
 Atelier maintains a config root **separate** from the operator's personal
