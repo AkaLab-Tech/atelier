@@ -22,6 +22,7 @@
 # Usage:
 #   atelier-project-cache refresh     [<project>] [--force]
 #   atelier-project-cache index       [<project>] [--no-refresh]
+#   atelier-project-cache backlog     [<project>] [--no-refresh] [--force]
 #   atelier-project-cache get <id>    [<project>] [--no-refresh]
 #   atelier-project-cache body <id>   [<project>] [--no-refresh]
 #   atelier-project-cache next-id     [<project>] [--no-refresh]
@@ -32,9 +33,11 @@
 #
 # <project> defaults to $PWD. Ids are given with or without the leading `#`.
 #
-# Staleness: a cache older than $ATELIER_PROJECT_CACHE_TTL seconds (default 900)
+# Staleness: a cache older than $ATELIER_PROJECT_CACHE_TTL seconds (default 3600)
 # is refreshed automatically by the read subcommands. `--no-refresh` forbids the
-# network and reads whatever is on disk, failing if there is nothing.
+# network and reads whatever is on disk, failing if there is nothing servable.
+# A snapshot is servable only when meta.json carries the current schemaVersion
+# and reports complete:true; anything else is a miss, never a partial read.
 #
 # After ANY write to the board (item-create, item-edit), call `invalidate` — the
 # next read then refetches instead of serving state you just changed.
@@ -88,7 +91,29 @@ case "$NUMBER" in *[!0-9]*|'') die "refusing non-numeric githubProject.projectNu
 CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
 DIR="$CONFIG_DIR/cache/project-$OWNER-$NUMBER"
 INDEX="$DIR/index.json"; META="$DIR/meta.json"; BODIES="$DIR/bodies"
-TTL="${ATELIER_PROJECT_CACHE_TTL:-900}"
+# Default raised from the 900s this script shipped with. Cost scales with nodes
+# requested, not requests made, so the header's "~200 points for a ~180-item
+# board" understates a large one badly: this project's own board measured 607
+# points for a 592-item fetch. At 900s that is up to four refreshes an hour,
+# ~2,430 points — nearly half the entire 5,000-point hourly budget, for the
+# discovery reads of a single board, before any other board or any unattended
+# `/loop /atelier:babysit-prs` run takes its share.
+#
+# A longer TTL costs nothing in freshness here because staleness is handled
+# where it actually matters rather than by refetching on a timer: the single
+# item being claimed is always read fresh, the no-eligible-task path forces a
+# refresh before concluding there is no work, and `--refresh` is the manual
+# escape. Tighten it per-project with the env var on a small board.
+TTL="${ATELIER_PROJECT_CACHE_TTL:-3600}"
+
+# Bump when the shape of index.json or meta.json changes in a way a previous
+# reader would misread. A cache whose meta.json carries a different (or no)
+# schemaVersion is treated as a miss and refetched, never read as far as it
+# goes: the failure that guards against is invisible — an older index silently
+# answers with fields that have moved or been renamed, and nothing in the
+# output says so. An existing pre-versioned cache therefore refreshes exactly
+# once on first contact with this version, which is the intended migration.
+SCHEMA_VERSION=1
 
 # GNU coreutils FIRST, BSD/macOS as fallback. Order matters: `stat -f %m` is BSD
 # syntax, but on GNU stat `-f` means --file-system, so it prints a multi-line
@@ -108,8 +133,20 @@ is_fresh() {
   [ -f "$INDEX" ] || return 1
   [ -d "$BODIES" ] || return 1
   [ -f "$DIR/.stale" ] && return 1
+  schema_ok || return 1
   local a; a="$(age)" || return 1
   [ "$a" -lt "$TTL" ]
+}
+
+# The trust boundary for anything read off disk. A snapshot is only servable
+# when meta.json parses, carries THIS schema version, and reports the fetch it
+# came from as complete. `complete: false` marks a refresh that could not
+# confirm it had pulled the whole board (a truncated listing), and serving that
+# is how a backlog silently loses items with nothing to indicate it.
+schema_ok() {
+  [ -f "$META" ] || return 1
+  jq -e --argjson v "$SCHEMA_VERSION" \
+    '(.schemaVersion? == $v) and (.complete? == true)' "$META" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------- refresh
@@ -264,12 +301,26 @@ refresh() {
   BODIES_TMP=""
   rm -rf "$bodies_old"
 
+  # `--limit 1000` above is a cap, not a promise: a board that actually holds
+  # 1000+ items comes back truncated, and `gh` says nothing about it. Landing
+  # exactly on the limit is the only signal available, so treat it as "cannot
+  # confirm complete" and record that rather than presenting a short board as
+  # the whole one. `complete: false` makes every later read a cache miss, which
+  # is the right outcome: refetching is cheap next to claiming work from a
+  # backlog that quietly lost its tail.
+  local count complete=true
+  count="$(jq '.items | length' "$INDEX")"
+  [ "$count" -ge 1000 ] && complete=false
+
   jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg owner "$OWNER" --arg number "$NUMBER" \
-        --argjson count "$(jq '.items | length' "$INDEX")" --argjson cost "${cost:-null}" \
+        --argjson version "$SCHEMA_VERSION" --argjson complete "$complete" \
+        --argjson count "$count" --argjson cost "${cost:-null}" \
         --argjson bytes "$(wc -c < "$INDEX" | tr -d ' ')" \
-        '{fetchedAt:$at, owner:$owner, projectNumber:$number, items:$count, graphqlPoints:$cost, indexBytes:$bytes}' \
+        '{schemaVersion:$version, fetchedAt:$at, owner:$owner, projectNumber:$number, items:$count, complete:$complete, graphqlPoints:$cost, indexBytes:$bytes}' \
         > "$META"
   rm -f "$DIR/.stale"
+
+  [ "$complete" = true ] || printf 'atelier-project-cache: warning: the listing returned %s items, the --limit ceiling; the board may be truncated and the cache is marked incomplete\n' "$count" >&2
 }
 
 ensure() {
@@ -279,7 +330,14 @@ ensure() {
   # is the path that most needs to say "the cache is broken" rather than silently
   # behaving like the item has no body.
   if [ "$NO_REFRESH" -eq 1 ]; then
-    [ -f "$INDEX" ] && [ -d "$BODIES" ] && return 0
+    if [ -f "$INDEX" ] && [ -d "$BODIES" ]; then
+      # --no-refresh promises not to touch the network; it does NOT promise to
+      # serve a snapshot this version cannot vouch for. Failing loudly is the
+      # only honest answer here, because the caller asked for offline reads and
+      # cannot be handed records of an unknown shape without knowing it.
+      schema_ok && return 0
+      die "cache at $DIR is not servable (missing/older schemaVersion, or marked incomplete); re-run without --no-refresh to rebuild it"
+    fi
     [ -f "$INDEX" ] && die "cache at $DIR is damaged (index present, bodies/ missing); re-run without --no-refresh to rebuild it"
     die "no cache and --no-refresh given"
   fi
@@ -316,6 +374,23 @@ cost:    \(.graphqlPoints // "?") graphql points for that refresh
 index:   \(.indexBytes) bytes"' "$META" ;;
 
   index) ensure; cat "$INDEX" ;;
+
+  # The roadmap bucket, already filtered. Every discovery consumer
+  # (/atelier:next-task, task-discovery, /atelier:status) wants exactly this
+  # set, and each one re-deriving the snake_case-bucket -> camelCase-config-key
+  # translation in its own prose is where the two backends drift apart. One
+  # implementation, three readers.
+  #
+  # `type` rides along deliberately: it records whether the item wraps an Issue
+  # or a DraftIssue, which is the question a consumer would otherwise answer
+  # with a `node(id:)` round-trip per candidate. On this project's board 594 of
+  # 596 items are DraftIssues, so that round-trip was wasted almost every time.
+  backlog) ensure
+    statuses="$(jq -c '(.githubProject.stateMap.roadmap // ["Backlog","Todo"])' "$RC")"
+    jq --argjson want "$statuses" \
+      '{ items: [ .items[]
+         | select(.status != null and (.status as $s | $want | index($s)))
+         | {id, itemId, type, title, status, ready, priority} ] }' "$INDEX" ;;
 
   get) ensure
     want="$(norm_id "$ID_ARG")"
