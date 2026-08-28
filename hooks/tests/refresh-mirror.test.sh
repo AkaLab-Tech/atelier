@@ -10,8 +10,13 @@
 #   3. NEVER /migrate-roadmap --to files — absent from both output and source.
 #   4. .roadmap.json integrity — file not removed or mutated after the helper runs.
 #   5. Worktree guard — linked worktree (.git as a file) → no-op.
-#   6. Once-per-day stamp — first run (stale/absent stamp) surfaces instruction and
-#      writes today's date; immediate second run with same-day stamp is a no-op.
+#   6. TTL stamp — first run (absent/expired stamp) surfaces the instruction and
+#      stamps; an immediate second run is a no-op. The stamp is PER PROJECT and
+#      its mtime is the clock. (This replaced a single global calendar-day
+#      stamp: a date string cannot express an interval, and one global file let
+#      one project's refresh silence every other project for the rest of the
+#      day. See hooks/tests/mirror-cache-discovery.test.sh for the per-project
+#      isolation and the TTL-override assertions.)
 #   7. Fail-open — missing ATELIER_CONFIG_DIR / non-git-repo dir → exit 0 silently.
 #   8. SessionStart wiring — hooks/hooks.json has an entry referencing refresh-mirror.sh.
 #
@@ -67,8 +72,16 @@ mk_roadmap_json() {
   fi
 }
 
-# clear_stamp — remove the once-per-day stamp so the next run is not suppressed.
-clear_stamp() { rm -f "$CFG/mirror-refresh-last-check"; }
+# clear_stamp — remove every per-project TTL stamp so the next run is not
+# suppressed. The stamps live one-per-project under mirror-refresh/, keyed by a
+# flattened project path.
+clear_stamp() { rm -rf "$CFG/mirror-refresh"; }
+
+# stamp_for — the stamp path for a project dir, mirroring the helper's own
+# flattening (every character outside [A-Za-z0-9._-] becomes '_').
+stamp_for() {
+  printf '%s/mirror-refresh/%s' "$CFG" "$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"
+}
 
 echo "refresh-mirror (TASK_034) — hermetic regression"
 echo ""
@@ -194,12 +207,14 @@ ATELIER_CONFIG_DIR="$CFG" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
   || fail "D2: linked worktree → non-zero exit $rc"
 
 # ===========================================================================
-# Group E — once-per-day stamp (assertion #6)
+# Group E — TTL stamp (assertion #6)
 # ===========================================================================
 
 E="$TMP/e_stamp"; mk_git_repo "$E"; mk_roadmap_json "$E" "github-project" "true"
-STAMP="$CFG/mirror-refresh-last-check"
 clear_stamp
+# The helper resolves the dir with `cd ... && pwd -P`, so the stamp is keyed by
+# the RESOLVED path (on macOS $TMPDIR is a /var -> /private/var symlink).
+STAMP="$(stamp_for "$(cd "$E" && pwd -P)")"
 
 # E1: first run (no stamp) → instruction surfaced
 out_e1="$(run_helper "$E")"
@@ -207,30 +222,38 @@ out_e1="$(run_helper "$E")"
   && pass "E1: first run (absent stamp) → instruction surfaced" \
   || fail "E1: first run → expected instruction but got no output"
 
-# E2: first run wrote the stamp file
+# E2: first run wrote a per-project stamp
 [ -f "$STAMP" ] \
-  && pass "E2: first run → stamp file created at $STAMP" \
-  || fail "E2: first run → stamp file NOT written"
+  && pass "E2: first run → per-project stamp created" \
+  || fail "E2: first run → per-project stamp NOT written at $STAMP"
 
-# E3: stamp file contains today's date in YYYY-MM-DD format
-TODAY="$(date +%F)"
-STAMP_VALUE="$(head -n1 "$STAMP" 2>/dev/null || true)"
-[ "$STAMP_VALUE" = "$TODAY" ] \
-  && pass "E3: stamp file contains today's date ($TODAY)" \
-  || fail "E3: stamp file contains '$STAMP_VALUE', expected today '$TODAY'"
+# E3: the stamp is not a global calendar-day file. That file suppressed every
+# other project once any one project had refreshed.
+[ ! -e "$CFG/mirror-refresh-last-check" ] \
+  && pass "E3: no global calendar-day stamp is written" \
+  || fail "E3: the global once-per-calendar-day stamp is still being written"
 
-# E4: second run (same-day stamp already written) → no-op
+# E4: second run inside the TTL → no-op
 out_e4="$(run_helper "$E")"
 [ -z "$out_e4" ] \
-  && pass "E4: second run (same-day stamp) → no-op (at most once per day)" \
-  || fail "E4: second run → should be suppressed by same-day stamp; got: $out_e4"
+  && pass "E4: second run inside the TTL → no-op" \
+  || fail "E4: second run → should be suppressed by the TTL; got: $out_e4"
 
-# E5: stale stamp (past date) → instruction surfaced again
-printf '2000-01-01\n' > "$STAMP"
+# E5: an expired stamp → instruction surfaced again. Backdate the mtime rather
+# than writing a date string: the mtime IS the clock now.
+touch -t 200001010000 "$STAMP" 2>/dev/null || true
 out_e5="$(run_helper "$E")"
 [ -n "$out_e5" ] \
-  && pass "E5: stale stamp (2000-01-01) → instruction surfaced" \
-  || fail "E5: stale stamp → expected instruction but got no output"
+  && pass "E5: expired stamp (mtime far in the past) → instruction surfaced" \
+  || fail "E5: expired stamp → expected instruction but got no output"
+
+# E6: an unparseable stamp mtime must fail OPEN (surface), never fail closed —
+# a gate that silently stops firing is worse than one that fires too often.
+clear_stamp
+out_e6="$(ATELIER_MIRROR_REFRESH_TTL=0 run_helper "$E")"
+[ -n "$out_e6" ] \
+  && pass "E6: TTL=0 always surfaces (the gate can be disabled)" \
+  || fail "E6: TTL=0 did not surface the instruction"
 
 # ===========================================================================
 # Group F — fail-open (assertion #7)

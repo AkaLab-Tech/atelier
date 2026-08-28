@@ -289,7 +289,12 @@ Three rules, in order of how much they save:
    mode this rule exists to prevent.
 
 2. **Read through `atelier-project-cache`.** It fetches once and serves
-   `index` / `get` / `body` / `next-id` / `duplicates` from disk. The index is
+   `index` / `backlog` / `get` / `body` / `next-id` / `duplicates` from disk.
+   `backlog` is the discovery entry point: it returns the items whose Status is
+   in `githubProject.stateMap.roadmap`, already filtered, each row carrying
+   `type` (`Issue` vs `DraftIssue`) so a consumer never issues a `node(id:)`
+   round-trip per candidate to learn it. `/atelier:next-task` and
+   `task-discovery` read the backlog from here, not from `listTasks`. The index is
    body-free, which matters under `planStorage: resident` where plans live in the item
    bodies and dominate the payload (measured on a real board: bodies were 90% of a
    1.0 MB dump). It auto-refreshes past its TTL; `--no-refresh` forbids the network.
@@ -297,6 +302,16 @@ Three rules, in order of how much they save:
 3. **Invalidate after every write.** Run `atelier-project-cache invalidate`
    immediately after any `item-create` / `item-edit`, so the next read refetches
    instead of serving state you just changed.
+
+**Cached discovery is safe because the claim is not cached.** The shortlist comes
+from the cache; the single item about to be claimed is always re-read from the
+board, and that fresh read is where `Ready` and Status are verified. The cache
+decides what to look at, the board decides what to take. The one case that guard
+cannot cover is a shortlist that came back empty — nothing was selected, so
+nothing got verified — so the no-eligible-task path forces a refresh before
+concluding there is no work. That is what makes it correct to mark something
+`Ready` in the GitHub UI and immediately ask for the next task. `--refresh` on
+`/atelier:next-task` is the manual escape.
 
 **Allocate a task id with `atelier-project-cache next-id`, never by eye.** Ids live in
 the `Atelier ID` field, and — when that field is absent — in the title, either as a

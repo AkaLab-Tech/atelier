@@ -9,10 +9,12 @@
 # Usage:   atelier-refresh-mirror [<dir>]
 #          (defaults to $CLAUDE_PROJECT_DIR or $PWD)
 #          atelier-refresh-mirror --help
+# Cadence: at most once per $ATELIER_MIRROR_REFRESH_TTL seconds (default 3600),
+#          per project, computed from the stamp's mtime.
 # Exit:    0 always (fail-open on any missing prereq).
 set -uo pipefail
 case "${1:-}" in
-  --help|-h) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  --help|-h) sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 # Bash / AI split
@@ -63,17 +65,56 @@ f="$DIR/.roadmap.json"
 mirror="$(jq -r '.offlineMirror // false' "$f" 2>/dev/null || printf 'false')"
 [ "$mirror" = "true" ] || exit 0
 
-# Once-per-day stamp (mirrors daily-housekeeping.sh stamp discipline).
-STAMP_FILE="$ATELIER_CONFIG_DIR/mirror-refresh-last-check"
-TODAY="$(date +%F 2>/dev/null || true)"
-[ -n "$TODAY" ] || exit 0
+# TTL gate.
+#
+# This replaces a once-per-calendar-day stamp, which was wrong in two ways.
+#
+# 1. A date string cannot express an interval. "Same calendar day" makes the
+#    first session after midnight refresh and every session before it blind,
+#    regardless of how long ago the last refresh actually was — two sessions
+#    four minutes apart across midnight both refresh; two sessions twenty-three
+#    hours apart within one day do not. Staleness is now COMPUTED from the
+#    stamp's mtime, so the interval means what it says.
+# 2. The stamp was a single global file, so refreshing the mirror of ONE
+#    project suppressed the instruction for every other project for the rest of
+#    the day. Mike runs seven boards; six of them were silently skipped. The
+#    stamp is now per project.
+TTL="${ATELIER_MIRROR_REFRESH_TTL:-3600}"
 
-LAST=""
-[ -f "$STAMP_FILE" ] && LAST="$(head -n1 "$STAMP_FILE" 2>/dev/null || true)"
-[ "$LAST" = "$TODAY" ] && exit 0
+# Per-project stamp. The directory path is flattened into a single filename;
+# any character outside the safe set becomes `_`, so the value can never steer
+# the write outside the stamp directory.
+STAMP_DIR="$ATELIER_CONFIG_DIR/mirror-refresh"
+key="$(printf '%s' "$DIR" | tr -c 'A-Za-z0-9._-' '_')"
+STAMP_FILE="$STAMP_DIR/$key"
+mkdir -p "$STAMP_DIR" 2>/dev/null || exit 0
 
-# Stamp today so the instruction fires at most once per calendar day.
-printf '%s\n' "$TODAY" > "$STAMP_FILE" 2>/dev/null || true
+# GNU coreutils FIRST, BSD/macOS as fallback — the same ordering, and for the
+# same reason, as mtime() in scripts/atelier-project-cache: `stat -f %m` is BSD
+# syntax, but on GNU stat `-f` means --file-system and prints a filesystem block
+# to stdout before failing on the operand. BSD-first would leak that non-numeric
+# output on Linux and break the arithmetic below.
+stamp_mtime() {
+  [ -e "$1" ] || return 1
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
+}
+
+NOW="$(date +%s 2>/dev/null || true)"
+[ -n "$NOW" ] || exit 0
+
+LAST="$(stamp_mtime "$STAMP_FILE" 2>/dev/null || true)"
+if [ -n "$LAST" ]; then
+  case "$LAST" in
+    *[!0-9]*) LAST="" ;;   # unparseable mtime → treat as never stamped
+  esac
+fi
+# Fresh enough → say nothing and do not surface the instruction.
+if [ -n "$LAST" ] && [ "$(( NOW - LAST ))" -lt "$TTL" ]; then
+  exit 0
+fi
+
+# Stamp now so the instruction fires at most once per TTL for THIS project.
+: > "$STAMP_FILE" 2>/dev/null || true
 
 # Per the SessionStart contract, this stdout becomes session context. The
 # model acts on the instruction before answering the operator's first prompt.
