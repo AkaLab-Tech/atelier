@@ -152,7 +152,7 @@ Lives in `settings.template.json`. `/next-task` instantiates a per-task `setting
 - Network: **allowlist-based**, grown organically as needed.
 
 ### 🔴 Deny (absolute)
-- `Bash(rm -rf:*)` and variants touching `/`, `~`, `*`.
+- `Bash(rm -rf:*)` and variants touching `/`, `~`, `*` — enumerated as sibling deny entries in `settings.template.json`: `-Rf`/`-fR`, the separated `-r -f`/`-f -r`/`-R -f`/`-f -R` forms, the long `--recursive --force`/`--force --recursive` forms (plus the mixed `-r --force`/`--recursive -f`), and the verbose bundles `-rfv`/`-Rfv`/`-frv`. This is a finite glob list, not a parser — it cannot cover every ordering/interspersion (`rm -rf --verbose`, `rm -i -Rf`) or compound commands (`cd x && rm -rf .`); only a `PreToolUse` hook that tokenizes the `rm` invocation would close it categorically, and none exists yet for `rm` (see §3 deny-list note below for the equivalent `git push` precedent).
 - `Bash(sudo:*)`.
 - `Bash(git push --force)`, `Bash(git push --force *)`, `git push -f*` — hard force is denied. **Exception:** `git push --force-with-lease origin task/*` is allowed (the safe, lease-guarded way to reconcile a diverged task branch; refuses if the remote moved unexpectedly, and preserves the open PR). The lease form is *not* a hard `--force` and is the only force variant `pr-author` may use.
 - `Bash(git push * --delete *)`, `git push * -d *`, `git push origin :*`, `git push * :*` — deleting a remote branch is denied, for any remote. A diverged `task/*` branch is reconciled with `--force-with-lease`, **never** by delete-then-re-push (destructive, orphans the open PR, and the auto-mode classifier blocks it mid-chain).
