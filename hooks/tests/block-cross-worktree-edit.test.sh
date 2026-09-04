@@ -18,6 +18,23 @@
 
 set -uo pipefail
 
+# Ambient-env hermeticity guard (#196a review finding 1): the CI failure
+# this cycle fixed came from N1/N2 inheriting the DEVELOPER's own
+# CLAUDE_CODE_BRIDGE_SESSION_ID instead of the value each section means to
+# exercise, which let a clean-env-only assertion pass locally while failing
+# under CI's clean env. Fixing only N1/N2 leaves the SAME latent hazard for
+# every future section: any block that forgets to set (or deliberately
+# unset) this var inherits whatever the invoking shell happens to export.
+# Stripping it here, once, for the whole file's own process makes that
+# hazard structural rather than a per-section discipline problem — every
+# section below either explicitly sets CLAUDE_CODE_BRIDGE_SESSION_ID itself
+# (run_hook/run_stop, and the few sections that build a payload by hand) or
+# relies on it being genuinely absent (the M/N/R fallback-chain sections),
+# and this line guarantees the latter is true regardless of what the
+# developer's or CI's own shell happened to export before invoking this
+# script.
+unset CLAUDE_CODE_BRIDGE_SESSION_ID
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOK="$REPO_ROOT/hooks/block-cross-worktree-edit.sh"
 BASH_BIN="$(command -v bash)"
@@ -111,6 +128,14 @@ assert_stderr_contains() {
 }
 
 echo "#196a regression — block-cross-worktree-edit categorical worktree-isolation guard"
+
+# Sanity-check the ambient-env guard above actually took effect in THIS
+# process before relying on it for every section below.
+if [ -z "${CLAUDE_CODE_BRIDGE_SESSION_ID:-}" ]; then
+  pass "ambient CLAUDE_CODE_BRIDGE_SESSION_ID stripped for the remainder of this suite (finding 1 guard)"
+else
+  fail "expected CLAUDE_CODE_BRIDGE_SESSION_ID to be unset after the top-of-file guard, got \"$CLAUDE_CODE_BRIDGE_SESSION_ID\""
+fi
 
 # =============================================================================
 # SECTION A — baseline ownership rules within one repo (one "container")
@@ -403,6 +428,15 @@ touch_age() {
   ts="$(date -r "$target" +%Y%m%d%H%M.%S 2>/dev/null)" || \
     ts="$(date -d "@$target" +%Y%m%d%H%M.%S 2>/dev/null)"
   [ -n "$ts" ] && touch -t "$ts" "$file" 2>/dev/null
+}
+
+# Mirrors the hook's own BSD-then-GNU `_stat_mtime` fallback, for tests
+# that assert on mtime deltas directly (section P).
+_test_mtime() {
+  local f="$1" m
+  m="$(stat -f %m "$f" 2>/dev/null)" && [ -n "$m" ] && { printf '%s' "$m"; return 0; }
+  m="$(stat -c %Y "$f" 2>/dev/null)" && [ -n "$m" ] && { printf '%s' "$m"; return 0; }
+  return 1
 }
 
 # =============================================================================
@@ -756,7 +790,7 @@ FAKE_HOME_OK="$TMP/fake-home-ok"
 mkdir -p "$FAKE_HOME_OK"
 payload_n1="$(jq -cn --arg f "$WT18A/new.txt" --arg sid "sess-n1" '{tool_name:"Write", tool_input:{file_path:$f}, session_id:$sid}')"
 code_n1="$(
-  unset ATELIER_CONFIG_DIR
+  unset ATELIER_CONFIG_DIR CLAUDE_CODE_BRIDGE_SESSION_ID
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" CLAUDE_PROJECT_DIR="$TMP/logs" HOME="$FAKE_HOME_OK" \
     "$BASH_BIN" "$HOOK" <<<"$payload_n1" >/dev/null 2>"$TMP/last_stderr"
   echo $?
@@ -777,9 +811,13 @@ FAKE_HOME_BAD="$TMP/fake-home-bad"
 mkdir -p "$FAKE_HOME_BAD"
 : > "$FAKE_HOME_BAD/.claude-work" # regular file where the default state dir needs to be a directory
 
-payload_n2="$(jq -cn --arg f "$WT18B/new.txt" '{tool_name:"Write", tool_input:{file_path:$f}}')"
+# Must carry a resolvable token (payload session_id) since the ambient
+# bridge var is stripped below — otherwise the hook's "no stable token"
+# early-exit (always allow, no stderr) fires before ever attempting the
+# state-dir mkdir this case means to exercise.
+payload_n2="$(jq -cn --arg f "$WT18B/new.txt" --arg sid "sess-n2" '{tool_name:"Write", tool_input:{file_path:$f}, session_id:$sid}')"
 code_n2="$(
-  unset ATELIER_CONFIG_DIR
+  unset ATELIER_CONFIG_DIR CLAUDE_CODE_BRIDGE_SESSION_ID
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" CLAUDE_PROJECT_DIR="$TMP/logs" HOME="$FAKE_HOME_BAD" \
     "$BASH_BIN" "$HOOK" <<<"$payload_n2" >/dev/null 2>"$TMP/last_stderr"
   echo $?
@@ -818,6 +856,360 @@ assert_allow "unblocker Step 5 — IN_PROGRESS.md edit on the main checkout, whi
 # on the main checkout's ROADMAP.md — same shape, different file.
 assert_allow "task-orchestrator Step 8 — ROADMAP.md [OVERSIZE] marker edit on the main checkout" \
   "Edit" "$REPO19/ROADMAP.md" "token-BABYSIT"
+
+# =============================================================================
+# SECTION P — mtime refresh on every accepted self-owned write (review
+# finding 2, active-owner half): staleness must track ACTIVITY, not just
+# time since the first claim.
+# =============================================================================
+echo
+echo "-- section P: owner's own claim mtime refreshes on each accepted write --"
+
+REPO20="$TMP/repo20"
+mk_repo "$REPO20"
+WT20="$TMP/repo20-wt"
+mk_worktree "$REPO20" "task/20" "$WT20"
+printf '{"ownerTtlSeconds": 30}\n' > "$WT20/.atelier.json"
+
+assert_allow "token P20 claims WT20 (ttl=30)" "Write" "$WT20/new.txt" "token-P20"
+key20="$(enc "$(container_dir_of "$REPO20")")--$(enc "$WT20")"
+tokfile20="$CFG/state/worktree-owner/$key20/token"
+
+# Age the claim to just inside the window, then have the SAME owner write
+# again — this must refresh the mtime back to "now" rather than merely
+# re-allowing on the stale/foreign-owner branches.
+touch_age "$tokfile20" 25
+mtime_before="$(_test_mtime "$tokfile20")"
+assert_allow "same owner (token-P20) writes again while its own claim is aging" \
+  "Write" "$WT20/again.txt" "token-P20"
+mtime_after="$(_test_mtime "$tokfile20")"
+if [ -n "$mtime_after" ] && [ "$mtime_after" -gt "$mtime_before" ]; then
+  pass "owner's own accepted write refreshed the claim's mtime ($mtime_before -> $mtime_after)"
+else
+  fail "expected the claim mtime to advance past $mtime_before on the owner's own write, got $mtime_after"
+fi
+
+# A THIRD party (different token, no other worktree owned) must still be
+# freely allowed against a self-refreshed claim — refreshing never denies
+# anyone by itself; only the pre-existing cross-worktree rule can.
+assert_allow "unrelated token (owns nothing) still allowed against WT20 after the refresh" \
+  "Write" "$WT20/third-party.txt" "token-P20-UNRELATED"
+
+# P continued (a): the refresh `touch` is best-effort — a broken/missing
+# `touch` binary must never turn the owner's own accepted write into a
+# denial or a crash (fail-open on the new refresh path itself).
+BIN_NO_TOUCH="$TMP/bin-no-touch"
+mkdir -p "$BIN_NO_TOUCH"
+for b in jq git cksum stat date mkdir rm mv dirname cat tr basename sed awk grep head bash env; do
+  src="$(command -v "$b" 2>/dev/null || true)"
+  [ -n "$src" ] && ln -sf "$src" "$BIN_NO_TOUCH/$b"
+done
+cat > "$BIN_NO_TOUCH/touch" <<'TOUCHEOF'
+#!/bin/sh
+exit 1
+TOUCHEOF
+chmod +x "$BIN_NO_TOUCH/touch"
+
+assert_allow "same owner writes again with a broken touch binary — refresh failure never blocks the write" \
+  "Write" "$WT20/no-touch-refresh.txt" "token-P20" "$BIN_NO_TOUCH"
+
+# P continued (b): an owner that goes INACTIVE (writes once, then never
+# again) must still go stale at the ttl boundary exactly as before the
+# refresh existed — the refresh only ever pushes staleness further away
+# when writes keep happening; it must never mask a genuinely abandoned claim.
+REPO20B="$TMP/repo20b"
+mk_repo "$REPO20B"
+WT20B_OWNER="$TMP/repo20b-wt-owner"
+WT20B_OTHER="$TMP/repo20b-wt-other"
+mk_worktree "$REPO20B" "task/20b-owner" "$WT20B_OWNER"
+mk_worktree "$REPO20B" "task/20b-other" "$WT20B_OTHER"
+printf '{"ownerTtlSeconds": 5}\n' > "$WT20B_OWNER/.atelier.json"
+
+assert_allow "token P20B claims WT20B_OWNER (ttl=5) then goes inactive" \
+  "Write" "$WT20B_OWNER/new.txt" "token-P20B"
+key20b="$(enc "$(container_dir_of "$REPO20B")")--$(enc "$WT20B_OWNER")"
+tokfile20b="$CFG/state/worktree-owner/$key20b/token"
+
+assert_allow "token P20B-CONTENDER claims WT20B_OTHER (a different worktree, same container)" \
+  "Write" "$WT20B_OTHER/new.txt" "token-P20B-CONTENDER"
+
+assert_block "contender denied while the inactive owner's claim is still fresh (no writes yet, well under ttl=5)" \
+  "Write" "$WT20B_OWNER/blocked.txt" "token-P20B-CONTENDER"
+
+# Age the inactive owner's claim past its own ttl=5 — since it never wrote
+# again (no refresh fired), it must go stale exactly as pre-refresh.
+touch_age "$tokfile20b" 8
+assert_allow "contender's write is allowed once the inactive owner's claim ages past ttl=5 (reclaimed — inactivity was never masked by the refresh)" \
+  "Write" "$WT20B_OWNER/reclaimed-after-inactivity.txt" "token-P20B-CONTENDER"
+
+# =============================================================================
+# SECTION Q — Stop-event claim release resolves the dead-owner lockout
+# (review finding 2, session-ended half). Reviewer's exact repro: R1 claims
+# worktree-a, R1's session ends (Stop fires), R2 claims worktree-b, R2
+# edits worktree-a -> must be ALLOWED because R1's claim was released on
+# Stop, not left to age out via ownerTtlSeconds.
+# =============================================================================
+echo
+echo "-- section Q: Stop hook releases the caller's claims (dead-owner lockout fix) --"
+
+run_stop() {
+  local token="$1"
+  local payload rc
+  payload="$(jq -cn '{hook_event_name:"Stop", session_id:"stop-sess", transcript_path:"/tmp/does-not-exist-stop.jsonl"}')"
+  (
+    export CLAUDE_PLUGIN_ROOT="$REPO_ROOT"
+    export CLAUDE_PROJECT_DIR="$TMP/logs"
+    export ATELIER_CONFIG_DIR="$CFG"
+    export CLAUDE_CODE_BRIDGE_SESSION_ID="$token"
+    "$BASH_BIN" "$HOOK" <<<"$payload" >/dev/null 2>"$TMP/last_stderr"
+  )
+  rc=$?
+  echo "$rc"
+}
+
+REPO21="$TMP/repo21"
+mk_repo "$REPO21"
+WT21_A="$TMP/repo21-wt-a"
+WT21_B="$TMP/repo21-wt-b"
+mk_worktree "$REPO21" "task/21-a" "$WT21_A"
+mk_worktree "$REPO21" "task/21-b" "$WT21_B"
+
+assert_allow "R1 (token-R1) claims worktree-a" "Write" "$WT21_A/f.txt" "token-R1"
+
+stop_code="$(run_stop "token-R1")"
+[ "$stop_code" = "0" ] && pass "Stop hook for R1 exits 0" || fail "Stop hook for R1 expected exit 0, got $stop_code"
+
+key21a="$(enc "$(container_dir_of "$REPO21")")--$(enc "$WT21_A")"
+if [ ! -d "$CFG/state/worktree-owner/$key21a" ]; then
+  pass "R1's claim on worktree-a was released by the Stop hook"
+else
+  fail "R1's claim on worktree-a is still present after Stop"
+fi
+
+assert_allow "R2 (token-R2) claims worktree-b (unrelated task)" "Write" "$WT21_B/f.txt" "token-R2"
+
+# The reviewer's repro: R2 now edits worktree-a. Before this fix this was a
+# false-positive BLOCK against a dead owner; after the Stop-release it must
+# be allowed outright (worktree-a is unclaimed again).
+assert_allow "R2 edits worktree-a after R1's Stop-released claim — no false-positive lockout" \
+  "Write" "$WT21_A/from-r2.txt" "token-R2"
+
+# A Stop event with no matching claims anywhere is a pure no-op.
+REPO22="$TMP/repo22"
+mk_repo "$REPO22"
+stop_noop_code="$(run_stop "token-never-claimed-anything")"
+[ "$stop_noop_code" = "0" ] && pass "Stop hook for a token owning nothing is a no-op (exit 0)" \
+                             || fail "Stop hook no-op case expected exit 0, got $stop_noop_code"
+
+# A Stop event releases EVERY claim the token holds, not just one worktree
+# (mirrors section O's multi-worktree-owner shape).
+REPO23="$TMP/repo23"
+mk_repo "$REPO23"
+WT23_ONE="$TMP/repo23-wt-one"
+WT23_TWO="$TMP/repo23-wt-two"
+mk_worktree "$REPO23" "task/23-one" "$WT23_ONE"
+mk_worktree "$REPO23" "task/23-two" "$WT23_TWO"
+assert_allow "token-MULTI claims worktree-one" "Write" "$WT23_ONE/f.txt" "token-MULTI"
+assert_allow "token-MULTI claims worktree-two" "Write" "$WT23_TWO/f.txt" "token-MULTI"
+run_stop "token-MULTI" >/dev/null
+key23one="$(enc "$(container_dir_of "$REPO23")")--$(enc "$WT23_ONE")"
+key23two="$(enc "$(container_dir_of "$REPO23")")--$(enc "$WT23_TWO")"
+if [ ! -d "$CFG/state/worktree-owner/$key23one" ] && [ ! -d "$CFG/state/worktree-owner/$key23two" ]; then
+  pass "Stop released BOTH claims held by the same token in one pass"
+else
+  fail "Stop left at least one of token-MULTI's claims behind"
+fi
+
+# A non-matching token's claim must survive an unrelated Stop event.
+REPO24="$TMP/repo24"
+mk_repo "$REPO24"
+WT24="$TMP/repo24-wt"
+mk_worktree "$REPO24" "task/24" "$WT24"
+assert_allow "token-SURVIVES claims worktree24" "Write" "$WT24/f.txt" "token-SURVIVES"
+run_stop "token-UNRELATED-STOP" >/dev/null
+key24="$(enc "$(container_dir_of "$REPO24")")--$(enc "$WT24")"
+[ -d "$CFG/state/worktree-owner/$key24" ] && pass "an unrelated token's Stop event never releases someone else's claim" \
+                                            || fail "unrelated Stop event incorrectly released token-SURVIVES's claim"
+
+# Q continued (a): Stop is idempotent — firing it twice for the same token
+# must not error or misbehave the second time (nothing left to release).
+REPO_QI="$TMP/repoQI"
+mk_repo "$REPO_QI"
+WT_QI="$TMP/repoQI-wt"
+mk_worktree "$REPO_QI" "task/qi" "$WT_QI"
+assert_allow "token-QI claims WT_QI" "Write" "$WT_QI/f.txt" "token-QI"
+stop1_code="$(run_stop "token-QI")"
+stop2_code="$(run_stop "token-QI")"
+[ "$stop1_code" = "0" ] && [ "$stop2_code" = "0" ] && pass "double Stop for the same token is idempotent (both exit 0)" \
+                                                     || fail "double Stop expected 0/0, got $stop1_code/$stop2_code"
+
+# Q continued (b): Stop fails open on its OWN missing dependency (jq) —
+# same posture as the PreToolUse path, but never independently verified for
+# the Stop branch until now.
+stop_payload_jq="$(jq -cn '{hook_event_name:"Stop", session_id:"stop-jq", transcript_path:"/tmp/does-not-exist-jq.jsonl"}')"
+code_stop_jq="$(
+  export CLAUDE_PLUGIN_ROOT="$REPO_ROOT"
+  export CLAUDE_PROJECT_DIR="$TMP/logs"
+  export ATELIER_CONFIG_DIR="$CFG"
+  export CLAUDE_CODE_BRIDGE_SESSION_ID="token-stop-jq"
+  export PATH="$BIN_NO_JQ"
+  "$BASH_BIN" "$HOOK" <<<"$stop_payload_jq" >/dev/null 2>"$TMP/last_stderr"
+  echo $?
+)"
+[ "$code_stop_jq" = "0" ] && pass "Stop event degrades to allow when jq is missing" \
+                           || fail "Stop event with jq missing expected exit 0, got $code_stop_jq"
+assert_stderr_contains "Stop jq-missing degrade warns on stderr" "jq missing"
+
+# Q continued (c): Stop with NO state dir at all yet (never created by any
+# prior claim) is a clean no-op, not an error.
+FRESH_CFG_Q="$TMP/fresh-cfg-q"
+mkdir -p "$FRESH_CFG_Q"
+stop_payload_fresh="$(jq -cn '{hook_event_name:"Stop", session_id:"stop-fresh"}')"
+code_stop_fresh="$(
+  export CLAUDE_PLUGIN_ROOT="$REPO_ROOT"
+  export CLAUDE_PROJECT_DIR="$TMP/logs"
+  export ATELIER_CONFIG_DIR="$FRESH_CFG_Q"
+  export CLAUDE_CODE_BRIDGE_SESSION_ID="token-never-owned-anything"
+  "$BASH_BIN" "$HOOK" <<<"$stop_payload_fresh" >/dev/null 2>"$TMP/last_stderr"
+  echo $?
+)"
+[ "$code_stop_fresh" = "0" ] && pass "Stop event with no state/worktree-owner dir at all is a clean no-op" \
+                              || fail "Stop with no state dir expected exit 0, got $code_stop_fresh"
+
+# Q continued (d): a malformed (empty) token file inside a claim dir must
+# not be released (it can never match a real caller token) and must not
+# crash Stop — same corruption shape as section I, exercised here on Stop.
+REPO_QM="$TMP/repoQM"
+mk_repo "$REPO_QM"
+WT_QM="$TMP/repoQM-wt"
+mk_worktree "$REPO_QM" "task/qm" "$WT_QM"
+key_qm="$(enc "$(container_dir_of "$REPO_QM")")--$(enc "$WT_QM")"
+mkdir -p "$CFG/state/worktree-owner/$key_qm"
+: > "$CFG/state/worktree-owner/$key_qm/token" # empty/corrupt — never a valid match
+stop_qm_code="$(run_stop "token-anyone")"
+[ "$stop_qm_code" = "0" ] && pass "Stop with a malformed (empty) token file in a claim dir does not crash" \
+                           || fail "Stop with malformed token file expected exit 0, got $stop_qm_code"
+[ -d "$CFG/state/worktree-owner/$key_qm" ] && pass "malformed token file's claim dir is left untouched (never falsely matched/released)" \
+                                             || fail "malformed token file's claim dir was unexpectedly removed"
+
+# Q continued (e): Stop degrades to a clean no-op (never errors, never
+# denies — there's no deny path on Stop at all) when the state dir exists
+# but is not writable (rm -rf of a claim entry fails).
+REPO_QU="$TMP/repoQU"
+mk_repo "$REPO_QU"
+WT_QU="$TMP/repoQU-wt"
+mk_worktree "$REPO_QU" "task/qu" "$WT_QU"
+assert_allow "token-QU claims WT_QU" "Write" "$WT_QU/f.txt" "token-QU"
+STATE_DIR_Q="$CFG/state/worktree-owner"
+chmod 555 "$STATE_DIR_Q" 2>/dev/null
+stop_qu_code="$(run_stop "token-QU")"
+chmod 755 "$STATE_DIR_Q" 2>/dev/null # restore immediately — later sections need write access
+[ "$stop_qu_code" = "0" ] && pass "Stop still exits 0 when the state dir is not writable (claim removal fails silently)" \
+                           || fail "Stop with unwritable state dir expected exit 0, got $stop_qu_code"
+
+# =============================================================================
+# SECTION R — token_source is logged on every decision (review finding 3):
+# the operator must be able to see which resolution tier fired, since
+# nothing in this repo sets CLAUDE_CODE_BRIDGE_SESSION_ID by default and the
+# payload-session_id fallback silently weakens cross-worktree protection.
+# =============================================================================
+echo
+echo "-- section R: token-source recorded in the hook decision log --"
+
+REPO25="$TMP/repo25"
+mk_repo "$REPO25"
+WT25="$TMP/repo25-wt"
+mk_worktree "$REPO25" "task/25" "$WT25"
+LOGDIR25="$TMP/logs25"
+mkdir -p "$LOGDIR25"
+
+payload25="$(jq -cn --arg f "$WT25/new.txt" --arg sid "sess-25" '{tool_name:"Write", tool_input:{file_path:$f}, session_id:$sid}')"
+(
+  unset CLAUDE_CODE_BRIDGE_SESSION_ID
+  CLAUDE_PLUGIN_ROOT="$REPO_ROOT" CLAUDE_PROJECT_DIR="$LOGDIR25" ATELIER_CONFIG_DIR="$CFG" \
+    "$BASH_BIN" "$HOOK" <<<"$payload25" >/dev/null 2>/dev/null
+)
+if grep -q 'token-source: payload-session-id' "$LOGDIR25/.task-log/hook-decisions.jsonl" 2>/dev/null; then
+  pass "log_decision records token-source: payload-session-id when the bridge env is absent"
+else
+  fail "expected a hook-decisions.jsonl line recording token-source: payload-session-id under $LOGDIR25"
+fi
+
+# R continued (a): the transcript-parent-dir fallback source is logged too
+# (third of the four token_source values, mirroring section M2's scenario).
+REPO25T="$TMP/repo25t"
+mk_repo "$REPO25T"
+WT25T="$TMP/repo25t-wt"
+mk_worktree "$REPO25T" "task/25t" "$WT25T"
+LOGDIR25T="$TMP/logs25t"
+mkdir -p "$LOGDIR25T"
+TRANSCRIPT_DIR25T="$TMP/faux-transcripts-25t/xyz"
+mkdir -p "$TRANSCRIPT_DIR25T"
+
+payload25t="$(jq -cn --arg f "$WT25T/new.txt" --arg tp "$TRANSCRIPT_DIR25T/session.jsonl" \
+  '{tool_name:"Write", tool_input:{file_path:$f}, transcript_path:$tp}')"
+(
+  unset CLAUDE_CODE_BRIDGE_SESSION_ID
+  CLAUDE_PLUGIN_ROOT="$REPO_ROOT" CLAUDE_PROJECT_DIR="$LOGDIR25T" ATELIER_CONFIG_DIR="$CFG" \
+    "$BASH_BIN" "$HOOK" <<<"$payload25t" >/dev/null 2>/dev/null
+)
+if grep -q 'token-source: transcript-parent-dir' "$LOGDIR25T/.task-log/hook-decisions.jsonl" 2>/dev/null; then
+  pass "log_decision records token-source: transcript-parent-dir when bridge env and session_id are both absent"
+else
+  fail "expected a hook-decisions.jsonl line recording token-source: transcript-parent-dir under $LOGDIR25T"
+fi
+
+# R continued (b): "none" (no resolvable token at all) is the one value
+# that is NEVER logged — the hook exits before reaching any log_decision
+# call in that case (nothing was decided about a claim). Confirmed by
+# checking a dedicated, otherwise-untouched project log directory.
+REPO25N="$TMP/repo25n"
+mk_repo "$REPO25N"
+WT25N="$TMP/repo25n-wt"
+mk_worktree "$REPO25N" "task/25n" "$WT25N"
+LOGDIR25N="$TMP/logs25n"
+mkdir -p "$LOGDIR25N"
+payload25n="$(jq -cn --arg f "$WT25N/new.txt" '{tool_name:"Write", tool_input:{file_path:$f}}')"
+(
+  unset CLAUDE_CODE_BRIDGE_SESSION_ID
+  CLAUDE_PLUGIN_ROOT="$REPO_ROOT" CLAUDE_PROJECT_DIR="$LOGDIR25N" ATELIER_CONFIG_DIR="$CFG" \
+    "$BASH_BIN" "$HOOK" <<<"$payload25n" >/dev/null 2>/dev/null
+)
+if [ ! -s "$LOGDIR25N/.task-log/hook-decisions.jsonl" ]; then
+  pass "token-source: none is never logged — the hook exits before any log_decision call with no resolvable token"
+else
+  fail "expected no (or empty) hook-decisions.jsonl under $LOGDIR25N when no token resolves, got: $(cat "$LOGDIR25N/.task-log/hook-decisions.jsonl" 2>/dev/null)"
+fi
+
+# R continued (c): the block, reclaim, and Stop-release decisions also
+# thread token_source through — not just the claim path asserted above.
+# Reused from the shared log ($TMP/logs/.task-log/hook-decisions.jsonl,
+# CLAUDE_PROJECT_DIR for every run_hook/run_stop call throughout this whole
+# file), which by now contains real examples of all three from sections A
+# (block), C/H/I (reclaim) and Q (Stop-release) — all driven via
+# run_hook/run_stop, which set CLAUDE_CODE_BRIDGE_SESSION_ID explicitly, so
+# every line below is expected to read token-source: bridge-env.
+SHARED_LOG="$TMP/logs/.task-log/hook-decisions.jsonl"
+if grep -q 'claimed .*(token-source: bridge-env)' "$SHARED_LOG" 2>/dev/null; then
+  pass "a claim decision in the shared log records token-source: bridge-env"
+else
+  fail "expected at least one claim decision logging token-source: bridge-env in $SHARED_LOG"
+fi
+if grep -q 'owned by a foreign fresh session.*(token-source: bridge-env)' "$SHARED_LOG" 2>/dev/null; then
+  pass "a block decision records token-source: bridge-env"
+else
+  fail "expected at least one block decision logging token-source: bridge-env in $SHARED_LOG"
+fi
+if grep -q 'reclaimed stale claim.*(token-source: bridge-env)' "$SHARED_LOG" 2>/dev/null; then
+  pass "a reclaim decision records token-source: bridge-env"
+else
+  fail "expected at least one reclaim decision logging token-source: bridge-env in $SHARED_LOG"
+fi
+if grep -q 'released claim on.*(token-source: bridge-env)' "$SHARED_LOG" 2>/dev/null; then
+  pass "a Stop-release decision records token-source: bridge-env"
+else
+  fail "expected at least one Stop-release decision logging token-source: bridge-env in $SHARED_LOG"
+fi
 
 echo
 if [ "$fails" -eq 0 ]; then
