@@ -166,7 +166,7 @@ Lives in `settings.template.json`. `/next-task` instantiates a per-task `setting
 - `Bash(gh repo delete*)`.
 - `Bash(gh api -X POST*)`, `-X PATCH*`, `-X PUT*`, `-X DELETE*` (plus spaceless `-XPOST*` etc., `--method`/`--method=` equivalents, and endpoint-first orderings, #197). This is a coarse deny net over the *explicit*-method surface, not a full closure of API mutations: `gh` performs an implicit POST whenever fields are passed without any `-X`/`--method` (e.g. `gh api repos/O/R/issues -f title=x`, `gh api graphql -f query='mutation {...}'`), and no glob-only deny can distinguish that shape from a plain read. The `github-project` tracking backend relies on exactly this implicit-POST shape for its own sanctioned mutations (`addProjectV2DraftIssue`, `updateProjectV2ItemFieldValue`, `addProjectV2ItemById`), so blanket-denying `-f`/`-F`/`--field`/`--raw-field`/`--input`/`graphql` would break board tracking — not a viable fix here. A categorical closure (a `PreToolUse` hook that inspects the resolved request body/fields the way `hooks/block-protected-push.sh` resolves push destinations) is deferred to a follow-up; revisit only when that hook lands.
 - `Bash(pnpm publish*)`, `npm publish*`.
-- `Bash(curl*|*sh*)`, `wget*|*sh*`.
+- `Bash(curl*|*sh*)`, `wget*|*sh*`, plus the process-substitution forms `*<(curl*`, `*<(wget*` (catches `bash <(curl url)`, `source <(curl url)`).
 - `Read(~/.ssh/**)`, `~/.aws/**`, `~/.gnupg/**`, `~/.config/gh/**`.
 - `Edit(~/.zshrc)`, `~/.bashrc`, `~/.ssh/**`.
 - `Edit(.github/workflows/**)`.
