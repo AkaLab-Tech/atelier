@@ -50,6 +50,14 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/teardown-docker-env.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/block-cross-worktree-edit.sh"
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -87,6 +95,15 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/scan-edit-write.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/block-cross-worktree-edit.sh"
           }
         ]
       },
