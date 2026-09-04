@@ -164,7 +164,7 @@ Lives in `settings.template.json`. `/next-task` instantiates a per-task `setting
 - `Bash(git config --global*)`.
 - `Bash(gh auth logout*)`, `gh auth refresh*`.
 - `Bash(gh repo delete*)`.
-- `Bash(gh api POST:*)`, `gh api PATCH:*`, `gh api DELETE:*`. Revisit only if a concrete use case appears.
+- `Bash(gh api -X POST*)`, `-X PATCH*`, `-X PUT*`, `-X DELETE*` (plus spaceless `-XPOST*` etc., `--method`/`--method=` equivalents, and endpoint-first orderings, #197). This is a coarse deny net over the *explicit*-method surface, not a full closure of API mutations: `gh` performs an implicit POST whenever fields are passed without any `-X`/`--method` (e.g. `gh api repos/O/R/issues -f title=x`, `gh api graphql -f query='mutation {...}'`), and no glob-only deny can distinguish that shape from a plain read. The `github-project` tracking backend relies on exactly this implicit-POST shape for its own sanctioned mutations (`addProjectV2DraftIssue`, `updateProjectV2ItemFieldValue`, `addProjectV2ItemById`), so blanket-denying `-f`/`-F`/`--field`/`--raw-field`/`--input`/`graphql` would break board tracking — not a viable fix here. A categorical closure (a `PreToolUse` hook that inspects the resolved request body/fields the way `hooks/block-protected-push.sh` resolves push destinations) is deferred to a follow-up; revisit only when that hook lands.
 - `Bash(pnpm publish*)`, `npm publish*`.
 - `Bash(curl*|*sh*)`, `wget*|*sh*`.
 - `Read(~/.ssh/**)`, `~/.aws/**`, `~/.gnupg/**`, `~/.config/gh/**`.
@@ -512,11 +512,14 @@ NEW permissions (the agent will now do this without asking you):
   + Edit(docker-compose.yml) → modify container config
 
 REMOVED permissions (the agent can no longer do this):
-  - Bash(gh api POST:*)      → GraphQL mutations blocked
+  - Bash(gh api -X POST*)    → explicit REST mutations blocked
 
 Impact on your day-to-day:
   - Docker-related tasks now progress without asking (previously asked).
-  - If a task needs to POST to the GitHub API, it will get blocked and ask you.
+  - If a task needs to explicitly POST/PATCH/PUT/DELETE via the GitHub API,
+    it will get blocked and ask you. (Implicit-POST field mutations and
+    `gh api graphql` mutations are a separate, currently-open gap — not
+    covered by this deny — see PLAN.md §3.)
 
 Apply? [y/N]
   · If you are NOT 100% sure, answer N and talk to the Product Owner.
