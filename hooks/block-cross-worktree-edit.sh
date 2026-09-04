@@ -89,6 +89,15 @@
 #                    tool_input: { file_path | notebook_path, ... } }
 #   exit 0 — allow the tool call
 #   exit 2 — block (stderr goes to Claude's context with the explanation)
+#
+# This SAME script is also wired at the Stop event in hooks.json (review
+# finding 2), where the payload carries no tool_name/tool_input at all —
+# just { session_id, transcript_path, hook_event_name: "Stop" }. On Stop it
+# releases every worktree claim held by the resolved token instead of
+# claiming/checking one, resolving the dead-owner lockout the moment a
+# session that legitimately finished hands back to the operator. The two
+# roles share the same token-resolution code (both need to agree on "who
+# is the caller"), which is why that block sits above both branches.
 
 set -uo pipefail
 
@@ -110,7 +119,72 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 input="$(cat 2>/dev/null || true)"
+hook_event_name="$(printf '%s' "$input" | jq -r '.hook_event_name // empty' 2>/dev/null || true)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)"
+
+# ---- session token ---------------------------------------------------
+#
+# Resolved ONCE, up here, because both the Stop-release branch below and
+# the PreToolUse claim/check logic further down need to agree on who "the
+# caller" is. Precedence and rationale: see the investigation note in the
+# file header. token_source is threaded through every log_decision call
+# from here on (#196a review finding 3) — nothing in this repo sets
+# CLAUDE_CODE_BRIDGE_SESSION_ID today, so a real run may silently always
+# be resolving the weaker payload-session_id fallback with no other sign
+# of it; logging the source on every invocation is what makes that
+# visible, and `atelier-doctor` surfaces the live-session view of it.
+token="${CLAUDE_CODE_BRIDGE_SESSION_ID:-}"
+token_source="bridge-env"
+if [ -z "$token" ]; then
+  token="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)"
+  token_source="payload-session-id"
+fi
+if [ -z "$token" ]; then
+  # Falls back to the transcript file's PARENT DIRECTORY — NOT a per-caller
+  # "session root" (that directory can be shared by cwd across sessions).
+  # Unreachable in practice: a real Claude Code payload always carries
+  # session_id, so this only fires when something invokes the hook
+  # directly with a hand-built payload that omits it.
+  transcript_path="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
+  if [ -n "$transcript_path" ]; then
+    token="$(dirname "$transcript_path" 2>/dev/null || true)"
+    token_source="transcript-parent-dir"
+  fi
+fi
+[ -n "$token" ] || token_source="none"
+
+# ---- Stop: release every claim this token holds -----------------------
+#
+# Directly resolves the dead-owner lockout from the "session legitimately
+# finished" side (#196a review finding 2): when the top-level turn that
+# dispatched a task chain hands back to the operator, its worktree claims
+# are released immediately instead of waiting out ownerTtlSeconds. A crash
+# mid-turn never fires Stop, so the TTL stays as the fallback net for that
+# case. This is a real liveness signal (the session actually ended), not a
+# substitute for a general one — a pid-based liveness check was considered
+# and rejected: no process handle survives a `Task` subagent dispatch
+# reliably enough across this harness to use as a freshness oracle, so we
+# do not ship one that would only look like liveness.
+if [ "$hook_event_name" = "Stop" ]; then
+  if [ -z "$token" ]; then
+    exit 0 # no stable identity to release claims under
+  fi
+  ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+  state_dir="$ATELIER_CONFIG_DIR/state/worktree-owner"
+  if [ -d "$state_dir" ]; then
+    for claim_dir in "$state_dir"/*; do
+      [ -d "$claim_dir" ] || continue
+      [ -f "$claim_dir/token" ] || continue
+      claim_owner_token="$(cat "$claim_dir/token" 2>/dev/null || true)"
+      if [ -n "$claim_owner_token" ] && [ "$claim_owner_token" = "$token" ]; then
+        released_path="$(cat "$claim_dir/path" 2>/dev/null || true)"
+        rm -rf "$claim_dir" 2>/dev/null
+        log_decision "$HOOK_NAME" "Stop" "$(basename "$claim_dir")" "allow" "released claim on ${released_path:-$claim_dir} on session stop (token-source: $token_source)"
+      fi
+    done
+  fi
+  exit 0
+fi
 
 case "$tool_name" in
   Edit|Write|MultiEdit|NotebookEdit) ;;
@@ -193,22 +267,13 @@ case "$common_dir_raw" in
 esac
 [ -n "$container_dir" ] || container_dir="$W" # degrade gracefully — under-scopes isolation, never over-denies
 
-# ---- session token -------------------------------------------------------
-
-token="${CLAUDE_CODE_BRIDGE_SESSION_ID:-}"
-if [ -z "$token" ]; then
-  token="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)"
-fi
-if [ -z "$token" ]; then
-  transcript_path="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
-  [ -n "$transcript_path" ] && token="$(dirname "$transcript_path" 2>/dev/null || true)"
-fi
-if [ -z "$token" ]; then
-  # No stable identity available at all — an unstable token can never be
-  # denied (PLAN.md #196a design doc). Degrades enforcement, never blocks
-  # a legitimate edit.
-  exit 0
-fi
+# ---- session token check ----------------------------------------------
+#
+# token/token_source were already resolved above (shared with the Stop
+# branch). No stable identity at all -> an unstable token can never be
+# denied (PLAN.md #196a design doc). Degrades enforcement, never blocks a
+# legitimate edit.
+[ -n "$token" ] || exit 0
 
 # ---- state dir -----------------------------------------------------------
 
@@ -233,7 +298,7 @@ block() {
    Action:    finish or hand off the worktree you already own before touching this one, or run this edit from a session that owns nothing yet (e.g. a fresh /atelier:resume-task on this worktree).
    Override:  none from inside this session — a genuine deliberate cross-worktree edit is the operator's call, made manually outside Claude Code, or after the owning session's claim ages out (ownerTtlSeconds in .atelier.json, default ${DEFAULT_TTL_SECONDS}s).
 MSG
-  log_decision "$HOOK_NAME" "$tool_name" "$key" "block" "worktree $W owned by a foreign fresh session; caller already owns $other_worktree"
+  log_decision "$HOOK_NAME" "$tool_name" "$key" "block" "worktree $W owned by a foreign fresh session; caller already owns $other_worktree (token-source: $token_source)"
   exit 2
 }
 
@@ -246,7 +311,7 @@ if mkdir "$target_claim_dir" 2>/dev/null; then
   # best-effort logging).
   printf '%s' "$token" > "$target_token_file" 2>/dev/null
   printf '%s' "$W" > "$target_claim_dir/path" 2>/dev/null
-  log_decision "$HOOK_NAME" "$tool_name" "$key" "allow" "claimed $W"
+  log_decision "$HOOK_NAME" "$tool_name" "$key" "allow" "claimed $W (token-source: $token_source)"
   exit 0
 fi
 
@@ -257,9 +322,17 @@ if [ ! -f "$target_token_file" ]; then
 fi
 
 owner_token="$(cat "$target_token_file" 2>/dev/null || true)"
-if [ -z "$owner_token" ] || [ "$owner_token" = "$token" ]; then
-  # Empty/unreadable token file (same as the in-flight race above) or we
-  # are the recorded owner ourselves.
+if [ -z "$owner_token" ]; then
+  # Unreadable/empty token file — same race window as mkdir-succeeded above.
+  exit 0
+fi
+if [ "$owner_token" = "$token" ]; then
+  # We are the recorded owner. Refresh the claim's mtime on every accepted
+  # write (#196a review finding 2): staleness must track ACTIVITY, not just
+  # elapsed time since the first claim, or a long-running-but-active owner
+  # could be misjudged as stale near the TTL boundary. Best-effort — a
+  # failed touch never blocks (fail-open posture holds even here).
+  touch "$target_token_file" 2>/dev/null || true
   exit 0
 fi
 
@@ -281,7 +354,7 @@ if [ "$age" -ge "$ttl" ]; then
       printf '%s' "$W" > "$target_claim_dir/path" 2>/dev/null
     fi
   fi
-  log_decision "$HOOK_NAME" "$tool_name" "$key" "allow" "reclaimed stale claim on $W (age ${age}s >= ttl ${ttl}s)"
+  log_decision "$HOOK_NAME" "$tool_name" "$key" "allow" "reclaimed stale claim on $W (age ${age}s >= ttl ${ttl}s) (token-source: $token_source)"
   exit 0
 fi
 

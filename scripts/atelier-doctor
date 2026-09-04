@@ -642,6 +642,28 @@ check_hooks_liveness() {
   fi
 }
 
+# check_worktree_isolation_token (#196a review finding 3) — read-only
+# signal for which session-token source `hooks/block-cross-worktree-edit.sh`
+# would resolve for THIS session right now. CLAUDE_CODE_BRIDGE_SESSION_ID
+# is the strong source (stable across a whole `Task` subagent chain); its
+# fallback (the PreToolUse payload's `.session_id`) differs per subagent,
+# which silently weakens cross-worktree isolation to near-nothing. Nothing
+# in install.sh/bootstrap.sh sets the bridge var today (the shipped
+# entrypoint is a plain terminal `claude`), so a real production session
+# may always be running in the weaker mode with no other visible sign of
+# it — this check exists purely to make that state visible, not to fix it.
+check_worktree_isolation_token() {
+  if [ -n "${CLAUDE_CODE_BRIDGE_SESSION_ID:-}" ]; then
+    push_host "$OK worktree isolation: CLAUDE_CODE_BRIDGE_SESSION_ID set — block-cross-worktree-edit.sh has a stable, per-task-chain token"
+  else
+    push_host "$FAIL worktree isolation: CLAUDE_CODE_BRIDGE_SESSION_ID unset — block-cross-worktree-edit.sh falls back to the PreToolUse payload's session_id, which is NOT stable across a Task subagent dispatch, weakening cross-worktree protection"
+    push_fix_manual "# No automated fix yet — CLAUDE_CODE_BRIDGE_SESSION_ID is set by a bridged
+# entrypoint (e.g. an IDE extension), not by install.sh/bootstrap.sh's plain
+# terminal \`claude\`. Tracked as a known gap against #196a; see the header
+# comment in hooks/block-cross-worktree-edit.sh for the full investigation."
+  fi
+}
+
 check_project_npmrc() {
   local npmrc=""
   if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -f "$CLAUDE_PROJECT_DIR/.npmrc" ]; then
@@ -1216,6 +1238,7 @@ check_git_wt_path
 check_shellrc_hooks
 check_install_mode
 check_hooks_liveness
+check_worktree_isolation_token
 check_project_npmrc
 check_roadmap_task_ids
 check_chrome
