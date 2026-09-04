@@ -182,6 +182,19 @@ describe_permission() {
     # ---------- destructive (deny list) ----------
     "Bash(rm -rf *)")                            echo "BLOCKED: recursive remove" ;;
     "Bash(rm -fr *)")                            echo "BLOCKED: recursive remove" ;;
+    "Bash(rm -Rf *)")                            echo "BLOCKED: recursive remove" ;;
+    "Bash(rm -fR *)")                            echo "BLOCKED: recursive remove" ;;
+    "Bash(rm -r -f *)")                          echo "BLOCKED: recursive remove (separated flags)" ;;
+    "Bash(rm -f -r *)")                          echo "BLOCKED: recursive remove (separated flags)" ;;
+    "Bash(rm -R -f *)")                          echo "BLOCKED: recursive remove (separated flags)" ;;
+    "Bash(rm -f -R *)")                          echo "BLOCKED: recursive remove (separated flags)" ;;
+    "Bash(rm --recursive --force *)")            echo "BLOCKED: recursive remove (long flags)" ;;
+    "Bash(rm --force --recursive *)")            echo "BLOCKED: recursive remove (long flags)" ;;
+    "Bash(rm -r --force *)")                     echo "BLOCKED: recursive remove (mixed flags)" ;;
+    "Bash(rm --recursive -f *)")                 echo "BLOCKED: recursive remove (mixed flags)" ;;
+    "Bash(rm -rfv *)")                           echo "BLOCKED: recursive remove (verbose)" ;;
+    "Bash(rm -Rfv *)")                           echo "BLOCKED: recursive remove (verbose)" ;;
+    "Bash(rm -frv *)")                           echo "BLOCKED: recursive remove (verbose)" ;;
     "Bash(sudo *)")                              echo "BLOCKED: privilege escalation" ;;
     "Bash(git push --force*)")                   echo "BLOCKED: force push" ;;
     "Bash(git push -f*)")                        echo "BLOCKED: force push (short flag)" ;;

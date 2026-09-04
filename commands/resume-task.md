@@ -236,7 +236,7 @@ If a step aborted, report exactly which one and the actionable next instruction 
 - **Never** wipe `.task-log/` in interrupted-resume mode. The whole point of that mode is that the budget continues — wiping would silently extend it past the 6-attempt cap from PLAN.md §8.
 - **Never** wipe `.task-log/` when the GitHub issue is still open. The close-as-signal is the only signal — until it happens, the logs are operator evidence in flight.
 - **Never** push to `origin task/<id>-<slug>` from this command. The task branch is for the failing implementation; the bookkeeping change (`docs/resume-<id>`) lives on its own branch.
-- **Never** use `rm -r`, `rm -rf`, or `rm -fr` even though the deny list does not match every form. The `Bash(rm:*)` allowance in this command's frontmatter is for the explicit per-file deletion of `.task-log/` contents only — recursive removal is out of scope and creates a foot-gun.
+- **Never** use `rm -r`/`rm -rf`/`rm -fr` or any of its enumerated deny-list equivalents (`-Rf`, `-fR`, separated `-r -f`, long `--recursive --force`, the `-rfv` bundles, etc. — see `templates/settings.template.json`), and never rely on the deny list to catch a form it doesn't enumerate. The `Bash(rm:*)` allowance in this command's frontmatter is for the explicit per-file deletion of `.task-log/` contents only — recursive removal is out of scope and creates a foot-gun.
 - **Never** invoke `unblocker` from this command. Resume reverses what `unblocker` did; re-invoking it would loop.
 - **Never** silently overwrite an in-flight `IN_PROGRESS.md` heading. If the heading mid-file changed between step 2's read and step 4b's edit (concurrent operator edit), stop and surface — the resume needs a stable target.
 
