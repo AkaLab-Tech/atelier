@@ -166,7 +166,7 @@ Lives in `settings.template.json`. `/next-task` instantiates a per-task `setting
 - `Bash(gh repo delete*)`.
 - `Bash(gh api POST:*)`, `gh api PATCH:*`, `gh api DELETE:*`. Revisit only if a concrete use case appears.
 - `Bash(pnpm publish*)`, `npm publish*`.
-- `Bash(curl*|*sh*)`, `wget*|*sh*`.
+- `Bash(curl*|*sh*)`, `wget*|*sh*`, plus the process-substitution forms `*<(curl*`, `*<(wget*` (catches `bash <(curl url)`, `source <(curl url)`).
 - `Read(~/.ssh/**)`, `~/.aws/**`, `~/.gnupg/**`, `~/.config/gh/**`.
 - `Edit(~/.zshrc)`, `~/.bashrc`, `~/.ssh/**`.
 - `Edit(.github/workflows/**)`.
