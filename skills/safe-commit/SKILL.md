@@ -17,6 +17,8 @@ Per PLAN.md §6, push to `origin task/<id>-<slug>` is allowed **only** when all 
 
 (e2e/Playwright belongs to a separate gate — the **PR gate** — and is handled by `e2e-runner` / `visual-validation`, not here.)
 
+This skill is the **deliberate** gate and always runs the full suite. The runtime hook that re-runs the gate on every `git commit` (`hooks/safe-commit.sh`) may have its `test` step scoped per project to `test:changed` via `safeCommit.testScope` in `.atelier.json` (#399); that scoping never applies here.
+
 When any of the three is red, the commit must not happen. Skipping the gate (`--no-verify`) is denied by the global rules unless the operator explicitly authorises it for a one-off reason.
 
 ## Detecting the project's scripts
