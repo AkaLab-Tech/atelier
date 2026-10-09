@@ -359,6 +359,8 @@ Push to `origin task/<id>-<slug>` when and only when:
 3. Unit + integration tests pass.
 4. Commit message ready (Conventional Commits style).
 
+The per-commit `safe-commit` hook is the reflexive safety net behind these preconditions, not their definition. A project may scope that hook's `test` step to a `test:changed` script via `safeCommit.testScope: "changed"` in `.atelier.json` (#399): the deliberate gate (`safe-commit` skill, run by `pr-author` before the push and by `tester`) and CI still run the full suite, so precondition 3 is unchanged — only the per-`git commit` re-run is narrowed.
+
 ### PR
 Open a PR (not draft) when:
 1. All push preconditions are met, **and**

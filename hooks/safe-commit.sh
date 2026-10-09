@@ -28,6 +28,21 @@
 #       no-verify guardrail in operator-rules.md; that requires explicit
 #       operator confirmation.
 #
+# Test scope (#399):
+#   The agent chain commits two or three times per PR (implementer WIP,
+#   pr-author, review-fix), and the full suite also runs in the deliberate
+#   gate (`safe-commit` skill, run by pr-author before the push and by
+#   tester) and in CI — so this reflexive net alone charges a project
+#   several full suites per PR. A project may scope the `test` step of
+#   THIS hook via `.atelier.json`:
+#       "safeCommit": { "testScope": "full" | "changed" }
+#   "full" (default, absent key, unknown value) runs `<pm> run test` as
+#   before. "changed" runs `<pm> run test:changed` when package.json
+#   defines that script (e.g. `vitest run --changed`, `jest --onlyChanged`)
+#   and falls back to `test` — logged — when it does not. `lint` and
+#   `typecheck` are never scoped. The push precondition in PLAN.md §6
+#   is unchanged: the full suite still gates the push and the PR.
+#
 # Contract per Claude Code hooks reference (PreToolUse):
 #   stdin  — JSON: { tool_name, tool_input: { command } }
 #   exit 0 — allow the commit
@@ -336,16 +351,64 @@ run_pm_step() {
   ( cd "$project_root" && "$pm" run "$script" 2>&1 )
 }
 
+# #399 — per-project scope for the `test` step (see the header). Reads
+# `safeCommit.testScope` from the project's `.atelier.json`: the one next
+# to package.json first, else the one at the git toplevel of the commit's
+# target worktree (a `git -C <subdir> commit` inside a workspace member).
+# Anything other than "full" / "changed" — missing file, unreadable JSON,
+# absent key, unknown value — resolves to "full"; an unknown value is
+# also logged so a typo never silently widens or narrows the gate.
+resolve_test_scope() {
+  local cfg="" top="" raw=""
+  if [ -f "$project_root/.atelier.json" ]; then
+    cfg="$project_root/.atelier.json"
+  else
+    top="$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$top" ] && [ -f "$top/.atelier.json" ]; then
+      cfg="$top/.atelier.json"
+    fi
+  fi
+  if [ -z "$cfg" ]; then
+    echo full
+    return 0
+  fi
+  raw="$(jq -r '.safeCommit.testScope // "full"' "$cfg" 2>/dev/null || true)"
+  case "$raw" in
+    full|changed)
+      echo "$raw"
+      ;;
+    "")
+      echo full
+      ;;
+    *)
+      log_decision "$HOOK_NAME" "Bash" "test-scope-invalid" "allow" "safeCommit.testScope \"$raw\" is neither \"full\" nor \"changed\" — treating as full"
+      echo full
+      ;;
+  esac
+}
+test_scope="$(resolve_test_scope)"
+
 # Walk the three steps in order, stopping (blocking) on the first red.
 # A step is N/A if `scripts.<name>` doesn't exist in package.json — we
-# log it and continue, which mirrors the `safe-commit` skill.
+# log it and continue, which mirrors the `safe-commit` skill. Under
+# `testScope: "changed"` the `test` step runs `test:changed` instead,
+# falling back to `test` (logged) when the project does not define it.
 for step in lint typecheck test; do
-  if ! has_script "$step"; then
-    log_decision "$HOOK_NAME" "Bash" "${step}-na" "allow" "scripts.${step} not defined in package.json — step N/A"
+  script="$step"
+  if [ "$step" = "test" ] && [ "$test_scope" = "changed" ]; then
+    if has_script "test:changed"; then
+      script="test:changed"
+    else
+      log_decision "$HOOK_NAME" "Bash" "test-changed-na" "allow" "scripts.test:changed not defined in package.json — falling back to scripts.test"
+    fi
+  fi
+
+  if ! has_script "$script"; then
+    log_decision "$HOOK_NAME" "Bash" "${script}-na" "allow" "scripts.${script} not defined in package.json — step N/A"
     continue
   fi
 
-  output="$(run_pm_step "$step" || printf '__EXIT_%d__' "$?")"
+  output="$(run_pm_step "$script" || printf '__EXIT_%d__' "$?")"
   # Detect our sentinel for failure. We can't capture $? cleanly through
   # a subshell + assignment without losing the output, so we encode it.
   if printf '%s' "$output" | tail -c 80 | grep -qE '__EXIT_[0-9]+__$'; then
@@ -355,19 +418,19 @@ for step in lint typecheck test; do
     cat >&2 <<MSG
 🚫 atelier:safe-commit BLOCKED
    Tool:   Bash(git commit)
-   Reason: \`$pm run $step\` failed with exit $exit_code
+   Reason: \`$pm run $script\` failed with exit $exit_code
    Output (last 30 lines):
 $(printf '%s' "$output" | tail -n 30)
    Rule:   PLAN.md §6 push gate — lint + typecheck + tests must pass before commit.
-   Action: fix the failing $step, then commit again. The hook re-runs automatically.
+   Action: fix the failing $script, then commit again. The hook re-runs automatically.
    Override: set ATELIER_SKIP_SAFE_COMMIT=1 only when the operator confirms the gate has been validated another way.
 MSG
 
-    log_decision "$HOOK_NAME" "Bash" "${step}-red" "block" "$pm run $step failed (exit $exit_code)"
+    log_decision "$HOOK_NAME" "Bash" "${script}-red" "block" "$pm run $script failed (exit $exit_code)"
     exit 2
   fi
 
-  log_decision "$HOOK_NAME" "Bash" "${step}-green" "allow" "$pm run $step passed"
+  log_decision "$HOOK_NAME" "Bash" "${script}-green" "allow" "$pm run $script passed"
 done
 
 log_decision "$HOOK_NAME" "Bash" "push-gate-green" "allow" "push gate green — commit allowed"

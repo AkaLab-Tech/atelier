@@ -203,7 +203,7 @@ To check whether auto-mode is currently active, inside any atelier session: `/st
 - `scan-edit-write` — refuses an edit/write whose content matches a sensitive-pattern catalog.
 - `scan-git-add` — refuses a `git add` that stages a `.env*` file.
 - `safe-package-change` — refuses a `pnpm add/install/update` for a too-new package or unauthorized post-install scripts.
-- `safe-commit` — refuses a commit when lint or tests fail.
+- `safe-commit` — refuses a commit when lint, typecheck or tests fail. It runs on every `git commit`; when the full suite is too slow for that cadence, set `safeCommit.testScope` to `"changed"` in `.atelier.json` and define a `test:changed` script (e.g. `vitest run --changed`) — the hook then runs only the tests related to the change, while the deliberate gate (`safe-commit` skill, run by `pr-author` before the push) and CI keep running the full suite.
 
 **Fix:** Read the hook's message — it cites the specific pattern that triggered it. Address the underlying issue (remove the sensitive content, wait out the cool-off, fix the failing test, etc.). The pattern catalogs are read-only and live at `~/.claude-work/plugins/cache/akalab-tech/atelier/<version>/hooks/patterns/*.json` if you want to understand the trigger.
 
