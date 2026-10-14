@@ -213,16 +213,30 @@ session never runs both halves:
 ### Top-level sessions only orchestrate
 
 A top-level session (the one the operator is talking to, plan session or worker)
-never authors. It does not run `git add` / `git commit` / `git push` /
-`gh pr create`, does not edit source, and does not dispatch the chain specialists
+never authors. It does not author code, does not push any branch, does not
+open, review or merge a PR, and does not dispatch the chain specialists
 (`implementer`, `tester`, `e2e-runner`, `docker-runner`, `pr-author`,
-`pr-opener`, `reviewer`, `unblocker`) itself. Every write to a repo goes through
-`task-orchestrator` (or `planner` / `task-decomposer` for plan and tracking
-files), which dispatches those specialists as its own sub-agents. The rule is
-identical in every project — no per-project configuration — and there is no
-exception for opening a PR "and not reviewing it": `/atelier:finish-task`,
-`/atelier:resume-task` (blocked-resume docs PR) and `/atelier:align` (every
-policy) all hand their commit / push / PR step to `task-orchestrator`.
+`pr-opener`, `reviewer`, `unblocker`) itself. Code and PR work goes through
+`task-orchestrator`, which dispatches those specialists as its own sub-agents.
+The rule is identical in every project — no per-project configuration — and
+there is no exception for opening a PR "and not reviewing it":
+`/atelier:finish-task`, `/atelier:resume-task` (blocked-resume docs PR) and
+`/atelier:align` (every policy) all hand their commit / push / PR step to
+`task-orchestrator`.
+
+Two narrow carve-outs, and nothing else:
+
+- **R1 — plan/tracking commits.** A top-level session may `git add` / `git commit`
+  when the staged set is only plan/tracking files (`.plan/**`, `ROADMAP.md`,
+  `IN_PROGRESS.md`, `HISTORY.md`, the indexed-layout tracking dir), as
+  `/atelier:plan-task` Phase 4 does. Gitignored or out-of-repo paths are fine too.
+- **R2 — release tag.** `/atelier:release` may push the semver tag
+  `origin v*` (tags only; the bump PR itself still goes through `task-orchestrator`).
+
+`/atelier:resume-task` and `/atelier:align` also make prepare-only edits in a
+temporary worktree (the `[BLOCKED]` unmark, copied-in changed files) before
+handing commit / push / PR to `task-orchestrator`; that preparation is not
+authoring and is covered by the same hand-off.
 
 This is stricter than the earlier "never both author and review" invariant above
 (which it subsumes) and it is the same boundary as "Atelier's gates are the only

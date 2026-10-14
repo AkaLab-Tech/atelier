@@ -110,7 +110,7 @@ dispatch per repo in **non-task mode** (same briefing fields as below, plus
 `interactive: true` and `stop_after: pr-open`) — rather than pushing the branch
 or running `gh pr create` in this session (top-level sessions only
 orchestrate). With `stop_after: pr-open` the orchestrator has `pr-opener` open
-the PR and returns its URL without dispatching `reviewer` / `auto-merge`: the
+the PR and returns its URL without dispatching `reviewer` / `auto-merge`:
 the operator merges on their own timeline. If the operator declines, print the
 exact per-repo commands instead. Do **not** push directly to the base branch.
 

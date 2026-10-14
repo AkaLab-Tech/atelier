@@ -35,7 +35,7 @@ The orchestrator owns the rest: `pr-author` runs the push gate (`safe-commit`), 
 Handle the orchestrator's terminal response:
 
 - **`merged`** or **PR opened** — surface the PR URL and state.
-- **`held: <reason>`** — surface the reason verbatim (a RED push gate shows the failing step's output; a PARTIAL gate needs the operator's confirmation before proceeding). Do not retry or work around it from this session.
+- **`held: <reason>`** — surface the reason verbatim (a RED push gate shows the failing step's output; a PARTIAL gate needs the operator's confirmation before proceeding; once the operator confirms, re-dispatch `task-orchestrator` with the same briefing plus `push_gate_partial_confirmed: true`). Do not retry or work around it from this session.
 
 ### 4. Report back
 

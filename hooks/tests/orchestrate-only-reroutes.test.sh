@@ -122,6 +122,12 @@ else
   fail "operator-rules: 'Top-level sessions only orchestrate' section missing"
 fi
 
+if has "$RULES" 'R1 — plan/tracking commits' && has "$RULES" '`.plan/**`' && has "$RULES" 'R2 — release tag' && has "$RULES" '`origin v*`'; then
+  pass "operator-rules: orchestrate-only section carries the plan/tracking commit and origin v* tag carve-outs"
+else
+  fail "operator-rules: orchestrate-only section lacks the R1/R2 carve-outs"
+fi
+
 echo ""
 if [ "$fails" -eq 0 ]; then
   echo "orchestrate-only-reroutes: all assertions passed."
