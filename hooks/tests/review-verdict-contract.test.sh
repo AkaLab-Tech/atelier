@@ -20,6 +20,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 REVIEWER="$REPO_ROOT/agents/reviewer.md"
 ORCH="$REPO_ROOT/agents/task-orchestrator.md"
+AUTOMERGE="$REPO_ROOT/skills/auto-merge/SKILL.md"
 TEMPLATE_JSON="$REPO_ROOT/templates/atelier.template.json"
 ATELIER_JSON="$REPO_ROOT/.atelier.json"
 PLAN="$REPO_ROOT/PLAN.md"
@@ -70,6 +71,24 @@ chk_absent "$REVIEWER" 'Instead, degrade to an advisory comment carrying the exa
 chk_absent "$REVIEWER" 'Degrade to the advisory `--comment` review and return `classifier-blocked`' \
   "reviewer: old 'designed fallback' rule removed"
 chk_absent "$REVIEWER" 'absent field → `"approve"`' "reviewer: old approve default removed"
+chk_prose "$REVIEWER" '**no v1 marker and no `Decision:` / `Head:` block**' \
+  "reviewer: advisory body omits v1 marker and Decision/Head block"
+chk_prose "$REVIEWER" 'so `atelier-review-verdict` returns `none` and the auto-merge gate holds' \
+  "reviewer: advisory comment yields none, gate holds"
+chk_prose "$REVIEWER" 'In `advisory` mode omit the marker and block and start at `# atelier:reviewer report`' \
+  "reviewer: body template says advisory omits marker and block"
+chk_absent "$REVIEWER" 'approve-advisory' "reviewer: stale approve-advisory decision removed"
+chk_absent "$REVIEWER" 'post the same `--comment` review, but the verdict is advisory only' \
+  "reviewer: old advisory 'same --comment' wording removed (carried the marker)"
+
+echo "== skills/auto-merge/SKILL.md =="
+chk_prose "$AUTOMERGE" 'the denial is terminal: the reviewer posts nothing in any other form' \
+  "auto-merge: denied --approve is terminal"
+chk_prose "$AUTOMERGE" 'plain `--comment` review without the v1 verdict marker, so the helper returns `none`' \
+  "auto-merge: advisory no-marker -> none"
+chk_absent "$AUTOMERGE" 'posts an advisory `--comment` review instead of `--approve`' \
+  "auto-merge: old 'denied --approve re-posted as advisory --comment' wording removed"
+chk_absent "$AUTOMERGE" 'Reviewer degraded to advisory' "auto-merge: old 'degraded to advisory' lead-in removed"
 
 echo "== templates/atelier.template.json + .atelier.json =="
 for f in "$TEMPLATE_JSON" "$ATELIER_JSON"; do

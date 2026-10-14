@@ -190,7 +190,7 @@ Run the review entirely **before** posting anything. Read `<project>/.atelier.js
 GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --comment --body-file <worktree>/.task-log/tmp/review-body.md
 ```
 
-- **`reviewerApprovalMode: "advisory"`** and your decision is `approve`: post the same `--comment` review, but the verdict is advisory only — the PR is always merged by a human. Return `Decision: approve` with `Auto-merge: no — advisory mode`.
+- **`reviewerApprovalMode: "advisory"`** and your decision is `approve`: post a `--comment` review whose body is the plain report only — **no v1 marker and no `Decision:` / `Head:` block**, so `atelier-review-verdict` returns `none` and the auto-merge gate holds. The verdict is advisory only; the PR is always merged by a human. Return `Decision: approve` with `Auto-merge: no — advisory mode`.
 - **`reviewerApprovalMode: "approve"`** (opt-in, for repos whose branch protection requires an approving review) and your decision is `approve`: attempt the approval:
 
 ```bash
@@ -207,9 +207,9 @@ GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --request-chan
 
 Write the body with the `Write` tool to `<worktree>/.task-log/tmp/review-body.md` before posting (never a heredoc, never `/tmp`). `<worktree>` is the worktree the caller hands you; when the briefing carries only a PR number (direct invocation), resolve it: take the PR's `headRefName` and find the local worktree whose branch equals it via `git worktree list --porcelain`; if none exists, use the project root's gitignored `.task-log/tmp/`. The body file content:
 
-The body starts with the verdict v1 marker and block (the exact text `atelier-review-verdict` parses; `Head` is the 40-hex head sha you diffed, i.e. the PR's `headRefOid` when you started), then the report:
+In `verdict`, `approve` and `request-changes` posts, the body starts with the verdict v1 marker and block (the exact text `atelier-review-verdict` parses; `Head` is the 40-hex head sha you diffed, i.e. the PR's `headRefOid` when you started), then the report. In `advisory` mode omit the marker and block and start at `# atelier:reviewer report`:
 
-```markdown
+````markdown
 <!-- atelier-reviewer-verdict/v1 -->
 ```
 Decision: approve | request-changes
@@ -219,7 +219,7 @@ Auto-merge: yes | no — <comma-separated blockers>
 
 # atelier:reviewer report
 
-**Decision:** approve | request-changes | approve-advisory (classifier-blocked)
+**Decision:** approve | request-changes
 **Auto-merge:** yes | no — <comma-separated blockers>
 
 ## Findings (≥ 80 confidence)
@@ -247,7 +247,7 @@ No high-confidence issues found.
 - [x|✗|⚠] Security
 - [x|✗|⚠] Dependency installs (PLAN.md §4)
 - [x|✗|⚠] PR shape
-```
+````
 
 Then return to the caller (orchestrator or operator) with:
 
@@ -259,7 +259,7 @@ Findings: N critical, M important
 Summary: <one-line>
 ```
 
-`classifier-blocked` is a **distinct terminal status**, not a synonym for `request-changes` — the review content says "correct, would approve" (`approve-advisory`), but the verdict never landed as an `APPROVED` review because the auto-mode classifier vetoed the `--approve` call in `approve` mode. The orchestrator must not treat this as a code-quality rejection that feeds the review-fix loop.
+`classifier-blocked` is a **distinct terminal status**, not a synonym for `request-changes` — the review content says "correct, would approve" (would approve), but the verdict never landed as an `APPROVED` review because the auto-mode classifier vetoed the `--approve` call in `approve` mode. The orchestrator must not treat this as a code-quality rejection that feeds the review-fix loop.
 
 ## Hard refusals
 
