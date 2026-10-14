@@ -97,7 +97,7 @@ else
   msg "adding marketplace $MARKETPLACE_SOURCE"
   # </dev/null: keeps any CLI prompt from eating the piped script stream
   # under `curl | bash` (same guard as scripts/atelier-* plugin calls).
-  CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin marketplace add "$MARKETPLACE_SOURCE" </dev/null
+  CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin marketplace add "$MARKETPLACE_SOURCE" </dev/null
 fi
 
 # ---------- 5) plugin install (idempotent — mirrors phase_c_2_install_plugin) ----------
@@ -106,7 +106,7 @@ if CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin list --json </dev/null 
   sub "$PLUGIN_ID already installed — skipping"
 else
   msg "installing $PLUGIN_ID"
-  CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin install "$PLUGIN_ID" </dev/null
+  CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin install "$PLUGIN_ID" </dev/null
 fi
 
 # ---------- 6) delegate to the cached install.sh ----------

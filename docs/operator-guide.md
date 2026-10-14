@@ -495,7 +495,7 @@ atelier-update
 
 What it does:
 
-1. Runs `claude plugin update atelier@akalab-tech` under atelier's config root, which downloads the latest release into Claude Code's plugin cache.
+1. Runs `claude plugin update atelier@akalab-tech` under atelier's config root, which downloads the latest release into Claude Code's plugin cache. The clone is forced over HTTPS (`CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1`), since atelier hosts have no SSH keys. If it fails, `atelier-update` shows the real error and exits 1 instead of saying "already up to date".
 2. Copies the new version into the managed runtime folder (`~/.local/share/atelier/<version>/`) and switches the `current` pointer to it — every `atelier-*` command updates at once, and the previous version stays on disk as a rollback.
 3. Refreshes the templates under `$ATELIER_CONFIG_DIR/templates/` so new projects pick up the latest settings.
 4. Reports the version delta and any new commands / agents / skills you now have.
