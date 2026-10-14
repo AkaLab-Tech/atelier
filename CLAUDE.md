@@ -67,7 +67,7 @@ Implementations of `pr-flow` and the auto-merge logic must enforce:
 
 - **Push gate**: lint + typecheck + unit/integration tests all green.
 - **PR gate**: push gate + Playwright e2e green with screenshots attached + auto-generated description (roadmap ref, summary, validation checklist, screenshots).
-- **Auto-merge gate**: CI green + independent `reviewer` agent (Opus, fresh context) approves.
+- **Auto-merge gate**: CI green + independent `reviewer` agent (Opus, fresh context) approves — published as a head-sha-bound verdict review (`autoMerge.reviewerApprovalMode`: `verdict` default, `approve`, `advisory`) and read by the gate via `atelier-review-verdict`.
 - **Never auto-merge** — falls back to human: changes touching `package.json`/`pnpm-lock.yaml`, `Dockerfile`/`docker-compose*`, `.github/workflows/**`, oversize PRs (default: `>200 lines` AND `>10 files` after exemptions for tests/lockfiles/migrations — see `scripts/atelier-pr-size-check`; per-project override in `<project>/.atelier.json`), pending human comments, or `request-changes` from reviewer.
 
 ## Failure recovery (PLAN.md §8)
