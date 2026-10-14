@@ -68,7 +68,7 @@ For each repo in scope, run:
 
 ```bash
 gh pr list --repo <owner/repo> --state open \
-  --json number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,mergeable,url \
+  --json number,title,headRefName,baseRefName,isDraft,reviewDecision,statusCheckRollup,mergeable,url \
   --limit 50
 ```
 
@@ -106,7 +106,10 @@ Using `statusCheckRollup` from step 3's JSON (no additional query needed):
 
 - Any check with `status == "IN_PROGRESS"` or `status == "QUEUED"` → **CI-pending**. Disposition: `waiting (CI)`. Skip dispatch; the pass verdict will report `re-poll suggested` so `/loop` continues.
 - Any check with `conclusion` in `FAILURE`, `CANCELLED`, `TIMED_OUT`, `STARTUP_FAILURE` → **CI-failed**. Disposition: `held — CI failed: <check-name>`. Terminal; the implementer must push a fix.
-- All checks `SUCCESS`, or (`status == "COMPLETED"` and `conclusion == "NEUTRAL"`), or array is empty → guardrail passes; continue to guardrail 4.
+- All checks `SUCCESS`, or (`status == "COMPLETED"` and `conclusion == "NEUTRAL"`) → guardrail passes; continue to guardrail 4.
+- Array is **empty** → decide with the "has CI" probes (from the project root): `git fetch origin <baseRefName>` then `git ls-tree -d --name-only origin/<baseRefName> .github/workflows` (non-empty → has CI; git error → fail closed), plus the required-status-checks read (rulesets / branch protection) only if that call is permitted — denied, prompting, or erroring means "unknown", never "none".
+  - Workflows present, required checks present, or either probe unknown → **CI not reported yet**. Disposition: `waiting (CI not reported yet)`. Non-terminal: skip dispatch; the pass verdict reports `re-poll suggested` so `/loop` continues. The unattended path never merges it.
+  - Both probes negative (no workflows on the base, no required checks) → guardrail passes; continue to guardrail 4. The per-PR line notes `no CI configured`.
 
 **Mergeable check (adjacent to guardrail 3):** if `mergeable == "CONFLICTING"` for any PR, set disposition `held — conflicting (needs manual rebase)`. Terminal. Apply this check before proceeding to guardrail 4.
 
