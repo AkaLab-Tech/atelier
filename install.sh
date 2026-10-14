@@ -2077,6 +2077,39 @@ phase_c_1_atelier_auto_mode() {
   sublog "enabled auto-mode in $target (permissions.defaultMode = \"auto\")"
 }
 
+# #442: Claude Code clones `github`-shorthand plugin sources over SSH on
+# `claude plugin update` (no HTTPS fallback), which fails on HTTPS-only hosts.
+# Setting env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 in atelier's settings.json also
+# covers in-session /plugin update and background auto-updates. Same idempotent
+# jq-merge shape as phase_c_1_atelier_auto_mode; only $ATELIER_CONFIG_DIR is
+# touched (never ~/.claude or git config). Duplicated in scripts/atelier-update.
+phase_c_1_plugin_prefer_https() {
+  local target="$ATELIER_CONFIG_DIR/settings.json"
+  local existing="{}"
+  if [ -f "$target" ]; then
+    existing=$(cat "$target")
+    if ! printf '%s' "$existing" | jq empty >/dev/null 2>&1; then
+      warn "$target is not valid JSON — leaving alone (operator must repair manually)"
+      return
+    fi
+  fi
+  if printf '%s' "$existing" | jq -e '.env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS == "1"' >/dev/null 2>&1; then
+    step_skip "CLAUDE_CODE_PLUGIN_PREFER_HTTPS already set in $target"
+    return
+  fi
+  local tmp
+  if ! tmp=$(mktemp "${target}.atelier.XXXXXX"); then
+    warn "could not create temp file for $target — skipping prefer-https write"
+    return
+  fi
+  printf '%s' "$existing" \
+    | jq '.env = (.env // {}) | .env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS = "1"' \
+    > "$tmp" \
+    && mv "$tmp" "$target" \
+    || { rm -f "$tmp"; warn "failed to write prefer-https to $target"; return; }
+  sublog "set env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS = \"1\" in $target"
+}
+
 # #41: reconcile the Notification hook entry in $ATELIER_CONFIG_DIR/settings.json
 # against the operator's .notification.enabled preference (operator.json),
 # at install time — so the FIRST session already has the hook if the
@@ -2163,6 +2196,7 @@ phase_c_1() {
   phase_c_1_setup_project_helper
   phase_c_1_atelier_help_file
   phase_c_1_atelier_auto_mode
+  phase_c_1_plugin_prefer_https
   phase_c_1_atelier_notification_hook
   phase_c_1_import_conversations
   phase_c_1_shellrc_hooks
@@ -2185,7 +2219,7 @@ ATELIER_PLUGIN_IDS=("atelier@akalab-tech" "claude-roadmap-tools@akalab-tech")
 
 phase_c_2_print_manual_commands() {
   warn "manual fallback — run these from a Claude Code session or terminal:"
-  warn "  claude plugin marketplace add ${ATELIER_MARKETPLACE_SOURCE}"
+  warn "  CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 claude plugin marketplace add ${ATELIER_MARKETPLACE_SOURCE}"
   for id in "${ATELIER_PLUGIN_IDS[@]}"; do
     warn "  claude plugin install ${id}"
   done
@@ -2203,7 +2237,7 @@ phase_c_2_marketplace() {
     step_skip "marketplace $ATELIER_MARKETPLACE_NAME already added"
   else
     sublog "adding marketplace $ATELIER_MARKETPLACE_SOURCE"
-    claude plugin marketplace add "$ATELIER_MARKETPLACE_SOURCE"
+    CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 claude plugin marketplace add "$ATELIER_MARKETPLACE_SOURCE"
   fi
 }
 
@@ -2214,7 +2248,7 @@ phase_c_2_install_plugin() {
     step_skip "$plugin_id already installed"
   else
     sublog "installing $plugin_id"
-    claude plugin install "$plugin_id"
+    CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 claude plugin install "$plugin_id"
   fi
 }
 

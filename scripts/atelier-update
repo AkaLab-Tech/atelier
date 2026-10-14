@@ -69,22 +69,74 @@ read_cached_plugin_version() {
 # installed the plugins, not the operator's personal ~/.claude/. Without it,
 # `claude plugin update` no-ops against the default config (no plugin to
 # update) and the atelier cache stays stale.
+#
+# #442: every call runs with CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 — `claude plugin
+# update` clones `github` sources over SSH otherwise, which fails on HTTPS-only
+# hosts. Output is captured (not discarded) so the real clone error is shown;
+# failures are recorded in the PLUGIN_REFRESH_FAILED_* globals for callers.
+PLUGIN_REFRESH_FAILED_ATELIER=false
+PLUGIN_REFRESH_FAILED_CRT=false
+
+# Idempotent jq merge of env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 into
+# $ATELIER_CONFIG_DIR/settings.json (covers in-session /plugin update and
+# background auto-update). Duplicates install.sh phase_c_1_plugin_prefer_https.
+ensure_plugin_prefer_https() {
+  local cfg="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+  local target="$cfg/settings.json" existing="{}" tmp
+  if [ -f "$target" ]; then
+    existing="$(cat "$target")"
+    printf '%s' "$existing" | jq empty >/dev/null 2>&1 \
+      || { warn "$target is not valid JSON — leaving alone"; return 0; }
+  fi
+  printf '%s' "$existing" | jq -e '.env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS == "1"' >/dev/null 2>&1 && return 0
+  mkdir -p "$cfg"
+  tmp="$(mktemp "${target}.atelier.XXXXXX")" || return 0
+  if printf '%s' "$existing" | jq '.env = (.env // {}) | .env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS = "1"' > "$tmp"; then
+    mv "$tmp" "$target"
+    sublog "set env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 in $target"
+  else
+    rm -f "$tmp"
+  fi
+  return 0
+}
+
+# Run `claude plugin update <id>`; on failure print the captured output
+# (last 20 lines) and, for SSH auth errors, the HTTPS hint. Returns 1 on failure.
+update_one_plugin() {
+  local id="$1" cfg="$2" out
+  out="$(mktemp)"
+  # </dev/null: claude plugin update prompts interactively; without it the cache refresh hangs — mirrors atelier-uninstall L209
+  if CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 CLAUDE_CONFIG_DIR="$cfg" claude plugin update "$id" </dev/null >"$out" 2>&1; then
+    sublog "claude plugin update $id: OK"
+    rm -f "$out"
+    return 0
+  fi
+  warn "claude plugin update $id failed:"
+  tail -n 20 "$out" | sed 's/^/      /' >&2
+  if grep -qE 'Permission denied \(publickey\)|Host key verification failed' "$out"; then
+    warn "  the clone went over SSH, but atelier is HTTPS-only (no SSH keys). Run once:"
+    local retry="claude plugin update $id"
+    warn "    CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 CLAUDE_CONFIG_DIR=$cfg $retry"
+    warn "  then re-run atelier-update. See docs/troubleshooting.md (Permission denied (publickey))."
+  fi
+  rm -f "$out"
+  return 1
+}
+
 refresh_plugin_cache() {
   command -v claude >/dev/null 2>&1 || return 0
   local cfg="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+  PLUGIN_REFRESH_FAILED_ATELIER=false
+  PLUGIN_REFRESH_FAILED_CRT=false
+  ensure_plugin_prefer_https
   log "refreshing Claude Code plugin cache"
-  # </dev/null: claude plugin update prompts interactively; without it the cache refresh hangs — mirrors atelier-uninstall L209
-  if CLAUDE_CONFIG_DIR="$cfg" claude plugin update atelier@akalab-tech </dev/null 2>/dev/null; then
-    sublog "claude plugin update atelier@akalab-tech: OK"
-  else
-    warn "claude plugin update atelier@akalab-tech failed (continuing)"
-  fi
-  if CLAUDE_CONFIG_DIR="$cfg" claude plugin update claude-roadmap-tools@akalab-tech </dev/null 2>/dev/null; then
-    sublog "claude plugin update claude-roadmap-tools@akalab-tech: OK"
-  else
-    warn "claude plugin update claude-roadmap-tools@akalab-tech failed (continuing)"
-  fi
+  update_one_plugin atelier@akalab-tech "$cfg" || PLUGIN_REFRESH_FAILED_ATELIER=true
+  update_one_plugin claude-roadmap-tools@akalab-tech "$cfg" || PLUGIN_REFRESH_FAILED_CRT=true
+  return 0
 }
+
+# True (0) when the last refresh_plugin_cache had any failure.
+plugin_refresh_failed() { $PLUGIN_REFRESH_FAILED_ATELIER || $PLUGIN_REFRESH_FAILED_CRT; }
 
 # ---------- template + symlink resync helpers (M7.1.F61 / F60) ----------
 # UTC timestamp for backup filenames (mirrors atelier-setup-project).
@@ -429,9 +481,11 @@ managed_update() {
   # 1) Let the claude CLI pull the latest release into its plugin cache.
   #    This replaces clone-mode's git fetch/merge; there is NO separate
   #    cache refresh after the swap (the CLI just did it — that's the
-  #    point of managed mode). refresh_plugin_cache tolerates "already up
-  #    to date" and network failures (warn + continue with what's cached).
+  #    point of managed mode). A failed atelier update dies below (#442).
   refresh_plugin_cache
+  if $PLUGIN_REFRESH_FAILED_ATELIER; then
+    die "plugin update failed — cache still at $(read_cached_plugin_version); nothing was swapped"
+  fi
 
   # 2) Resolve the ACTIVE cache version via installed_plugins.json — the
   #    claude CLI's own pointer file — never by globbing version dirs.
@@ -470,7 +524,7 @@ managed_update() {
   templates_out_of_sync && tmpl_drift=true || true
   symlinks_out_of_sync && link_drift=true || true
 
-  if ! $swapped && ! $tmpl_drift && ! $link_drift; then
+  if ! $swapped && ! $tmpl_drift && ! $link_drift && ! $PLUGIN_REFRESH_FAILED_CRT; then
     log "already up to date — nothing to do"
     echo ""
     ok "version: $new_version (cache, runtime, templates and helper symlinks all in sync)"
@@ -485,6 +539,8 @@ managed_update() {
   refresh_shellrc_block
 
   echo ""
+  $PLUGIN_REFRESH_FAILED_CRT \
+    && die "claude-roadmap-tools plugin update failed (atelier itself was updated) — fix the error above and re-run atelier-update"
   if $swapped; then
     ok "update applied — runtime current -> $new_version; restart open Claude Code sessions to pick up agent/skill/command changes"
   else
@@ -608,6 +664,8 @@ if [ "$OLD_SHA" = "$NEW_SHA" ]; then
   resync_script_symlinks
   refresh_shellrc_block
   echo ""
+  plugin_refresh_failed \
+    && die "runtime resynced, plugin cache NOT refreshed — sessions will keep loading the old version"
   ok "installed artifacts resynced to $NEW_VERSION — restart open Claude Code sessions to pick up plugin/agent changes"
   exit 0
 fi
@@ -821,5 +879,7 @@ if $SETTINGS_TEMPLATE_CHANGED; then
 fi
 
 echo ""
+plugin_refresh_failed \
+  && die "runtime updated, plugin cache NOT refreshed — sessions will keep loading the old version"
 ok "update applied — restart open Claude Code sessions to pick up agent/skill/command changes"
 exit 0

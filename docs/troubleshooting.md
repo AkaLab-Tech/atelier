@@ -136,6 +136,21 @@ Issues that come up while running a task.
 
 **Fix:** Re-run `atelier-update` — the "already up to date" path now checks each artifact for drift and resyncs whatever lags (templates, runtime dir, symlinks). If it still reports clean while the doctor disagrees, delete `$ATELIER_CONFIG_DIR/templates/` and re-run `atelier-update`. Then re-launch any open Claude sessions so they pick up the refreshed settings template.
 
+### `atelier-update` fails with `Permission denied (publickey)`
+
+**Symptom:** `atelier-update` prints `claude plugin update atelier@akalab-tech failed` with `git@github.com: Permission denied (publickey)` and exits 1; the plugin cache stays on the old version.
+
+**Cause:** the marketplace declares plugins as `github` sources, and `claude plugin update` clones those over SSH unless `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` is set. atelier hosts are HTTPS-only (no SSH keys), so the clone fails. `claude plugin install` falls back to HTTPS by itself, which is why the first install works and updates don't.
+
+**Fix:** from v0.46.1 on, atelier sets that variable on every plugin call and in `$ATELIER_CONFIG_DIR/settings.json`; `atelier-doctor --fix` applies the setting. If your installed `atelier-update` predates the fix it cannot fetch it, so bootstrap once by hand:
+
+```bash
+CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 CLAUDE_CONFIG_DIR=~/.claude-work claude plugin update atelier@akalab-tech
+atelier-update
+```
+
+atelier deliberately does not add a global git `insteadOf` rewrite: that would change git behaviour for all your repos, not just atelier's.
+
 ### `claude plugin install` fails with "marketplace not registered"
 
 **Symptom:** `install.sh` or `atelier-update` fails on the `claude plugin install atelier@akalab-tech` step with a message about the `akalab-tech` marketplace not being registered.

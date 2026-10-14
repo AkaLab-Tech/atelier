@@ -223,7 +223,7 @@ check_plugin_drift() {
 
   if [ -z "$local_v" ]; then
     push_plugin "$FAIL $plugin_id not installed"
-    push_fix_auto "CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin install $plugin_id"
+    push_fix_auto "CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin install $plugin_id"
     return
   fi
 
@@ -246,9 +246,30 @@ check_plugin_drift() {
     push_plugin "$OK $plugin_id $local_v (ahead of published $upstream_v)"
   else
     push_plugin "$FAIL $plugin_id $local_v → $upstream_v"
-    push_fix_auto "CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin marketplace update akalab-tech"
-    push_fix_auto "CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin update $plugin_id"
+    push_fix_auto "CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin marketplace update akalab-tech"
+    push_fix_auto "CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin update $plugin_id"
   fi
+}
+
+# #442 — Claude Code clones `github`-shorthand plugin sources over SSH on
+# `claude plugin update` unless CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 is set. Offline
+# and deterministic: reads the cached marketplace.json + settings.json only.
+check_plugin_https_clone() {
+  local mp="$ATELIER_CONFIG_DIR/plugins/marketplaces/akalab-tech/.claude-plugin/marketplace.json"
+  local target="$ATELIER_CONFIG_DIR/settings.json"
+  if [ ! -f "$mp" ] || ! jq empty "$mp" >/dev/null 2>&1; then
+    push_plugin "$SKIP plugin HTTPS clone (no readable marketplace.json at $mp)"
+    return
+  fi
+  local gh_n env_v=""
+  gh_n="$(jq '[.plugins[]? | select(.name == "atelier" or .name == "claude-roadmap-tools") | select((.source | type == "object") and .source.source == "github")] | length' "$mp" 2>/dev/null || echo 0)"
+  [ -f "$target" ] && env_v="$(jq -r '.env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS // ""' "$target" 2>/dev/null || true)"
+  if [ "$gh_n" = "0" ] || [ "$env_v" = "1" ]; then
+    push_plugin "$OK plugin updates clone over HTTPS"
+    return
+  fi
+  push_plugin "$FAIL plugin updates will clone over SSH (no SSH key on an HTTPS-only atelier host) — $target lacks env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS"
+  push_fix_auto "tmp=\"\$(mktemp \"$target.atelier.XXXXXX\")\" && { [ -f \"$target\" ] && cat \"$target\" || echo '{}'; } | jq '.env = (.env // {}) | .env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS = \"1\"' > \"\$tmp\" && mv \"\$tmp\" \"$target\" || rm -f \"\$tmp\""
 }
 
 check_git_wt_drift() {
@@ -1227,6 +1248,7 @@ atelier-migrate-task-ids <project> --apply   # rewrite ROADMAP.md + IN_PROGRESS.
 # Run checks in deterministic order.
 check_plugin_drift "atelier@akalab-tech"               "AkaLab-Tech/atelier"
 check_plugin_drift "claude-roadmap-tools@akalab-tech"  "AkaLab-Tech/claude-roadmap-tools"
+check_plugin_https_clone
 check_git_wt_drift
 check_legacy_hooks
 check_personal_claudemd_leak
