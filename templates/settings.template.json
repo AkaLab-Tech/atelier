@@ -248,6 +248,19 @@
       "Bash(jest*)",
       "Bash(pytest*)",
       "Bash(playwright test*)",
+      "Bash(PW_CHROME_CHANNEL=chrome pnpm exec vitest *)",
+      "Bash(PW_CHROME_CHANNEL=chrome pnpm exec playwright test *)",
+      "Bash(PW_CHROME_CHANNEL=chrome pnpm test*)",
+      "Bash(PW_CHROME_CHANNEL=chrome pnpm run test*)",
+      "Bash(CI=1 pnpm exec vitest *)",
+      "Bash(CI=1 pnpm exec playwright test *)",
+      "Bash(CI=1 pnpm test*)",
+      "Bash(CI=1 pnpm run test*)",
+      "Bash(CI=true pnpm exec vitest *)",
+      "Bash(CI=true pnpm exec playwright test *)",
+      "Bash(CI=true pnpm test*)",
+      "Bash(CI=true pnpm run test*)",
+      "Bash(pnpm run test*)",
       "Bash(eslint*)",
       "Bash(prettier*)",
       "Bash(tsc*)",
@@ -300,6 +313,12 @@
       "Read(~/.zshrc)",
       "Read(~/.bashrc)",
       "Read(<atelier-config-dir>/projects.json)"
+    ]
+  },
+
+  "autoMode": {
+    "allow": [
+      "Running the project's own test scripts (pnpm test, pnpm exec vitest, pnpm exec playwright test, pnpm run test*) from inside <worktree>, including Storybook browser runs through vitest or Playwright, with a leading PW_CHROME_CHANNEL=chrome, CI=1 or CI=true environment assignment and no other environment assignment, is allowed. Never with dangerouslyDisableSandbox, and never outside <worktree>."
     ]
   }
 }
