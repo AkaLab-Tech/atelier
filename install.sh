@@ -1690,6 +1690,10 @@ phase_c_1_setup_project_helper() {
   # the once-a-day SessionStart nudge (hooks/daily-housekeeping.sh).
   _phase_c_1_symlink_helper atelier-housekeeping
 
+  # #407a: read-only resolver for the reviewer's head-sha-bound verdict; the
+  # auto-merge gate and /atelier:babysit-prs read verdicts through it.
+  _phase_c_1_symlink_helper atelier-review-verdict
+
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it
   # yet. Warn rather than fail.
