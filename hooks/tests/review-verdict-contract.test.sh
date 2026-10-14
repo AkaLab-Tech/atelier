@@ -59,6 +59,14 @@ chk_prose "$REVIEWER" 'gh pr review <NN> --approve --body-file <worktree>/.task-
   "reviewer: approve mode still documents --approve via --body-file"
 chk_prose "$REVIEWER" '`reviewerApprovalMode: "approve"`** (opt-in' "reviewer: approve mode is opt-in"
 chk_prose "$REVIEWER" '`reviewerApprovalMode: "advisory"`' "reviewer: advisory mode documented"
+chk_prose "$REVIEWER" 'and your decision is `approve` **or** `request-changes`: post the verdict as a COMMENTED review' \
+  "reviewer: verdict-mode rejection is a COMMENTED review"
+chk_prose "$REVIEWER" 'neither `--approve` nor `--request-changes` is ever used in this mode' \
+  "reviewer: verdict mode never uses --request-changes"
+chk_prose "$REVIEWER" '**Never** post `--request-changes` (or `--approve`) when `reviewerApprovalMode` is `verdict`' \
+  "reviewer: hard refusal on --request-changes in verdict mode"
+chk_absent "$REVIEWER" 'post it exactly as before' "reviewer: old unconditional --request-changes wording removed"
+chk_absent "$TEMPLATE_JSON" 'posted as a real CHANGES_REQUESTED review in every mode' "template: old every-mode CHANGES_REQUESTED wording removed"
 chk_prose "$REVIEWER" 'Auto-merge: no — advisory mode' "reviewer: advisory mode never auto-merges"
 chk_prose "$REVIEWER" 'never** retry the denied `--approve` as a `--comment` review' \
   "reviewer: never retry a denied --approve as a comment"

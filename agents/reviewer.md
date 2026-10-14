@@ -184,7 +184,7 @@ Rate every finding before you report it:
 
 Run the review entirely **before** posting anything. Read `<project>/.atelier.json`'s `autoMerge.reviewerApprovalMode` first (absent block or absent field → `"verdict"`).
 
-- **`reviewerApprovalMode: "verdict"` (default)** and your decision is `approve`: post the verdict as a COMMENTED review from the reviewer identity. The auto-merge gate reads it through `atelier-review-verdict` (head-sha-bound, author-checked); no `--approve` is attempted:
+- **`reviewerApprovalMode: "verdict"` (default)** and your decision is `approve` **or** `request-changes`: post the verdict as a COMMENTED review from the reviewer identity, with `Decision:` set accordingly. The auto-merge gate reads it through `atelier-review-verdict` (head-sha-bound, author-checked); neither `--approve` nor `--request-changes` is ever used in this mode. A rejection is a COMMENTED `Decision: request-changes` on purpose: GitHub keeps a user's `CHANGES_REQUESTED` sticky until that same user approves or it is dismissed, so a real `--request-changes` review could never be cleared by a later COMMENTED approve verdict after the review-fix cycle, and every fixed PR would resolve to `request-changes` forever. The helper resolves a v1 COMMENTED `request-changes` at the current head to `request-changes`, and to `stale` once a push moves the head:
 
 ```bash
 GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --comment --body-file <worktree>/.task-log/tmp/review-body.md
@@ -199,7 +199,7 @@ GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --approve --bo
 
 If this call is denied by the auto-mode classifier (e.g. the `[Self-Approval]` veto — it keys on the **actor/session** that coordinated both authoring and review of this PR, not on whether both parties are agent-controlled; see `operator-rules.md` § "PR authoring is always sub-agent work"), the denial is **terminal**: **do not reword, re-quote, retry, or re-post the verdict as a `--comment` review or in any other form**, and do not route around it. Return `classifier-blocked` with the denial tag verbatim. Only `approve` mode has this outcome; a `verdict`-mode comment is a contract, not a retry after a denial.
 
-For a `request-changes` decision, post it exactly as before — the classifier only vetoes approvals of agent-authored PRs, never `request-changes`:
+In `approve` and `advisory` modes a `request-changes` decision is posted as a real review (the classifier only vetoes approvals of agent-authored PRs, never `request-changes`); in `advisory` mode it is marker-less like the rest of that mode. Never use this form in `verdict` mode:
 
 ```bash
 GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --request-changes --body-file <worktree>/.task-log/tmp/review-body.md
@@ -207,7 +207,7 @@ GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --request-chan
 
 Write the body with the `Write` tool to `<worktree>/.task-log/tmp/review-body.md` before posting (never a heredoc, never `/tmp`). `<worktree>` is the worktree the caller hands you; when the briefing carries only a PR number (direct invocation), resolve it: take the PR's `headRefName` and find the local worktree whose branch equals it via `git worktree list --porcelain`; if none exists, use the project root's gitignored `.task-log/tmp/`. The body file content:
 
-In `verdict`, `approve` and `request-changes` posts, the body starts with the verdict v1 marker and block (the exact text `atelier-review-verdict` parses; `Head` is the 40-hex head sha you diffed, i.e. the PR's `headRefOid` when you started), then the report. In `advisory` mode omit the marker and block and start at `# atelier:reviewer report`:
+In `verdict` mode (both decisions) and `approve` mode, the body starts with the verdict v1 marker and block (the exact text `atelier-review-verdict` parses; `Head` is the 40-hex head sha you diffed, i.e. the PR's `headRefOid` when you started), then the report. In `advisory` mode omit the marker and block and start at `# atelier:reviewer report`:
 
 ````markdown
 <!-- atelier-reviewer-verdict/v1 -->
@@ -259,11 +259,12 @@ Findings: N critical, M important
 Summary: <one-line>
 ```
 
-`classifier-blocked` is a **distinct terminal status**, not a synonym for `request-changes` — the review content says "correct, would approve" (would approve), but the verdict never landed as an `APPROVED` review because the auto-mode classifier vetoed the `--approve` call in `approve` mode. The orchestrator must not treat this as a code-quality rejection that feeds the review-fix loop.
+In `verdict` mode a `request-changes` return corresponds to the COMMENTED v1 verdict above and feeds the review-fix loop as usual. `classifier-blocked` is a **distinct terminal status**, not a synonym for `request-changes` — the review content says "correct, would approve" (would approve), but the verdict never landed as an `APPROVED` review because the auto-mode classifier vetoed the `--approve` call in `approve` mode. The orchestrator must not treat this as a code-quality rejection that feeds the review-fix loop.
 
 ## Hard refusals
 
 - **Never** approve a PR with a critical finding.
+- **Never** post `--request-changes` (or `--approve`) when `reviewerApprovalMode` is `verdict`: both decisions are COMMENTED v1 verdict reviews, so no sticky `CHANGES_REQUESTED` is created.
 - **Never** mark a PR auto-mergeable when any guardrail from "Auto-merge guardrails" is tripped.
 - **Never** edit any existing file or commit. You evaluate; you do not change. `Write` is granted only to create the review body under `<worktree>/.task-log/tmp/` (inside the task worktree, never `/tmp`, `$TMPDIR` or `~/`); never stage `.task-log/`. `Edit` is not granted.
 - **Never** `gh pr merge`. The `auto-merge` skill decides when to merge, and only when both (a) you approved and (b) no guardrails fired and (c) CI is green.
