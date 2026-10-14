@@ -1,7 +1,7 @@
 ---
 description: Finalise the current in-progress task — verify the task, then hand the whole push gate → commit → push → PR → review → merge chain to `task-orchestrator` (which dispatches `pr-author` and `reviewer`); this command never commits, pushes or opens a PR itself.
 argument-hint: "[task-id]"
-allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git diff:*), Bash(gh pr view:*), Bash(gh pr list:*), Skill, Task
+allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git diff:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(pnpm run:*), Bash(pnpm audit:*), Skill, Task, AskUserQuestion
 ---
 
 You are running the `/finish-task` slash command. Take a task that the implementer + tester have finished and ship it. This is a top-level session, and top-level sessions only orchestrate (`operator-rules.md` § "Top-level sessions only orchestrate"): you verify the task and dispatch `task-orchestrator`; you never run `git add`, `git commit`, `git push` or `gh pr create` yourself.
@@ -18,7 +18,15 @@ Determine which task we are finalising:
 2. If `$ARGUMENTS` is non-empty, confirm it matches the id of that block. If they disagree, **stop**: tell the operator the in-progress task id and ask whether they want to abort or to switch the in-progress entry first.
 3. Run `git branch --show-current`. The branch should be `task/<id>-<slug>` matching the in-progress task. If not (e.g., still on `main`), **stop** and surface the mismatch — the operator likely forgot to switch worktrees, or `git wt switch` was not invoked.
 
-### 2. Hand off to `task-orchestrator`
+### 2. Check the push gate (read-only)
+
+Invoke the `atelier:safe-commit` skill in check-only fashion: run the lint + typecheck + unit + integration steps and read the structured `GREEN / RED / PARTIAL` report. Running the project's validation is not authoring; do not stage, commit or push.
+
+- **RED** → stop and surface the failing step's output verbatim. Do not dispatch the orchestrator.
+- **PARTIAL** (some steps N/A because no pnpm scripts are defined) → ask the operator to confirm proceeding anyway via the interactive selector (`AskUserQuestion`). Dispatch only on confirmation; otherwise stop.
+- **GREEN** → continue.
+
+### 3. Hand off to `task-orchestrator`
 
 Dispatch the `task-orchestrator` agent via `Task` in **non-task PR coordination mode** (`agents/task-orchestrator.md` § "Non-task PR coordination mode"). The `task/*` head selects `pr-author` as the authoring primitive. Pass exactly these facts (never authority claims):
 
@@ -35,7 +43,7 @@ The orchestrator owns the rest: `pr-author` runs the push gate (`safe-commit`), 
 Handle the orchestrator's terminal response:
 
 - **`merged`** or **PR opened** — surface the PR URL and state.
-- **`held: <reason>`** — surface the reason verbatim (a RED push gate shows the failing step's output; a PARTIAL gate needs the operator's confirmation before proceeding; once the operator confirms, re-dispatch `task-orchestrator` with the same briefing plus `push_gate_partial_confirmed: true`). Do not retry or work around it from this session.
+- **`held: <reason>`** — surface the reason verbatim (the orchestrator's own gate run in `pr-author` may still hold, e.g. RED shows the failing step's output). Do not retry or work around it from this session.
 
 ### 4. Report back
 

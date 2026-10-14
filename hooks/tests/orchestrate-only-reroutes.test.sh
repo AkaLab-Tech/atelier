@@ -128,6 +128,18 @@ else
   fail "operator-rules: orchestrate-only section lacks the R1/R2 carve-outs"
 fi
 
+if has "$RULES" 'Known gap (pre-enforcement)' && has "$RULES" '/atelier:release' && has "$RULES" '#440'; then
+  pass "operator-rules: documents the /release step 6 known gap (reroute before #440)"
+else
+  fail "operator-rules: lacks the /release known-gap note naming #440"
+fi
+
+if has "$FINISH" 'AskUserQuestion' && ! has "$FINISH" 'push_gate_partial_confirmed'; then
+  pass "finish-task: confirms a PARTIAL gate itself, no hand-off flag"
+else
+  fail "finish-task: PARTIAL confirmation missing or stale push_gate_partial_confirmed flag"
+fi
+
 echo ""
 if [ "$fails" -eq 0 ]; then
   echo "orchestrate-only-reroutes: all assertions passed."

@@ -224,7 +224,7 @@ there is no exception for opening a PR "and not reviewing it":
 `/atelier:align` (every policy) all hand their commit / push / PR step to
 `task-orchestrator`.
 
-Two narrow carve-outs, and nothing else:
+Two sanctioned carve-outs (R1 and R2 are the only ones):
 
 - **R1 — plan/tracking commits.** A top-level session may `git add` / `git commit`
   when the staged set is only plan/tracking files (`.plan/**`, `ROADMAP.md`,
@@ -232,6 +232,12 @@ Two narrow carve-outs, and nothing else:
   `/atelier:plan-task` Phase 4 does. Gitignored or out-of-repo paths are fine too.
 - **R2 — release tag.** `/atelier:release` may push the semver tag
   `origin v*` (tags only; the bump PR itself still goes through `task-orchestrator`).
+
+**Known gap (pre-enforcement).** `/atelier:release` step 6 still dispatches
+`implementer` from the top level for the version bump, which conflicts with this
+rule. It is a documented, unsanctioned gap, not a carve-out: it must be rerouted
+through `task-orchestrator` (non-task PR coordination mode) before the #405b
+(#440) hook enforces the rule.
 
 `/atelier:resume-task` and `/atelier:align` also make prepare-only edits in a
 temporary worktree (the `[BLOCKED]` unmark, copied-in changed files) before
