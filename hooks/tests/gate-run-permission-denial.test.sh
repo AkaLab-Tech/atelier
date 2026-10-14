@@ -145,13 +145,19 @@ if command -v jq >/dev/null 2>&1; then
   else
     fail "template: an autoMode.allow entry mentions dangerouslyDisableSandbox without excluding it"
   fi
-  for shape in 'Bash(PW_CHROME_CHANNEL=chrome pnpm exec vitest *)' 'Bash(PW_CHROME_CHANNEL=chrome pnpm exec playwright test *)' 'Bash(PW_CHROME_CHANNEL=chrome pnpm test*)' 'Bash(PW_CHROME_CHANNEL=chrome pnpm run test:*)' 'Bash(CI=1 pnpm exec vitest *)' 'Bash(CI=true pnpm test*)'; do
+  for shape in 'Bash(PW_CHROME_CHANNEL=chrome pnpm exec vitest *)' 'Bash(PW_CHROME_CHANNEL=chrome pnpm exec playwright test *)' 'Bash(PW_CHROME_CHANNEL=chrome pnpm test*)' 'Bash(PW_CHROME_CHANNEL=chrome pnpm run test*)' 'Bash(CI=1 pnpm exec vitest *)' 'Bash(CI=1 pnpm run test*)' 'Bash(CI=true pnpm test*)' 'Bash(CI=true pnpm run test*)' 'Bash(pnpm run test*)'; do
     if jq -e --arg s "$shape" '.permissions.allow | index($s) != null' "$TEMPLATE" >/dev/null 2>&1; then
       pass "template: permissions.allow carries '$shape'"
     else
       fail "template: permissions.allow missing '$shape'"
     fi
   done
+  # A trailing ':*' equals ' *' and needs a space, so 'pnpm run test:*' would not match 'pnpm run test:storybook'.
+  if jq -e '[.permissions.allow[] | select(test("pnpm run test:\\*"))] | length == 0' "$TEMPLATE" >/dev/null 2>&1; then
+    pass "template: no 'pnpm run test:*' (colon-star) allow shape"
+  else
+    fail "template: a permissions.allow entry uses the 'pnpm run test:*' colon-star shape (does not match 'pnpm run test:storybook')"
+  fi
   if jq -e '[.permissions.allow[] | select(test("=\\* +pnpm "))] | length == 0' "$TEMPLATE" >/dev/null 2>&1; then
     pass "template: no env-prefixed pnpm allow entry has a wildcard env-assignment value"
   else
