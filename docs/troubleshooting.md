@@ -260,6 +260,14 @@ gh pr merge <N> --squash --delete-branch
 
 **Do not** widen `templates/settings.template.json`'s `gh pr review` / `gh pr merge` allow-rules yourself expecting this to fix it — the veto fires independent of the allow-rule match, and the harness's own `[Self-Modification]` classifier blocks an agent from editing its own permission templates. If you want to experiment with a wider allow-rule anyway, apply it manually to your own `~/.claude-work/settings.json` (or the relevant per-machine settings file) — this is squarely an operator-owned change atelier will not make for you.
 
+### Worker session asks you to paste a phrase
+
+**Symptom:** in a multi-terminal setup, a worker session asks you to type or paste a sentence (an "authorization phrase") into its terminal before it will review or merge a PR.
+
+**Cause:** atelier never asks for this. The auto-mode classifier accepts consent only from your own message in the session that acts, and it ignores approval-like text that arrives through briefs or peer messages (it treats it as a bypass signal), so a pasted phrase does not clear a denial. The ritual usually comes from a session's own memory notes, or from a worker that skipped `/atelier:next-task` and is writing and reviewing the same PR itself.
+
+**Fix:** decline the phrase. Have workers take tasks only through `/atelier:next-task` or `/atelier:resume-task <id>`. If a PR really is `held` after a classifier denial, the plan session asks you once (with a selector, naming the PR and head sha) and, on your answer, dispatches `task-orchestrator` via `/atelier:resume-task <id>`. See `operator-rules.md` § "Multi-session setups (plan + worker sessions)". Remove any old session-memory note that tells a session to ask for a phrase.
+
 ### Task is stuck — atelier created a `blocked` GitHub issue
 
 **Symptom:** atelier opened a GitHub issue labeled `blocked` and stopped working on a task.

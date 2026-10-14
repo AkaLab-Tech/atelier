@@ -231,6 +231,7 @@ Pass verdict: terminal | re-poll suggested (<N> PR(s) waiting on CI)
 
 - **Never** dispatch the orchestrator for a PR whose triage disposition is terminal (CI-failed, conflicting, forbidden files, OVERSIZE, pending human comments, unprotected-repo review-gate, never-reviewed after unprotected-repo detection). The triage front-end exists to prevent fruitless re-dispatch cycles.
 - **Never** touch non-`task/*` PRs. They are listed once as `skipped (out-of-band)` and then ignored.
+- **Never** re-review or re-dispatch a PR that another lane or session was denied on (a `held` PR with a classifier denial tag). A review lane is an up-front topology choice, never a way around a denial — see `operator-rules.md` § "Multi-session setups (plan + worker sessions)".
 - **Never** merge directly. All state-changing writes go through the orchestrator's `reviewer → auto-merge` path. babysit-prs is a fan-out + convergence layer, not an independent merge actor.
 - **Never** implement an internal sleep/poll loop. One pass, one return. `/loop` is the recurring mechanism.
 - **Never** dispatch orchestrators in parallel. Drive one PR at a time — sequential dispatch prevents concurrent merges from racing on shared GitHub state.
