@@ -210,11 +210,26 @@ session never runs both halves:
   `pr-opener` for non-task branches then the reviewer, in its "non-task PR
   coordination mode" (see `agents/task-orchestrator.md`).
 
-**One benign exception:** opening a PR and *not* self-reviewing it in the same
-session — e.g. `/atelier:finish-task`, which opens the PR and hands review off
-to a later, separate session or the operator — is fine. The violation is
-specifically coordinating both authoring and review from the same session,
-not authoring a PR per se.
+### Top-level sessions only orchestrate
+
+A top-level session (the one the operator is talking to, plan session or worker)
+never authors. It does not run `git add` / `git commit` / `git push` /
+`gh pr create`, does not edit source, and does not dispatch the chain specialists
+(`implementer`, `tester`, `e2e-runner`, `docker-runner`, `pr-author`,
+`pr-opener`, `reviewer`, `unblocker`) itself. Every write to a repo goes through
+`task-orchestrator` (or `planner` / `task-decomposer` for plan and tracking
+files), which dispatches those specialists as its own sub-agents. The rule is
+identical in every project — no per-project configuration — and there is no
+exception for opening a PR "and not reviewing it": `/atelier:finish-task`,
+`/atelier:resume-task` (blocked-resume docs PR) and `/atelier:align` (every
+policy) all hand their commit / push / PR step to `task-orchestrator`.
+
+This is stricter than the earlier "never both author and review" invariant above
+(which it subsumes) and it is the same boundary as "Atelier's gates are the only
+authority on commit / push / merge": the gates decide whether a step proceeds,
+and this rule decides who may perform it. Categorical enforcement by a
+`PreToolUse` hook arrives with #405b (#440); until it lands this section is the
+rule, not a mechanism — follow it anyway.
 
 ### Multi-session setups (plan + worker sessions)
 
@@ -246,14 +261,18 @@ session:
 - **Review lane is an up-front design choice.** Separation of duties is
   acceptable only when fixed before any denial: workers only write PRs and a
   non-writing session (the plan session, or a dedicated review session running
-  `/loop /atelier:babysit-prs`) reviews and merges PRs it did not write. A lane
+  `/loop /atelier:babysit-prs`) reviews and merges PRs it did not write — and
+  even that session acts only through `task-orchestrator` (`resume_mode:
+  pr-open`, or non-task coordination mode), never by dispatching `reviewer` or
+  running `gh pr merge` from its own top level. A lane
   that was denied on a PR leaves it `held`; it does not re-review it.
 - **Held-PR escalation goes through the plan session.** A worker's classifier
   denial ends as a structured `held` report: PR number, head sha and the denial
   tag verbatim (e.g. `[Auto-Mode Bypass]`). The plan session asks the
   operator **once** via `AskUserQuestion`. Only on the operator's own answer
-  in that session does it act — and only by dispatching `task-orchestrator`
-  (`/atelier:resume-task <id>`), which owns review and merge. The plan session
+  in that session does it act — and only through `task-orchestrator`
+  (`/atelier:resume-task <id>` for a task PR, non-task coordination mode for any
+  other PR), which dispatches a fresh `reviewer` and owns review and merge. The plan session
   never commits, pushes, reviews or merges from its own top level. Every
   Auto-merge gate guardrail above (independent `reviewer`, CI green, the
   never-auto-merge list) still applies unchanged.
