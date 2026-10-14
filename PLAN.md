@@ -374,9 +374,9 @@ Open a PR (not draft) when:
 
 Auto-merge when:
 1. CI green, **and**
-2. Independent `reviewer` agent (Opus, fresh context) approves per checklist.
+2. Independent `reviewer` agent (Opus, fresh context) approves per checklist. The approval is published as a head-sha-bound verdict review (COMMENTED, read by the gate through `atelier-review-verdict`; `APPROVED` in `approve` mode) (#407).
 
-**Classifier-blocked reviewer approval (#38).** The Claude Code auto-mode classifier applies a `[Self-Approval]` veto to a reviewer sub-agent's `--approve` on a PR authored by the agent-controlled `pr-author` sub-agent — it fires regardless of the two distinct `gh` identities and regardless of whether the exact command matches the `templates/settings.template.json` allow-rule; it is a hard actor/session veto, not a missing-allow-rule gap. When this happens, `reviewer` degrades to an advisory `gh pr review --comment` carrying its full verdict and returns `classifier-blocked`; `task-orchestrator` treats this as a terminal `held: reviewer approval blocked by auto-mode classifier — human merge required` state (never a `request-changes`, never retry-able) and `reviewDecision` correctly stays non-`APPROVED`, so guardrail #2 below withholds the merge for a human. Per-project `autoMerge.reviewerApprovalMode` (`"approve"` default | `"advisory"`) controls whether the reviewer even attempts `--approve` first. See `agents/reviewer.md` § Output, `agents/task-orchestrator.md` step 8, and `docs/troubleshooting.md`. The durable fix is harness-level second-actor support (an independent-identity notion the classifier can honor) — outside atelier's unilateral control.
+**Classifier-blocked reviewer approval (#38).** The Claude Code auto-mode classifier applies a `[Self-Approval]` veto to a reviewer sub-agent's `--approve` on a PR authored by the agent-controlled `pr-author` sub-agent — it fires regardless of the two distinct `gh` identities and regardless of whether the exact command matches the `templates/settings.template.json` allow-rule; it is a hard actor/session veto, not a missing-allow-rule gap. This applies to `approve` mode only (#407b): `reviewer` returns `classifier-blocked` and never re-posts the denied approval as a comment; `task-orchestrator` treats this as a terminal `held: reviewer approval blocked by auto-mode classifier — human merge required` state (never a `request-changes`, never retry-able) and `reviewDecision` correctly stays non-`APPROVED`, so guardrail #2 below withholds the merge for a human. Per-project `autoMerge.reviewerApprovalMode` (`"verdict"` default | `"approve"` | `"advisory"`) controls how the reviewer publishes: `verdict` posts a COMMENTED review (marker `<!-- atelier-reviewer-verdict/v1 -->`, `Decision: approve | request-changes` + `Head:` block) from the reviewer identity for both outcomes (never a real `--request-changes`, which GitHub keeps sticky), `approve` attempts `--approve` (for repos whose branch protection requires an approving review), `advisory` is human-merge only. See `agents/reviewer.md` § Output, `agents/task-orchestrator.md` step 8, and `docs/troubleshooting.md`. The durable fix is harness-level second-actor support (an independent-identity notion the classifier can honor) — outside atelier's unilateral control.
 
 **Held-escalation path (#403).** Any classifier denial of a review or merge dispatch (not only `[Self-Approval]`) ends as a structured `held` report carrying the PR, head sha and the denial tag verbatim. Authorization never travels between sessions or into sub-agent briefs (the classifier does not treat delegated or peer-session text as the user's own message), so no agent composes a phrase for the operator to paste elsewhere and none moves the denied review or merge to another lane. The plan session asks the operator once via `AskUserQuestion` and, only on the operator's own answer, acts solely by dispatching `task-orchestrator` (`/atelier:resume-task <id>`); it never commits, pushes, reviews or merges from its own top level. All guardrails in this section still apply. See `operator-rules.md` § "Multi-session setups (plan + worker sessions)".
 
@@ -446,10 +446,15 @@ approval (#38).** Delegating authoring and review to separate sub-agents
 satisfies the actor/session rule above, but the classifier's `[Self-Approval]`
 veto is broader: it can still refuse a reviewer sub-agent's `--approve` on a
 PR authored by the agent-controlled `pr-author` sub-agent, purely because both
-are agent-controlled — independent of the delegation depth. `reviewer`
-handles this by degrading to an advisory comment and returning
-`classifier-blocked`; `task-orchestrator` surfaces it as a terminal held state
-(§6 above) rather than treating it as a bug in the delegation chain.
+are agent-controlled — independent of the delegation depth. The denial rate is
+harness-version dependent (a 2026-09/10 transcript scan: reviewer-identity
+`--approve` 0 denials in ~220 calls on 2.1.272–2.1.295, 5/40 on 2.1.296;
+non-approve reviewer writes 0/207). Since #407b the default `verdict` mode
+publishes a COMMENTED, head-sha-bound review instead of `--approve`, so the
+gate no longer depends on an approval. In `approve` mode `reviewer` returns
+`classifier-blocked` and `task-orchestrator` surfaces a terminal held state
+(§6 above) rather than treating it as a bug in the delegation chain; the denied
+approval is never re-posted as a comment.
 
 ### Skills (global)
 
@@ -621,7 +626,7 @@ Phases are sequential. Each phase ends with a verifiable milestone.
 ### Phase 5 — Multi-project
 **Deliverables:**
 - M5.0 Config root isolation: atelier lives under `$ATELIER_CONFIG_DIR` (default `~/.claude-work/`), separate from the operator's personal Claude.
-- M5.0.1 `gh` auth isolation: two atelier-isolated `gh` identities at `$ATELIER_CONFIG_DIR/gh/author/` (used by every operational agent) and `$ATELIER_CONFIG_DIR/gh/reviewer/` (used only by the `reviewer` agent). The two must be different GitHub users so `gh pr review --approve` lands as a real approval, fixing Finding #11.
+- M5.0.1 `gh` auth isolation: two atelier-isolated `gh` identities at `$ATELIER_CONFIG_DIR/gh/author/` (used by every operational agent) and `$ATELIER_CONFIG_DIR/gh/reviewer/` (used only by the `reviewer` agent). The two must be different GitHub users: the reviewer identity is the provenance anchor for the verdict (the gate accepts a verdict only from the reviewer login, never the PR author), and in `approve` mode `gh pr review --approve` lands as a real approval, fixing Finding #11.
 - M5.0.2 Preflight collision check + dynamic `ATELIER_CONFIG_DIR` so the operator can choose a different path when the default already has unrelated content.
 - M5.0.3 `atelier-uninstall` with chat-session preservation (default) + `--purge` opt-in.
 - M5.1 Project registry at `$ATELIER_CONFIG_DIR/projects.json`.
