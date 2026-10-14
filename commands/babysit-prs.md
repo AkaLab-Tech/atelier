@@ -88,17 +88,14 @@ For each PR in the triage list, apply the `auto-merge` six guardrails as a read-
 
 **Guardrail 2 — reviewer approved.**
 
-- `reviewDecision == "APPROVED"` → guardrail passes; continue to guardrail 3.
-- `reviewDecision == "CHANGES_REQUESTED"` → **needs-fix**. If `reviewFix.enabled` is `true` (default), this is actionable (the orchestrator's review-fix loop drives it). If `reviewFix.enabled` is `false`, disposition is terminal: `needs fix (request-changes) — reviewFix disabled`.
-- `reviewDecision` is `null` or `"REVIEW_REQUIRED"` → may be genuinely unreviewed **or** the unprotected-repo quirk (reviewer ran and approved, but GitHub left `reviewDecision` empty because branch protection is not enabled). Distinguish with one additional query:
+Run `atelier-review-verdict <owner/repo> <NN>` (read-only; same resolver as the `auto-merge` skill) and branch on its `verdict=` line:
 
-  ```bash
-  gh pr view <NN> --repo <owner/repo> --json reviews \
-    --jq '[.reviews[] | select(.state == "APPROVED")] | length'
-  ```
+- `approve` or `approved` (exit 0) → guardrail passes; continue to guardrail 3.
+- `request-changes` → **needs-fix**. If `reviewFix.enabled` is `true` (default), this is actionable (the orchestrator's review-fix loop drives it). If `reviewFix.enabled` is `false`, disposition is terminal: `needs fix (request-changes) — reviewFix disabled`.
+- `none` or `stale` → **unreviewed** (never reviewed, or the head moved after the verdict). Actionable: dispatch so the orchestrator runs reviewer → auto-merge.
+- exit 2 (a `gh` read failed) → `waiting (verdict unreadable)`; skip dispatch this pass, never treat it as a pass.
 
-  - Count == 0 → **unreviewed**. Actionable: dispatch so the orchestrator runs reviewer → auto-merge.
-  - Count > 0 → **unprotected-repo hold**: an `APPROVED` review exists but `reviewDecision` is still null. **Terminal.** Disposition: `held — review gate: unprotected repo`. The operator must enable branch protection on the repo — this will never self-resolve and must **not** be re-polled. Surface it clearly; never dispatch.
+The gate no longer depends on GitHub computing `reviewDecision`, so there is no "unprotected-repo" terminal state here.
 
 **Guardrail 3 — CI.**
 
@@ -229,13 +226,12 @@ Pass verdict: terminal | re-poll suggested (<N> PR(s) waiting on CI)
 
 ## Hard refusals
 
-- **Never** dispatch the orchestrator for a PR whose triage disposition is terminal (CI-failed, conflicting, forbidden files, OVERSIZE, pending human comments, unprotected-repo review-gate, never-reviewed after unprotected-repo detection). The triage front-end exists to prevent fruitless re-dispatch cycles.
+- **Never** dispatch the orchestrator for a PR whose triage disposition is terminal (CI-failed, conflicting, forbidden files, OVERSIZE, pending human comments). The triage front-end exists to prevent fruitless re-dispatch cycles.
 - **Never** touch non-`task/*` PRs. They are listed once as `skipped (out-of-band)` and then ignored.
 - **Never** re-review or re-dispatch a PR that another lane or session was denied on (a `held` PR with a classifier denial tag). A review lane is an up-front topology choice, never a way around a denial — see `operator-rules.md` § "Multi-session setups (plan + worker sessions)".
 - **Never** merge directly. All state-changing writes go through the orchestrator's `reviewer → auto-merge` path. babysit-prs is a fan-out + convergence layer, not an independent merge actor.
 - **Never** implement an internal sleep/poll loop. One pass, one return. `/loop` is the recurring mechanism.
 - **Never** dispatch orchestrators in parallel. Drive one PR at a time — sequential dispatch prevents concurrent merges from racing on shared GitHub state.
 - **Never** weaken or skip a guardrail. All six are applied faithfully in triage; the orchestrator's `auto-merge` skill remains authoritative and short-circuits on the first failure regardless.
-- **Never** merge the never-auto-merge set: draft, non-`task/*`, forbidden files, oversize, pending human comments, `CHANGES_REQUESTED` with `reviewFix.enabled: false`, unprotected-repo review-gate, CI-failed, conflicting.
-- **Never** re-poll an unprotected-repo review-gate hold. Once an `APPROVED` review exists and `reviewDecision` is still null, that is a configuration problem (missing branch protection), not a transient state. Report it once as terminal; do not count it as `re-poll suggested`.
+- **Never** merge the never-auto-merge set: draft, non-`task/*`, forbidden files, oversize, pending human comments, `CHANGES_REQUESTED` with `reviewFix.enabled: false`, CI-failed, conflicting.
 - **Never** honour a `decisionPolicy: ask` override by prompting in non-interactive mode. In non-interactive mode, stop with a clear error when no safe default exists — never guess, never prompt.

@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+#
+# atelier-review-verdict — read-only resolution of a PR's review verdict (#407a).
+#
+# Usage: atelier-review-verdict <owner/repo> <NN>
+#
+# Output: exactly one line on stdout.
+#   verdict=approve sha=<40-hex>   v1 verdict review from the reviewer identity, bound to the current head
+#   verdict=approved sha=<40-hex>  GitHub reviewDecision == APPROVED (human review, or `approve` mode); sha = head
+#   verdict=request-changes        reviewDecision CHANGES_REQUESTED, or a v1 request-changes verdict
+#   verdict=stale sha=<40-hex>     latest v1 verdict was for an older head; sha = the head it covered
+#   verdict=none                   no usable verdict (also: forged, self-authored, or malformed)
+# Exit: 0 approve/approved · 1 none/stale/request-changes · 2 error/usage (never a pass).
+#
+# Verdict v1 contract (written by the reviewer agent, read here). The review body
+# starts with the marker `<!-- atelier-reviewer-verdict/v1 -->` followed by a fenced block:
+#     Decision: approve | request-changes
+#     Head: <40-hex head sha the reviewer diffed>
+#     Auto-merge: yes | no — <blockers>
+# A verdict counts only when the review author is the reviewer login, differs from the
+# PR author, review commit.oid == Head == the PR's current headRefOid. Newer supersedes older.
+# gh reads only; no state is modified.
+
+set -u
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+[ $# -eq 2 ] || { echo "usage: atelier-review-verdict <owner/repo> <NN>" >&2; exit 2; }
+repo="$1"; pr="$2"
+case "$pr" in ''|*[!0-9]*) echo "atelier-review-verdict: <NN> must be a PR number" >&2; exit 2 ;; esac
+
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+
+# Single swap point for the reviewer login source (#391 will replace this lookup).
+reviewer_login() {
+  GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh api user --jq .login
+}
+
+fail() { echo "atelier-review-verdict: $1" >&2; exit 2; }
+
+command -v jq >/dev/null 2>&1 || fail "jq not found"
+login="$(reviewer_login 2>/dev/null)" || fail "cannot resolve reviewer login"
+[ -n "$login" ] || fail "empty reviewer login"
+pr_json="$(gh pr view "$pr" --repo "$repo" --json author,headRefOid,reviewDecision,reviews 2>/dev/null)" \
+  || fail "cannot read PR $repo#$pr"
+
+out="$(printf '%s' "$pr_json" | jq -r --arg login "$login" '
+  def v1: (.body // "") | contains("<!-- atelier-reviewer-verdict/v1 -->");
+  .headRefOid as $head
+  | (.author.login // "") as $author
+  | ([.reviews[]? | select((.author.login // "") == $login and ($login != $author) and v1)]
+      | sort_by(.submittedAt) | last) as $v
+  | if .reviewDecision == "CHANGES_REQUESTED" then "verdict=request-changes"
+    elif .reviewDecision == "APPROVED" then "verdict=approved sha=\($head)"
+    elif $v == null then "verdict=none"
+    else
+      ($v.body | capture("Decision: *(?<d>approve|request-changes)\\b").d? // "") as $d
+      | ($v.body | capture("Head: *(?<h>[0-9a-f]{40})").h? // "") as $h
+      | ($v.commit.oid // "") as $c
+      | if $d == "" or $h == "" or $h != $c then "verdict=none"
+        elif $c != $head then "verdict=stale sha=\($c)"
+        elif $d == "approve" then "verdict=approve sha=\($c)"
+        else "verdict=request-changes" end
+    end' 2>/dev/null)" || fail "cannot parse PR JSON"
+[ -n "$out" ] || fail "empty verdict"
+
+printf '%s\n' "$out"
+case "$out" in
+  "verdict=approve "*|"verdict=approved "*) exit 0 ;;
+  *) exit 1 ;;
+esac

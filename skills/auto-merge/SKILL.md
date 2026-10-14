@@ -25,7 +25,7 @@ The executable form of [PLAN.md §6](PLAN.md)'s auto-merge gate. The `reviewer` 
 
 - Operator has authenticated `gh` (`gh auth status` returns OK). Without it the skill cannot read PR state and must stop.
 - The PR exists and is identified by a number or URL.
-- `task-orchestrator` (or the operator) has already invoked `reviewer` and the review verdict is visible via `gh pr view --json reviewDecision`.
+- `task-orchestrator` (or the operator) has already invoked `reviewer` and the review verdict is readable via `atelier-review-verdict <owner/repo> <NN>` (a head-sha-bound verdict review, or GitHub's `reviewDecision`).
 
 If any precondition is missing, **stop and report** — do not partially-merge.
 
@@ -44,20 +44,18 @@ If `true` → `held: PR is still a draft`.
 ### 2. Reviewer approved
 
 ```bash
-gh pr view <NN> --json reviewDecision --jq .reviewDecision
+atelier-review-verdict <owner/repo> <NN>   # one line: verdict=<approve|approved|request-changes|stale|none> [sha=<40-hex>]
 ```
 
-Valid values: `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED`, `null` (no review requested).
+Exit `0` (`verdict=approve sha=…` or `verdict=approved sha=…`) proceeds; **record the `sha`** — the merge in § "The merge" is pinned to it. Anything else holds: exit `1` → `held: review verdict is <verdict>; expected approve/approved` (`stale` means the head moved after the reviewer's verdict — re-review needed); exit `2` (a `gh` read failed) → `held: review verdict unreadable` — never a pass.
 
-Only `APPROVED` proceeds. Anything else (including `null`) → `held: review status is <value>; expected APPROVED`.
+The helper resolves, in order: GitHub's net `reviewDecision` `CHANGES_REQUESTED` → `request-changes`; `APPROVED` → `approved` (a human, or the `approve` reviewer mode); otherwise the latest review by the reviewer login carrying the `<!-- atelier-reviewer-verdict/v1 -->` marker, valid only when its author is not the PR author and its `commit.oid`, its body `Head:` and the PR's `headRefOid` all match. It honours GitHub's net decision — if the `atelier:reviewer` agent approved but a human later marked `request-changes`, the result is `request-changes`.
 
-Important: GitHub's `reviewDecision` is the **net** decision after all reviews. If the `atelier:reviewer` agent approved but a human later marked `request-changes`, GitHub returns `CHANGES_REQUESTED` (correctly). The skill honours GitHub's verdict — it does not double-check the agent's individual review.
+Note: the `reviewer` agent runs under `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/reviewer`, a distinct GitHub user from the author identity at `$ATELIER_CONFIG_DIR/gh/author`. The helper rejects any verdict authored by the PR author's login, so if the two identities resolve to the same GitHub login this guardrail keeps holding until the reviewer dir is re-authenticated with a different account.
 
-Note: the `reviewer` agent runs under `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/reviewer`, a distinct GitHub user from the author identity at `$ATELIER_CONFIG_DIR/gh/author`. With distinct identities, GitHub honours the reviewer's `--approve` and `reviewDecision` resolves to `APPROVED`. If the two identities resolve to the same GitHub login, this guardrail keeps holding until the reviewer dir is re-authenticated with a different account.
+Reviewer has no access to the repo: on a freshly-created **private** repo the reviewer identity is often not a collaborator, so it never managed to post a verdict and the helper returns `none`. Do not treat this as a normal "waiting for review" hold that will resolve on its own — it never will. When the review never landed because the reviewer could not resolve the repo, surface it as the terminal state `held: reviewer cannot access this repo — auto-merge unavailable; grant the reviewer read access (run /atelier:setup-project or add it as a collaborator)`, not an open-ended wait.
 
-Reviewer has no access to the repo: on a freshly-created **private** repo the reviewer identity is often not a collaborator, so it never managed to post an approval and `reviewDecision` is `REVIEW_REQUIRED`/`null`. Do not treat this as a normal "waiting for review" hold that will resolve on its own — it never will. When the review never landed because the reviewer could not resolve the repo, surface it as the terminal state `held: reviewer cannot access this repo — auto-merge unavailable; grant the reviewer read access (run /atelier:setup-project or add it as a collaborator)`, not an open-ended wait.
-
-Reviewer degraded to advisory (`classifier-blocked`): when the auto-mode classifier vetoes the reviewer's `--approve` as self-approval — the veto keys on the **actor/session** that coordinated both authoring and review, not on both parties being agent-controlled (see `operator-rules.md` § "PR authoring is always sub-agent work") — or `autoMerge.reviewerApprovalMode` is `"advisory"`, the `reviewer` agent posts an advisory `--comment` review instead of `--approve` and returns `classifier-blocked` (see `agents/reviewer.md` § Output). `reviewDecision` correctly stays non-`APPROVED` in this case, so this guardrail holds and the PR is withheld for a human merge — this is the correct, designed outcome, not a bug in the guardrail. `task-orchestrator` surfaces this before it ever reaches the `auto-merge` skill (see `agents/task-orchestrator.md` step 8), so the skill should rarely be invoked at all on a `classifier-blocked` PR; if it is invoked anyway, guardrail #2 holds it exactly as it would any other non-`APPROVED` state.
+Reviewer degraded to advisory (`classifier-blocked`): when the auto-mode classifier vetoes the reviewer's `--approve` as self-approval — the veto keys on the **actor/session** that coordinated both authoring and review, not on both parties being agent-controlled (see `operator-rules.md` § "PR authoring is always sub-agent work") — or `autoMerge.reviewerApprovalMode` is `"advisory"`, the `reviewer` agent posts an advisory `--comment` review instead of `--approve` and returns `classifier-blocked` (see `agents/reviewer.md` § Output). The advisory comment carries no v1 verdict marker, so the helper returns `none` and this guardrail holds and the PR is withheld for a human merge — this is the correct, designed outcome, not a bug in the guardrail. `task-orchestrator` surfaces this before it ever reaches the `auto-merge` skill (see `agents/task-orchestrator.md` step 8), so the skill should rarely be invoked at all on a `classifier-blocked` PR; if it is invoked anyway, guardrail #2 holds it exactly as it would any other `none` verdict.
 
 ### 3. All CI checks succeeded
 
@@ -149,11 +147,12 @@ These escape hatches leave a paper trail in the project / task; an ad-hoc *"conf
 ## Merge — only when all six guardrails pass
 
 ```bash
-gh pr merge <NN> --squash --delete-branch --body-file <(echo "")
+gh pr merge <NN> --squash --delete-branch --match-head-commit <sha> --body-file <(echo "")
 ```
 
 - `--squash` is the only strategy atelier ships (PLAN.md §6).
 - `--delete-branch` removes the remote branch in the same call.
+- `--match-head-commit <sha>` is the `sha` recorded in guardrail #2 (the reviewed head): a push racing the gate makes the merge fail instead of landing unreviewed code. On that failure report `held: head moved after review` and do not retry.
 - `--body-file <(echo "")` clears the squash-commit body to just the title — the original PR body lives on the closed PR for history; the merge commit on `main` should be terse.
 
 Capture the merge commit SHA from the command output (it prints `Merged pull request #N (commit: <sha>)`).
