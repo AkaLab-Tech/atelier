@@ -67,11 +67,20 @@ gh pr view <NN> --json statusCheckRollup --jq '.statusCheckRollup'
 
 This returns an array of check objects (with `conclusion` and `status` fields). Pass condition: **every** check has `conclusion == "SUCCESS"` (or `status == "COMPLETED" && conclusion == "NEUTRAL"`, which means skipped checks). Fail if any is `FAILURE`, `CANCELLED`, `TIMED_OUT`, `STARTUP_FAILURE`, or still `IN_PROGRESS` / `QUEUED`.
 
-If the array is empty (no checks configured), the skill treats it as **pass** — projects without CI shouldn't be blocked by the absence of CI. Surface this in the report so the operator knows.
+If the array is **empty**, it is never a pass by itself: GitHub registers check-runs asynchronously after a push, so an empty rollup right after a push usually means "CI has not reported yet". Decide with two probes, run from the project root:
+
+- **Workflows on the base branch** (local, permission-free): `git fetch origin <baseRefName>` then `git ls-tree -d --name-only origin/<baseRefName> .github/workflows`. Non-empty output → the repo has CI. Empty output → no workflows. Any git error → treat as "has CI" (fail closed).
+- **Required status checks on the base branch**: query the rulesets / branch-protection read **only if that call is permitted** in the session. If the call is denied, prompts, or errors, the answer is "unknown" — never assume "none".
+
+Outcomes:
+
+1. Workflows present, or required checks present, or either probe could not be determined → **hold**: `held: CI not reported yet` (append `(could not determine required checks)` when the required-checks probe was the unknown one).
+2. Both probes say "none" (no workflows and no required checks) → guardrail 3 **passes vacuously**. Surface it in the report: `CI: no checks configured (no .github/workflows on <base>, no required checks): guardrail 3 passes vacuously`.
 
 → `held: CI not green (<N> check(s) failed | <N> still running)`.
+→ `held: CI not reported yet` (empty rollup on a repo with CI, or CI presence could not be determined).
 
-Note: when the skill is invoked via `task-orchestrator`, pending CI has already been waited on by the orchestrator's pre-merge CI wait step before this skill is called. The skill remains evaluate-once; the bounded wait lives upstream. When the skill is invoked directly by the operator ("merge the PR"), pending CI still yields `held` here — re-invoke after CI completes, or use `/atelier:babysit-prs` for unattended monitoring.
+Note: when the skill is invoked via `task-orchestrator`, pending CI has already been waited on by the orchestrator's pre-merge CI wait step before this skill is called. The skill remains evaluate-once; the bounded wait lives upstream. When the skill is invoked directly by the operator ("merge the PR"), pending CI still yields `held` here, and so does an empty rollup on a repo with CI (`held: CI not reported yet`) — re-invoke after CI completes or reports, or use `/atelier:babysit-prs` for unattended monitoring.
 
 ### 4. No forbidden files in the diff
 
