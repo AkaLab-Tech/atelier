@@ -61,13 +61,14 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
 - **Never** commit the screenshots into the repository. They live in `<worktree>/.task-log/screenshots/` for the lifetime of the task (kept for the retry budget log per §8) and are never pushed to `origin` or uploaded anywhere as binary content.
 - **Never** install `playwright` (the deprecated package) — only `@playwright/test` (the maintained one). The skill enforces this.
 - **Never** edit `package.json` or `pnpm-lock.yaml` directly. Adding `@playwright/test` always goes through `pnpm add -D` — and that goes through the `safe-package-change` hook, which already allowlists `@playwright/test` as a legitimate native-build dependency.
+- **Never** set `dangerouslyDisableSandbox` on a Playwright or browser command, and stop on the first sandbox or auto-mode classifier denial. A denial is terminal for that step: no retry, rewording, splitting, env-var juggling, and no handing the command to the parent or another session (`operator-rules.md` § "Gate runs and sandbox/classifier denials"). Return `NEEDS-OPERATOR-PERMISSION` (see Output).
 - If `@playwright/test` was added in this task (first time for the project), surface that explicitly to the orchestrator so `pr-author` mentions it in the PR description — that change touches `package.json` and falls into the "never auto-merge" list in [PLAN.md §6](PLAN.md). The PR must go through a human.
 
 ## Output
 
 End your turn with:
 
-- **Suite result:** `PASS — N tests, M screenshots` or `FAIL — N failures` or `SKIPPED — no UI surface`.
+- **Suite result:** `PASS — N tests, M screenshots` or `FAIL — N failures` or `SKIPPED — no UI surface` or `NEEDS-OPERATOR-PERMISSION` (a browser run was denied; no retry). On a denial it carries three lines: `Command:` (the exact command denied), `Denial:` (the tag quoted exactly, e.g. `[Safety Bypass Flag]`, or "no explanation") and `Worktree:` (the absolute worktree path).
 - **Markdown block** ready for `pr-author` to embed (the block from step 3 of "Core responsibilities").
 - **Local artifacts:** path to `<worktree>/.task-log/screenshots/` so the orchestrator can attach the same PNGs to a blocking issue if the chain hard-stops later.
 - **Install effect:** `installed @playwright/test@<version> + browsers` (when this was the first invocation in the project) or `existing install reused`. The orchestrator uses this to know whether the PR touches `package.json`.

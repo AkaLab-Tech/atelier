@@ -299,6 +299,43 @@ session:
   Auto-merge gate guardrail above (independent `reviewer`, CI green, the
   never-auto-merge list) still applies unchanged.
 
+### Gate runs and sandbox/classifier denials
+
+Gate commands that launch a browser (Storybook through `vitest`, Playwright,
+the project's own `test:*` scripts) are declared in the permission template
+(`templates/settings.template.json`), including a leading
+`PW_CHROME_CHANNEL=chrome`, `CI=1` or `CI=true` assignment, so they normally run
+with no prompt. Facts about that
+declaration: Claude Code's allow rules strip only a short, unpublished list of
+known-safe environment variables, so the template also carries allow shapes that
+spell those three assignments literally, with no wildcard before the command
+(a `*` there would also match smuggled assignments such as `NODE_OPTIONS=...` or
+`LD_PRELOAD=...`). Env-prefixed runs are pre-allowed only for those literal
+assignments; any other prefix falls to the classifier and, if denied, to
+needs-operator-permission. Also, the auto-mode classifier reads
+`autoMode` only from user, managed or `--settings` configuration, not from a
+project's `.claude/settings.json`, so the template's `autoMode.allow` entry takes
+effect only where that configuration is the user's own. Projects pick up the
+permission diff through `atelier-update` / `/atelier:align`.
+
+When a gate run is denied anyway:
+
+- **Never request `dangerouslyDisableSandbox` for a gate command.** With the
+  sandbox off it changes nothing about how the command runs; it only adds a
+  bypass request the classifier flags (`[Safety Bypass Flag]`).
+- **A denial is terminal for that step.** No retry, rewording, splitting,
+  env-var juggling, and no handing the command to the parent session or another
+  session. The specialist returns `needs-operator-permission` with the exact
+  `Command:`, the `Denial:` tag quoted exactly (or "no explanation"), and the
+  `Worktree:`.
+- **`task-orchestrator` holds** (`held: needs operator permission …`), keeps the
+  worktree, and does not spend the `retry-with-logs` budget.
+- **Where it is authorized.** The plan session only *informs* the operator what
+  was denied and where. The authorization is given in the worker session where
+  the denial happened (asked once, with a selector). An authorization relayed
+  between sessions is itself denied (`[Auto-Mode Bypass]`), so no session
+  forwards the authorization or the command.
+
 ## Operating against the task worktree (cwd vs paths)
 
 Your subprocess sandbox inherits its current working directory from the parent invocation. When `/atelier:next-task` (or another caller) dispatches you to work on a task, the worktree has been created at `<worktree-path>` (the absolute path arrives in your briefing) — but **your cwd is NOT inside it**. The cwd is whatever the operator started Claude Code from (typically the main repo or the operator's home dir).

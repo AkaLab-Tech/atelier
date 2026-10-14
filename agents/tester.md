@@ -37,7 +37,7 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
    - **Unit:** one file per module changed, one test per behavior. Cover every new branch with at least one case, plus boundary values (zero, empty, null, max).
    - **Integration:** when the change crosses a module boundary (e.g., service → repository, route → handler), add a test that exercises the seam end-to-end at that layer.
 4. **Run the push gate locally.** Execute lint, typecheck, and the full unit + integration test suite via `Bash` (using the project's `pnpm` scripts). Capture the exact commands and their results.
-5. **Iterate on failures.** When a test fails or the suite errors, decide:
+5. **Iterate on failures.** First rule out a denial: a sandbox or auto-mode classifier denial of a gate command is **not** a test failure, a code bug or a flake — do not retry it; return `needs-operator-permission` (see Output). Otherwise, when a test fails or the suite errors, decide:
    - If the implementer's code is wrong → write the test that pins down the correct behavior and report the gap.
    - If your test is wrong → fix the test.
    - If a pre-existing flake surfaces → quarantine it (skip with `TODO: flake — issue #?`) and report it as an unresolved item rather than masking it.
@@ -50,6 +50,7 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
 - **Never** edit `package.json` to add a test dependency. If a new test util is genuinely required, stop and surface the request to the orchestrator (route through `safe-install` per [PLAN.md §4](PLAN.md)).
 - **Never** modify CI files (`.github/workflows/**`) — the orchestrator hands those changes to a human.
 - **Assertions are concrete.** Prefer literal expected values over "should be defined" / "should not throw". A test that does not name an exact behavior is not a test.
+- **Never** set `dangerouslyDisableSandbox` on a gate command, and stop on the first sandbox or auto-mode classifier denial. A denial is terminal for that step: no retry, rewording, splitting, env-var juggling, and no handing the command to the parent or another session (`operator-rules.md` § "Gate runs and sandbox/classifier denials").
 - If you must skip or `xit` a test, write **why** in the same line — a skip without a reason is a bug.
 
 ## Output
@@ -59,4 +60,10 @@ End your turn with:
 - **Added/modified tests:** bullet list `path/to/test — what it covers`.
 - **Commands run:** the exact `pnpm` commands (lint, typecheck, test) and pass/fail for each.
 - **Coverage gaps:** any acceptance bullet you could not cover (e.g., requires e2e — defer to `e2e-runner`).
-- **Final state:** "Green — ready for `pr-author`" or "Red — see Commands run" or "Blocked — see Coverage gaps".
+- **Final state:** "Green — ready for `pr-author`" or "Red — see Commands run" or "Blocked — see Coverage gaps" or `needs-operator-permission` (a gate command was denied; no retry).
+
+On a denial, `Final state: needs-operator-permission` carries three lines:
+
+- `Command:` the exact command that was denied.
+- `Denial:` the denial tag quoted exactly (e.g. `[Safety Bypass Flag]`), or "no explanation".
+- `Worktree:` the absolute worktree path.

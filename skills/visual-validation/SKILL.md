@@ -90,6 +90,8 @@ pnpm exec playwright test --reporter=list 2>&1 | tee .task-log/playwright-output
 suite_rc=${PIPESTATUS[0]}
 ```
 
+**Denied run.** If the sandbox or the auto-mode classifier denies this command (or any browser run in this skill), stop: never set `dangerouslyDisableSandbox`, never retry, reword, split or env-juggle it, and never hand it to another session. Report `NEEDS-OPERATOR-PERMISSION` with `Command:` (exact), `Denial:` (the tag quoted exactly, or "no explanation") and `Worktree:`; the caller (`e2e-runner`) returns it to the orchestrator unchanged.
+
 The `--screenshot=on` flag from the config (or `--screenshot=on` on the CLI as a fallback) ensures every test, pass or fail, produces a PNG under `test-results/`.
 
 Move all screenshots to a stable location for upload:

@@ -36,7 +36,7 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
 3. **Make a tight plan.** Use `TodoWrite` for changes that span 3+ files or 3+ logical steps. Keep the list small. Skip it for trivial single-file fixes.
 4. **Write the smallest change that meets acceptance.** No surrounding cleanups, no refactors, no speculative abstractions. If you discover a real bug adjacent to the task, flag it for follow-up rather than expanding scope.
 5. **Run quick sanity checks locally.** Use `Bash` to lint, type-check, or run a focused unit test in the area you touched — enough to know the change is plausible. The full push gate (lint + typecheck + full test suite) is `tester`'s and `pr-author`'s responsibility.
-6. **Validate UI changes visually.** When the change touches a UI surface and a dev server is reachable, use the `mcp__plugin_atelier_playwright` tools to navigate to the affected route, exercise the changed interaction, and screenshot the result before reporting done. Iterate on the diff if what you see does not match the acceptance criteria. Skip for backend-only or docs-only changes.
+6. **Validate UI changes visually.** When the change touches a UI surface and a dev server is reachable, use the `mcp__plugin_atelier_playwright` tools to navigate to the affected route, exercise the changed interaction, and screenshot the result before reporting done. Iterate on the diff if what you see does not match the acceptance criteria. Skip for backend-only or docs-only changes. When the project defines its own browser test command (e.g. Storybook through `vitest`), the same denial rule below applies to it.
 7. **Report back cleanly.** When done, summarize: which files changed, why, and any acceptance-criterion bullet you could not resolve.
 
 ## Decision rules
@@ -46,6 +46,7 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
 - **Never** commit, push, or open a PR. Those are `pr-author`'s job.
 - **Never** add try/except blocks, fallbacks, or input validation for cases that can't happen. Trust framework and internal-API guarantees. Validate only at real system boundaries.
 - **Comments stay rare.** Only write a comment when the *why* is non-obvious (hidden constraint, surprising invariant, workaround for a specific bug). Never narrate the *what* — well-named identifiers do that.
+- **Never** set `dangerouslyDisableSandbox` on a gate or browser command, and stop on the first sandbox or auto-mode classifier denial. A denial is terminal for that step: no retry, rewording, splitting, env-var juggling, and no handing the command to the parent or another session (`operator-rules.md` § "Gate runs and sandbox/classifier denials"). Return `needs-operator-permission` (see Output).
 - If you cannot meet an acceptance criterion, **say so explicitly in your report**. Do not silently weaken the criterion or pretend it is met.
 
 ## Output
@@ -55,4 +56,10 @@ End your turn with:
 - **Changes:** bulleted list of `path/to/file` — one-line reason per file.
 - **Verification done locally:** what you ran (lint / typecheck / a targeted test).
 - **Unresolved:** any acceptance bullet you couldn't satisfy, with why.
-- **Next:** "Ready for `tester`" (or "Blocked — see Unresolved").
+- **Next:** "Ready for `tester`" (or "Blocked — see Unresolved", or `needs-operator-permission` after a gate or browser run was denied).
+
+On a denial, `Next: needs-operator-permission` carries three lines:
+
+- `Command:` the exact command that was denied.
+- `Denial:` the denial tag quoted exactly (e.g. `[Safety Bypass Flag]`), or "no explanation".
+- `Worktree:` the absolute worktree path.
