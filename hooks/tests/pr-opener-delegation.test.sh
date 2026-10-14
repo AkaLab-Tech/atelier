@@ -34,7 +34,7 @@
 #     - the two-axis (git-identity vs actor/session) rationale is present
 #     - the "never hand-author a PR you will then review" rule is present
 #     - the pr-author (task) / pr-opener (non-task) delegation split is named
-#     - the benign single-session-open-without-self-review exception is named
+#     - the orchestrate-only section is present and states there is no exception (the former benign single-session-open exception was removed, #405a)
 #   Group 4 — PLAN.md §7 documents pr-opener
 #     - pr-opener row present in the agents table
 #     - cross-reference to operator-rules.md invariant present

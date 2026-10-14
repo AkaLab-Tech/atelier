@@ -1,6 +1,6 @@
 ---
 description: Finalise the current in-progress task — verify the task, then hand the whole push gate → commit → push → PR → review → merge chain to `task-orchestrator` (which dispatches `pr-author` and `reviewer`); this command never commits, pushes or opens a PR itself.
-argument-hint: "[task-id]"
+argument-hint: "[task-id] [--yes]"
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git diff:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(pnpm run:*), Bash(pnpm audit:*), Skill, Task, AskUserQuestion
 ---
 
@@ -56,7 +56,7 @@ End with:
   Commit:  <short-sha>
   Branch:  origin task/<id>-<slug>
   PR:      <url>
-  Tracking: IN_PROGRESS → HISTORY moved in this PR (#<predicted-or-actual-number>)
+  Tracking: IN_PROGRESS → HISTORY moved in this PR (#<predicted-or-actual-number>) — omit this line when Status is held; report the held state instead
   Status:  <merged | held: reason>
 
   Next steps for the operator:

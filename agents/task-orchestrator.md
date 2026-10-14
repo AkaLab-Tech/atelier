@@ -103,6 +103,8 @@ documented everywhere else in this file** — this guard is the regression
 firewall that keeps `/next-task` (and every other standard-mode caller)
 running unchanged.
 
+**Open-PR re-entry.** When the briefing carries `mode: non-task-pr` **and** `pr_number` (and no `task_id`), the PR already exists: skip authoring entirely (no `pr-opener` / `pr-author` first pass, no `gh pr create`; `title`/`body` not required) and go straight to `reviewer` → Pre-merge CI wait → `auto-merge` for that PR. If `reviewDecision` is already `APPROVED`, go straight to `auto-merge`, mirroring `pr-open`. The review-fix loop still applies, re-pushing via the branch-shape follow-up primitive. Without `pr_number`, first-pass authoring is unchanged.
+
 In this mode you skip ALL task-only bookkeeping:
 
 - No `git-wt` worktree creation — the caller already prepared `worktree` on `head`.
@@ -153,7 +155,7 @@ reviewer's findings plus the PR diff are the whole spec, since a non-task
 branch never had a plan to begin with. (This is the first thing to defer if
 the size budget tightens.)
 
-**Finish-task handoff and author-only runs.** `/atelier:finish-task` enters this mode with a `task/<id>-<slug>` head, `author_agent: pr-author` and `tracking_move: true`: `pr-author` (not the orchestrator) performs the `IN_PROGRESS.md` → `HISTORY.md` move in the PR per `pr-flow`, then the `reviewer` → `auto-merge` segment runs as usual. An optional briefing field `stop_after: pr-open` (used by `/atelier:align` under the `ask` policy) ends the run once the authoring primitive returns the PR URL — no `reviewer` / `auto-merge` dispatch — and reports `Status: PR opened` for the operator to merge. Reviewing or merging an already-open PR is not a separate mode: a caller passes `resume_mode: pr-open` in standard mode (see `/atelier:resume-task`), which re-enters at the `reviewer` segment without re-authoring.
+**Finish-task handoff and author-only runs.** `/atelier:finish-task` enters this mode with a `task/<id>-<slug>` head, `author_agent: pr-author` and `tracking_move: true`: `pr-author` (not the orchestrator) performs the `IN_PROGRESS.md` → `HISTORY.md` move in the PR per `pr-flow`, then the `reviewer` → `auto-merge` segment runs as usual. An optional briefing field `stop_after: pr-open` (used by `/atelier:align` under the `ask` policy) ends the run once the authoring primitive returns the PR URL — no `reviewer` / `auto-merge` dispatch — and reports `Status: PR opened` for the operator to merge. Reviewing or merging an already-open `task/*` PR is done by passing `resume_mode: pr-open` in standard mode (see `/atelier:resume-task`); an already-open non-task PR is re-entered via `mode: non-task-pr` + `pr_number` (Open-PR re-entry above). Both re-enter at the `reviewer` segment without re-authoring.
 
 This is the mechanism by which a driving session delegates the entire
 author→review→merge coordination one level down to `task-orchestrator`

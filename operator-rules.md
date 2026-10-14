@@ -283,7 +283,8 @@ session:
   non-writing session (the plan session, or a dedicated review session running
   `/loop /atelier:babysit-prs`) reviews and merges PRs it did not write — and
   even that session acts only through `task-orchestrator` (`resume_mode:
-  pr-open`, or non-task coordination mode), never by dispatching `reviewer` or
+  pr-open` for a `task/*` PR; `mode: non-task-pr` + `pr_number` for a PR on
+  any other branch), never by dispatching `reviewer` or
   running `gh pr merge` from its own top level. A lane
   that was denied on a PR leaves it `held`; it does not re-review it.
 - **Held-PR escalation goes through the plan session.** A worker's classifier
@@ -291,8 +292,9 @@ session:
   tag verbatim (e.g. `[Auto-Mode Bypass]`). The plan session asks the
   operator **once** via `AskUserQuestion`. Only on the operator's own answer
   in that session does it act — and only through `task-orchestrator`
-  (`/atelier:resume-task <id>` for a task PR, non-task coordination mode for any
-  other PR), which dispatches a fresh `reviewer` and owns review and merge. The plan session
+  (`/atelier:resume-task <id>` in pr-open mode for a `task/*` PR;
+  `mode: non-task-pr` + `pr_number` for a held PR on a non-`task/*` branch —
+  align, `docs/resume-<id>`, `docs/abandon-<id>`, release bump), which dispatches a fresh `reviewer` and owns review and merge. The plan session
   never commits, pushes, reviews or merges from its own top level. Every
   Auto-merge gate guardrail above (independent `reviewer`, CI green, the
   never-auto-merge list) still applies unchanged.
