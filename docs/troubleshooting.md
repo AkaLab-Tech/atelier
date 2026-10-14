@@ -278,6 +278,48 @@ gh pr merge <N> --squash --delete-branch
 
 **Long-term fix (outside atelier's control):** the classifier would need a notion of a second, independent actor identity so an agent-controlled reviewer can legitimately approve an agent-controlled PR; that is a Claude Code harness capability.
 
+### Worker session asks you to paste a phrase
+
+**Symptom:** in a multi-terminal setup, a worker session asks you to type or paste a sentence (an "authorization phrase") into its terminal before it will review or merge a PR.
+
+**Cause:** atelier never asks for this. The auto-mode classifier accepts consent only from your own message in the session that acts, and it ignores approval-like text that arrives through briefs or peer messages (it treats it as a bypass signal), so a pasted phrase does not clear a denial. The ritual usually comes from a session's own memory notes, or from a worker that skipped `/atelier:next-task` and is writing and reviewing the same PR itself.
+
+**Fix:** decline the phrase. Have workers take tasks only through `/atelier:next-task` or `/atelier:resume-task <id>`. If a PR really is `held` after a classifier denial, the plan session asks you once (with a selector, naming the PR and head sha) and, on your answer, dispatches `task-orchestrator` via `/atelier:resume-task <id>`. See `operator-rules.md` § "Multi-session setups (plan + worker sessions)". Remove any old session-memory note that tells a session to ask for a phrase.
+
+### Task is stuck — atelier created a `blocked` GitHub issue
+
+**Symptom:** atelier opened a GitHub issue labeled `blocked` and stopped working on a task.
+
+**Cause:** This is the failure-recovery path (PLAN.md §8). atelier tried up to three implementation attempts, reset the worktree, tried three more, and gave up. The issue contains the `.task-log/<timestamp>-<attempt>.md` files describing each failure.
+
+**Fix:** Read the latest `.task-log` excerpt in the issue to understand what went wrong. Decide:
+- **(a) Retry:** refine the task description in `ROADMAP.md`, close the `blocked` issue, then run `task` again.
+- **(b) Abandon:** close the `blocked` issue with a `wontfix` comment, manually mark the task `[x]` in `ROADMAP.md` (or move to `HISTORY.md`). Optionally remove the worktree with `git wt rm <name>`.
+
+### Edits succeed on a deny-listed path after a worktree reset
+
+**Symptom:** During retry attempts 04–06 (after the first reset between attempts 03 and 04), Claude completes an `Edit` call on a path that's in the project's deny list. Earlier attempts (01–03) on the same path were correctly refused.
+
+**Cause:** Claude Code's permission cache is stale. When `retry-with-logs` removes and recreates the worktree, the harness's per-session deny patterns don't always re-evaluate the recreated directory. This is **dogfood-1 finding B** — a Claude Code harness limitation, not an atelier bug.
+
+**Mitigation until Claude Code fixes the harness:** When the orchestrator triggers a reset between attempt 03 and 04, **restart your Claude Code session** before continuing. The fresh session loads `.claude/settings.json` clean and the deny patterns apply correctly.
+
+### `git-wt` commands fail
+
+**Symptom:** `task` opens Claude but task-orchestrator errors with "command not found: git-wt" or "git-wt: invalid usage".
+
+**Cause:** The external `git-wt` binary at `~/.local/bin/git-wt` is missing, outdated, or shadowed by a different `git-wt` on `PATH`.
+
+**Fix:** Run `atelier-doctor` (or `atelier-doctor --fix` to auto-repair the symlink when possible) — the report will flag the issue with the exact fix. The fix is the snippet from `install.sh:check_git_wt_drift` (clone git-wt, run its `install.sh --skill-for=claude`, record the SHA). Or simply re-run the atelier installer.
+
+### `atelier-hooks-version` mismatch warning during install
+
+**Symptom:** The installer prints `→ refreshing atelier shellrc block (v0 → v1)` (or similar version pair).
+
+**Cause:** This is **expected behavior** when upgrading atelier from one version to a later one (M7.1.F7c). The shellrc block in your `~/.zshrc` is older than the current `install.sh` ships; the installer strips the old block and re-injects the new one in place.
+
+**Fix:** Nothing. The message is informational. After `source ~/.zshrc`, the new shell functions (`task`, `atelier`) are active.
+
 ---
 
 ## When all else fails

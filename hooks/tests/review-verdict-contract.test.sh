@@ -129,6 +129,12 @@ chk_prose "$OPRULES" '`autoMerge.reviewerApprovalMode: "approve"` only' "operato
 chk_prose "$OPRULES" 'never re-posted as a comment' "operator-rules.md: denial never re-posted"
 chk_prose "$CLAUDE_MD" 'head-sha-bound verdict review' "CLAUDE.md: gate line names the verdict review"
 chk_prose "$CLAUDE_MD" 'atelier-review-verdict' "CLAUDE.md: gate line names atelier-review-verdict"
+TROUBLE="$REPO_ROOT/docs/troubleshooting.md"
+chk_prose "$TROUBLE" '### Worker session asks you to paste a phrase' "troubleshooting: paste-a-phrase section kept"
+chk_prose "$TROUBLE" '### Task is stuck — atelier created a `blocked` GitHub issue' "troubleshooting: blocked-issue section kept"
+chk_prose "$TROUBLE" '### Edits succeed on a deny-listed path after a worktree reset' "troubleshooting: deny-list-after-reset section kept"
+chk_prose "$TROUBLE" '### `git-wt` commands fail' "troubleshooting: git-wt section kept"
+chk_prose "$TROUBLE" '### `atelier-hooks-version` mismatch warning during install' "troubleshooting: hooks-version section kept"
 
 echo ""
 if [ "$fails" -eq 0 ]; then
