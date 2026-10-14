@@ -412,6 +412,8 @@ The orchestrator waits (bounded) for CI to complete before invoking the merge ga
 | `reviewer` | Opus | Independent review before merge |
 | `unblocker` | Sonnet | Handles failure recovery + blocking issues |
 
+**Invariant — file-producing agents hold `Write`.** `pr-author`, `reviewer`, `unblocker`, `pr-opener`, `e2e-runner` (plus `implementer` / `tester` / `docker-runner`) hold `Write`; the first five write only inside the task worktree, temporaries under `<worktree>/.task-log/tmp/`, and PR / review / issue bodies and commit messages go through `--body-file` / `git commit -F`, never heredocs.
+
 **Invariant — PR authoring is always sub-agent work.** Two orthogonal axes gate
 review: git identity (`gh/author` vs `gh/reviewer`, §6) and actor/session (the
 auto-mode classifier blocks a `reviewer`/`auto-merge` dispatch as self-approval

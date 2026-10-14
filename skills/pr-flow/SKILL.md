@@ -6,7 +6,7 @@ description: >-
   `git add`, `git commit`, `git push`, or `gh pr create` on an atelier task,
   including dry-runs and walkthroughs: the `operator-rules.md` SessionStart
   hook only summarises PLAN.md §6 policy, while this skill carries the
-  executable detail — exact HEREDOC commit-message template, exact `gh pr
+  executable detail — exact `-F` commit-message template, exact `gh pr
   create` body shape (Summary / Test plan / Tracking), exact ordered command
   sequence, exhaustive hard-refusal list, and the `IN_PROGRESS.md` →
   `HISTORY.md` tracking move that must land in the same PR. Use this skill
@@ -47,7 +47,7 @@ git add <path1> <path2> …
 git status --short
 ```
 
-If `git status` shows anything you did not mean to commit (stray temp files, `.task-log/`, IDE droppings), unstage it. The push is non-revocable enough that a tight stage is worth the extra second.
+If `git status` shows anything you did not mean to commit (stray temp files, `.task-log/`, IDE droppings), unstage it. Never stage `.task-log/` (the commit-message and PR-body scratch files live in `.task-log/tmp/`). The push is non-revocable enough that a tight stage is worth the extra second.
 
 ### 2. Compose the commit message — Conventional Commits
 
@@ -67,18 +67,21 @@ Format:
   - The acceptance criteria, in 1–3 bullets.
   - For dependency additions: the PLAN.md §4 justification (self-question + ≥2 alternatives compared + why this choice).
 
-**Always pass the message via a HEREDOC** so multi-line bodies survive shell quoting. **Always prefix `git commit` with `GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf`** so the commit's Author / Committer fields match the atelier-author GitHub identity (dual-gh-id), not the operator's personal global git config:
+**Always pass the message via a file** so multi-line bodies survive shell quoting and no prose sits on the command line. Write the message with the `Write` tool to `<worktree>/.task-log/tmp/commit-msg.txt` (scratch dir, gitignored, inside the task worktree only), e.g.:
 
-```sh
-GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" git commit -m "$(cat <<'EOF'
+```text
 feat(reports): add CSV export at /reports
 
 Closes #42.
 
 - Button "Export" downloads the active-filtered view as CSV.
 - Filter state preserved via the existing useReportFilters() hook.
-EOF
-)"
+```
+
+Then commit with `-F`. **Always prefix `git commit` with `GIT_CONFIG_GLOBAL=$ATELIER_CONFIG_DIR/git-identity.conf`** so the commit's Author / Committer fields match the atelier-author GitHub identity (dual-gh-id), not the operator's personal global git config:
+
+```sh
+GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" git commit -F <worktree>/.task-log/tmp/commit-msg.txt
 ```
 
 The identity file is written at install time by `install.sh` Phase B (`phase_b_capture_atelier_git_identity`) — `[user] name = AtelierAuthor` + `email = <id>+<login>@users.noreply.github.com`. The env-var prefix scopes the override to this single `git` invocation; the operator's `~/.gitconfig` is never modified. If the file is missing (shouldn't be — `/atelier:doctor` flags it), commits fall back to the operator's global identity, which works but mixes attribution with the atelier-author push token; surface a `warn` to the operator and continue.
@@ -149,12 +152,9 @@ If the current branch name does not start with `task/`, stop — the static perm
 
 ### 6. Open the PR with `gh pr create`
 
-```sh
-gh pr create \
-  --base main \
-  --head task/<id>-<slug> \
-  --title "<type>(<scope>): <subject>" \
-  --body "$(cat <<'EOF'
+Write the body with the `Write` tool to `<worktree>/.task-log/tmp/pr-body.md` (never `/tmp`, never a heredoc), using this shape:
+
+```markdown
 ## Summary
 
 - <bullet 1>
@@ -170,8 +170,16 @@ gh pr create \
 - `ROADMAP.md`: <task-id> block removed.
 - `IN_PROGRESS.md`: empty (was <task-id> mid-PR).
 - `HISTORY.md`: new entry under `## YYYY-MM`, references this PR as `#<predicted-number>`.
-EOF
-)"
+```
+
+Then open the PR with that file:
+
+```sh
+gh pr create \
+  --base main \
+  --head task/<id>-<slug> \
+  --title "<type>(<scope>): <subject>" \
+  --body-file <worktree>/.task-log/tmp/pr-body.md
 ```
 
 The title must be **under 70 characters** (GitHub truncates anything longer in lists). Keep the body's `## Summary` to 1–3 bullets; details belong in commit messages, not PR descriptions.

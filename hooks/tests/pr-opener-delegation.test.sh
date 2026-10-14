@@ -16,7 +16,7 @@
 #   Group 1 — agents/pr-opener.md exists and is structurally sound
 #     - file exists
 #     - frontmatter declares name: pr-opener
-#     - tool list matches the spec (Read, Grep, Glob, Bash, TodoWrite, Skill)
+#     - tool list matches the spec (Read, Grep, Glob, Bash, TodoWrite, Skill, Write)
 #     - playwright is NOT in the tool list (generic non-UI authoring agent)
 #     - references a non-task/* branch shape (chore/*, docs/*, fix/*)
 #     - explicitly does NOT require task/<id> (states the contrast with pr-author)
@@ -145,8 +145,8 @@ fi
 chk_prose "$PR_OPENER" 'name: pr-opener' \
   "pr-opener: frontmatter declares name: pr-opener"
 
-chk_prose "$PR_OPENER" 'tools: ["Read", "Grep", "Glob", "Bash", "TodoWrite", "Skill"]' \
-  "pr-opener: tool list matches spec (Read, Grep, Glob, Bash, TodoWrite, Skill)"
+chk_prose "$PR_OPENER" 'tools: ["Read", "Grep", "Glob", "Bash", "TodoWrite", "Skill", "Write"]' \
+  "pr-opener: tool list matches spec (Read, Grep, Glob, Bash, TodoWrite, Skill, Write)"
 
 chk_absent "$PR_OPENER" 'playwright' \
   "pr-opener: playwright is NOT in the tool list (generic, non-UI agent)"
