@@ -14,6 +14,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 FINISH="$ROOT/commands/finish-task.md"
 RESUME="$ROOT/commands/resume-task.md"
 RULES="$ROOT/operator-rules.md"
+ORCH="$ROOT/agents/task-orchestrator.md"
+PLAN="$ROOT/PLAN.md"
 
 fails=0
 pass() { echo "ok   - $1"; }
@@ -138,6 +140,55 @@ if has "$FINISH" 'AskUserQuestion' && ! has "$FINISH" 'push_gate_partial_confirm
   pass "finish-task: confirms a PARTIAL gate itself, no hand-off flag"
 else
   fail "finish-task: PARTIAL confirmation missing or stale push_gate_partial_confirmed flag"
+fi
+
+# --- open-PR re-entry (non-task-pr + pr_number) ----------------------------
+# flat FILE: whole file on one line (whitespace collapsed) so phrases that wrap match
+flat() { tr '\n' ' ' < "$1" | tr -s ' '; }
+# the paragraph following a heading token, flattened (until next blank line)
+para() { awk -v k="$2" 'index($0,k){f=1} f&&/^$/{exit} f' "$1" | tr '\n' ' ' | tr -s ' '; }
+contains() { printf '%s' "$1" | grep -qF -- "$2"; }
+
+REENTRY="$(para "$ORCH" '**Open-PR re-entry.**')"
+if contains "$REENTRY" '`mode: non-task-pr` **and** `pr_number`' && contains "$REENTRY" '(and no `task_id`)'; then
+  pass "task-orchestrator: open-PR re-entry keyed on mode: non-task-pr + pr_number (no task_id)"
+else
+  fail "task-orchestrator: open-PR re-entry trigger (non-task-pr + pr_number) missing"
+fi
+
+if contains "$REENTRY" 'skip authoring entirely' && contains "$REENTRY" 'no `gh pr create`' && contains "$REENTRY" 'no `pr-opener` / `pr-author` first pass'; then
+  pass "task-orchestrator: open-PR re-entry skips authoring (no first pass, no gh pr create)"
+else
+  fail "task-orchestrator: open-PR re-entry does not document skipping authoring"
+fi
+
+if contains "$REENTRY" 'go straight to `reviewer`' && contains "$REENTRY" '`auto-merge`' && contains "$REENTRY" '`reviewDecision` is already `APPROVED`'; then
+  pass "task-orchestrator: open-PR re-entry goes reviewer -> auto-merge (APPROVED shortcut)"
+else
+  fail "task-orchestrator: open-PR re-entry reviewer -> auto-merge routing missing"
+fi
+
+RULES_FLAT="$(flat "$RULES")"
+REVIEW_LANE="$(printf '%s' "$RULES_FLAT" | grep -oE 'acts only through `task-orchestrator` \(`resume_mode: pr-open` for a `task/\*` PR; `mode: non-task-pr` \+ `pr_number` for a PR on any other branch\)')"
+if [ -n "$REVIEW_LANE" ]; then
+  pass "operator-rules: review lane routes task/* via resume_mode: pr-open and other branches via non-task-pr + pr_number"
+else
+  fail "operator-rules: review lane lacks the pr-open / non-task-pr + pr_number routing"
+fi
+
+HELD="$(printf '%s' "$RULES_FLAT" | sed -n 's/.*\(Held-PR escalation goes through the plan session.*\)/\1/p')"
+if contains "$HELD" '`/atelier:resume-task <id>` in pr-open mode for a `task/*` PR' \
+  && contains "$HELD" '`mode: non-task-pr` + `pr_number` for a held PR on a non-`task/*` branch'; then
+  pass "operator-rules: held-PR escalation keeps resume-task pr-open for task/* and uses non-task-pr + pr_number otherwise"
+else
+  fail "operator-rules: held-PR escalation lacks the task/* vs non-task-pr + pr_number split"
+fi
+
+PLAN_FLAT="$(flat "$PLAN")"
+if contains "$PLAN_FLAT" '`/resume-task` pr-open for `task/*` PRs; `mode: non-task-pr` + `pr_number` open-PR re-entry for any other branch'; then
+  pass "PLAN.md: §7 held-PR escalation points to the non-task-pr + pr_number open-PR re-entry"
+else
+  fail "PLAN.md: held-PR escalation sentence lacks the non-task-pr + pr_number open-PR re-entry"
 fi
 
 echo ""
