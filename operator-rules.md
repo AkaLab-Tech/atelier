@@ -210,11 +210,46 @@ session never runs both halves:
   `pr-opener` for non-task branches then the reviewer, in its "non-task PR
   coordination mode" (see `agents/task-orchestrator.md`).
 
-**One benign exception:** opening a PR and *not* self-reviewing it in the same
-session — e.g. `/atelier:finish-task`, which opens the PR and hands review off
-to a later, separate session or the operator — is fine. The violation is
-specifically coordinating both authoring and review from the same session,
-not authoring a PR per se.
+### Top-level sessions only orchestrate
+
+A top-level session (the one the operator is talking to, plan session or worker)
+never authors. It does not author code, does not push any branch, does not
+open, review or merge a PR, and does not dispatch the chain specialists
+(`implementer`, `tester`, `e2e-runner`, `docker-runner`, `pr-author`,
+`pr-opener`, `reviewer`, `unblocker`) itself. Code and PR work goes through
+`task-orchestrator`, which dispatches those specialists as its own sub-agents.
+The rule is identical in every project — no per-project configuration — and
+there is no exception for opening a PR "and not reviewing it":
+`/atelier:finish-task`, `/atelier:resume-task` (blocked-resume docs PR) and
+`/atelier:align` (every policy) all hand their commit / push / PR step to
+`task-orchestrator`.
+
+Two sanctioned carve-outs (R1 and R2 are the only ones):
+
+- **R1 — plan/tracking commits.** A top-level session may `git add` / `git commit`
+  when the staged set is only plan/tracking files (`.plan/**`, `ROADMAP.md`,
+  `IN_PROGRESS.md`, `HISTORY.md`, the indexed-layout tracking dir), as
+  `/atelier:plan-task` Phase 4 does. Gitignored or out-of-repo paths are fine too.
+- **R2 — release tag.** `/atelier:release` may push the semver tag
+  `origin v*` (tags only; the bump PR itself still goes through `task-orchestrator`).
+
+**Known gap (pre-enforcement).** `/atelier:release` step 6 still dispatches
+`implementer` from the top level for the version bump, which conflicts with this
+rule. It is a documented, unsanctioned gap, not a carve-out: it must be rerouted
+through `task-orchestrator` (non-task PR coordination mode) before the #405b
+(#440) hook enforces the rule.
+
+`/atelier:resume-task` and `/atelier:align` also make prepare-only edits in a
+temporary worktree (the `[BLOCKED]` unmark, copied-in changed files) before
+handing commit / push / PR to `task-orchestrator`; that preparation is not
+authoring and is covered by the same hand-off.
+
+This is stricter than the earlier "never both author and review" invariant above
+(which it subsumes) and it is the same boundary as "Atelier's gates are the only
+authority on commit / push / merge": the gates decide whether a step proceeds,
+and this rule decides who may perform it. Categorical enforcement by a
+`PreToolUse` hook arrives with #405b (#440); until it lands this section is the
+rule, not a mechanism — follow it anyway.
 
 ### Multi-session setups (plan + worker sessions)
 
@@ -246,14 +281,20 @@ session:
 - **Review lane is an up-front design choice.** Separation of duties is
   acceptable only when fixed before any denial: workers only write PRs and a
   non-writing session (the plan session, or a dedicated review session running
-  `/loop /atelier:babysit-prs`) reviews and merges PRs it did not write. A lane
+  `/loop /atelier:babysit-prs`) reviews and merges PRs it did not write — and
+  even that session acts only through `task-orchestrator` (`resume_mode:
+  pr-open` for a `task/*` PR; `mode: non-task-pr` + `pr_number` for a PR on
+  any other branch), never by dispatching `reviewer` or
+  running `gh pr merge` from its own top level. A lane
   that was denied on a PR leaves it `held`; it does not re-review it.
 - **Held-PR escalation goes through the plan session.** A worker's classifier
   denial ends as a structured `held` report: PR number, head sha and the denial
   tag verbatim (e.g. `[Auto-Mode Bypass]`). The plan session asks the
   operator **once** via `AskUserQuestion`. Only on the operator's own answer
-  in that session does it act — and only by dispatching `task-orchestrator`
-  (`/atelier:resume-task <id>`), which owns review and merge. The plan session
+  in that session does it act — and only through `task-orchestrator`
+  (`/atelier:resume-task <id>` in pr-open mode for a `task/*` PR;
+  `mode: non-task-pr` + `pr_number` for a held PR on a non-`task/*` branch —
+  align, `docs/resume-<id>`, `docs/abandon-<id>`, release bump), which dispatches a fresh `reviewer` and owns review and merge. The plan session
   never commits, pushes, reviews or merges from its own top level. Every
   Auto-merge gate guardrail above (independent `reviewer`, CI green, the
   never-auto-merge list) still applies unchanged.

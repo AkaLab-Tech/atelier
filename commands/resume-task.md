@@ -1,7 +1,7 @@
 ---
 description: Continue a task after interruption or unblocking. Auto-detects the resume mode from `IN_PROGRESS.md` state — "interrupted" (active entry, partial progress) vs "blocked-resumed" (entry has the `[BLOCKED]` marker and the GitHub issue has been closed by the operator). Runs the mode-specific cleanup, then hands off to `task-orchestrator`.
 argument-hint: "<task-id> [--yes|-y]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(git worktree:*), Bash(git add:*), Bash(git commit:*), Bash(git push:*), Bash(git checkout:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(env:*), Bash(jq:*), Bash(test:*), Bash(gh issue view:*), Bash(gh pr create:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh api graphql:*), Bash(atelier-task-backend:*), Skill, Task
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(git worktree:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(env:*), Bash(jq:*), Bash(test:*), Bash(gh issue view:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh api graphql:*), Bash(atelier-task-backend:*), Skill, Task
 ---
 
 You are running the `/resume-task` slash command. Three distinct entry points lead here — all end with the same orchestrator hand-off, but they require different pre-flight cleanup:
@@ -141,32 +141,22 @@ The contract: closing the issue is the operator's signal. The 6 attempt logs are
 
    If `.task-log/` does not exist (the operator pre-cleaned it, or it never had any files), skip. Do not error.
 
-3. **Unmark the `[BLOCKED]` heading and remove the metadata block from `IN_PROGRESS.md`.** Use `Edit` to:
+3. **Unmark the `[BLOCKED]` heading and remove the metadata block from `IN_PROGRESS.md`** (applied inside step 4's temporary `docs/resume-<id>` worktree, never in the main checkout or the task worktree). Use `Edit` to:
    - Replace the heading line `### <id> — <title> — [BLOCKED] see #<NN>` with the original `### <id> — <title>` form (recover the title from the heading itself — strip the ` — [BLOCKED] see #<NN>` suffix).
    - Delete the metadata block that follows the heading (the `> Blocked at … / GitHub issue: … / Worktree (preserved): … / Logs: …` quoted block).
    - Leave the original task block contents (acceptance criteria, etc.) untouched.
 
-4. **Commit and push the unmark on a dedicated branch** (mirrors the `unblocker` pattern that wrote the marker):
+4. **Prepare the unmark on a dedicated branch, then hand commit/push/PR/review/merge to `task-orchestrator`.** This session only prepares the edit; it never commits, pushes or opens the PR (top-level sessions only orchestrate — `operator-rules.md` § "Top-level sessions only orchestrate"). From a temporary worktree (the main checkout stays untouched):
 
    ```bash
-   git checkout -b docs/resume-<id>
-   git add IN_PROGRESS.md
-   # commit under atelier-author identity (mirror unblocker.md).
-   GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
-     git commit -m "docs(tracking): unmark task <id> [BLOCKED] — resuming via /atelier:resume-task (issue #<NN> closed)"
-   git push origin docs/resume-<id>
-   gh pr create \
-     --title "docs(tracking): unmark task <id> [BLOCKED] — resuming" \
-     --body "Auto-opened by /atelier:resume-task after issue #<NN> was closed. Removes the [BLOCKED] marker from IN_PROGRESS.md so the orchestrator stops filtering this task out. Pair PR to the one that originally marked it blocked."
+   git worktree add -b docs/resume-<id> <tmp-wt> origin/<base>
    ```
 
-   Capture the PR URL — it goes into the final output. If `gh pr create` fails, leave the local commit on the docs branch, push when possible, and surface the failure (do **not** edit the task-worktree copy as a fallback — same reasoning as the `unblocker`).
+   Apply the step-3 `Edit` in `<tmp-wt>/IN_PROGRESS.md` (not in the task worktree). Then dispatch `task-orchestrator` via `Task` in **non-task PR coordination mode** (`agents/task-orchestrator.md`), passing: `mode: non-task-pr`, `repo`, `worktree: <tmp-wt>`, `base`, `head: docs/resume-<id>`, `title: docs(tracking): unmark task <id> [BLOCKED] — resuming`, `body: Opened by /atelier:resume-task after issue #<NN> was closed. Removes the [BLOCKED] marker from IN_PROGRESS.md so the orchestrator stops filtering this task out. Pair PR to the one that originally marked it blocked.`, and `interactive` per the `--yes` flag. Do **not** pass a `task_id`. The head is not `task/*`, so the orchestrator dispatches `pr-opener` (committing under the author identity) and then `reviewer` → Auto-merge gate as its own sub-agents.
 
-5. **Switch back to `main`** so the next step's task-orchestrator hand-off runs from a clean base branch:
+   Capture the PR URL / terminal state from the orchestrator's response — it goes into the final output. On `held`, surface the reason, leave the temporary worktree in place and **stop here without running step 5's task resume**: the unmark has not landed on base, so the task is still `[BLOCKED]` and resuming it would contradict the tracking state (the operator re-runs `/atelier:resume-task` once the docs PR lands); do **not** edit the task-worktree copy as a fallback (same reasoning as the `unblocker`). On `merged`, remove the temporary worktree.
 
-   ```bash
-   git checkout main
-   ```
+5. **Stay on the base branch.** The temporary worktree in step 4 means the main checkout never left `main`, so the next step's task-orchestrator hand-off runs from a clean base branch.
 
 ### 4c. PR-open-resume preflight — verify the PR is genuinely orphaned
 

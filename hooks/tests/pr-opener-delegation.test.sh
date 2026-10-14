@@ -34,7 +34,7 @@
 #     - the two-axis (git-identity vs actor/session) rationale is present
 #     - the "never hand-author a PR you will then review" rule is present
 #     - the pr-author (task) / pr-opener (non-task) delegation split is named
-#     - the benign single-session-open-without-self-review exception is named
+#     - the orchestrate-only section is present and states there is no exception (the former benign single-session-open exception was removed, #405a)
 #   Group 4 — PLAN.md §7 documents pr-opener
 #     - pr-opener row present in the agents table
 #     - cross-reference to operator-rules.md invariant present
@@ -241,12 +241,13 @@ else
   fail "align: Tier 3 auto section does not disclaim inline gh pr create authoring"
 fi
 
-# Ask path unchanged: still authors inline via the AskUserQuestion offer.
-chk_prose "$ALIGN_MD" '**Offer** (via `AskUserQuestion`) to open the PR for each repo — push the branch' \
-  "align: Tier 3 ask path still authors inline via AskUserQuestion offer (no regression)"
+# Ask path (#405a): still offers via AskUserQuestion, but delegates authoring
+# to task-orchestrator instead of running gh pr create inline.
+chk_prose "$ALIGN_MD" '**Offer** (via `AskUserQuestion`) to open the PR for each repo' \
+  "align: Tier 3 ask path still offers via AskUserQuestion"
 
-chk_prose "$ALIGN_MD" 'and run `gh pr create --base <base>` inline in this session' \
-  "align: Tier 3 ask path still runs gh pr create inline (no regression)"
+chk_prose "$ALIGN_MD" '`stop_after: pr-open`' \
+  "align: Tier 3 ask path delegates to task-orchestrator with stop_after: pr-open (no inline gh pr create)"
 
 # ---------------------------------------------------------------------------
 # Group 3: operator-rules.md documents the invariant
@@ -279,8 +280,8 @@ chk_prose "$OPERATOR_RULES" 'sub-agent (`pr-author` for `task/<id>-<slug>` branc
 chk_prose "$OPERATOR_RULES" '`pr-opener` for non-task branches' \
   "operator-rules: names pr-opener as the non-task-branch authoring sub-agent"
 
-chk_prose "$OPERATOR_RULES" 'One benign exception' \
-  "operator-rules: names the benign open-without-self-review exception"
+chk_prose "$OPERATOR_RULES" '### Top-level sessions only orchestrate' \
+  "operator-rules: orchestrate-only section present (benign exception removed, #405a)"
 
 # ---------------------------------------------------------------------------
 # Group 4: PLAN.md §7 documents pr-opener

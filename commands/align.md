@@ -1,7 +1,7 @@
 ---
 description: Align every registered atelier project/workspace to the installed atelier in one pass — version-drift resync + decision policy (Tier 1, applied by atelier-align), §5 ROADMAP adoption + legacy IN_PROGRESS reset (Tier 2, via /adopt-roadmap), and one commit-to-base PR per changed repo (Tier 3). Surveys read-only first; applies nothing without confirmation (or pre-consent via `auto` policy).
 argument-hint: "[<workspace-slug>] [--policy <auto|ask>]"
-allowed-tools: Bash(atelier-align:*), Bash(atelier-setup-project:*), Bash(git rev-parse:*), Bash(git -C * rev-parse:*), Bash(git remote:*), Bash(git -C * remote:*), Bash(git ls-remote:*), Bash(git -C * ls-remote:*), Bash(git branch:*), Bash(git status:*), Bash(git fetch:*), Bash(git -C * fetch:*), Bash(git worktree:*), Bash(git -C * worktree:*), Bash(git add:*), Bash(git -C * add:*), Bash(git commit:*), Bash(git -C * commit:*), Bash(git pull --ff-only*), Bash(git -C * pull --ff-only*), Bash(git push origin chore/atelier-align*), Bash(git push -u origin chore/atelier-align*), Bash(git -C * push origin chore/atelier-align*), Bash(git -C * push -u origin chore/atelier-align*), Bash(gh pr create:*), Bash(gh pr view:*), Bash(gh pr list:*), Read, AskUserQuestion, SlashCommand, Task
+allowed-tools: Bash(atelier-align:*), Bash(atelier-setup-project:*), Bash(git rev-parse:*), Bash(git -C * rev-parse:*), Bash(git remote:*), Bash(git -C * remote:*), Bash(git ls-remote:*), Bash(git -C * ls-remote:*), Bash(git branch:*), Bash(git status:*), Bash(git fetch:*), Bash(git -C * fetch:*), Bash(git worktree:*), Bash(git -C * worktree:*), Bash(git pull --ff-only*), Bash(git -C * pull --ff-only*), Bash(gh pr view:*), Bash(gh pr list:*), Read, AskUserQuestion, SlashCommand, Task
 ---
 
 You are running `/atelier:align` — the one-pass project/workspace aligner. It
@@ -93,17 +93,24 @@ open one PR per repo:
 - Resolve the base branch (prefer `dev` if `origin/dev` exists, else the default
   branch). Use a **temporary worktree** so the operator's checkout is untouched:
   `git -C <repo> worktree add -b chore/atelier-align <tmp> origin/<base>`, copy in
-  the changed `.atelier.json` / settings / adopted tracking, and commit
-  (Conventional Commits, **no AI attribution**). Authoring the PR itself (push +
-  `gh pr create`) happens per the effective policy below, then remove the
-  temporary worktree once the PR is open.
+  the changed `.atelier.json` / settings / adopted tracking, and leave the diff
+  uncommitted — `pr-opener` commits it (Conventional Commits, **no AI
+  attribution**), pushes and opens the PR as the orchestrator's sub-agent. This
+  session never commits, pushes or runs `gh pr create`; every policy delegates to
+  `task-orchestrator` as below, then remove the temporary worktree once the PR is
+  open.
 
 Then, **per the member's effective policy**:
 
 ### Tier 3 under `ask` (interactive)
 
-**Offer** (via `AskUserQuestion`) to open the PR for each repo — push the branch
-and run `gh pr create --base <base>` inline in this session. Do **not** merge —
+**Offer** (via `AskUserQuestion`) to open the PR for each repo. On the operator's
+yes, delegate it exactly as the `auto` path below does — one `task-orchestrator`
+dispatch per repo in **non-task mode** (same briefing fields as below, plus
+`interactive: true` and `stop_after: pr-open`) — rather than pushing the branch
+or running `gh pr create` in this session (top-level sessions only
+orchestrate). With `stop_after: pr-open` the orchestrator has `pr-opener` open
+the PR and returns its URL without dispatching `reviewer` / `auto-merge`:
 the operator merges on their own timeline. If the operator declines, print the
 exact per-repo commands instead. Do **not** push directly to the base branch.
 
