@@ -651,16 +651,12 @@ check_hooks_liveness() {
 # in install.sh/bootstrap.sh sets the bridge var today (the shipped
 # entrypoint is a plain terminal `claude`), so a real production session
 # may always be running in the weaker mode with no other visible sign of
-# it — this check exists purely to make that state visible, not to fix it.
+# it — this check is informational only (never FAIL, no fix, no exit-status effect).
 check_worktree_isolation_token() {
   if [ -n "${CLAUDE_CODE_BRIDGE_SESSION_ID:-}" ]; then
     push_host "$OK worktree isolation: CLAUDE_CODE_BRIDGE_SESSION_ID set — block-cross-worktree-edit.sh has a stable, per-task-chain token"
   else
-    push_host "$FAIL worktree isolation: CLAUDE_CODE_BRIDGE_SESSION_ID unset — block-cross-worktree-edit.sh falls back to the PreToolUse payload's session_id, which is NOT stable across a Task subagent dispatch, weakening cross-worktree protection"
-    push_fix_manual "# No automated fix yet — CLAUDE_CODE_BRIDGE_SESSION_ID is set by a bridged
-# entrypoint (e.g. an IDE extension), not by install.sh/bootstrap.sh's plain
-# terminal \`claude\`. Tracked as a known gap against #196a; see the header
-# comment in hooks/block-cross-worktree-edit.sh for the full investigation."
+    push_host "$OK worktree isolation (info): CLAUDE_CODE_BRIDGE_SESSION_ID not visible to this shell — doctor usually runs outside the claude session, so this does not measure it; if it is also unset inside the session, block-cross-worktree-edit.sh falls back to the payload session_id (unstable across Task subagents, weaker isolation). See the token_source field in the hook's JSONL log"
   fi
 }
 

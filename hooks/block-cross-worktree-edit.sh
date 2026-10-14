@@ -5,7 +5,8 @@
 # session from editing a sibling task's worktree while it already owns a
 # DIFFERENT worktree of the same repository — without denying anything to a
 # caller that owns nothing (the operator's own session, and troubleshooting
-# reads/edits from outside a claimed worktree, must keep working).
+# reads/edits from outside a claimed worktree, must keep working). The
+# primary (main) checkout is non-ownable: never claimed, never counted.
 #
 # Why this hook exists (#196 board finding): narrowing the static
 # `<worktree>-worktrees` Edit/Write grants in settings.template.json (the
@@ -178,8 +179,9 @@ if [ "$hook_event_name" = "Stop" ]; then
       claim_owner_token="$(cat "$claim_dir/token" 2>/dev/null || true)"
       if [ -n "$claim_owner_token" ] && [ "$claim_owner_token" = "$token" ]; then
         released_path="$(cat "$claim_dir/path" 2>/dev/null || true)"
-        rm -rf "$claim_dir" 2>/dev/null
-        log_decision "$HOOK_NAME" "Stop" "$(basename "$claim_dir")" "allow" "released claim on ${released_path:-$claim_dir} on session stop (token-source: $token_source)"
+        if rm -rf "$claim_dir" 2>/dev/null; then
+          log_decision "$HOOK_NAME" "Stop" "$(basename "$claim_dir")" "allow" "released claim on ${released_path:-$claim_dir} on session stop (token-source: $token_source)"
+        fi
       fi
     done
   fi
@@ -281,6 +283,12 @@ ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
 state_dir="$ATELIER_CONFIG_DIR/state/worktree-owner"
 mkdir -p "$state_dir" 2>/dev/null || degrade_allow "\$ATELIER_CONFIG_DIR ($ATELIER_CONFIG_DIR) unwritable"
 
+# The primary checkout is never ownable: it is shared by every session, so
+# claiming it would count as "owning another worktree" and disarm the
+# "owns nothing -> never denied" escape hatch. For the primary checkout the
+# git common dir is exactly <W>/.git.
+[ "$container_dir" = "$W/.git" ] && exit 0
+
 container_id="$(_encode_id "$container_dir")"
 w_id="$(_encode_id "$W")"
 key="${container_id}--${w_id}"
@@ -369,6 +377,7 @@ for candidate in "$state_dir/${container_id}--"*; do
 
   candidate_path="$(cat "$candidate/path" 2>/dev/null || true)"
   [ -n "$candidate_path" ] || candidate_path="$W"
+  [ "$container_dir" = "$candidate_path/.git" ] && continue # primary checkout is non-ownable
   candidate_ttl="$(_ttl_for_worktree "$candidate_path")"
   candidate_mtime="$(_stat_mtime "$candidate/token")" || continue
   candidate_age=$((now - candidate_mtime))

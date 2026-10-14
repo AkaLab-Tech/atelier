@@ -453,28 +453,29 @@ WT8_CALLER="$TMP/repo8-wt-caller"
 WT8_TARGET="$TMP/repo8-wt-target"
 mk_worktree "$REPO8" "task/8-caller" "$WT8_CALLER"
 mk_worktree "$REPO8" "task/8-target" "$WT8_TARGET"
-printf '{"ownerTtlSeconds": 30}\n' > "$WT8_TARGET/.atelier.json"
+printf '{"ownerTtlSeconds": 300}\n' > "$WT8_TARGET/.atelier.json"
 
 # Token L8 owns a different worktree in the same container.
 assert_allow "token L8 claims WT8_CALLER (owns something in this container)" \
   "Write" "$WT8_CALLER/new.txt" "token-L8"
 # Token F8 claims the ttl=30 worktree.
-assert_allow "token F8 claims WT8_TARGET (ttl=30)" "Write" "$WT8_TARGET/new.txt" "token-F8"
+assert_allow "token F8 claims WT8_TARGET (ttl=300)" "Write" "$WT8_TARGET/new.txt" "token-F8"
 
 key8="$(enc "$(container_dir_of "$REPO8")")--$(enc "$WT8_TARGET")"
 tokfile8="$CFG/state/worktree-owner/$key8/token"
 
-# Just inside the window: age 27s < ttl 30s (margin 3s to absorb exec
-# jitter between setting the mtime and the hook computing `now`) — still
-# fresh, so L8 (who owns a different worktree here) is denied.
-touch_age "$tokfile8" 27
-assert_block "L8 writes into WT8_TARGET while F8's claim is fresh (age 27s < ttl 30s)" \
+# Just inside the window: age 240s < ttl 300s (60s margin so a loaded CI
+# box cannot tip the claim over the boundary between setting the mtime and
+# the hook computing `now`) — still fresh, so L8 (who owns a different
+# worktree here) is denied.
+touch_age "$tokfile8" 240
+assert_block "L8 writes into WT8_TARGET while F8's claim is fresh (age 240s < ttl 300s)" \
   "Write" "$WT8_TARGET/blocked-fresh.txt" "token-L8"
 
-# Just outside the window: age 33s >= ttl 30s (same 3s margin) — now
+# Just outside the window: age 360s >= ttl 300s (same 60s margin) — now
 # stale, reclaimed rather than denied.
-touch_age "$tokfile8" 33
-assert_allow "L8 writes into WT8_TARGET once F8's claim ages past ttl (age 33s >= ttl 30s) → reclaimed" \
+touch_age "$tokfile8" 360
+assert_allow "L8 writes into WT8_TARGET once F8's claim ages past ttl (age 360s >= ttl 300s) → reclaimed" \
   "Write" "$WT8_TARGET/reclaimed.txt" "token-L8"
 owner8="$(cat "$tokfile8" 2>/dev/null || true)"
 if [ "$owner8" = "token-L8" ]; then
@@ -923,9 +924,9 @@ WT20B_OWNER="$TMP/repo20b-wt-owner"
 WT20B_OTHER="$TMP/repo20b-wt-other"
 mk_worktree "$REPO20B" "task/20b-owner" "$WT20B_OWNER"
 mk_worktree "$REPO20B" "task/20b-other" "$WT20B_OTHER"
-printf '{"ownerTtlSeconds": 5}\n' > "$WT20B_OWNER/.atelier.json"
+printf '{"ownerTtlSeconds": 300}\n' > "$WT20B_OWNER/.atelier.json"
 
-assert_allow "token P20B claims WT20B_OWNER (ttl=5) then goes inactive" \
+assert_allow "token P20B claims WT20B_OWNER (ttl=300) then goes inactive" \
   "Write" "$WT20B_OWNER/new.txt" "token-P20B"
 key20b="$(enc "$(container_dir_of "$REPO20B")")--$(enc "$WT20B_OWNER")"
 tokfile20b="$CFG/state/worktree-owner/$key20b/token"
@@ -933,13 +934,13 @@ tokfile20b="$CFG/state/worktree-owner/$key20b/token"
 assert_allow "token P20B-CONTENDER claims WT20B_OTHER (a different worktree, same container)" \
   "Write" "$WT20B_OTHER/new.txt" "token-P20B-CONTENDER"
 
-assert_block "contender denied while the inactive owner's claim is still fresh (no writes yet, well under ttl=5)" \
+assert_block "contender denied while the inactive owner's claim is still fresh (no writes yet, well under ttl=300)" \
   "Write" "$WT20B_OWNER/blocked.txt" "token-P20B-CONTENDER"
 
-# Age the inactive owner's claim past its own ttl=5 — since it never wrote
+# Age the inactive owner's claim past its own ttl=300 — since it never wrote
 # again (no refresh fired), it must go stale exactly as pre-refresh.
-touch_age "$tokfile20b" 8
-assert_allow "contender's write is allowed once the inactive owner's claim ages past ttl=5 (reclaimed — inactivity was never masked by the refresh)" \
+touch_age "$tokfile20b" 360
+assert_allow "contender's write is allowed once the inactive owner's claim ages past ttl=300 (reclaimed — inactivity was never masked by the refresh)" \
   "Write" "$WT20B_OWNER/reclaimed-after-inactivity.txt" "token-P20B-CONTENDER"
 
 # =============================================================================
@@ -1210,6 +1211,47 @@ if grep -q 'released claim on.*(token-source: bridge-env)' "$SHARED_LOG" 2>/dev/
 else
   fail "expected at least one Stop-release decision logging token-source: bridge-env in $SHARED_LOG"
 fi
+
+# =============================================================================
+# SECTION Q — the container's primary (main) checkout is non-ownable (#196a
+# cycle-2 review repro): a session that merely edits <main>/README.md must
+# never claim main, so it must still be free to edit a sibling task worktree
+# afterwards (it owns nothing).
+# =============================================================================
+echo
+echo "-- section Q: main checkout is never claimed / never counted as an owned worktree --"
+
+REPOQ="$TMP/repoq"
+mk_repo "$REPOQ"
+printf 'readme\n' > "$REPOQ/README.md"
+WTQ_A="$TMP/repoq-wt-a"
+mk_worktree "$REPOQ" "task/q-a" "$WTQ_A"
+keyq_main="$(enc "$(container_dir_of "$REPOQ")")--$(enc "$REPOQ")"
+
+# Session B claims wt-a; session A then edits main's README, then wt-a.
+assert_allow "session B (token-QB) writes wt-a/f.txt (claims wt-a)" "Write" "$WTQ_A/f.txt" "token-QB"
+assert_allow "session A (token-QA) edits <main>/README.md" "Edit" "$REPOQ/README.md" "token-QA"
+if [ ! -e "$CFG/state/worktree-owner/$keyq_main" ]; then
+  pass "no claim dir was created for the main checkout"
+else
+  fail "a claim dir was created for the main checkout: $CFG/state/worktree-owner/$keyq_main"
+fi
+assert_allow "session A edits wt-a/f.txt after touching main → allowed (A owns nothing)" \
+  "Edit" "$WTQ_A/f.txt" "token-QA"
+
+# A stale claim for the main checkout already on disk under A's token (from
+# a pre-fix hook) must be ignored by the deny scan.
+REPOQ2="$TMP/repoq2"
+mk_repo "$REPOQ2"
+WTQ2_A="$TMP/repoq2-wt-a"
+mk_worktree "$REPOQ2" "task/q2-a" "$WTQ2_A"
+keyq2_main="$(enc "$(container_dir_of "$REPOQ2")")--$(enc "$REPOQ2")"
+mkdir -p "$CFG/state/worktree-owner/$keyq2_main"
+printf 'token-QA2' > "$CFG/state/worktree-owner/$keyq2_main/token"
+printf '%s' "$REPOQ2" > "$CFG/state/worktree-owner/$keyq2_main/path" # as a pre-fix hook would have written it
+assert_allow "session B2 (token-QB2) claims wt-a of repoq2" "Write" "$WTQ2_A/f.txt" "token-QB2"
+assert_allow "session A2 holding a pre-existing FRESH main claim on disk can still edit wt-a (main claim ignored by deny scan)" \
+  "Edit" "$WTQ2_A/f.txt" "token-QA2"
 
 echo
 if [ "$fails" -eq 0 ]; then
