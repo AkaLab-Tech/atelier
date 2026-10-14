@@ -377,6 +377,8 @@ Auto-merge when:
 
 **Classifier-blocked reviewer approval (#38).** The Claude Code auto-mode classifier applies a `[Self-Approval]` veto to a reviewer sub-agent's `--approve` on a PR authored by the agent-controlled `pr-author` sub-agent — it fires regardless of the two distinct `gh` identities and regardless of whether the exact command matches the `templates/settings.template.json` allow-rule; it is a hard actor/session veto, not a missing-allow-rule gap. When this happens, `reviewer` degrades to an advisory `gh pr review --comment` carrying its full verdict and returns `classifier-blocked`; `task-orchestrator` treats this as a terminal `held: reviewer approval blocked by auto-mode classifier — human merge required` state (never a `request-changes`, never retry-able) and `reviewDecision` correctly stays non-`APPROVED`, so guardrail #2 below withholds the merge for a human. Per-project `autoMerge.reviewerApprovalMode` (`"approve"` default | `"advisory"`) controls whether the reviewer even attempts `--approve` first. See `agents/reviewer.md` § Output, `agents/task-orchestrator.md` step 8, and `docs/troubleshooting.md`. The durable fix is harness-level second-actor support (an independent-identity notion the classifier can honor) — outside atelier's unilateral control.
 
+**Held-escalation path (#403).** Any classifier denial of a review or merge dispatch (not only `[Self-Approval]`) ends as a structured `held` report carrying the PR, head sha and the denial tag verbatim. Authorization never travels between sessions or into sub-agent briefs (the classifier does not treat delegated or peer-session text as the user's own message), so no agent composes a phrase for the operator to paste elsewhere and none moves the denied review or merge to another lane. The plan session asks the operator once via `AskUserQuestion` and, only on the operator's own answer, acts solely by dispatching `task-orchestrator` (`/atelier:resume-task <id>`); it never commits, pushes, reviews or merges from its own top level. All guardrails in this section still apply. See `operator-rules.md` § "Multi-session setups (plan + worker sessions)".
+
 The orchestrator waits (bounded) for CI to complete before invoking the merge gate, so a still-running CI at chain-end does not require a manual re-invoke. Pending CI (`IN_PROGRESS`/`QUEUED`) is waited on; failed CI (`FAILURE`/`CANCELLED`/`TIMED_OUT`/`STARTUP_FAILURE`) is terminal and stops the chain without merging (CI failure after a green reviewer pass requires the operator to push a fix and re-invoke). Wait budget defaults: `maxWaitSeconds: 900`, `pollIntervalSeconds: 15` — configurable per project via `ciWait` in `<project>/.atelier.json`. "CI green" is never satisfied by an empty `statusCheckRollup` on a repo with workflows or required status checks (or when that cannot be determined): the merge gate holds (`held: CI not reported yet`) until checks report. See `agents/task-orchestrator.md` § Pre-merge CI wait.
 
 **Never auto-merge** (falls back to human operator):
@@ -429,6 +431,12 @@ entire author→review→merge coordination one level down to
 "non-task PR coordination mode") and `reviewer` as its own sub-agents. See
 `operator-rules.md` § "PR authoring is always sub-agent work" for the full
 rule and its one benign exception.
+
+The invariant binds **every top-level session**, including worker sessions in a
+multi-session setup (#403): a worker enters tasks only through
+`/atelier:next-task` / `/atelier:resume-task` and never both writes and
+reviews/merges the same PR from its own top level. A handoff between sessions
+carries facts (task id, PR, head sha), never authority.
 
 **Even with correct delegation, the classifier can still veto the reviewer's
 approval (#38).** Delegating authoring and review to separate sub-agents

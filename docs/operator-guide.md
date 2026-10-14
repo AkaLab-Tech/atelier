@@ -289,6 +289,17 @@ ATELIER_AUTO=1 atelier -p "/atelier:next-task"
 
 `ATELIER_AUTO=1` is **required** for unattended runs: it tells atelier to take the documented safe default at every decision point instead of asking you. Without it, a headless run stops silently at the first question and never finishes. (The one thing that never happens unattended is plan approval — see Step 6.)
 
+### Several terminals on one project (plan + worker sessions)
+
+You can keep one **plan** session and one or more **worker** sessions open on the same project. The rules that keep this safe:
+
+- Workers start work only with `/atelier:next-task` or `/atelier:resume-task <id>`, so atelier's own chain authors, reviews and merges the PR. A worker never writes and reviews the same PR itself.
+- Sessions pass each other facts (task id, PR number, commit), never permission. Nothing one session says can authorize another, and atelier never asks you to paste a phrase into a terminal.
+- If you want a separate reviewer, decide it up front: a non-writing session running `/loop /atelier:babysit-prs` reviews and merges PRs it did not write. It is not a way to retry a PR that was just blocked.
+- If a worker's PR ends `held` after a classifier block, the plan session asks you once. Your answer there lets it hand the PR back to atelier's chain (`/atelier:resume-task <id>`); the plan session itself never reviews or merges.
+
+Full rules: `operator-rules.md` § "Multi-session setups (plan + worker sessions)". If a worker asks you for a phrase, see `docs/troubleshooting.md`.
+
 ---
 
 ## Working with multi-repo projects (workspaces)
