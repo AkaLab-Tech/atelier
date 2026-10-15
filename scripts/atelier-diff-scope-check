@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+#
+# atelier-diff-scope-check — read-only pre-review diff scope check (#452).
+#
+# Usage: atelier-diff-scope-check --worktree <wt> --base <ref> --plan <file|->
+#
+# Compares the working tree against `git merge-base HEAD origin/<base>` and lists
+# removals the approved plan does not name. `--plan -` reads the plan from stdin;
+# only the text between `<!-- atelier:plan:start -->` and `<!-- atelier:plan:end -->`
+# is used when those markers are present.
+# Findings (one line each), then `result=pass|fail`:
+#   fail removed-heading <file> <heading>   ATX heading of a modified *.md gone from the tree (fences ignored, moves not counted)
+#   fail removed-file <path>                deleted file (renames are not removals)
+#   fail|warn deletion-heavy <file> @@ -N/+M   hunk with >=15 deleted lines and deleted >= 3x added;
+#                                           fail when the file is not named in the plan, else warn
+# A removal is planned when its text/path appears in the plan (lowercased, no backticks or
+# leading '#', whitespace collapsed). Exempt: ROADMAP.md, IN_PROGRESS.md, HISTORY.md,
+# roadmap/**, .plan/**, .task-log/**.
+# Exit: 0 pass · 1 findings · 2 error/usage (never a pass). Reads only; no state is modified.
+
+set -u
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+wt=""; base=""; plan=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --worktree|--base|--plan)
+      if [ $# -lt 2 ] || [ -z "$2" ]; then
+        echo "atelier-diff-scope-check: $1 needs a non-empty value" >&2
+        echo "usage: atelier-diff-scope-check --worktree <wt> --base <ref> --plan <file|->" >&2
+        exit 2
+      fi
+      case "$1" in --worktree) wt="$2" ;; --base) base="$2" ;; --plan) plan="$2" ;; esac
+      shift 2 ;;
+    *) echo "usage: atelier-diff-scope-check --worktree <wt> --base <ref> --plan <file|->" >&2; exit 2 ;;
+  esac
+done
+[ -n "$wt" ] && [ -n "$base" ] && [ -n "$plan" ] || {
+  echo "usage: atelier-diff-scope-check --worktree <wt> --base <ref> --plan <file|->" >&2; exit 2; }
+
+g() { git -C "$wt" "$@"; }
+g rev-parse --git-dir >/dev/null 2>&1 || { echo "atelier-diff-scope-check: $wt is not a git worktree" >&2; exit 2; }
+mb=$(g merge-base HEAD "origin/$base" 2>/dev/null) || { echo "atelier-diff-scope-check: no merge base with origin/$base" >&2; exit 2; }
+
+if [ "$plan" = "-" ]; then plan_raw=$(cat)
+elif [ -r "$plan" ]; then plan_raw=$(cat "$plan")
+else echo "atelier-diff-scope-check: plan not readable: $plan" >&2; exit 2; fi
+case "$plan_raw" in
+  *'<!-- atelier:plan:start -->'*)
+    plan_raw=$(printf '%s\n' "$plan_raw" | sed -n '/<!-- atelier:plan:start -->/,/<!-- atelier:plan:end -->/p') ;;
+esac
+
+norm() { tr '[:upper:]' '[:lower:]' | tr -d '`' | sed 's/^[[:space:]]*#*[[:space:]]*//' | tr -s '[:space:]' ' ' | sed 's/ $//'; }
+plan_n=$(printf '%s' "$plan_raw" | tr -d '`' | tr '[:upper:]' '[:lower:]' | tr -s '[:space:]' ' ')
+planned() { local n; n=$(printf '%s' "$1" | norm); [ -n "$n" ] && case "$plan_n" in *"$n"*) return 0 ;; esac; return 1; }
+
+exempt() {
+  case "$1" in
+    ROADMAP.md|IN_PROGRESS.md|HISTORY.md|roadmap/*|.plan/*|.task-log/*) return 0 ;;
+  esac
+  return 1
+}
+
+# ATX headings outside fenced code, one per line.
+headings() {
+  awk '/^[[:space:]]*(```|~~~)/ { f = !f; next } !f && /^#{1,6}[[:space:]]+/ { print }'
+}
+
+fail=0
+emit() { echo "$1"; case "$1" in fail*) fail=1 ;; esac; }
+
+while IFS=$'\t' read -r st p1 _; do
+  [ -n "$st" ] || continue
+  case "$st" in
+    D)
+      exempt "$p1" && continue
+      planned "$p1" || emit "fail removed-file $p1" ;;
+    M)
+      exempt "$p1" && continue
+      case "$p1" in *.md) ;; *) continue ;; esac
+      removed=$(comm -23 \
+        <(g show "$mb:$p1" 2>/dev/null | headings | sort) \
+        <(headings < "$wt/$p1" 2>/dev/null | sort))
+      while IFS= read -r h; do
+        [ -n "$h" ] || continue
+        planned "$h" || emit "fail removed-heading $p1 $h"
+      done <<EOF
+$removed
+EOF
+      ;;
+  esac
+done < <(g diff -M --name-status "$mb" | awk -F'\t' '$1 ~ /^[DM]$/')
+
+file=""
+while IFS= read -r line; do
+  case "$line" in
+    '+++ b/'*) file="${line#+++ b/}" ;;
+    '+++ /dev/null') file="" ;;
+    '@@ '*)
+      [ -n "$file" ] || continue
+      exempt "$file" && continue
+      del=$(printf '%s' "$line" | sed -n 's/^@@ -[0-9]*,\{0,1\}\([0-9]*\) .*/\1/p')
+      add=$(printf '%s' "$line" | sed -n 's/^@@ -[0-9,]* +[0-9]*,\{0,1\}\([0-9]*\) @@.*/\1/p')
+      [ -n "$del" ] || del=1
+      [ -n "$add" ] || add=1
+      if [ "$del" -ge 15 ] && [ "$del" -ge $((add * 3)) ]; then
+        if planned "$file"; then lvl=warn; else lvl=fail; fi
+        emit "$lvl deletion-heavy $file @@ -$del/+$add"
+      fi ;;
+  esac
+done < <(g diff -M -U0 "$mb")
+
+if [ "$fail" -eq 1 ]; then echo "result=fail"; exit 1; fi
+echo "result=pass"
