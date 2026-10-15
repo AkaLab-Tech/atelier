@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+#
+# atelier-reviewer-mode — read-only resolution of autoMerge.reviewerApprovalMode from the BASE (#459).
+#
+# Usage: atelier-reviewer-mode <project-dir> --base <ref>
+#
+# Reads `.atelier.json` as committed at <ref> (`git show <ref>:.atelier.json`), never the
+# working tree and never the reviewed PR head: a PR cannot relax its own review, and a mode
+# change takes effect only for PRs reviewed after it lands on the base.
+# Output: exactly one line on stdout.
+#   verdict | approve | advisory   the configured mode; a missing file, block or field -> approve
+#   invalid-mode:<value>           any other value, a non-string, or unparseable JSON
+# Exit: 0 resolved · 2 invalid-mode, error or usage (never a pass).
+# Reads only; no state is modified.
+
+set -u
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+usage() { echo "usage: atelier-reviewer-mode <project-dir> --base <ref>" >&2; exit 2; }
+fail() { echo "atelier-reviewer-mode: $1" >&2; exit 2; }
+
+dir=""; base=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --base) [ $# -ge 2 ] || usage; base="$2"; shift 2 ;;
+    -*) usage ;;
+    *) [ -z "$dir" ] || usage; dir="$1"; shift ;;
+  esac
+done
+[ -n "$dir" ] && [ -n "$base" ] || usage
+
+command -v jq >/dev/null 2>&1 || fail "jq not found"
+git -C "$dir" rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1 || fail "cannot resolve base ref $base"
+
+if ! raw="$(git -C "$dir" show "$base:.atelier.json" 2>/dev/null)"; then
+  echo "approve"
+  exit 0
+fi
+
+if ! mode="$(printf '%s' "$raw" | jq -c '
+  if type != "object" then {malformed: .}
+  else (.autoMerge // null) | if . == null then null elif type != "object" then {malformed: .} else (.reviewerApprovalMode // null) end
+  end' 2>/dev/null)"; then
+  echo "invalid-mode:unparseable"
+  exit 2
+fi
+
+case "$mode" in
+  null) echo "approve" ;;
+  '"verdict"') echo "verdict" ;;
+  '"approve"') echo "approve" ;;
+  '"advisory"') echo "advisory" ;;
+  *) echo "invalid-mode:$mode"; exit 2 ;;
+esac
