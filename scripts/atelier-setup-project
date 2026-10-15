@@ -1278,6 +1278,39 @@ step_record_setup() {
 
   SETUP_COMPLETED="$now"
   SETUP_VERSION="$plugin_version"
+
+  report_stale_workspace_members
+}
+
+# #488: report-only. A workspace member whose path is not registered but whose
+# git origin equals this project's origin is almost certainly the old location
+# of a moved project. Never edits workspaces.json — the fix is the operator's.
+# Remote normalisation is the same pipeline as atelier-doctor's
+# check_project_registry (#466); keep the two in sync.
+report_stale_workspace_members() {
+  local wsf="$ATELIER_CONFIG_DIR/workspaces.json"
+  [ -f "$wsf" ] || return 0
+  jq -e . "$wsf" >/dev/null 2>&1 || return 0
+  local norm_sed='s#^(https?|ssh|git)://([^@/]+@)?##; s#^[^@/]+@##; s#^github\.com[:/]#github.com/#; s#\.git$##; s#/+$##'
+  local url mine
+  url="$(git -C "$PROJECT" remote get-url origin 2>/dev/null || true)"
+  [ -n "$url" ] || return 0
+  mine="$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]' | sed -E "$norm_sed")"
+  local slug token mpath root murl theirs
+  while IFS=$'\t' read -r slug token mpath root; do
+    [ -n "$mpath" ] || continue
+    [ "$mpath" = "$PROJECT" ] && continue
+    jq -e --arg p "$mpath" '.projects[$p] // empty' "$CONFIG_FILE" >/dev/null 2>&1 && continue
+    murl="$(git -C "$mpath" remote get-url origin 2>/dev/null || true)"
+    [ -n "$murl" ] || continue
+    theirs="$(printf '%s' "$murl" | tr '[:upper:]' '[:lower:]' | sed -E "$norm_sed")"
+    [ "$theirs" = "$mine" ] || continue
+    warn "workspace '$slug' lists member '$token' at $mpath, an unregistered checkout of this project's remote"
+    warn "  fix: re-run /atelier:setup-workspace with the corrected --members (this project at $PROJECT), --root $root and --force"
+    warn "  or drop the grouping: atelier-remove-workspace $slug"
+  done < <(jq -r '(.workspaces // {}) | to_entries[] | .key as $s | .value.root as $r
+    | (.value.members // [])[] | "\($s)\t\(.token)\t\(.path)\t\($r // "")"' "$wsf" 2>/dev/null || true)
+  return 0
 }
 
 # ---------- M7.1.F56: reviewer access to this repo ----------
