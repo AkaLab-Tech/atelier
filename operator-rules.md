@@ -542,9 +542,14 @@ you're ready to accept. (The interactive permission-diff prompt is a
 clone-mode feature; managed mode backs up the previous instantiated
 template instead.)
 
-After any successful update, **restart open Claude Code sessions** —
-the plugin cache is refreshed but each session loads its agents /
-skills / commands at start.
+After any successful update, in each open Claude Code session type
+**`/reload-plugins`** (`--force` when it warns), then run
+**`/atelier:refresh`**: the plugin cache is refreshed, `/reload-plugins`
+reloads agents / skills / commands / hooks, and `/atelier:refresh`
+re-injects these operator rules and the session-start context. Open
+sessions get a one-time nudge on their next prompt. Restart only for
+plugin monitors, non-interactive MCP changes, settings keys read at
+session start, or a new Claude Code binary.
 
 ## Planning gate — tasks must be `[ready]` before they run
 

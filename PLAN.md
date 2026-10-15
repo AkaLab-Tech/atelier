@@ -551,6 +551,8 @@ Apply? [y/N]
   · If you are NOT 100% sure, answer N and talk to the Product Owner.
 ```
 
+**Decision (#486): open sessions pick up an update without a restart.** After an update, the operator types the built-in `/reload-plugins` (`--force` when it warns), then `/atelier:refresh`: the reload swaps skills / commands / agents / hooks, and `/atelier:refresh` compares the loaded, installed and helper versions and re-injects `operator-rules.md` and the SessionStart context (chat language, orient, notification reconcile), which a reload does not replace. A `UserPromptSubmit` hook (`hooks/version-drift-nudge.sh`) nudges once per (session, installed version) when the loaded plugin version differs from `installed_plugins.json`; it uses jq and local files only and fails open. A restart stays necessary only for plugin monitors, plugin MCP changes in non-interactive sessions, settings keys read at session start, and a new Claude Code binary. Whether a reload re-runs SessionStart hooks and whether the model can type `/reload-plugins` itself are not verified (assumed no for both); see `docs/research/session-reload.md`.
+
 ---
 
 ## 10. Secrets handling ✅
