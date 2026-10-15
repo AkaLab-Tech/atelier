@@ -257,6 +257,50 @@ OUT=$(guarded --base main --plan "$TMP/plan2.md" --worktree 2>&1); RC=$?
 expect "trailing --worktree without value exits 2 (no hang)" 2 ''
 printf '%s\n' "$OUT" | grep -q 'result=pass' && fail "trailing --worktree must not print result=pass" || pass "trailing --worktree never prints result=pass"
 
+# 11. --base accepts a branch name or origin/<branch> (#483).
+mkfix
+git -C "$WT" rm -q gone.txt
+printf 'Unrelated cleanup.\n' >"$TMP/plan3.md"
+OUT_A=$("$CHECK" --worktree "$WT" --base main --plan "$TMP/plan3.md" 2>/dev/null); RC_A=$?
+OUT_B=$("$CHECK" --worktree "$WT" --base origin/main --plan "$TMP/plan3.md" 2>/dev/null); RC_B=$?
+[ "$RC_A" -eq 1 ] && [ "$RC_B" -eq 1 ] && pass "--base main and origin/main both exit 1 on a removal" \
+  || fail "--base main/origin/main exit codes (main=$RC_A origin/main=$RC_B, want 1/1)"
+[ "$OUT_A" = "$OUT_B" ] && pass "--base main and origin/main give identical stdout" \
+  || fail "--base forms differ (main: $(printf '%s' "$OUT_A" | tr '\n' '|') vs origin/main: $(printf '%s' "$OUT_B" | tr '\n' '|'))"
+printf '%s\n' "$OUT_B" | grep -qx 'result=fail' && printf '%s\n' "$OUT_B" | grep -qx 'fail removed-file gone.txt' \
+  && pass "--base origin/main reports result=fail and removed-file gone.txt" \
+  || fail "--base origin/main should report removed-file gone.txt (out: $(printf '%s' "$OUT_B" | tr '\n' '|'))"
+
+mkfix
+OUT_A=$("$CHECK" --worktree "$WT" --base main --plan "$TMP/plan3.md" 2>/dev/null); RC_A=$?
+OUT_B=$("$CHECK" --worktree "$WT" --base origin/main --plan "$TMP/plan3.md" 2>/dev/null); RC_B=$?
+[ "$RC_A" -eq 0 ] && [ "$RC_B" -eq 0 ] && [ "$OUT_A" = "$OUT_B" ] \
+  && printf '%s\n' "$OUT_B" | grep -qx 'result=pass' \
+  && pass "empty diff: --base main and origin/main both exit 0 with result=pass" \
+  || fail "empty diff forms (main rc=$RC_A origin/main rc=$RC_B; out: $(printf '%s' "$OUT_B" | tr '\n' '|'))"
+
+OUT=$("$CHECK" --worktree "$WT" --base origin/nosuchbase --plan "$TMP/plan3.md" 2>"$TMP/err"); RC=$?
+expect "--base origin/nosuchbase exits 2" 2 ''
+grep -qF 'origin/nosuchbase' "$TMP/err" && ! grep -qF 'origin/origin/' "$TMP/err" \
+  && pass "origin/nosuchbase error names origin/nosuchbase, not origin/origin/nosuchbase" \
+  || fail "origin/nosuchbase stderr wrong: $(tr '\n' '|' <"$TMP/err")"
+
+OUT=$("$CHECK" --worktree "$WT" --base origin/ --plan "$TMP/plan3.md" 2>"$TMP/err"); RC=$?
+expect "--base origin/ exits 2" 2 ''
+printf '%s\n' "$OUT" | grep -q 'result=pass' && fail "--base origin/ must never print result=pass" || pass "--base origin/ never prints result=pass"
+grep -qF -- '--base needs a branch name' "$TMP/err" \
+  && pass "--base origin/ stderr explains the missing branch name" \
+  || fail "--base origin/ stderr wrong: $(tr '\n' '|' <"$TMP/err")"
+
+# --help: documents <branch>, prints exactly the header block.
+HELP=$("$CHECK" --help 2>&1)
+printf '%s\n' "$HELP" | grep -qF -- '--base <branch>' && pass "--help documents --base <branch>" \
+  || fail "--help should contain --base <branch>"
+printf '%s\n' "$HELP" | grep -qF -- '--base <ref>' && fail "--help must not say --base <ref>" || pass "--help no longer says --base <ref>"
+EXPECTED_HELP=$(awk 'NR>=2 { if ($0 ~ /^#/) print; else exit }' "$CHECK" | sed 's/^# \{0,1\}//')
+[ "$HELP" = "$EXPECTED_HELP" ] && pass "--help prints the full header block and nothing more" \
+  || fail "--help differs from the header block (help last line: $(printf '%s\n' "$HELP" | tail -1))"
+
 echo "== prose contract"
 
 has() { # <file> <fixed phrase> <name>
@@ -278,6 +322,8 @@ has "$ORCH" 'does not consume a review-fix cycle' "orchestrator: no review-fix c
 has "$ORCH" 'one normal attempt' "orchestrator: one normal attempt"
 has "$ORCH" 'held: unplanned removal needs plan amendment' "orchestrator: second-identical-finding hold"
 has "$ORCH" 'held: diff scope check errored' "orchestrator: exit 2 fails closed"
+
+has "$ORCH" '--base <branch>' "orchestrator: scope check call site uses --base <branch>"
 
 has "$INSTALL" '_phase_c_1_symlink_helper atelier-diff-scope-check' "install.sh: helper symlink registration"
 
