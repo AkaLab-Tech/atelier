@@ -62,7 +62,8 @@ read_cached_plugin_version() {
 
 # Trigger `claude plugin update` for both atelier plugins so Claude Code's
 # plugin cache lands on the clone's version. Open sessions keep loading the
-# old version until they restart — callers surface that in their report.
+# old version until the operator types /reload-plugins and then
+# /atelier:refresh — callers surface that in their report.
 #
 # M7.1.F29: prefix CLAUDE_CONFIG_DIR=$ATELIER_CONFIG_DIR so the update hits
 # the atelier-managed root (~/.claude-work/) where install.sh Phase C.2
@@ -287,7 +288,8 @@ ${SCRIPT_NAME} ${VERSION}
 
 Update atelier to the latest release and refresh the installed artifacts
 (versioned runtime dir, instantiated templates, helper symlinks) so Claude
-Code sessions load the new version on next start. Managed installs (#39)
+Code sessions load the new version (open sessions: /reload-plugins, then
+/atelier:refresh). Managed installs (#39)
 update via Claude Code's plugin cache; clone installs (legacy/dev) pull
 origin/main.
 
@@ -337,7 +339,9 @@ NOTES:
     once; this script re-links anything missing or still pointing at a
     clone / plugin cache.
   - \`claude plugin update\` refreshes Claude Code's plugin cache. Open
-    sessions keep loading the old version until they restart.
+    sessions keep loading the old version until you type /reload-plugins
+    and then /atelier:refresh (restart only for plugin monitors,
+    non-interactive MCP changes, or a new Claude Code binary).
 EOF
 }
 
@@ -551,7 +555,7 @@ managed_update() {
   $PLUGIN_REFRESH_FAILED_CRT \
     && die "claude-roadmap-tools plugin update failed (atelier itself was updated) — fix the error above and re-run atelier-update"
   if $swapped; then
-    ok "update applied — runtime current -> $new_version; restart open Claude Code sessions to pick up agent/skill/command changes"
+    ok "update applied — runtime current -> $new_version; open sessions: type /reload-plugins, then /atelier:refresh (restart only for plugin monitors, non-interactive MCP changes, or a new Claude Code binary)"
   else
     ok "installed artifacts resynced to $new_version"
   fi
@@ -722,7 +726,7 @@ if [ "$OLD_SHA" = "$NEW_SHA" ]; then
   echo ""
   plugin_refresh_failed \
     && die "runtime resynced, plugin cache NOT refreshed — sessions will keep loading the old version"
-  ok "installed artifacts resynced to $NEW_VERSION — restart open Claude Code sessions to pick up plugin/agent changes"
+  ok "installed artifacts resynced to $NEW_VERSION — open sessions: type /reload-plugins, then /atelier:refresh (restart only for plugin monitors, non-interactive MCP changes, or a new Claude Code binary)"
   exit 0
 fi
 
@@ -878,7 +882,7 @@ else
 
   # 2) Trigger `claude plugin update` so Claude Code's plugin cache lands
   #    on the new version. Open sessions keep loading the old version
-  #    until they restart — surface this in the final report. (Clone mode
+  #    until /reload-plugins + /atelier:refresh — surface this in the final report. (Clone mode
   #    keeps this step; in managed mode the CLI update IS the fetch.)
   refresh_plugin_cache
 
@@ -937,5 +941,5 @@ fi
 echo ""
 plugin_refresh_failed \
   && die "runtime updated, plugin cache NOT refreshed — sessions will keep loading the old version"
-ok "update applied — restart open Claude Code sessions to pick up agent/skill/command changes"
+ok "update applied — open sessions: type /reload-plugins, then /atelier:refresh (restart only for plugin monitors, non-interactive MCP changes, or a new Claude Code binary)"
 exit 0

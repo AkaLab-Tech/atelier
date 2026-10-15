@@ -336,6 +336,23 @@ Legacy case: in `verdict` mode, a PR that already carries a real `CHANGES_REQUES
 
 **Fix:** Nothing. The message is informational. After `source ~/.zshrc`, the new shell functions (`task`, `atelier`) are active.
 
+### A session still runs the old atelier version
+
+**Symptom:** After `atelier-update`, an open Claude Code session shows a note like `atelier 0.50.0 is installed; this session runs 0.49.0`, or behaves like the previous version.
+
+**Cause:** Claude Code loads plugins when a session starts. `atelier-update` refreshes the plugin cache, but open sessions keep the old version's hooks, commands, agents and the operator rules injected at start.
+
+**Fix:** In that session, type `/reload-plugins` (use `/reload-plugins --force` if it warns that reloading would change MCP tools), then run `/atelier:refresh`. The refresh command compares the loaded, installed and helper versions; on a match it re-loads the operator rules and session-start context. The nudge stops once the session runs the new version. The old version's directory stays on disk for 14 days, so stale sessions keep working meanwhile. Details and sources: [research/session-reload.md](research/session-reload.md).
+
+**Still needs a restart:**
+
+- Plugin monitors (atelier ships none).
+- Plugin MCP server changes in non-interactive sessions (`claude -p`, SDK, desktop): `/reload-plugins` there does not (dis)connect MCP servers.
+- Settings keys that Claude Code reads only at session start.
+- A new Claude Code binary.
+
+**Bootstrap caveat:** a session started before this feature shipped has no nudge hook and no `/atelier:refresh` command in its loaded version. Type `/reload-plugins` once by hand; from then on the new hook and command exist. If the version you are updating from predates it and `/atelier:refresh` is not found after the reload, restart that session once.
+
 ---
 
 ## When all else fails
