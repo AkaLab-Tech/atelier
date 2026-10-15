@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+# atelier-ci-coverage — does any workflow on origin/<base> run on pull
+# requests targeting <base>?  (#497)
+#
+# Usage: atelier-ci-coverage <project_root> <base>
+#
+# Prints two lines and always exits 0 (2 on a usage error):
+#   coverage=<covered|uncovered|unknown|none>
+#   reason=<one line>
+#
+#   covered    some workflow runs on PRs into <base> -> CI will report
+#   uncovered  workflows exist but none triggers on PRs into <base>
+#   unknown    could not be classified with certainty (callers treat it as
+#              "has CI": fail closed)
+#   none       no workflow files on the base ref
+#
+# Read-only apart from a best-effort `git fetch origin <base>`. Workflow
+# files are read from the base ref (`git show`), never from the working
+# tree. Only a narrow, certain `on:` grammar is accepted; anything else
+# (expressions, workflow_call/workflow_run, branches-ignore, path filters,
+# globs, anchors/aliases, tabs, multi-document files, unclassifiable lines)
+# yields `unknown`.
+
+set -u
+
+if [ "$#" -ne 2 ] || [ -z "$1" ] || [ -z "$2" ]; then
+  echo "usage: atelier-ci-coverage <project_root> <base>" >&2
+  exit 2
+fi
+root=$1
+base=$2
+
+emit() {
+  printf 'coverage=%s\nreason=%s\n' "$1" "$2"
+  exit 0
+}
+
+[ -d "$root" ] || emit unknown "project root is not a directory: $root"
+
+git -C "$root" fetch --quiet origin "$base" >/dev/null 2>&1 || true
+
+git -C "$root" rev-parse --verify --quiet "refs/remotes/origin/$base" >/dev/null 2>&1 \
+  || emit unknown "cannot resolve origin/$base"
+
+listing=$(git -C "$root" ls-tree -r --name-only "origin/$base" -- .github/workflows 2>/dev/null) \
+  || emit unknown "git ls-tree failed on origin/$base"
+
+# shellcheck disable=SC2016
+AWK_PROG='
+function fail(r) { if (!unk) { unk = 1; ureason = r } }
+function trim(s) { sub(/^[ ]+/, "", s); sub(/[ ]+$/, "", s); return s }
+function unq(s,   f, l) {
+  s = trim(s)
+  f = substr(s, 1, 1); l = substr(s, length(s), 1)
+  if (length(s) >= 2 && (f == "\"" || f == SQ) && l == f) s = substr(s, 2, length(s) - 2)
+  return s
+}
+function addname(n) {
+  if (n !~ /^[A-Za-z0-9_.\/-]+$/) { fail("non-literal branch pattern: " n); return }
+  nn++
+  if (n == BASE) matched = 1
+  names = names (names == "" ? "" : ", ") n
+}
+function flowitems(v, mode,   inner, parts, i, cnt) {
+  if (substr(v, 1, 1) != "[" || substr(v, length(v), 1) != "]") { fail("unsupported flow value: " v); return }
+  inner = trim(substr(v, 2, length(v) - 2))
+  if (inner == "") return
+  cnt = split(inner, parts, ",")
+  for (i = 1; i <= cnt; i++) {
+    if (mode == "branches") addname(unq(parts[i])); else evt(unq(parts[i]))
+  }
+}
+function evt(name) {
+  if (name ~ /^workflow_(call|run)$/) { fail(name " trigger"); return }
+  if (name ~ /^pull_request(_target)?$/) { cov = 1; covwhy = name " without a branch filter"; return }
+  if (name !~ /^[A-Za-z_][A-Za-z0-9_-]*$/) { fail("unclassifiable trigger: " name); return }
+  other = 1
+}
+function startpr() { cur = "pr"; prci = -1; sub_ = ""; haschild = 0; hasbr = 0; nn = 0; matched = 0; names = "" }
+function finish() {
+  if (cur == "pr") {
+    if (!hasbr) { cov = 1; covwhy = "pull_request without a branch filter" }
+    else if (nn == 0) fail("empty branches list")
+    else if (matched) { cov = 1; covwhy = "pull_request branches include " BASE }
+    else { unc = 1; uncwhy = "pull_request limited to branches [" names "]" }
+  }
+  cur = ""
+}
+function closeon() {
+  finish()
+  if (ci < 0) fail("empty on: block")
+  inon = 0
+}
+function keyval(body,   p) {
+  if (!match(body, /^[^:]+:/)) { fail("unclassifiable line: " body); return 0 }
+  p = RLENGTH
+  if (substr(body, p + 1, 1) != "" && substr(body, p + 1, 1) != " ") { fail("unclassifiable line: " body); return 0 }
+  K = unq(substr(body, 1, p - 1)); V = trim(substr(body, p + 1))
+  if (K !~ /^[A-Za-z_][A-Za-z0-9_-]*$/) { fail("unrecognised key: " K); return 0 }
+  return 1
+}
+function stripcomment(l) {
+  if (index(l, "#")) {
+    if (index(l, "\"") || index(l, SQ)) { fail("comment on a quoted line"); return l }
+    sub(/[ ]+#.*$/, "", l)
+  }
+  return l
+}
+BEGIN { SQ = "\047"; BASE = ENVIRON["CIB"]; ci = -1; ONRE = "^(on|\"on\"|" SQ "on" SQ "|true)[ ]*:" }
+{
+  L = $0; sub(/\r$/, "", L)
+  if (L ~ /^[ ]*$/ || L ~ /^[ ]*#/) next
+  if (L ~ /^---/ || L ~ /^\.\.\./) {
+    if (seen || L ~ /^\.\.\./) fail("multi-document file")
+    next
+  }
+  seen = 1
+  match(L, /^ */); ind = RLENGTH
+  if (ind == 0 && !(inon && L ~ /^-([ ]|$)/)) {
+    if (inon) closeon()
+    if (L ~ ONRE) {
+      onseen++
+      if (onseen > 1) fail("multiple on: keys")
+      L = stripcomment(L)
+      if (index(L, "${{")) fail("expression in on:")
+      rest = L; sub(/^[^:]*:/, "", rest); rest = trim(rest)
+      if (rest ~ /(^|[ :,\[{-])[&*][A-Za-z0-9_]/) fail("anchor or alias in on:")
+      if (rest == "") { inon = 1; ci = -1; cur = "" }
+      else if (substr(rest, 1, 1) == "[") flowitems(rest, "events")
+      else if (substr(rest, 1, 1) == "{") fail("flow mapping in on:")
+      else evt(unq(rest))
+    } else {
+      f1 = substr(L, 1, 1)
+      if (f1 == "\"" || f1 == SQ) fail("unrecognised quoted top-level key")
+    }
+    next
+  }
+  if (!inon) next
+  if (index(L, "\t")) fail("tab in on: block")
+  if (index(L, "${{")) fail("expression in on: block")
+  if (L ~ /(^|[ :,\[{-])[&*][A-Za-z0-9_]/ || L ~ /<<:/) fail("anchor or alias in on: block")
+  L = stripcomment(L)
+  body = trim(substr(L, ind + 1))
+  if (ci < 0) ci = ind
+  if (ind < ci) { fail("unclassifiable indentation"); next }
+  if (ind == ci) {
+    finish()
+    if (substr(body, 1, 2) == "- ") {
+      item = unq(substr(body, 3))
+      if (index(item, ":")) fail("unclassifiable trigger item: " item); else evt(item)
+    } else if (keyval(body)) {
+      if (K ~ /^workflow_(call|run)$/) fail(K " trigger")
+      else if (K ~ /^pull_request(_target)?$/) {
+        startpr()
+        if (V == "") { }
+        else if (V == "null" || V == "~" || V == "{}") { }
+        else fail("unsupported " K " value: " V)
+      } else cur = "other"
+    }
+    next
+  }
+  if (cur != "pr") next
+  if (prci < 0) prci = ind
+  haschild = 1
+  if (ind == prci) {
+    if (substr(body, 1, 2) == "- ") {
+      if (sub_ == "branches") addname(unq(substr(body, 3)))
+      else if (sub_ != "types") fail("unclassifiable line: " body)
+    } else if (keyval(body)) {
+      if (K == "branches") {
+        sub_ = "branches"; hasbr = 1
+        if (V != "") { if (substr(V, 1, 1) == "[") flowitems(V, "branches"); else addname(unq(V)) }
+      } else if (K == "types") sub_ = "types"
+      else fail("unsupported pull_request key: " K)
+    }
+  } else {
+    if (sub_ == "branches") {
+      if (substr(body, 1, 2) == "- ") addname(unq(substr(body, 3))); else fail("unclassifiable line: " body)
+    } else if (sub_ != "types") fail("unclassifiable line: " body)
+  }
+}
+END {
+  if (inon) closeon()
+  if (!onseen) fail("no top-level on: key")
+  if (unk) print "unknown|" ureason
+  else if (cov) print "covered|" covwhy
+  else if (unc) print "uncovered|" uncwhy
+  else print "uncovered|no pull_request trigger"
+}
+'
+
+files=$(printf '%s\n' "$listing" | grep -E '^\.github/workflows/[^/]+\.ya?ml$' || true)
+[ -n "$files" ] || emit none "no workflow files on origin/$base"
+
+any_cov=0 any_unk=0
+cov_reason="" unk_reason="" unc_reason=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  name=${f##*/}
+  if ! content=$(git -C "$root" show "origin/$base:$f" 2>/dev/null); then
+    any_unk=1; unk_reason="${unk_reason:+$unk_reason; }$name: git show failed"
+    continue
+  fi
+  res=$(printf '%s\n' "$content" | CIB="$base" awk "$AWK_PROG") || res="unknown|awk failed"
+  status=${res%%|*}
+  why=${res#*|}
+  case "$status" in
+    covered)   any_cov=1; cov_reason="${cov_reason:+$cov_reason; }$name: $why" ;;
+    uncovered) unc_reason="${unc_reason:+$unc_reason; }$name: $why" ;;
+    *)         any_unk=1; unk_reason="${unk_reason:+$unk_reason; }$name: $why" ;;
+  esac
+done <<EOF
+$files
+EOF
+
+if [ "$any_cov" -eq 1 ]; then
+  emit covered "$cov_reason"
+elif [ "$any_unk" -eq 1 ]; then
+  emit unknown "$unk_reason"
+else
+  emit uncovered "$unc_reason"
+fi

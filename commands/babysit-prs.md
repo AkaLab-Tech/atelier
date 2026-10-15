@@ -1,7 +1,7 @@
 ---
 description: One idempotent pass — enumerate every open `task/*` PR, triage each against the `auto-merge` six guardrails (read-only), drive eligible PRs to merge via `task-orchestrator` `pr-open` dispatch, and report per-PR status. Run unattended via `/loop <interval> /atelier:babysit-prs`.
 argument-hint: "[--workspace] [--yes|-y]"
-allowed-tools: Read, Glob, Bash(env:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(git worktree list:*), Bash(git remote:*), Bash(atelier-pr-size-check:*), Bash(atelier-setup-workspace:*), Task
+allowed-tools: Read, Glob, Bash(env:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(git worktree list:*), Bash(git remote:*), Bash(atelier-pr-size-check:*), Bash(atelier-ci-coverage:*), Bash(atelier-setup-workspace:*), Task
 ---
 
 You are running the `/atelier:babysit-prs` slash command. Your job is one **idempotent, convergent pass**: enumerate every open `task/*` PR in scope, triage each against the `auto-merge` six guardrails (read-only first), dispatch eligible PRs to `task-orchestrator` in `pr-open` resume mode, and report the outcome.
@@ -104,9 +104,10 @@ Using `statusCheckRollup` from step 3's JSON (no additional query needed):
 - Any check with `status == "IN_PROGRESS"` or `status == "QUEUED"` → **CI-pending**. Disposition: `waiting (CI)`. Skip dispatch; the pass verdict will report `re-poll suggested` so `/loop` continues.
 - Any check with `conclusion` in `FAILURE`, `CANCELLED`, `TIMED_OUT`, `STARTUP_FAILURE` → **CI-failed**. Disposition: `held — CI failed: <check-name>`. Terminal; the implementer must push a fix.
 - All checks `SUCCESS`, or (`status == "COMPLETED"` and `conclusion == "NEUTRAL"`) → guardrail passes; continue to guardrail 4.
-- Array is **empty** → decide with the "has CI" probes (from the project root): `git fetch origin <baseRefName>` then `git ls-tree -d --name-only origin/<baseRefName> .github/workflows` (non-empty → has CI; git error → fail closed), plus the required-status-checks read (rulesets / branch protection) only if that call is permitted — denied, prompting, or erroring means "unknown", never "none".
-  - Workflows present, required checks present, or either probe unknown → **CI not reported yet**. Disposition: `waiting (CI not reported yet)`. Non-terminal: skip dispatch; the pass verdict reports `re-poll suggested` so `/loop` continues. The unattended path never merges it.
-  - Both probes negative (no workflows on the base, no required checks) → guardrail passes; continue to guardrail 4. The per-PR line notes `no CI configured`.
+- Array is **empty** → decide with the CI-coverage probe (from the project root): `atelier-ci-coverage . <baseRefName>` prints `coverage=<covered|uncovered|unknown|none>` (it fetches the base itself; a git error, a missing helper or unparseable output counts as `unknown`), plus the required-status-checks read (rulesets / branch protection) only if that call is permitted — denied, prompting, or erroring means "unknown", never "none".
+  - Coverage `covered` or `unknown`, required checks present, or the required-checks probe unknown → **CI not reported yet**. Disposition: `waiting (CI not reported yet)`. Non-terminal: skip dispatch; the pass verdict reports `re-poll suggested` so `/loop` continues. The unattended path never merges it.
+  - Coverage `none` and no required checks → guardrail passes; continue to guardrail 4. The per-PR line notes `no CI configured`.
+  - Coverage `uncovered` and no required checks → no CI will ever report on a PR into this base, so the PR is driven instead of re-polled forever: guardrail passes; continue to guardrail 4. The per-PR line notes `no CI for base <baseRefName>` (reason from the helper). If `.atelier.json` sets `autoMerge.uncoveredBaseCi` to `"hold"` (or any value other than `"pass"`; absent means `"pass"`), the disposition is instead `held — no CI for base <baseRefName> (human merge required)`. Terminal; never dispatch, and no `re-poll suggested`.
 
 **Mergeable check (adjacent to guardrail 3):** if `mergeable == "CONFLICTING"` for any PR, set disposition `held — conflicting (needs manual rebase)`. Terminal. Apply this check before proceeding to guardrail 4.
 

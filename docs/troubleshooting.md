@@ -258,6 +258,16 @@ To check whether auto-mode is currently active, inside any atelier session: `/st
 
 **Fix:** Review the PR yourself and merge it manually (`gh pr merge <N> --squash --delete-branch`). The held-back rules protect dependencies, CI, and large changes from going in without a human check. If you'd rather have atelier break the work into smaller tasks automatically, run `/atelier:slice-task` against the offending roadmap item — the `task-decomposer` agent will rewrite it as an epic with sub-tasks (M4.24).
 
+### PR held with `held: CI not reported yet` on a base with no CI for PRs
+
+**Symptom:** A PR into a branch such as `stage` stays at `held: CI not reported yet` (or `/atelier:babysit-prs` keeps showing `waiting (CI not reported yet)`), and `gh pr view <N> --json statusCheckRollup` is empty no matter how long you wait.
+
+**Cause:** The repo has workflows, but none of them runs on pull requests into that base. A typical case is a `ci.yml` with `on: pull_request: branches: [main]`: PRs into `main` get checks, PRs into `stage` never do.
+
+**How to check:** From the project root run `atelier-ci-coverage . <base>`. `coverage=uncovered` means no workflow runs on PRs into that base. Auto-merge then passes guardrail 3 with `CI: no workflow runs on PRs to <base> ...` and the other guardrails still apply. `coverage=unknown` means the workflow triggers could not be classified with certainty (expressions, `workflow_call`/`workflow_run`, `branches-ignore`, path filters, globs, anchors, unusual YAML); atelier treats that as "this base has CI" and keeps holding, because guessing wrong would merge unchecked code. The `reason=` line says which construct blocked the classification.
+
+**Fix:** Either add the base to the workflow's `pull_request.branches` (so CI really runs for it; recommended), or merge the PR yourself (`gh pr merge <N> --squash --delete-branch`). To make atelier hold such PRs for a human instead of passing guardrail 3, set `autoMerge.uncoveredBaseCi` to `"hold"` in `<project>/.atelier.json`; the PR then ends as `held: no CI runs on PRs to <base> — human merge required`.
+
 ### Reviewer's `gh pr review --approve` shows as a comment, not an approval
 
 **Symptom:** The reviewer agent ran `gh pr review --approve` but the PR still shows zero approvals in `gh pr view`. Auto-merge is held.

@@ -65,18 +65,18 @@ for f in "$SKILL" "$CMD" "$ORCH" "$PLAN"; do
 done
 
 echo "Group 1 — skills/auto-merge/SKILL.md"
-chk_prose "$SKILL" 'git ls-tree -d --name-only origin/<baseRefName> .github/workflows' \
-  "SKILL: workflows probe uses git ls-tree on origin/<baseRefName>"
+chk_prose "$SKILL" 'atelier-ci-coverage . <baseRefName>' \
+  "SKILL: coverage probe uses atelier-ci-coverage on <baseRefName>"
 chk_prose "$SKILL" 'held: CI not reported yet' \
   "SKILL: holds with 'held: CI not reported yet'"
-chk_prose "$SKILL" 'Any git error → treat as "has CI" (fail closed)' \
-  "SKILL: workflows probe fails closed on git error"
+chk_prose "$SKILL" 'a git error, a missing helper or unparseable output is also `unknown`' \
+  "SKILL: coverage probe fails closed on git error"
 chk_prose "$SKILL" 'the answer is "unknown" — never assume "none"' \
   "SKILL: required-checks probe unknown is never 'none'"
-chk_prose "$SKILL" 'either probe could not be determined → **hold**' \
+chk_prose "$SKILL" 'or the required-checks probe could not be determined → **hold**' \
   "SKILL: hold when either probe could not be determined"
-chk_prose "$SKILL" 'Both probes say "none" (no workflows and no required checks) → guardrail 3 **passes vacuously**' \
-  "SKILL: pass only when both probes say none"
+chk_prose "$SKILL" 'Coverage `none` and no required checks (no workflow files and no required checks) → guardrail 3 **passes vacuously**' \
+  "SKILL: vacuous pass only when no workflow files and no required checks"
 chk_prose "$SKILL" 'CI: no checks configured (no .github/workflows on <base>, no required checks): guardrail 3 passes vacuously' \
   "SKILL: explicit vacuous-pass report line"
 
@@ -89,10 +89,10 @@ chk_prose "$CMD" 're-poll suggested' \
   "babysit-prs: 're-poll suggested' verdict"
 chk_prose "$CMD" 'no CI configured' \
   "babysit-prs: 'no CI configured' note for the both-negative case"
-chk_prose "$CMD" 'git ls-tree -d --name-only origin/<baseRefName> .github/workflows' \
-  "babysit-prs: workflows probe uses git ls-tree on origin/<baseRefName>"
-chk_prose "$CMD" 'git error → fail closed' \
-  "babysit-prs: git probe error fails closed"
+chk_prose "$CMD" 'atelier-ci-coverage . <baseRefName>' \
+  "babysit-prs: coverage probe uses atelier-ci-coverage on <baseRefName>"
+chk_prose "$CMD" 'a missing helper or unparseable output counts as `unknown`' \
+  "babysit-prs: coverage probe error fails closed"
 
 echo "Group 3 — agents/task-orchestrator.md"
 chk_prose "$ORCH" 'an empty rollup is **pending**, not green' \
@@ -103,8 +103,8 @@ chk_prose "$ORCH" 'An empty `statusCheckRollup` is pending, not green, on any re
   "orchestrator: Never-bypass rule clause (empty rollup pending, not green)"
 chk_prose "$ORCH" '| `held: CI not reported after <maxWaitSeconds>s` |' \
   "orchestrator: held status listed in the report Status vocabulary"
-chk_prose "$ORCH" 'Only when both probes say "none" keep the one-settle behaviour' \
-  "orchestrator: one-settle only when both probes say none"
+chk_prose "$ORCH" 'Only when coverage is `none` or `uncovered` **and** there are no required checks' \
+  "orchestrator: one-settle only when no CI will report"
 
 echo "Group 4 — PLAN.md §6"
 chk_prose "$PLAN" '"CI green" is never satisfied by an empty `statusCheckRollup` on a repo with workflows or required status checks' \
@@ -121,6 +121,49 @@ chk_absent "$CMD" 'array is empty → guardrail passes' \
   "babysit-prs: no 'array is empty → guardrail passes' (any position)"
 chk_absent "$ORCH" 'If the array is empty, wait a 15 s settle window' \
   "orchestrator: no unconditional empty-array settle-then-proceed"
+
+echo "Group 6 — #497: uncovered base (outcome ii) and the autoMerge.uncoveredBaseCi opt-out"
+INSTALL="$REPO_ROOT/install.sh"
+TEMPLATE="$REPO_ROOT/templates/atelier.template.json"
+chk_prose "$SKILL" 'Coverage `uncovered` and no required checks' \
+  "SKILL: outcome (ii) names uncovered + no required checks"
+chk_prose "$SKILL" 'CI: no workflow runs on PRs to <base> (<reason>), no required checks: guardrail 3 passes (no CI will report)' \
+  "SKILL: outcome (ii) report line"
+chk_prose "$SKILL" 'autoMerge.uncoveredBaseCi' \
+  "SKILL: names the autoMerge.uncoveredBaseCi opt-out"
+chk_prose "$SKILL" 'held: no CI runs on PRs to <base> — human merge required' \
+  "SKILL: opt-out terminal hold"
+chk_prose "$CMD" 'Coverage `uncovered` and no required checks' \
+  "babysit-prs: outcome (ii) names uncovered + no required checks"
+chk_prose "$CMD" 'no CI for base <baseRefName>' \
+  "babysit-prs: outcome (ii) per-PR note"
+chk_prose "$CMD" 'autoMerge.uncoveredBaseCi' \
+  "babysit-prs: names the autoMerge.uncoveredBaseCi opt-out"
+chk_prose "$CMD" 'held — no CI for base <baseRefName> (human merge required)' \
+  "babysit-prs: opt-out terminal disposition"
+chk_prose "$ORCH" 'no workflow runs on PRs to <base>' \
+  "orchestrator: outcome (ii) report note"
+chk_prose "$ORCH" 'autoMerge.uncoveredBaseCi' \
+  "orchestrator: names the autoMerge.uncoveredBaseCi opt-out"
+chk_prose "$ORCH" 'held: no CI runs on PRs to <base> — human merge required' \
+  "orchestrator: opt-out terminal hold"
+chk_prose "$TEMPLATE" '"uncoveredBaseCi": "pass"' \
+  "template: autoMerge.uncoveredBaseCi defaults to pass"
+chk_prose "$INSTALL" '_phase_c_1_symlink_helper atelier-ci-coverage' \
+  "install.sh: registers the atelier-ci-coverage helper"
+if [ -x "$REPO_ROOT/scripts/atelier-ci-coverage" ]; then
+  pass "scripts/atelier-ci-coverage is executable"
+else
+  fail "scripts/atelier-ci-coverage missing or not executable"
+fi
+
+echo "Group 7 — #497 guard: the bare 'Non-empty output → the repo has CI' rule is gone"
+for f in "$SKILL" "$CMD" "$ORCH"; do
+  chk_absent "$f" 'Non-empty output → the repo has CI' \
+    "$(basename "$f"): no bare 'Non-empty output → the repo has CI'"
+  chk_absent "$f" 'git ls-tree -d --name-only origin/<baseRefName> .github/workflows' \
+    "$(basename "$f"): no directory-presence ls-tree probe"
+done
 
 if [ "$fails" -eq 0 ]; then
   echo "All assertions passed."
