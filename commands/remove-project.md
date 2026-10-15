@@ -1,5 +1,5 @@
 ---
-description: Deconfigure the current project from atelier. Default mode preserves operator content (ROADMAP/IN_PROGRESS/HISTORY, .claude/CLAUDE.md, .gitignore, .npmrc); `--purge` extends the cleanup to those files (with surgical strip of atelier's exact entries in .gitignore/.npmrc); `--unregister-only` drops just the registry entry and touches no file. Wraps the `atelier-remove-project` host-OS helper.
+description: Deconfigure the current project from atelier. Default mode preserves operator content (ROADMAP/IN_PROGRESS/HISTORY, .claude/CLAUDE.md, .gitignore, .npmrc); `--purge` extends the cleanup to those files (with surgical strip of atelier's exact entries in .gitignore/.npmrc); `--unregister-only` drops just the registry entry and workspace memberships and touches no file inside the project. Wraps the `atelier-remove-project` host-OS helper.
 argument-hint: "[--purge | --unregister-only] [--yes|-y] [path]"
 allowed-tools: Bash(atelier-remove-project:*), Bash(pwd)
 ---
@@ -33,7 +33,7 @@ When the same repo is registered under two paths (e.g. an old checkout the docto
 atelier-remove-project <stale-path> --unregister-only
 ```
 
-`--unregister-only` deletes and modifies nothing: every atelier file (`.claude/settings.json`, `.atelier.json`, tracking files, `.gitignore`, `.npmrc`, `.claude/CLAUDE.md`) is listed as preserved and only the `projects.json` key is removed. It cannot be combined with `--purge`. The confirmation / `--yes` contract is unchanged, and this command never adds `--yes` on its own.
+`--unregister-only` touches no file inside the project: every atelier file (`.claude/settings.json`, `.atelier.json`, tracking files, `.gitignore`, `.npmrc`, `.claude/CLAUDE.md`) is listed as preserved and only the `projects.json` key is removed, together with any workspace membership (`workspaces.json`) that references the path. It cannot be combined with `--purge`. Every mode drops the removed path's workspace memberships (listed in the inventory before the confirmation); a workspace left with 0 members is kept and the binary prints the `atelier-remove-workspace <slug>` follow-up. The confirmation / `--yes` contract is unchanged, and this command never adds `--yes` on its own.
 
 ## Stop rule
 

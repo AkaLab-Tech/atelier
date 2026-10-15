@@ -27,8 +27,21 @@
 #   - no other autoMode.* key and no other top-level key is touched.
 # To take ownership of an entry, delete its `[atelier-managed:...]` marker.
 #
+# --replace-path OLD=NEW (repeatable, #488): a separate mode for a project that
+# moved to a new path. The managed-entry merge is skipped; instead, inside
+# .autoMode.{allow,soft_deny,environment} and .permissions.{allow,deny,ask},
+# every whole-path occurrence of OLD in a string entry becomes NEW. OLD must not
+# be preceded by a path character and must be followed by end of string, `/`,
+# whitespace or punctuation, so `/x/atelier-dev2` is never touched by
+# OLD=/x/atelier-dev. No other key, entry order or `[atelier-managed:*]` entry
+# changes (beyond the path text itself). Same read-only/--apply contract: a
+# before/after diff and exit 1 when something would change, 0 when nothing
+# would; --apply writes through a temp file + mv. Exit 2 on a malformed
+# argument. Not wired into atelier-update: the operator runs it.
+#
 # Usage:
 #   atelier-automode-sync [--apply] [--template <path>] [--config-dir <dir>]
+#   atelier-automode-sync --replace-path OLD=NEW [--replace-path ...] [--apply]
 #   atelier-automode-sync --help
 #
 # Exit codes:
@@ -51,6 +64,7 @@ ${SCRIPT_NAME} — sync atelier-managed autoMode.allow entries into the user-lev
 
 USAGE:
   ${SCRIPT_NAME} [--apply] [--quiet] [--template <path>] [--config-dir <dir>]
+  ${SCRIPT_NAME} --replace-path OLD=NEW [--replace-path OLD=NEW ...] [--apply] [--config-dir <dir>]
   ${SCRIPT_NAME} --help
 
 OPTIONS:
@@ -58,6 +72,12 @@ OPTIONS:
   --quiet              Omit the read-only footer line (for callers that print their own).
   --template <path>    Managed entries source (default: <plugin>/templates/automode.user.json).
   --config-dir <dir>   Target config dir (default: \$ATELIER_CONFIG_DIR or ~/.claude-work).
+  --replace-path OLD=NEW
+                       Repeatable. Instead of the managed-entry merge, rewrite whole-path
+                       occurrences of OLD to NEW in autoMode.{allow,soft_deny,environment}
+                       and permissions.{allow,deny,ask} (a moved project). Read-only
+                       without --apply: prints a before/after diff, exit 1 if changes
+                       are pending, 0 if none. Relative mentions cannot be detected.
   --help, -h           Show this help.
 
 EXIT CODES:
@@ -67,6 +87,7 @@ EOF
 
 APPLY=false
 QUIET=false
+declare -a REPLACES=()
 TEMPLATE=""
 CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
 
@@ -78,12 +99,79 @@ while [ $# -gt 0 ]; do
     --template=*)   TEMPLATE="${1#--template=}"; shift ;;
     --config-dir)   [ -n "${2:-}" ] || die "--config-dir requires a path"; CONFIG_DIR="$2"; shift 2 ;;
     --config-dir=*) CONFIG_DIR="${1#--config-dir=}"; shift ;;
+    --replace-path) [ -n "${2:-}" ] || die "--replace-path requires OLD=NEW"; REPLACES+=("$2"); shift 2 ;;
+    --replace-path=*) REPLACES+=("${1#--replace-path=}"); shift ;;
     --help|-h)      usage; exit 0 ;;
     *)              die "unknown arg: $1 (run --help for usage)" ;;
   esac
 done
 
 command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+
+if [ ${#REPLACES[@]} -gt 0 ]; then
+  PAIRS="[]"
+  for r in "${REPLACES[@]}"; do
+    case "$r" in
+      /*=/*) ;;
+      *) die "malformed --replace-path '$r' (expected OLD=NEW, both absolute paths)" ;;
+    esac
+    old="${r%%=*}"; new="${r#*=}"
+    old="${old%/}"; new="${new%/}"
+    [ -n "$old" ] && [ -n "$new" ] || die "malformed --replace-path '$r' (empty path)"
+    PAIRS="$(jq -c --arg o "$old" --arg n "$new" '. + [{o: $o, n: $n}]' <<<"$PAIRS")"
+  done
+  TARGET="$CONFIG_DIR/settings.json"
+  if [ ! -f "$TARGET" ]; then
+    printf 'No %s — nothing to rewrite\n' "$TARGET"
+    exit 0
+  fi
+  if ! jq empty "$TARGET" >/dev/null 2>&1; then
+    warn "$TARGET is not valid JSON — leaving alone (operator must repair manually)"
+    exit 0
+  fi
+  # shellcheck disable=SC2016  # jq program, not shell
+  RP_DEFS='
+    def esc: gsub("(?<c>[\\\\.^$|?*+()\\[\\]{}])"; "\\\(.c)");
+    def rewrite($pairs): reduce $pairs[] as $p (.;
+      gsub("(?<![A-Za-z0-9_.~/-])" + ($p.o | esc) + "(?![A-Za-z0-9_-])"; $p.n));
+    def keys6: [["autoMode","allow"],["autoMode","soft_deny"],["autoMode","environment"],
+                ["permissions","allow"],["permissions","deny"],["permissions","ask"]];
+  '
+  # shellcheck disable=SC2016
+  RP_APPLY="$RP_DEFS"'
+    reduce keys6[] as $k (.;
+      if (getpath($k) | type) == "array"
+      then setpath($k; getpath($k) | map(if type == "string" then rewrite($pairs) else . end))
+      else . end)'
+  # shellcheck disable=SC2016
+  RP_DIFF="$RP_DEFS"'
+    . as $old | ($old | '"${RP_APPLY#"$RP_DEFS"}"') as $new
+    | keys6[] as $k
+    | (($old | getpath($k)) // []) as $a | (($new | getpath($k)) // []) as $b
+    | range(0; ($a | length)) as $i
+    | select($a[$i] != $b[$i])
+    | "  \($k | join("."))[\($i)]\n    - \($a[$i])\n    + \($b[$i])"'
+  NEWDOC="$(jq --argjson pairs "$PAIRS" "$RP_APPLY" "$TARGET")" || die "could not rewrite $TARGET"
+  DIFF="$(jq -r --argjson pairs "$PAIRS" "$RP_DIFF" "$TARGET")" || die "could not diff $TARGET"
+  if [ -z "$DIFF" ]; then
+    printf 'No whole-path occurrence to replace in %s\n' "$TARGET"
+    exit 0
+  fi
+  printf 'path replacements pending in %s:\n%s\n' "$TARGET" "$DIFF"
+  if ! $APPLY; then
+    $QUIET || printf 'Read-only: nothing written. Re-run with --apply (after the operator confirms) to write it.\n'
+    exit 1
+  fi
+  TMP="$(mktemp "${TARGET}.atelier.XXXXXX")" || die "could not create temp file next to $TARGET"
+  if printf '%s\n' "$NEWDOC" > "$TMP" && mv "$TMP" "$TARGET"; then
+    printf 'Applied: path replacements written to %s\n' "$TARGET"
+  else
+    rm -f "$TMP"
+    die "failed to write $TARGET"
+  fi
+  exit 0
+fi
+
 [ -n "$TEMPLATE" ] || TEMPLATE="$SCRIPT_DIR/../templates/automode.user.json"
 [ -f "$TEMPLATE" ] || die "template not found: $TEMPLATE"
 jq -e '(.autoMode.allow | type) == "array"' "$TEMPLATE" >/dev/null 2>&1 \

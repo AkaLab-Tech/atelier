@@ -23,11 +23,20 @@
 #   - Requires --yes when stdin is not a TTY to skip the confirmation.
 #
 # Unregister-only mode (--unregister-only):
-#   - Removes ONLY the registry key from $ATELIER_CONFIG_DIR/projects.json.
-#     No file on disk is touched (settings.json, .atelier.json, tracking
+#   - Removes ONLY the registry key from $ATELIER_CONFIG_DIR/projects.json
+#     and the workspace memberships that reference the path (workspaces.json).
+#     No file inside the project is touched (settings.json, .atelier.json, tracking
 #     files, .gitignore, .npmrc, .claude/CLAUDE.md all stay). Use it to
 #     retire a duplicate/stale registration of a project that stays in use.
 #   - Cannot be combined with --purge.
+#
+# Workspace memberships (every mode, #488):
+#   - Any member of $ATELIER_CONFIG_DIR/workspaces.json whose `path` equals the
+#     removed project is dropped (listed in the inventory first). Other members,
+#     `root`, `createdAt` and other workspaces are untouched. A workspace left
+#     with 0 members is kept; the follow-up `atelier-remove-workspace <slug>` is
+#     printed. A missing workspaces.json is skipped silently, an invalid one
+#     with a warning.
 #
 # Out of scope (intentionally not touched):
 #   - Per-task worktrees under <path>-worktrees/. The script warns when
@@ -80,8 +89,9 @@ OPTIONS:
                    other entries), and delete .claude/CLAUDE.md. Requires
                    --yes in non-interactive mode.
   --unregister-only
-                   Remove ONLY the registry entry; delete and modify nothing
-                   on disk. For retiring a duplicate/stale registration whose
+                   Remove ONLY the registry entry and the workspace memberships
+                   that reference the path; no file inside the project is
+                   touched. For retiring a duplicate/stale registration whose
                    files are still in use. Cannot be combined with --purge.
   --yes, -y        Non-interactive mode. Skip the confirmation prompt.
                    Required with --purge in non-TTY contexts.
@@ -123,6 +133,7 @@ fi
 # ---------- resolve config ----------
 ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
 CONFIG_FILE="$ATELIER_CONFIG_DIR/projects.json"
+WORKSPACES_FILE="$ATELIER_CONFIG_DIR/workspaces.json"
 
 command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
 
@@ -159,6 +170,21 @@ if ! jq -e --arg p "$PROJECT" '.projects[$p]' "$CONFIG_FILE" >/dev/null 2>&1; th
   warn "$PROJECT is not registered in $CONFIG_FILE"
   warn "nothing to do — exiting cleanly"
   exit 0
+fi
+
+# ---------- workspace memberships referencing this path ----------
+declare -a WS_DROPS=()   # "<slug>\t<token>"
+if [ -f "$WORKSPACES_FILE" ]; then
+  if jq -e . "$WORKSPACES_FILE" >/dev/null 2>&1; then
+    while IFS= read -r line; do
+      [ -n "$line" ] && WS_DROPS+=("$line")
+    done < <(jq -r --arg p "$PROJECT" '
+      (.workspaces // {}) | to_entries[] | .key as $s
+      | (.value.members // [])[] | select(.path == $p)
+      | "\($s)\t\(.token // "")"' "$WORKSPACES_FILE" 2>/dev/null || true)
+  else
+    warn "$WORKSPACES_FILE is not valid JSON — workspace memberships not checked"
+  fi
 fi
 
 # ---------- inventory: what would be removed ----------
@@ -246,6 +272,14 @@ if [ ${#PRESERVED[@]} -gt 0 ]; then
   echo ""
 fi
 
+if [ ${#WS_DROPS[@]} -gt 0 ]; then
+  log "workspace memberships:"
+  for d in "${WS_DROPS[@]}"; do
+    sublog "will drop member '${d#*$'\t'}' from workspace '${d%%$'\t'*}'"
+  done
+  echo ""
+fi
+
 log "registry: will unregister $PROJECT from $CONFIG_FILE"
 echo ""
 
@@ -301,6 +335,26 @@ jq --arg p "$PROJECT" 'del(.projects[$p])' "$CONFIG_FILE" > "$tmp" \
   || { rm -f "$tmp"; die "failed to update $CONFIG_FILE"; }
 mv "$tmp" "$CONFIG_FILE"
 sublog "unregistered from $CONFIG_FILE"
+
+if [ ${#WS_DROPS[@]} -gt 0 ]; then
+  tmp="$(mktemp)"
+  if jq --arg p "$PROJECT" \
+       'del(.workspaces[].members[]? | select(.path == $p))' \
+       "$WORKSPACES_FILE" > "$tmp"; then
+    mv "$tmp" "$WORKSPACES_FILE"
+    for d in "${WS_DROPS[@]}"; do
+      sublog "dropped member '${d#*$'\t'}' from workspace '${d%%$'\t'*}'"
+    done
+    while IFS= read -r slug; do
+      [ -n "$slug" ] || continue
+      warn "workspace '$slug' now has 0 members — remove it with \`atelier-remove-workspace $slug\`"
+    done < <(jq -r '(.workspaces // {}) | to_entries[] | select((.value.members // []) | length == 0) | .key' "$WORKSPACES_FILE" \
+               | grep -Fxf <(for d in "${WS_DROPS[@]}"; do printf '%s\n' "${d%%$'\t'*}"; done) || true)
+  else
+    rm -f "$tmp"
+    warn "failed to update $WORKSPACES_FILE (registry removal already applied)"
+  fi
+fi
 
 # ---------- report ----------
 echo ""

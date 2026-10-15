@@ -822,7 +822,7 @@ check_workspaces() {
   local slug
   while IFS= read -r slug; do
     [ -n "$slug" ] || continue
-    local issues=() seen_tokens="" root token mpath
+    local issues=() seen_tokens="" root token mpath extra_fix="" murl mkey rp rurl
     root="$(jq -r --arg w "$slug" '.workspaces[$w].root // ""' "$ws_file")"
     [ -n "$root" ] && [ ! -d "$root" ] && issues+=("root missing ($root)")
     while IFS=$'\t' read -r token mpath; do
@@ -830,7 +830,25 @@ check_workspaces() {
       [ -d "$mpath" ] || issues+=("member '$token' path missing ($mpath)")
       if [ -f "$projects_file" ]; then
         jq -e --arg p "$mpath" '.projects[$p] // empty' "$projects_file" >/dev/null 2>&1 \
-          || issues+=("member '$token' not a registered project")
+          || {
+            issues+=("member '$token' not a registered project")
+            # #488: same-remote checkout of a registered project -> name the exact fix.
+            murl=""
+            [ -d "$mpath" ] && murl="$(git -C "$mpath" remote get-url origin 2>/dev/null || true)"
+            if [ -n "$murl" ]; then
+              mkey="$(remote_key "$murl")"
+              while IFS= read -r rp; do
+                [ -n "$rp" ] && [ -d "$rp" ] || continue
+                rurl="$(git -C "$rp" remote get-url origin 2>/dev/null || true)"
+                [ -n "$rurl" ] && [ "$(remote_key "$rurl")" = "$mkey" ] || continue
+                extra_fix="$extra_fix
+# member '$token' ($mpath) is a stale checkout of the project registered at $rp:
+#   re-run /atelier:setup-workspace with --members corrected to $rp, --root ${root:-<root>} and --force
+#   or drop the grouping: atelier-remove-workspace ${slug}"
+                break
+              done < <(jq -r '.projects // {} | keys[]' "$projects_file" 2>/dev/null)
+            fi
+          }
       fi
       case ",$seen_tokens," in *",$token,"*) issues+=("duplicate token '$token'") ;; esac
       seen_tokens="${seen_tokens}${token},"
@@ -841,7 +859,7 @@ check_workspaces() {
       push_host "$OK workspace '$slug' — $n member(s), all registered & present"
     else
       push_host "$FAIL workspace '$slug': ${issues[*]}"
-      push_fix_manual "fix workspace '$slug' — re-run /atelier:setup-workspace, or /atelier:remove-workspace ${slug} to drop the grouping"
+      push_fix_manual "fix workspace '$slug' — re-run /atelier:setup-workspace, or /atelier:remove-workspace ${slug} to drop the grouping${extra_fix}"
     fi
   done <<< "$slugs"
 }
@@ -1193,6 +1211,103 @@ check_atelier_automode_managed() {
   esac
 }
 
+# #488: read-only. A user-level settings entry that names an absolute path which
+# is not a registered project but is a checkout of a registered project's remote
+# is a leftover from a moved project. Relative mentions cannot be detected.
+# Never writes settings.json and never queues an auto fix.
+check_user_settings_stale_paths() {
+  local target="$ATELIER_CONFIG_DIR/settings.json"
+  local pf="$ATELIER_CONFIG_DIR/projects.json"
+  command -v jq >/dev/null 2>&1 || { push_host "$SKIP user settings stale-path check (jq not available)"; return; }
+  if [ ! -f "$target" ]; then
+    push_host "$SKIP user settings stale-path check ($target missing)"
+    return
+  fi
+  if ! jq empty "$target" >/dev/null 2>&1; then
+    push_host "$SKIP user settings stale-path check ($target is not valid JSON)"
+    return
+  fi
+  if [ ! -f "$pf" ] || ! jq empty "$pf" >/dev/null 2>&1; then
+    push_host "$SKIP user settings stale-path check (no readable project registry)"
+    return
+  fi
+  local -a reg_paths=() reg_keys=()
+  local p url
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    reg_paths+=("$p")
+    url=""
+    [ -d "$p" ] && url="$(git -C "$p" remote get-url origin 2>/dev/null || true)"
+    if [ -n "$url" ]; then reg_keys+=("$(remote_key "$url")"); else reg_keys+=(""); fi
+  done < <(jq -r '.projects // {} | keys[]' "$pf" 2>/dev/null)
+
+  # "<key>[<i>]<TAB><abs path token>" for every string entry of the six arrays.
+  local entries
+  # shellcheck disable=SC2016  # jq program, not shell
+  entries="$(jq -r '
+    [["autoMode","allow"],["autoMode","soft_deny"],["autoMode","environment"],
+     ["permissions","allow"],["permissions","deny"],["permissions","ask"]][] as $k
+    | (getpath($k) // []) as $a
+    | if ($a | type) == "array" then
+        range(0; ($a | length)) as $i
+        | select($a[$i] | type == "string")
+        | ($a[$i] | scan("(?<![A-Za-z0-9_.~/-])/[A-Za-z0-9_.@+-]+(?:/[A-Za-z0-9_.@+-]+)*")) as $t
+        | "\($k | join("."))[\($i)]\t\($t)"
+      else empty end' "$target" 2>/dev/null || true)"
+
+  local found=0 line ekey tok i inside root rurl rkey cache="" hit new
+  local fixes=" "
+  while IFS=$'\t' read -r ekey tok; do
+    [ -n "$tok" ] || continue
+    tok="${tok%.}"
+    inside=false
+    for p in ${reg_paths[@]+"${reg_paths[@]}"}; do
+      case "$tok" in "$p"|"$p"/*) inside=true; break ;; esac
+    done
+    $inside && continue
+    hit=""
+    case "$cache" in
+      *$'\n'"$tok"$'\t'*)
+        hit="$(printf '%s' "$cache" | awk -F'\t' -v t="$tok" '$1 == t { sub(/^[^\t]*\t/, ""); print; exit }')" ;;
+      *)
+        local d="$tok" hitroot="" hitnew=""
+        while [ -n "$d" ] && [ "$d" != "/" ] && [ ! -d "$d" ]; do d="$(dirname "$d")"; done
+        root=""; rkey=""
+        [ -n "$d" ] && [ "$d" != "/" ] && root="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null || true)"
+        if [ -n "$root" ] && [ "$root" != "/" ]; then
+          rurl="$(git -C "$root" remote get-url origin 2>/dev/null || true)"
+          if [ -n "$rurl" ]; then
+            rkey="$(remote_key "$rurl")"
+            for ((i = 0; i < ${#reg_paths[@]}; i++)); do
+              if [ -n "${reg_keys[i]}" ] && [ "${reg_keys[i]}" = "$rkey" ] && [ "${reg_paths[i]}" != "$root" ]; then
+                hitroot="$root"; hitnew="${reg_paths[i]}"; break
+              fi
+            done
+          fi
+        fi
+        hit="$hitroot"$'\t'"$hitnew$(printf '\t%s' "$rkey")"
+        cache="$cache"$'\n'"$tok"$'\t'"$hit"
+        ;;
+    esac
+    root="$(printf '%s' "$hit" | cut -f1)"
+    [ -n "$root" ] || continue
+    new="$(printf '%s' "$hit" | cut -f2)"
+    rkey="$(printf '%s' "$hit" | cut -f3)"
+    found=$((found + 1))
+    push_host "$WARN user settings $ekey names $root, a checkout of $rkey that is registered at $new"
+    case "$fixes" in
+      *" $root=$new "*) ;;
+      *)
+        fixes="$fixes$root=$new "
+        push_fix_manual "atelier-automode-sync --replace-path $root=$new   # preview the diff; then re-run with --apply after you confirm"
+        ;;
+    esac
+  done <<< "$entries"
+  if [ "$found" -eq 0 ]; then
+    push_host "$OK user settings name no stale checkout of a registered project"
+  fi
+}
+
 check_atelier_claude_auth() {
   # M7.1.F42 + F43 — verify the atelier-scoped Claude Code auth is valid
   # AGAINST THE ANTHROPIC API, not just by reading .claude.json.
@@ -1276,6 +1391,13 @@ atelier-migrate-task-ids <project> --apply   # rewrite ROADMAP.md + IN_PROGRESS.
   fi
 }
 
+# remote_key <url> — normalise a git remote URL so https/ssh/.git spellings of
+# the same repo compare equal (#466; reused by #488 checks).
+remote_key() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's#^(https?|ssh|git)://([^@/]+@)?##; s#^[^@/]+@##; s#^github\.com[:/]#github.com/#; s#\.git$##; s#/+$##'
+}
+
 # #466: registry integrity — offline only (no network, no gh). Flags registered
 # paths that vanished from disk, and one git remote registered at 2+ paths (a
 # stale duplicate left by a moved/renamed checkout). Non-git roots (workspace
@@ -1298,8 +1420,7 @@ check_project_registry() {
     git -C "$p" rev-parse --git-dir >/dev/null 2>&1 || continue
     url="$(git -C "$p" remote get-url origin 2>/dev/null || true)"
     [ -n "$url" ] || continue
-    key="$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]' \
-      | sed -E 's#^(https?|ssh|git)://([^@/]+@)?##; s#^[^@/]+@##; s#^github\.com[:/]#github.com/#; s#\.git$##; s#/+$##')"
+    key="$(remote_key "$url")"
     ts=0
     for ref in refs/remotes/origin/HEAD refs/heads/main refs/heads/master HEAD; do
       if git -C "$p" rev-parse --verify -q "$ref" >/dev/null 2>&1; then
@@ -1361,6 +1482,7 @@ check_vercel
 check_neon
 check_workspaces
 check_project_registry
+check_user_settings_stale_paths
 check_atelier_config_dir
 check_atelier_claude_auth
 check_git_identity

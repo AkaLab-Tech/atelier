@@ -124,6 +124,15 @@ Issues that come up while running a task.
 
 Housekeeping only works on registered projects. Register the path with `/atelier:setup-project --backend github-project` (or whichever backend the project uses). If the doctor instead reports the same remote registered at two paths, retire the stale one with `atelier-remove-project <stale-path> --unregister-only` (keeps the files on disk).
 
+### Project moved to a new path
+
+When a project is moved or re-cloned elsewhere, the old path can linger in the workspace groupings and in your user-level `settings.json`. The doctor flags both (`workspace ... not a registered project`, `user settings ... names <old>, a checkout of <remote> that is registered at <new>`). Clean up in this order:
+
+1. Retire the old registration: `atelier-remove-project <old> --unregister-only`. Besides the registry key it now also drops the workspace memberships that point at `<old>` (listed before you confirm). A workspace left with 0 members is kept; remove it with `atelier-remove-workspace <slug>` or re-add the new path with `/atelier:setup-workspace`.
+2. A membership left behind by a removal done before this fix: run `/atelier:remove-workspace <slug>`, or re-run `/atelier:setup-workspace` with the corrected `--members` (the new path), the current `--root` and `--force`. `atelier-setup-project <new>` prints the exact command when it spots such a member.
+3. Rewrite the old path in the user-level settings: `atelier-automode-sync --replace-path <old>=<new>` previews a before/after diff and writes nothing (exit 1 means changes are pending). Re-run it with `--apply` once you have checked the diff. It only touches whole-path occurrences in `autoMode.allow|soft_deny|environment` and `permissions.allow|deny|ask`.
+4. Relative mentions (for example an `atelier-dev/ prefix` in an entry) cannot be detected or rewritten; edit those by hand in `$ATELIER_CONFIG_DIR/settings.json`.
+
 ### `atelier --help` prints nothing / "atelier-help.txt: No such file"
 
 **Symptom:** Running `atelier --help` shows an empty output or a "file not found" error pointing at `$ATELIER_CONFIG_DIR/atelier-help.txt`.
