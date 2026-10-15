@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# Regression test for #436 (unit #407b) — the reviewer publishes its verdict
-# as a head-sha-bound COMMENTED review by default; `--approve` is opt-in
-# (`autoMerge.reviewerApprovalMode: "approve"`).
+# Regression test for #436 (unit #407b), re-pointed by #465 — `--approve` is the
+# out-of-the-box reviewer mode (`autoMerge.reviewerApprovalMode: "approve"`);
+# the head-sha-bound COMMENTED review is opt-in via `"verdict"`.
 #
 # Contract asserted (prose + JSON; the helper that parses the verdict,
 # `atelier-review-verdict`, has its own test from #407a):
-#   - agents/reviewer.md: v1 marker + Decision/Head/Auto-merge block, default
+#   - agents/reviewer.md: v1 marker + Decision/Head/Auto-merge block, opt-in
 #     `verdict` mode posts `--comment` via `--body-file .task-log/tmp/review-body.md`,
 #     a denied `--approve` is terminal (never re-posted as a comment), and the
 #     old "degrade to an advisory comment on denial" fallback is gone.
-#   - templates/atelier.template.json + .atelier.json: three modes, default "verdict".
+#   - templates/atelier.template.json + .atelier.json: three modes, "approve" is the shipped value.
 #   - agents/task-orchestrator.md: `verdict: approve (<sha>)` status, and
 #     classifier-blocked scoped to approve mode.
 #   - PLAN.md / operator-rules.md / CLAUDE.md mention the verdict mechanism.
@@ -51,13 +51,14 @@ chk_prose "$REVIEWER" '<!-- atelier-reviewer-verdict/v1 -->' "reviewer: v1 verdi
 chk_prose "$REVIEWER" 'Decision: approve | request-changes' "reviewer: Decision line in verdict block"
 chk_prose "$REVIEWER" 'Head: <40-hex head sha diffed>' "reviewer: Head (40-hex sha) line in verdict block"
 chk_prose "$REVIEWER" 'Auto-merge: yes | no' "reviewer: Auto-merge line in verdict block"
-chk_prose "$REVIEWER" 'absent field → `"verdict"`' "reviewer: absent mode defaults to verdict"
-chk_prose "$REVIEWER" '`reviewerApprovalMode: "verdict"` (default)' "reviewer: verdict mode is the default"
+chk_prose "$REVIEWER" 'absent field → `"approve"`' "reviewer: absent mode resolves to approve"
+chk_prose "$REVIEWER" '`reviewerApprovalMode: "approve"`** (default; required for repos' "reviewer: approve mode is the shipped mode"
 chk_prose "$REVIEWER" 'gh pr review <NN> --comment --body-file <worktree>/.task-log/tmp/review-body.md' \
   "reviewer: verdict mode posts --comment via --body-file .task-log/tmp/review-body.md"
 chk_prose "$REVIEWER" 'gh pr review <NN> --approve --body-file <worktree>/.task-log/tmp/review-body.md' \
   "reviewer: approve mode still documents --approve via --body-file"
-chk_prose "$REVIEWER" '`reviewerApprovalMode: "approve"`** (opt-in' "reviewer: approve mode is opt-in"
+chk_prose "$REVIEWER" '`reviewerApprovalMode: "verdict"`** (opt-in, for repos with no required-approval rule' \
+  "reviewer: verdict mode is opt-in, with a when-to-use clause"
 chk_prose "$REVIEWER" '`reviewerApprovalMode: "advisory"`' "reviewer: advisory mode documented"
 chk_prose "$REVIEWER" 'and your decision is `approve` **or** `request-changes`: post the verdict as a COMMENTED review' \
   "reviewer: verdict-mode rejection is a COMMENTED review"
@@ -78,7 +79,7 @@ chk_absent "$REVIEWER" 'Instead, degrade to an advisory comment carrying the exa
   "reviewer: old degrade-to-comment-on-denial fallback removed"
 chk_absent "$REVIEWER" 'Degrade to the advisory `--comment` review and return `classifier-blocked`' \
   "reviewer: old 'designed fallback' rule removed"
-chk_absent "$REVIEWER" 'absent field → `"approve"`' "reviewer: old approve default removed"
+chk_absent "$REVIEWER" 'absent field → `"verdict"`' "reviewer: old verdict-as-absent-fallback removed"
 chk_prose "$REVIEWER" '**no v1 marker and no `Decision:` / `Head:` block**' \
   "reviewer: advisory body omits v1 marker and Decision/Head block"
 chk_prose "$REVIEWER" 'so `atelier-review-verdict` returns `none` and the auto-merge gate holds' \
@@ -101,7 +102,7 @@ chk_absent "$AUTOMERGE" 'Reviewer degraded to advisory' "auto-merge: old 'degrad
 echo "== templates/atelier.template.json + .atelier.json =="
 for f in "$TEMPLATE_JSON" "$ATELIER_JSON"; do
   rel="${f#"$REPO_ROOT"/}"
-  chk_jq "$f" '.autoMerge.reviewerApprovalMode' 'verdict' "$rel: reviewerApprovalMode default is \"verdict\""
+  chk_jq "$f" '.autoMerge.reviewerApprovalMode' 'approve' "$rel: reviewerApprovalMode is \"approve\""
   for m in verdict approve advisory; do
     if jq -r '.autoMerge._comment' "$f" 2>/dev/null | grep -qF "\"$m\""; then
       pass "$rel: _comment enumerates mode \"$m\""
@@ -111,6 +112,7 @@ for f in "$TEMPLATE_JSON" "$ATELIER_JSON"; do
   done
 done
 chk_prose "$TEMPLATE_JSON" 'atelier-reviewer-verdict/v1' "template: _comment names the v1 marker"
+chk_prose "$TEMPLATE_JSON" 'Absent field is treated as \"approve\"' "template: _comment says an absent field is treated as approve"
 
 echo "== agents/task-orchestrator.md =="
 chk_prose "$ORCH" 'verdict: approve (<sha>)' "orchestrator: reports 'verdict: approve (<sha>)'"

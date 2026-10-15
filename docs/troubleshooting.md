@@ -262,11 +262,11 @@ gh pr merge <N> --squash --delete-branch
 
 **Symptom:** `task-orchestrator` finishes a task chain reporting `held: reviewer approval blocked by auto-mode classifier — human merge required` instead of `merged`. `gh pr view --json reviewDecision` is not `APPROVED`.
 
-**Cause:** this only happens with `autoMerge.reviewerApprovalMode: "approve"` (opt-in). Claude Code's auto-mode classifier applies a `[Self-Approval]` veto: it refuses to let a reviewer sub-agent post `--approve` on a PR authored by the agent-controlled `pr-author` sub-agent, because both are spawned by the same orchestrating session. It fires even under a distinct `gh` identity and even when the command matches the `Bash(GH_CONFIG_DIR=* gh pr review*)` allow-rule (#38). The denial is terminal: `agents/reviewer.md` returns `classifier-blocked` and never re-posts the approval as a comment or reworded command.
+**Cause:** this only happens with `autoMerge.reviewerApprovalMode: "approve"` (the default). Claude Code's auto-mode classifier applies a `[Self-Approval]` veto: it refuses to let a reviewer sub-agent post `--approve` on a PR authored by the agent-controlled `pr-author` sub-agent, because both are spawned by the same orchestrating session. It fires even under a distinct `gh` identity and even when the command matches the `Bash(GH_CONFIG_DIR=* gh pr review*)` allow-rule (#38). The denial is terminal: `agents/reviewer.md` returns `classifier-blocked` and never re-posts the approval as a comment or reworded command.
 
 **Reviewer modes (`autoMerge.reviewerApprovalMode` in `<project>/.atelier.json`):**
-- `verdict` (default): the reviewer posts a COMMENTED review with the `<!-- atelier-reviewer-verdict/v1 -->` marker and `Decision: approve | request-changes` (bound to the head sha), for both outcomes. The auto-merge gate reads it through `atelier-review-verdict`; no `--approve` is attempted, so the classifier veto does not apply.
-- `approve` (opt-in, for branch protection that requires an approving review): the reviewer attempts `--approve`; a classifier denial is the terminal held state above.
+- `approve` (the default; required for branch protection that requires an approving review): the reviewer attempts `--approve`; a classifier denial is the terminal held state above.
+- `verdict` (opt-in): the reviewer posts a COMMENTED review with the `<!-- atelier-reviewer-verdict/v1 -->` marker and `Decision: approve | request-changes` (bound to the head sha), for both outcomes. The auto-merge gate reads it through `atelier-review-verdict`; no `--approve` is attempted, so the classifier veto does not apply. It cannot satisfy a required-approval rule.
 - `advisory`: the reviewer posts a marker-less comment and the PR is always merged by a human.
 
 **Fix (per-task):** read the reviewer's review on the PR (full findings and checklist) and, if you agree, merge manually:
@@ -274,7 +274,7 @@ gh pr merge <N> --squash --delete-branch
 gh pr merge <N> --squash --delete-branch
 ```
 
-**Fix (per-project):** remove the `"approve"` setting (use the default `"verdict"`), or set `"advisory"` if you want every merge to be manual.
+**Fix (per-project):** denials are rare, so usually merge manually. Only on a repo with no required-approval rule that sees repeated denials, opt into `"verdict"`; otherwise merge manually or set `"advisory"` if you want every merge to be manual. Never use `"verdict"` on a base that requires approvals: it cannot satisfy that rule and holds every PR.
 
 **Long-term fix (outside atelier's control):** the classifier would need a notion of a second, independent actor identity so an agent-controlled reviewer can legitimately approve an agent-controlled PR; that is a Claude Code harness capability.
 

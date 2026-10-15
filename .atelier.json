@@ -49,8 +49,8 @@
     "sweepOrphans": true
   },
   "autoMerge": {
-    "_comment": "Reviewer verdict mode (#38, #407): \"verdict\" (default) posts a head-sha-bound COMMENTED review read via atelier-review-verdict; \"approve\" attempts --approve (classifier denial = terminal held); \"advisory\" = human merge only.",
-    "reviewerApprovalMode": "verdict"
+    "_comment": "Reviewer mode (#38, #407, #465): \"approve\" (default) attempts --approve (classifier denial = terminal held); \"verdict\" is opt-in and posts a head-sha-bound COMMENTED review read via atelier-review-verdict; \"advisory\" = human merge only. Set explicitly to \"approve\" here.",
+    "reviewerApprovalMode": "approve"
   },
   "deliverableLanguage": "English",
   "_deliverableLanguage_comment": "Language atelier writes repo deliverables in — commit messages, PR titles/descriptions, code comments, and generated docs/artifacts (.plan/<id>.md, drafted CLAUDE.md, ROADMAP/IN_PROGRESS/HISTORY entries) — regardless of the project's own content language or the operator's chat language (M7.1.F73). Set to any language name (e.g. \"Spanish\", \"French\"). Absent field is treated as \"English\". Does not affect operator-facing chat or the project's pre-existing content.",
