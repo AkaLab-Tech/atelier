@@ -141,7 +141,7 @@ This is a one-time configuration step per project. atelier will:
 
 You can run `atelier /atelier:setup-project .` on as many projects as you like — atelier will remember each one. Run `atelier-list-projects` from any shell to see them all.
 
-If you ever want to retire a project from atelier (no more `task` will run on it), `cd` into the project and run `atelier-remove-project .` — it deregisters the project but keeps your files. Add `--purge` to also strip the few `.gitignore` and `.npmrc` entries atelier added during setup. Both flows have a Claude-session equivalent under `/atelier:remove-project`.
+If you ever want to retire a project from atelier (no more `task` will run on it), `cd` into the project and run `atelier-remove-project .` — it deregisters the project but keeps your files. Add `--purge` to also strip the few `.gitignore` and `.npmrc` entries atelier added during setup, or `--unregister-only` to drop just the registry entry (a duplicate or stale registration) while every file on disk stays untouched. All flows have a Claude-session equivalent under `/atelier:remove-project`.
 
 ### Branch protection
 
@@ -589,7 +589,7 @@ Quick lookup once you've used atelier a few times.
 | `/adopt-roadmap --format atelier` | Convert a project's pre-existing roadmap into the format atelier reads (keeps every item; from the `claude-roadmap-tools` plugin) |
 | `/atelier:plan-task <id>` | Draft + approve the plan for one task, marking it `[ready]` so `task` can claim it |
 | `atelier-list-projects` | List every project registered with atelier (`--json` for machine-readable) |
-| `atelier-remove-project <path>` | Deregister a project (`--purge` also strips atelier's `.gitignore` / `.npmrc` additions) |
+| `atelier-remove-project <path>` | Deregister a project (`--purge` also strips atelier's `.gitignore` / `.npmrc` additions; `--unregister-only` removes only the registry entry and touches no file) |
 | `/atelier:setup-workspace <name> --discover .` | Group the repos under the current folder into a multi-repo workspace (or `--members a,b,c`) |
 | `/atelier:workspace-status` | Aggregated status across a workspace's repos (run from the parent folder) |
 | `atelier-list-workspaces` | List your workspaces and each repo's health |

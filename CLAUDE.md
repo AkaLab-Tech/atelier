@@ -59,7 +59,7 @@ The full allow/deny/ask matrix lives in PLAN.md §3 and is materialized as [temp
 - Network access is **allowlist-based, grown organically** — do not add broad network grants speculatively.
 - Add new entries to the template, not directly to per-task `settings.json` (that file is regenerated each task).
 
-The repo's own `.claude/settings.json` is a working dev convenience for the maintainer and is **not** the template the plugin will ship.
+The repo's own `.claude/settings.json` is a working dev convenience for the maintainer and is **not** the template the plugin will ship. It is instantiated from the template by `atelier-setup-project` and stays untracked (absolute `<worktree>` paths, D3-3); maintainer-only extras go in `settings.local.json`.
 
 ## Push / PR / merge gates (PLAN.md §6)
 

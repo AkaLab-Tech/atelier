@@ -120,6 +120,10 @@ Issues that come up while running a task.
 1. **Land the plan commit** (the default path): push or open a small PR to get the `/atelier:plan-task` commit onto your base branch, then re-run `task`. This keeps the plan in the task PR as an audit trail.
 2. **Switch to local plans** if you'd rather not commit/push plans at all: set `"planStorage": "local"` in `.atelier.json` and gitignore `.plan/`. Then the plan is read from your main checkout and carried to the worker inline — nothing to push for the plan itself. Trade-off: the plan won't appear in the task PR (see the operator guide, "keep plans local"). Note that for the file-backed layout the `[ready]` flip in `ROADMAP.md` still has to reach `origin/<base>`.
 
+### `atelier-housekeeping --project <path>` dies with "`<path>` is not registered"
+
+Housekeeping only works on registered projects. Register the path with `/atelier:setup-project --backend github-project` (or whichever backend the project uses). If the doctor instead reports the same remote registered at two paths, retire the stale one with `atelier-remove-project <stale-path> --unregister-only` (keeps the files on disk).
+
 ### `atelier --help` prints nothing / "atelier-help.txt: No such file"
 
 **Symptom:** Running `atelier --help` shows an empty output or a "file not found" error pointing at `$ATELIER_CONFIG_DIR/atelier-help.txt`.
@@ -356,6 +360,7 @@ If only one project is broken and the rest of atelier is healthy, you don't need
 ```bash
 atelier-remove-project <path>           # deregister; keep files
 atelier-remove-project <path> --purge   # also strip the .gitignore / .npmrc atelier-additions
+atelier-remove-project <path> --unregister-only   # drop only the registry entry; touch no file
 ```
 
 Then re-run `atelier /atelier:setup-project <path>` if you want to start fresh on that project.
