@@ -19,12 +19,19 @@
 #     Auto-merge: yes | no — <blockers>
 # A verdict counts only when the review author is the reviewer login, differs from the
 # PR author, review commit.oid == Head == the PR's current headRefOid. Newer supersedes older.
+#
+# Resolution order: reviewDecision CHANGES_REQUESTED -> request-changes; APPROVED -> approved.
+# When reviewDecision is neither (null, "", REVIEW_REQUIRED), take each author's latest
+# APPROVED/CHANGES_REQUESTED review (COMMENTED and DISMISSED ignored): any CHANGES_REQUESTED ->
+# request-changes; else the reviewer login's APPROVED (not the PR author) -> approved if on the
+# head, stale if on an older commit; otherwise the v1 verdict logic above. A non-null
+# reviewDecision is never overridden.
 # gh reads only; no state is modified.
 
 set -u
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 fi
 [ $# -eq 2 ] || { echo "usage: atelier-review-verdict <owner/repo> <NN>" >&2; exit 2; }
@@ -52,8 +59,14 @@ out="$(printf '%s' "$pr_json" | jq -r --arg login "$login" '
   | (.author.login // "") as $author
   | ([.reviews[]? | select((.author.login // "") == $login and ($login != $author) and v1)]
       | sort_by(.submittedAt) | last) as $v
+  | ([.reviews[]? | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
+      | group_by(.author.login // "") | map(sort_by(.submittedAt) | last)) as $latest
+  | ($latest | map(select((.author.login // "") == $login and ($login != $author) and .state == "APPROVED")) | first) as $ra
   | if .reviewDecision == "CHANGES_REQUESTED" then "verdict=request-changes"
     elif .reviewDecision == "APPROVED" then "verdict=approved sha=\($head)"
+    elif any($latest[]; .state == "CHANGES_REQUESTED") then "verdict=request-changes"
+    elif $ra != null and ($ra.commit.oid // "") == $head then "verdict=approved sha=\($head)"
+    elif $ra != null then "verdict=stale sha=\($ra.commit.oid // "")"
     elif $v == null then "verdict=none"
     else
       ($v.body | capture("Decision: *(?<d>approve|request-changes)\\b").d? // "") as $d

@@ -164,6 +164,43 @@ setup author "" "[$(review reviewer-bot COMMENTED $OLD 2026-10-14T08:00:00Z requ
 jq '.reviewDecision=null' "$FIX/pr.json" > "$FIX/pr2.json" && mv "$FIX/pr2.json" "$FIX/pr.json"
 expect "reviewDecision null: newer approve supersedes older request-changes" "verdict=approve sha=$H" 0
 
+echo "== #453 native-review fallback (reviewDecision not APPROVED/CHANGES_REQUESTED) =="
+nulldec() { jq '.reviewDecision=null' "$FIX/pr.json" > "$FIX/pr2.json" && mv "$FIX/pr2.json" "$FIX/pr.json"; }
+RA_H="$(review reviewer-bot APPROVED $H 2026-10-14T10:00:00Z x $H nomarker)"
+
+setup author "" "[$RA_H]"
+expect "reviewDecision '' + reviewer APPROVED at head, no marker -> approved" "verdict=approved sha=$H" 0
+
+setup author "REVIEW_REQUIRED" "[$RA_H]"
+expect "reviewDecision REVIEW_REQUIRED + reviewer APPROVED at head -> approved" "verdict=approved sha=$H" 0
+
+setup author "" "[$RA_H]"; nulldec
+expect "reviewDecision null + reviewer APPROVED at head -> approved" "verdict=approved sha=$H" 0
+
+setup author "" "[$(review reviewer-bot APPROVED $OLD 2026-10-14T10:00:00Z x $OLD nomarker)]"
+expect "reviewer APPROVED on older commit -> stale" "verdict=stale sha=$OLD" 1
+
+setup author "" "[$RA_H,$(review human CHANGES_REQUESTED $H 2026-10-14T12:00:00Z x $H nomarker)]"
+expect "reviewer APPROVED then later human CHANGES_REQUESTED -> request-changes" "verdict=request-changes" 1
+
+setup author "" "[$RA_H,$(review human DISMISSED $H 2026-10-14T12:00:00Z x $H nomarker)]"
+expect "human review DISMISSED ignored alongside reviewer APPROVED -> approved" "verdict=approved sha=$H" 0
+
+setup author "" "[$RA_H,$(review human CHANGES_REQUESTED $H 2026-10-14T11:00:00Z x $H nomarker),$(review human DISMISSED $H 2026-10-14T12:00:00Z x $H nomarker)]"
+expect "human CHANGES_REQUESTED later DISMISSED (not superseding state) -> request-changes" "verdict=request-changes" 1
+
+setup author "" "[$(review reviewer-bot DISMISSED $H 2026-10-14T10:00:00Z x $H nomarker)]"
+expect "reviewer APPROVED review state DISMISSED -> none" "verdict=none" 1
+
+setup reviewer-bot "" "[$RA_H]"
+expect "PR author == reviewer login with APPROVED -> none" "verdict=none" 1
+
+setup author "" "[$(review reviewer-bot CHANGES_REQUESTED $OLD 2026-10-14T09:00:00Z request-changes $OLD),$(review reviewer-bot COMMENTED $H 2026-10-14T11:00:00Z approve $H)]"
+expect "legacy pin: reviewDecision '' reviewer CHANGES_REQUESTED then newer COMMENTED approve -> request-changes" "verdict=request-changes" 1
+
+setup author "CHANGES_REQUESTED" "[$(review reviewer-bot CHANGES_REQUESTED $OLD 2026-10-14T09:00:00Z request-changes $OLD),$(review reviewer-bot COMMENTED $H 2026-10-14T11:00:00Z approve $H)]"
+expect "legacy pin: reviewDecision CHANGES_REQUESTED same reviews -> request-changes" "verdict=request-changes" 1
+
 # missing reviews key entirely -> none
 printf '{"author":{"login":"author"},"headRefOid":"%s","reviewDecision":null}' "$H" > "$FIX/pr.json"
 expect "no reviews key -> none" "verdict=none" 1

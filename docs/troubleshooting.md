@@ -280,6 +280,10 @@ gh pr merge <N> --squash --delete-branch
 
 **Fix (per-project):** denials are rare, so usually merge manually. Only on a repo with no required-approval rule that sees repeated denials, opt into `"verdict"`; otherwise merge manually or set `"advisory"` if you want every merge to be manual. Never use `"verdict"` on a base that requires approvals: it cannot satisfy that rule and holds every PR.
 
+Do not widen the `gh pr review` / `gh pr merge` allow-rules in `templates/settings.template.json` expecting it to clear the veto: with `reviewerApprovalMode: "approve"` the classifier fires whether or not the rule matches.
+
+Legacy case: in `verdict` mode, a PR that already carries a real `CHANGES_REQUESTED` from the reviewer login keeps resolving to `request-changes`, even after a newer v1 `approve` at the head. Recover by having a human dismiss that review, or by running the reviewer once in `approve` mode.
+
 **Long-term fix (outside atelier's control):** the classifier would need a notion of a second, independent actor identity so an agent-controlled reviewer can legitimately approve an agent-controlled PR; that is a Claude Code harness capability.
 
 ### `task-orchestrator` (or planner) dispatch denied with `[Auto-Mode Bypass]`
