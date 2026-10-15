@@ -517,6 +517,8 @@ On successful merge, logs are attached to the PR as an artifact.
 
 **Review-fix loop:** when `reviewer` returns `request-changes` with code-addressable findings and `reviewFix.enabled` is `true` in `<project>/.atelier.json` (default), the orchestrator automatically re-dispatches `implementer` (and `tester` when coverage is implicated) for up to `reviewFix.maxCycles` fix→re-review cycles (default 2, configurable per project). Each fix attempt is logged through the same `.task-log/` mechanism above — the 6-attempt ceiling is **shared** across the inner implementer↔`/validate` loop and review-fix cycles, so the loop cannot spin past the §8 budget regardless of which cap is hit first. On exhaustion (no convergence to `approve` within the cycle bound or the attempt budget), the orchestrator surfaces accumulated findings and `.task-log/` paths and leaves the PR open for the operator. See `agents/task-orchestrator.md` § Review-fix loop.
 
+**Pre-review scope check (#452):** after every `implementer` return (before `/validate`) and before every authoring dispatch, the orchestrator runs the read-only `atelier-diff-scope-check`, which compares the tree against the merge base and fails on removed Markdown headings, removed files, or deletion-heavy hunks the approved plan does not name. A failure is an ordinary implementer attempt failure: it goes through `retry-with-logs` and uses exactly one of the 6 attempts. It is not a review-fix cycle and adds no budget of its own; both budgets stay fixed. Helper errors fail closed.
+
 ---
 
 ## 9. Update flow (`atelier-update`) ✅

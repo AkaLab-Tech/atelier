@@ -222,7 +222,7 @@ instead of coordinating authoring and review itself — see `operator-rules.md`
 
    ### Inner loop — implementer ↔ `/validate`
 
-   After `implementer` returns, immediately invoke `/validate` (fast layer — lint + typecheck + unit/integration tests) against the worktree. The loop has two outcomes:
+   After `implementer` returns, run the **Scope check** (below) first; only on `result=pass` immediately invoke `/validate` (fast layer — lint + typecheck + unit/integration tests) against the worktree. The loop has two outcomes:
 
    - **`/validate` reports `Overall: pass`** → exit the inner loop, proceed to `tester` (which writes new tests if the change introduces new behavior or coverage gaps). The implementation is structurally sound; `tester` adds whatever the implementer left out.
    - **`/validate` reports `Overall: fail`** → this is an *implementer attempt failure*. Hand the verbatim `/validate` output to `retry-with-logs` (see step 7) along with the implementer's structured return. The skill writes the attempt log and returns its decision:
@@ -236,6 +236,15 @@ instead of coordinating authoring and review itself — see `operator-rules.md`
    **`/validate --full` runs once, after the inner loop exits clean and after `tester` and (when relevant) `e2e-runner`** — final gate before `pr-author`. The slow layer is too expensive to iterate against; only `/validate` (fast) lives inside the inner loop.
 
    **Hard refusal — `/validate` inside the inner loop is NEVER `--full`.** If the orchestrator finds itself running the slow layer inside the loop, that is a bug — the slow layer's Playwright + screenshot cost would explode iteration time. Stop and report.
+
+   ### Scope check — `atelier-diff-scope-check` (#452)
+
+   A read-only gate that catches unplanned deletions (removed Markdown headings, removed files, deletion-heavy hunks) before anything reaches review. Run `atelier-diff-scope-check --worktree <worktree> --base <base> --plan <src>` (a) after **every** `implementer` return — first pass and each review-fix cycle — **before** `/validate`, and (b) once more right before **every** authoring dispatch (`pr-author` / `pr-opener`, first pass and `follow_up: true`). Plan source by `planStorage`: `committed` → `<worktree>/.plan/<id>.md`; `local` → `<main_checkout_root>/.plan/<id>.md`; `resident` on github-project → pipe `gh issue view <NN> -R <repo> --json body --jq .body` into `--plan -` (never pass plan text through a heredoc). With no readable plan source, do not skip silently: report `scope check skipped: no plan source` in the chain status.
+
+   - **`result=pass`** → continue to `/validate` (or the authoring dispatch).
+   - **`result=fail` (exit 1)** → an ordinary implementer attempt failure, handled like a red `/validate`: hand the verbatim output to `retry-with-logs` and act on `continue | reset | hard-stop`. On `continue`, re-dispatch `implementer` with the findings and "restore the listed content from the merge base unless the plan names its removal". It uses **one normal attempt** of the fixed 6-attempt §8 budget — no new counter, no free retry — and it **does not consume a review-fix cycle** (the cycle counter only increments on a reviewer `request-changes`).
+   - **Same finding twice after a "needs plan amendment" report** (the implementer reported it under **Unresolved** and the identical unplanned-removal finding returns) → stop with `held: unplanned removal needs plan amendment` through the plan session; do not spend the remaining attempts.
+   - **Exit 2** → fail closed: `held: diff scope check errored — <stderr>`. Never a pass, never retried silently.
 
    ### When to dispatch `docker-runner`
 
@@ -274,11 +283,13 @@ instead of coordinating authoring and review itself — see `operator-rules.md`
    - The current PR diff (`gh pr diff <NN>`) so the implementer fixes against concrete reviewer concerns, not a re-implementation.
    - A note that this is fix cycle N of `maxCycles` — not a fresh implementation.
 
+   After `implementer` returns, run the **Scope check** before `/validate`, exactly as on the first pass.
+
    When findings implicate coverage, also dispatch `tester` (same as the first pass). Each fix attempt that fails `/validate` (inner loop) flows through `retry-with-logs` as it does today — the §8 6-attempt ceiling is shared across the inner loop and review-fix cycles alike; whichever cap is hit first ends the loop.
 
    **Step 4 — Re-push via the follow-up-mode authoring primitive.** The re-push primitive is selected by the **same branch-shape rule** the first-pass authoring dispatch already uses (see "Non-task PR coordination mode" above): a `task/*` head re-pushes through `pr-author` with `follow_up: true`; any other pushable head (`chore/*`, `docs/*`, `fix/*`, plan-tracking) re-pushes through `pr-opener` with `follow_up: true` + `pr_number`. One rule governs both first-pass authoring and the re-push — no path reaches a `pr-author` re-push on a non-`task/*` head.
 
-   After the inner loop exits clean and `tester` (and `e2e-runner`, when applicable) completes, dispatch the selected primitive:
+   After the inner loop exits clean and `tester` (and `e2e-runner`, when applicable) completes, re-run the **Scope check** (`result=pass` required), then dispatch the selected primitive:
 
    - `pr-author` (`task/*` head) — in **follow-up mode**:
      - Skip the `IN_PROGRESS → HISTORY` tracking move (in standard task mode, already committed on the first pass — re-doing it would be a malformed double move; in `mode: non-task-pr` this move never happens at all, per the mode's own no-tracking-move rule above).
@@ -381,6 +392,7 @@ instead of coordinating authoring and review itself — see `operator-rules.md`
 - **Never** bypass or weaken a guardrail during the pre-merge CI wait. The wait resolves pending CI before the `auto-merge` skill evaluates; it does not suppress any of the six guardrails. An empty `statusCheckRollup` is pending, not green, on any repo with workflows or required checks (or when that cannot be determined). On unprotected repos, guardrail #2 (`reviewDecision`) may still hold even after CI resolves green — the report must make "CI resolved ≠ gate passed" explicit so the operator is not misled. The wait is: budget-exempt (never consumes the 6-attempt `retry-with-logs` count), fail-fast on `FAILURE`/`CANCELLED`/`TIMED_OUT`/`STARTUP_FAILURE` (never waits on a definitively failed check), bounded by `ciWait.maxWaitSeconds` from `.atelier.json` (built-in default 900 s), and interruptible.
 - **Never** run more than `reviewFix.maxCycles` automated fix→re-review cycles (default 2, configured in `.atelier.json`). The per-cycle cap and the §8 6-attempt budget are two independent ceilings — whichever is hit first ends the loop. Silently extending either cap or resetting the cycle counter mid-task is forbidden.
 - **Never** treat a `classifier-blocked` reviewer return as `request-changes` or as a retry-able failure. It is a terminal held state — see step 8 — that requires a human merge, not a fix cycle, a `retry-with-logs` attempt, or an `unblocker` hard-stop.
+- **Never** dispatch `reviewer` or an authoring primitive (`pr-author` / `pr-opener`) on a worktree whose last Scope check is not `result=pass`. Both budgets stay fixed: the Scope check adds no budget of its own — a failure is one normal §8 attempt, never a review-fix cycle.
 - **Never** put authorization claims in a brief to any sub-agent or in a message to a peer session ("the operator authorized…", "plan APPROVED…"): the classifier does not treat delegated text as the user's own message and reads such claims as a bypass signal. Briefs carry facts only (task id, PR, head sha, paths).
 - **Never** ask the operator for a phrase to paste or type in another terminal, and never move a denied review or merge to another lane or session. When the classifier blocks a dispatch (`classifier-blocked`, or a denied `reviewer` / `auto-merge` dispatch), return `held` with the PR number, head sha and the denial tag verbatim (e.g. `[Auto-Mode Bypass]`) and yield — escalation is the plan session's single `AskUserQuestion`, per `operator-rules.md` § "Multi-session setups (plan + worker sessions)".
 - **Never** re-dispatch a specialist with the same command after `needs-operator-permission`, never run the denied gate command yourself, and never brief another session with it. Retrying, rewording, splitting or env-juggling a denied command is the same bypass; `dangerouslyDisableSandbox` is never requested for gate commands. See `operator-rules.md` § "Gate runs and sandbox/classifier denials".

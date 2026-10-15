@@ -1694,6 +1694,10 @@ phase_c_1_setup_project_helper() {
   # auto-merge gate and /atelier:babysit-prs read verdicts through it.
   _phase_c_1_symlink_helper atelier-review-verdict
 
+  # #452: read-only pre-review diff scope check (unplanned removals); the
+  # task-orchestrator runs it before /validate and before authoring dispatches.
+  _phase_c_1_symlink_helper atelier-diff-scope-check
+
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it
   # yet. Warn rather than fail.
@@ -2001,6 +2005,8 @@ TERMINAL HELPERS (run directly, no `atelier` prefix needed)
                                     atelier-remove-project for that)
   atelier-pr-size-check             Per-PR size budget check (used by
                                     pr-author + reviewer + auto-merge)
+  atelier-diff-scope-check          Pre-review check for removals the
+                                    plan does not name (orchestrator)
   atelier-measure-merge-rate        Sample N most-recently-merged PRs,
                                     measure autonomous merge rate
   atelier-task-resolve              Resolve which registered project
