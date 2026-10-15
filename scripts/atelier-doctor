@@ -1158,6 +1158,41 @@ check_atelier_auto_mode() {
   push_fix_auto "tmp=\"\$(mktemp \"$target.atelier.XXXXXX\")\" && jq '.permissions = (.permissions // {}) | .permissions.defaultMode = \"auto\"' \"$target\" > \"\$tmp\" && mv \"\$tmp\" \"$target\""
 }
 
+check_atelier_automode_managed() {
+  # #456 — report-only. The gate-run autoMode rule must live in the user-level
+  # $ATELIER_CONFIG_DIR/settings.json (Claude Code ignores autoMode in project
+  # settings). Writing it needs the operator's explicit OK, so this check never
+  # queues a runnable fix (no push_fix_auto): it prints a manual fix line that
+  # points at /atelier:update, which shows the diff and asks first.
+  local target="$ATELIER_CONFIG_DIR/settings.json"
+  local script_dir sync tmpl
+  script_dir="$(cd -P "$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")" 2>/dev/null && pwd)"
+  sync="$script_dir/atelier-automode-sync"
+  tmpl="$script_dir/../templates/automode.user.json"
+  if [ ! -x "$sync" ] || [ ! -f "$tmpl" ]; then
+    push_host "$SKIP managed autoMode rule (atelier-automode-sync or template not found next to this script)"
+    return
+  fi
+  if [ ! -f "$target" ]; then
+    push_host "$SKIP managed autoMode rule ($target missing — see the auto-mode check above)"
+    return
+  fi
+  if ! jq empty "$target" >/dev/null 2>&1; then
+    push_host "$SKIP managed autoMode rule ($target is not valid JSON)"
+    return
+  fi
+  local rc=0
+  "$sync" --quiet --template "$tmpl" --config-dir "$ATELIER_CONFIG_DIR" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) push_host "$OK managed autoMode gate-run rule in sync in $target" ;;
+    1)
+      push_host "$WARN managed autoMode gate-run rule missing or stale in $target — auto mode may prompt on project test scripts"
+      push_fix_manual "/atelier:update   # shows the autoMode diff and applies it only after you confirm"
+      ;;
+    *) push_host "$SKIP managed autoMode rule (atelier-automode-sync failed, rc=$rc)" ;;
+  esac
+}
+
 check_atelier_claude_auth() {
   # M7.1.F42 + F43 — verify the atelier-scoped Claude Code auth is valid
   # AGAINST THE ANTHROPIC API, not just by reading .claude.json.
@@ -1332,6 +1367,7 @@ check_git_identity
 check_reviewer_repo_access
 check_branch_protection
 check_atelier_auto_mode
+check_atelier_automode_managed
 
 # ---------- emit the report ----------
 

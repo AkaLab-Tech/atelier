@@ -16,7 +16,8 @@
 #   atelier-permission-diff --help
 #
 # Exit codes:
-#   0  no permission changes (allow / deny / ask arrays unchanged)
+#   0  no permission changes (permissions.* / autoMode.* arrays and the
+#      defaultMode / classifyAllShell scalars unchanged)
 #   1  changes detected (diff rendered to stdout)
 #   2  error (missing file, malformed json, jq missing, ...)
 
@@ -116,6 +117,16 @@ describe_permission() {
     "Bash(pnpm update*)")                        echo "bump dependencies" ;;
     "Bash(pnpm run *)")                          echo "run a package.json script" ;;
     "Bash(pnpm test*)")                          echo "run tests via pnpm" ;;
+    "Bash(pnpm run test*)")                      echo "run the project's test scripts" ;;
+    "Bash(pnpm exec playwright test*)")          echo "run playwright tests via pnpm" ;;
+    # ---------- env-prefixed gate runs (#451): <env> <command> ----------
+    "Bash(PW_CHROME_CHANNEL=chrome "*|"Bash(CI=1 "*|"Bash(CI=true "*)
+      local env_assign rest base
+      env_assign="${entry#Bash(}"; env_assign="${env_assign%% *}"
+      rest="Bash(${entry#"Bash($env_assign "}"
+      base="$(describe_permission "$rest")"
+      case "$base" in "(no description"*) base="run a gate command" ;; esac
+      echo "$base with $env_assign set" ;;
     "Bash(pnpm audit*)")                         echo "audit dependencies for vulnerabilities" ;;
     "Bash(pnpm view*)")                          echo "inspect package metadata" ;;
     "Bash(pnpm exec eslint*)")                   echo "lint with eslint" ;;
@@ -232,51 +243,84 @@ describe_permission() {
 }
 
 # ---------- diff computation ----------
-# For each permission category (allow / deny / ask), compute the set
-# difference. We compare as sorted arrays — order in the source file
-# doesn't matter, only membership.
-diff_category() {
-  local key="$1"
-  local added removed
-  added="$(jq -r --arg k "$key" \
-    '($OLD_ARR) as $o | ($NEW_ARR) as $n | ($n - $o)[]' \
-    --slurpfile OLD_ARR <(jq ".permissions.$key // []" "$OLD") \
-    --slurpfile NEW_ARR <(jq ".permissions.$key // []" "$NEW") \
-    -n 2>/dev/null || true)"
-  # Simpler form: just compute additions and removals with jq -n + --slurpfile
-  added="$(jq -nr \
-    --slurpfile old <(jq ".permissions.$key // []" "$OLD") \
-    --slurpfile new <(jq ".permissions.$key // []" "$NEW") \
-    '$new[0] - $old[0] | .[]')"
-  removed="$(jq -nr \
-    --slurpfile old <(jq ".permissions.$key // []" "$OLD") \
-    --slurpfile new <(jq ".permissions.$key // []" "$NEW") \
-    '$old[0] - $new[0] | .[]')"
-  printf '%s\n---\n%s' "$added" "$removed"
+# Array paths are compared as sets (membership only, order ignored); scalar
+# paths are compared by value. autoMode.* is user-level config the classifier
+# reads (#456) — an `allow`/`environment` entry lets the agent do more,
+# `soft_deny`/`hard_deny` less.
+ARRAY_PATHS=(permissions.allow permissions.deny permissions.ask permissions.additionalDirectories
+             autoMode.allow autoMode.soft_deny autoMode.hard_deny autoMode.environment)
+SCALAR_PATHS=(permissions.defaultMode autoMode.classifyAllShell)
+
+# Tag shown in brackets. permissions.allow|deny|ask keep their short legacy tag.
+path_tag() {
+  case "$1" in
+    permissions.allow|permissions.deny|permissions.ask) printf '%s' "${1#permissions.}" ;;
+    *) printf '%s' "$1" ;;
+  esac
 }
 
-# Capture diffs per category. Format: "category|added_or_removed|entry|description".
+# Description for a prose autoMode.* entry: managed-marker id, else first 60 chars.
+describe_automode_entry() {
+  local path="$1" kind="$2" entry="$3" label dir
+  if [[ "$entry" =~ ^\[atelier-managed:([^]]*)\] ]]; then
+    label="${BASH_REMATCH[1]}"
+  elif [ "$entry" = '$defaults' ]; then
+    label='built-in defaults ($defaults)'
+  elif [ "${#entry}" -gt 60 ]; then
+    label="${entry:0:60}…"
+  else
+    label="$entry"
+  fi
+  case "$path:$kind" in
+    autoMode.allow:added|autoMode.environment:added|autoMode.soft_deny:removed|autoMode.hard_deny:removed) dir="the agent can do more" ;;
+    *) dir="the agent can do less" ;;
+  esac
+  printf 'auto-mode classifier rule: %s — %s' "$label" "$dir"
+}
+
+describe_entry() {
+  local path="$1" kind="$2" entry="$3"
+  case "$path" in
+    autoMode.*) describe_automode_entry "$path" "$kind" "$entry" ;;
+    permissions.additionalDirectories)
+      if [ "$kind" = added ]; then printf 'extra directory the agent can access — the agent can do more'
+      else printf 'directory no longer accessible — the agent can do less'; fi ;;
+    *) describe_permission "$entry" ;;
+  esac
+}
+
+# Records are separated by \x1f (entries may contain `|`):
+#   <tag> US added|removed|changed US <entry or "old → new"> US <description>
 collect_changes() {
-  local category=""
-  for category in allow deny ask; do
-    local result added removed
-    result="$(diff_category "$category")"
-    added="${result%%---*}"
-    removed="${result##*---}"
-    # Trim leading newlines.
-    added="$(printf '%s' "$added" | sed '/^$/d')"
-    removed="$(printf '%s' "$removed" | sed '/^$/d')"
-    if [ -n "$added" ]; then
-      while IFS= read -r entry; do
-        printf '%s|added|%s|%s\n' "$category" "$entry" "$(describe_permission "$entry")"
-      done <<< "$added"
-    fi
-    if [ -n "$removed" ]; then
-      while IFS= read -r entry; do
-        printf '%s|removed|%s|%s\n' "$category" "$entry" "$(describe_permission "$entry")"
-      done <<< "$removed"
-    fi
+  local path old_json new_json entry
+  local US=$'\x1f'
+  for path in "${ARRAY_PATHS[@]}"; do
+    old_json="$(jq -c --arg p "$path" 'getpath($p | split(".")) // [] | if type == "array" then . else [] end' "$OLD")"
+    new_json="$(jq -c --arg p "$path" 'getpath($p | split(".")) // [] | if type == "array" then . else [] end' "$NEW")"
+    while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      printf '%s%sadded%s%s%s%s\n' "$(path_tag "$path")" "$US" "$US" "$entry" "$US" "$(describe_entry "$path" added "$entry")"
+    done < <(jq -nr --argjson o "$old_json" --argjson n "$new_json" '($n - $o)[]')
+    while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      printf '%s%sremoved%s%s%s%s\n' "$(path_tag "$path")" "$US" "$US" "$entry" "$US" "$(describe_entry "$path" removed "$entry")"
+    done < <(jq -nr --argjson o "$old_json" --argjson n "$new_json" '($o - $n)[]')
   done
+  local ov nv
+  for path in "${SCALAR_PATHS[@]}"; do
+    ov="$(jq -r --arg p "$path" 'getpath($p | split(".")) // "(unset)" | tostring' "$OLD")"
+    nv="$(jq -r --arg p "$path" 'getpath($p | split(".")) // "(unset)" | tostring' "$NEW")"
+    [ "$ov" = "$nv" ] && continue
+    printf '%s%schanged%s%s → %s%s%s\n' "$path" "$US" "$US" "$ov" "$nv" "$US" "$(describe_scalar "$path")"
+  done
+}
+
+describe_scalar() {
+  case "$1" in
+    permissions.defaultMode)       printf 'default permission mode for sessions' ;;
+    autoMode.classifyAllShell)     printf 'auto-mode classifier reviews every shell command' ;;
+    *) printf '(no description)' ;;
+  esac
 }
 
 CHANGES="$(collect_changes)"
@@ -297,7 +341,7 @@ render_block() {
   printf '%b%s permissions%b — the agent %s without asking:\n' \
     "$C_BOLD" "$label" "$C_RESET" \
     "$([ "$sigil" = "+" ] && echo "WILL now do these" || echo "can NO LONGER do these")"
-  while IFS='|' read -r category _ entry description; do
+  while IFS=$'\x1f' read -r category _ entry description; do
     [ -z "$entry" ] && continue
     # Note: $sigil $entry are emitted unmodified — preserves the operator's
     # exact pattern (helpful when they copy-paste into .atelier.json or
@@ -313,12 +357,22 @@ render_block() {
 # with status 1 when there are no matches, which would silently abort the
 # script (and skip the rendering below) for the common "additions only" or
 # "removals only" case.
-ADDED_LINES="$(printf '%s\n' "$CHANGES" | grep -E '^[^|]+\|added\|' || true)"
-REMOVED_LINES="$(printf '%s\n' "$CHANGES" | grep -E '^[^|]+\|removed\|' || true)"
+US=$'\x1f'
+ADDED_LINES="$(printf '%s\n' "$CHANGES" | grep -E "^[^${US}]+${US}added${US}" || true)"
+REMOVED_LINES="$(printf '%s\n' "$CHANGES" | grep -E "^[^${US}]+${US}removed${US}" || true)"
+CHANGED_LINES="$(printf '%s\n' "$CHANGES" | grep -E "^[^${US}]+${US}changed${US}" || true)"
 
 printf '\n%b⚠️  The update changes the agent permissions%b\n\n' "$C_YELLOW$C_BOLD" "$C_RESET"
 render_block "NEW"     "+" "$C_GREEN" "$ADDED_LINES"
 render_block "REMOVED" "-" "$C_RED"   "$REMOVED_LINES"
+if [ -n "$CHANGED_LINES" ]; then
+  printf '%bCHANGED settings%b:\n' "$C_BOLD" "$C_RESET"
+  while IFS=$'\x1f' read -r category _ entry description; do
+    [ -z "$entry" ] && continue
+    printf '  %s~ %s%b → %s [%s]\n' "$C_YELLOW" "$entry" "$C_RESET" "$description" "$category"
+  done <<< "$CHANGED_LINES"
+  printf '\n'
+fi
 
 # Impact summary — heuristic. Group changes by intent (Bash / Edit / Read / mcp)
 # and emit one operator-facing line per group.
@@ -333,6 +387,9 @@ if [ "$COUNT_ADDED" -gt 0 ]; then
 fi
 if [ "$COUNT_REMOVED" -gt 0 ]; then
   printf '  - %d removed permission(s): the agent will now ask you before doing those.\n' "$COUNT_REMOVED"
+fi
+if [ -n "$CHANGED_LINES" ]; then
+  printf '  - %d changed setting(s): review the old → new values above.\n' "$(printf '%s\n' "$CHANGED_LINES" | grep -c .)"
 fi
 printf '\n'
 

@@ -313,9 +313,14 @@ spell those three assignments literally, with no wildcard before the command
 `LD_PRELOAD=...`). Env-prefixed runs are pre-allowed only for those literal
 assignments; any other prefix falls to the classifier and, if denied, to
 needs-operator-permission. Also, the auto-mode classifier reads
-`autoMode` only from user, managed or `--settings` configuration, not from a
-project's `.claude/settings.json`, so the template's `autoMode.allow` entry takes
-effect only where that configuration is the user's own. Projects pick up the
+`autoMode` only from user, managed or `--settings` configuration, never from a
+project's `.claude/settings.json`, so the project template carries no `autoMode`
+block. The gate-run classifier rule ships at user level instead
+(`templates/automode.user.json`, a `[atelier-managed:gate-runs]` entry in
+`$ATELIER_CONFIG_DIR/settings.json`) and is applied **only with the operator's
+explicit OK**: through `/atelier:update`'s confirmation or `install.sh`'s
+interactive prompt, never silently and never in a non-interactive run.
+`atelier-doctor` only reports a missing or stale entry. Projects pick up the
 permission diff through `atelier-update` / `/atelier:align`.
 
 When a gate run is denied anyway:

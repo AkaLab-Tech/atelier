@@ -29,6 +29,7 @@ VV="$REPO_ROOT/skills/visual-validation/SKILL.md"
 ORCH="$REPO_ROOT/agents/task-orchestrator.md"
 RULES="$REPO_ROOT/operator-rules.md"
 TEMPLATE="$REPO_ROOT/templates/settings.template.json"
+AUTOMODE="$REPO_ROOT/templates/automode.user.json"
 
 fails=0
 pass() { printf '  PASS: %s\n' "$1"; }
@@ -52,7 +53,7 @@ chk_section() {
   fi
 }
 
-for f in "$IMPL" "$TESTER" "$E2E" "$VV" "$ORCH" "$RULES" "$TEMPLATE"; do
+for f in "$IMPL" "$TESTER" "$E2E" "$VV" "$ORCH" "$RULES" "$TEMPLATE" "$AUTOMODE"; do
   [ -f "$f" ] || { echo "  FAIL: $f not found"; exit 1; }
 done
 
@@ -117,35 +118,62 @@ chk_section "$RULES_SEC" 'no session' "operator-rules: no session forwards the a
 chk_section "$RULES_SEC" '`autoMode`' "operator-rules: states the autoMode project-scope limitation"
 
 # ---------------------------------------------------------------------------
-# Template: scoped autoMode.allow + env-prefixed permissions.allow shapes
+# templates/automode.user.json (user level, #456): scoped autoMode.allow;
+# settings.template.json: env-prefixed permissions.allow shapes, no autoMode
 # ---------------------------------------------------------------------------
 if command -v jq >/dev/null 2>&1; then
-  if jq -e '(.autoMode.allow | type == "array" and length >= 1)' "$TEMPLATE" >/dev/null 2>&1; then
-    pass "template: autoMode.allow exists"
+  if jq -e '(.autoMode.allow | type == "array" and length >= 1)' "$AUTOMODE" >/dev/null 2>&1; then
+    pass "automode.user.json: autoMode.allow exists"
   else
-    fail "template: autoMode.allow missing or empty"
+    fail "automode.user.json: autoMode.allow missing or empty"
   fi
-  if jq -e '[.autoMode.allow[] | select(contains("<worktree>"))] | length >= 1' "$TEMPLATE" >/dev/null 2>&1; then
-    pass "template: autoMode.allow entry is scoped to <worktree>"
+  if jq -e '[.autoMode.allow[] | select(contains("atelier task worktree") and contains("-worktrees/") and contains("registered project"))] | length >= 1' "$AUTOMODE" >/dev/null 2>&1; then
+    pass "automode.user.json: autoMode.allow entry is scoped to an atelier task worktree / registered project root"
   else
-    fail "template: no autoMode.allow entry scoped to <worktree>"
+    fail "automode.user.json: no autoMode.allow entry scoped to an atelier task worktree / registered project root"
   fi
-  if jq -e '[.autoMode.allow[] | select(contains("PW_CHROME_CHANNEL=chrome") and contains("CI=1"))] | length >= 1' "$TEMPLATE" >/dev/null 2>&1; then
-    pass "template: autoMode.allow entry covers the literal PW_CHROME_CHANNEL / CI env prefixes"
+  if jq -e '[.autoMode.allow[] | select(contains("PW_CHROME_CHANNEL=chrome") and contains("CI=1"))] | length >= 1' "$AUTOMODE" >/dev/null 2>&1; then
+    pass "automode.user.json: autoMode.allow entry covers the literal PW_CHROME_CHANNEL / CI env prefixes"
   else
-    fail "template: autoMode.allow entry does not mention the literal PW_CHROME_CHANNEL / CI env prefixes"
+    fail "automode.user.json: autoMode.allow entry does not mention the literal PW_CHROME_CHANNEL / CI env prefixes"
   fi
-  if jq -e '[.autoMode.allow[] | select(test("Never with dangerouslyDisableSandbox"))] | length >= 1' "$TEMPLATE" >/dev/null 2>&1; then
-    pass "template: autoMode.allow entry excludes dangerouslyDisableSandbox"
+  if jq -e '[.autoMode.allow[] | select(test("Never with dangerouslyDisableSandbox"))] | length >= 1' "$AUTOMODE" >/dev/null 2>&1; then
+    pass "automode.user.json: autoMode.allow entry excludes dangerouslyDisableSandbox"
   else
-    fail "template: autoMode.allow entry does not exclude dangerouslyDisableSandbox"
+    fail "automode.user.json: autoMode.allow entry does not exclude dangerouslyDisableSandbox"
   fi
-  if jq -e '[.autoMode.allow[] | select(test("(?<!Never with )dangerouslyDisableSandbox") and (test("Never with dangerouslyDisableSandbox")|not))] | length == 0' "$TEMPLATE" >/dev/null 2>&1; then
-    pass "template: no autoMode.allow entry grants dangerouslyDisableSandbox"
+  if jq -e '[.autoMode.allow[] | select(test("(?<!Never with )dangerouslyDisableSandbox") and (test("Never with dangerouslyDisableSandbox")|not))] | length == 0' "$AUTOMODE" >/dev/null 2>&1; then
+    pass "automode.user.json: no autoMode.allow entry grants dangerouslyDisableSandbox"
   else
-    fail "template: an autoMode.allow entry mentions dangerouslyDisableSandbox without excluding it"
+    fail "automode.user.json: an autoMode.allow entry mentions dangerouslyDisableSandbox without excluding it"
   fi
-  for shape in 'Bash(PW_CHROME_CHANNEL=chrome pnpm exec vitest *)' 'Bash(PW_CHROME_CHANNEL=chrome pnpm exec playwright test *)' 'Bash(PW_CHROME_CHANNEL=chrome pnpm test*)' 'Bash(PW_CHROME_CHANNEL=chrome pnpm run test*)' 'Bash(CI=1 pnpm exec vitest *)' 'Bash(CI=1 pnpm run test*)' 'Bash(CI=true pnpm test*)' 'Bash(CI=true pnpm run test*)' 'Bash(pnpm run test*)'; do
+  if jq -e '.autoMode.allow[0] | startswith("[atelier-managed:gate-runs] ")' "$AUTOMODE" >/dev/null 2>&1; then
+    pass "automode.user.json: entry starts with the [atelier-managed:gate-runs] marker"
+  else
+    fail "automode.user.json: entry lacks the [atelier-managed:gate-runs] marker"
+  fi
+  # #456: Claude Code ignores autoMode in project settings, so the project template must not carry one.
+  if jq -e 'has("autoMode") | not' "$TEMPLATE" >/dev/null 2>&1; then
+    pass "template: settings.template.json has no autoMode block (user-level only, #456)"
+  else
+    fail "template: settings.template.json still carries an autoMode block"
+  fi
+  if jq -e '.permissions.allow | (length == (unique | length))' "$TEMPLATE" >/dev/null 2>&1; then
+    pass "template: permissions.allow has no duplicate entries"
+  else
+    fail "template: permissions.allow has duplicates: $(jq -c '.permissions.allow | group_by(.) | map(select(length > 1) | .[0])' "$TEMPLATE")"
+  fi
+  if jq -e '[.permissions.allow[] | select(test("^Bash\\((PW_CHROME_CHANNEL=chrome|CI=1|CI=true) .* \\*\\)$"))] | length == 0' "$TEMPLATE" >/dev/null 2>&1; then
+    pass "template: no env-prefixed allow entry ends in ' *)' (bare '*' only)"
+  else
+    fail "template: an env-prefixed allow entry ends in ' *)': $(jq -c '[.permissions.allow[] | select(test("^Bash\\((PW_CHROME_CHANNEL=chrome|CI=1|CI=true) .* \\*\\)$"))]' "$TEMPLATE")"
+  fi
+  if jq -e '[.permissions.allow[] | select(test("^Bash\\((PW_CHROME_CHANNEL=chrome|CI=1|CI=true) "))] | length == 12' "$TEMPLATE" >/dev/null 2>&1; then
+    pass "template: exactly 12 env-prefixed gate-run shapes (3 prefixes x 4 commands)"
+  else
+    fail "template: expected 12 env-prefixed shapes, got $(jq '[.permissions.allow[] | select(test("^Bash\\((PW_CHROME_CHANNEL=chrome|CI=1|CI=true) "))] | length' "$TEMPLATE")"
+  fi
+  for shape in 'Bash(PW_CHROME_CHANNEL=chrome pnpm exec vitest*)' 'Bash(PW_CHROME_CHANNEL=chrome pnpm exec playwright test*)' 'Bash(PW_CHROME_CHANNEL=chrome pnpm test*)' 'Bash(PW_CHROME_CHANNEL=chrome pnpm run test*)' 'Bash(CI=1 pnpm exec vitest*)' 'Bash(CI=1 pnpm exec playwright test*)' 'Bash(CI=1 pnpm test*)' 'Bash(CI=1 pnpm run test*)' 'Bash(CI=true pnpm exec vitest*)' 'Bash(CI=true pnpm exec playwright test*)' 'Bash(CI=true pnpm test*)' 'Bash(CI=true pnpm run test*)'; do
     if jq -e --arg s "$shape" '.permissions.allow | index($s) != null' "$TEMPLATE" >/dev/null 2>&1; then
       pass "template: permissions.allow carries '$shape'"
     else

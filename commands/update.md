@@ -53,6 +53,17 @@ The helper's own `Apply these permission changes? [y/N]` prompt needs stdin to b
 
 In non-interactive runs (`claude -p`, `$ATELIER_AUTO`) `AskUserQuestion` would hang the session: print the diff plus a one-line recommendation to re-run `/atelier:update` interactively (or with `--yes`, if the operator has already told you to skip confirmation for this run), and stop.
 
+## Managed autoMode rule confirmation (user-level, #456)
+
+Claude Code reads `autoMode` only from user-level settings, so atelier ships its gate-run classifier rule as `templates/automode.user.json` and syncs it into `$ATELIER_CONFIG_DIR/settings.json`. It is written **only with the operator's explicit OK**. When the helper's output contains `autoMode rule NOT applied` (it prints the pending entry diff just above it):
+
+1. Show the operator the entry diff exactly as printed (`+` added, `~` replaced, `-` removed). Explain in one line that this adds a classifier rule to their own user settings, that their other `autoMode` entries are preserved, and that they can opt out of a managed entry later by deleting its `[atelier-managed:...]` marker.
+2. Ask with `AskUserQuestion` (two options: apply / keep current).
+3. On **apply**: run `atelier-update --apply-automode` (a no-op update plus the apply) and pass its output through.
+4. On **keep current**: do nothing; tell the operator in one line that the rule was not applied and that `/atelier:update` offers it again next time.
+
+In non-interactive runs (`claude -p`, `$ATELIER_AUTO`) never apply it: print the diff plus the one-line instruction to run `/atelier:update` interactively, and stop. `--yes` never applies this rule.
+
 ## Phase 2 — Post-update notes
 
 If the helper returned 0 and **something was applied** (not `--dry-run`):

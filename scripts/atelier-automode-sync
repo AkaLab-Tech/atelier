@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+#
+# atelier-automode-sync — keep atelier's managed `autoMode.allow` entries in
+# the user-level settings file ($ATELIER_CONFIG_DIR/settings.json) in sync
+# with templates/automode.user.json (#456).
+#
+# Why user level: Claude Code reads `autoMode` only from user settings,
+# managed settings and --settings — never from a project's
+# .claude/settings.json — so the gate-run classifier rule (#451) has to live
+# in the operator's own settings file to have any effect.
+#
+# READ-ONLY BY DEFAULT. Without --apply the script only prints the diff of
+# the managed entries and exits 1 (out of sync) or 0 (in sync). It writes
+# ONLY with an explicit --apply, which callers pass only after the operator
+# said yes (install.sh y/N prompt, /atelier:update confirmation).
+#
+# Managed entries carry a marker prefix `[atelier-managed:<id>] `. The merge:
+#   - .autoMode.allow absent  -> ["$defaults", <managed...>] (never without
+#                                "$defaults": that would replace the built-in
+#                                classifier rules)
+#   - otherwise               -> marked entries are updated IN PLACE, marked
+#                                entries with no current counterpart are
+#                                dropped, new managed entries are appended;
+#                                every other entry (including "$defaults")
+#                                keeps its text and position. No "$defaults"
+#                                is added to an array that lacks one.
+#   - no other autoMode.* key and no other top-level key is touched.
+# To take ownership of an entry, delete its `[atelier-managed:...]` marker.
+#
+# Usage:
+#   atelier-automode-sync [--apply] [--template <path>] [--config-dir <dir>]
+#   atelier-automode-sync --help
+#
+# Exit codes:
+#   0  in sync (or applied successfully, or target is invalid JSON — warned
+#      and left untouched)
+#   1  not in sync (read-only mode; diff printed)
+#   2  error (template missing/invalid, jq missing, write failure)
+
+set -euo pipefail
+
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+die() { printf '!!  ERROR: %s\n' "$*" >&2; exit 2; }
+warn() { printf '!!  %s\n' "$*" >&2; }
+
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} — sync atelier-managed autoMode.allow entries into the user-level settings
+
+USAGE:
+  ${SCRIPT_NAME} [--apply] [--quiet] [--template <path>] [--config-dir <dir>]
+  ${SCRIPT_NAME} --help
+
+OPTIONS:
+  --apply              Write the merge. Without it the script is read-only.
+  --quiet              Omit the read-only footer line (for callers that print their own).
+  --template <path>    Managed entries source (default: <plugin>/templates/automode.user.json).
+  --config-dir <dir>   Target config dir (default: \$ATELIER_CONFIG_DIR or ~/.claude-work).
+  --help, -h           Show this help.
+
+EXIT CODES:
+  0 in sync / applied    1 not in sync (read-only)    2 error
+EOF
+}
+
+APPLY=false
+QUIET=false
+TEMPLATE=""
+CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --apply)        APPLY=true; shift ;;
+    --quiet)        QUIET=true; shift ;;
+    --template)     [ -n "${2:-}" ] || die "--template requires a path"; TEMPLATE="$2"; shift 2 ;;
+    --template=*)   TEMPLATE="${1#--template=}"; shift ;;
+    --config-dir)   [ -n "${2:-}" ] || die "--config-dir requires a path"; CONFIG_DIR="$2"; shift 2 ;;
+    --config-dir=*) CONFIG_DIR="${1#--config-dir=}"; shift ;;
+    --help|-h)      usage; exit 0 ;;
+    *)              die "unknown arg: $1 (run --help for usage)" ;;
+  esac
+done
+
+command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
+[ -n "$TEMPLATE" ] || TEMPLATE="$SCRIPT_DIR/../templates/automode.user.json"
+[ -f "$TEMPLATE" ] || die "template not found: $TEMPLATE"
+jq -e '(.autoMode.allow | type) == "array"' "$TEMPLATE" >/dev/null 2>&1 \
+  || die "template has no .autoMode.allow array: $TEMPLATE"
+
+TARGET="$CONFIG_DIR/settings.json"
+EXISTING="{}"
+if [ -f "$TARGET" ]; then
+  EXISTING="$(cat "$TARGET")"
+  if ! printf '%s' "$EXISTING" | jq empty >/dev/null 2>&1; then
+    warn "$TARGET is not valid JSON — leaving alone (operator must repair manually)"
+    exit 0
+  fi
+  if ! printf '%s' "$EXISTING" | jq -e '(.autoMode.allow // []) | type == "array"' >/dev/null 2>&1; then
+    warn "$TARGET has a non-array autoMode.allow — leaving alone"
+    exit 0
+  fi
+fi
+
+MANAGED="$(jq -c '.autoMode.allow' "$TEMPLATE")"
+
+# shellcheck disable=SC2016  # jq program, not shell
+JQ_DEFS='
+  def ismanaged: type == "string" and startswith("[atelier-managed:");
+  def mid: sub("^\\[atelier-managed:(?<id>[^\\]]*)\\].*"; "\(.id)");
+'
+
+# shellcheck disable=SC2016
+JQ_MERGE="$JQ_DEFS"'
+  ($m | map(select(ismanaged)) | map({key: mid, value: .}) | from_entries) as $mm
+  | (.autoMode.allow // null) as $cur
+  | if $cur == null then
+      .autoMode = ((.autoMode // {}) | .allow = (["$defaults"] + $m))
+    else
+      ($cur | map(select(ismanaged) | mid)) as $have
+      | .autoMode.allow = (
+          ($cur | map(if ismanaged then ($mm[mid] // empty) else . end))
+          + ($m | map(select(ismanaged and ((mid as $i | $have | index($i)) == null))))
+        )
+    end'
+
+MERGED="$(printf '%s' "$EXISTING" | jq --argjson m "$MANAGED" "$JQ_MERGE")"
+
+if [ "$(printf '%s' "$EXISTING" | jq -S -c .)" = "$(printf '%s' "$MERGED" | jq -S -c .)" ] && [ -f "$TARGET" ]; then
+  printf 'autoMode managed entries already in sync in %s\n' "$TARGET"
+  exit 0
+fi
+
+# Human-readable diff of the managed entries (added / replaced / removed).
+# shellcheck disable=SC2016
+DIFF_PROG="$JQ_DEFS"'
+  def entries: map(select(ismanaged)) | map({key: mid, value: .}) | from_entries;
+  def body: sub("^\\[atelier-managed:[^\\]]*\\] *"; "");
+  ($old.autoMode.allow // [] | entries) as $c | ($m | entries) as $w
+  | ([$w | to_entries[] | select($c[.key] == null) | "+ [" + .key + "] " + (.value | body)]
+   + [$w | to_entries[] | select($c[.key] != null and $c[.key] != .value) | "~ [" + .key + "] " + (.value | body)]
+   + [$c | to_entries[] | select($w[.key] == null) | "- [" + .key + "]"])
+  | .[]'
+printf 'autoMode.allow managed-entry changes for %s:\n' "$TARGET"
+jq -nr --argjson m "$MANAGED" --argjson old "$EXISTING" "$DIFF_PROG" | sed 's/^/  /'
+
+if ! $APPLY; then
+  $QUIET || printf 'Read-only: nothing written. Re-run with --apply (after the operator confirms) to write it.\n'
+  exit 1
+fi
+
+mkdir -p "$CONFIG_DIR"
+TMP="$(mktemp "${TARGET}.atelier.XXXXXX")" || die "could not create temp file next to $TARGET"
+if printf '%s\n' "$MERGED" > "$TMP" && mv "$TMP" "$TARGET"; then
+  printf 'Applied: managed autoMode.allow entries written to %s\n' "$TARGET"
+else
+  rm -f "$TMP"
+  die "failed to write $TARGET"
+fi
+exit 0

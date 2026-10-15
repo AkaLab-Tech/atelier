@@ -72,6 +72,8 @@ CACHE="$CFG/plugins/cache/akalab-tech/atelier/0.2.0"
 mkdir -p "$CACHE/scripts" "$CACHE/templates" "$CACHE/.claude-plugin" "$CFG/plugins"
 cp "$UPDATE" "$CACHE/scripts/atelier-update"
 cp "$INSTALL" "$CACHE/install.sh"
+cp "$REPO_ROOT/scripts/atelier-automode-sync" "$CACHE/scripts/atelier-automode-sync"
+cp "$REPO_ROOT/templates/automode.user.json" "$CACHE/templates/automode.user.json"
 printf '#!/usr/bin/env bash\necho foo-v2\n' > "$CACHE/scripts/atelier-foo"
 chmod +x "$CACHE/scripts/"*
 printf '{ "name": "atelier", "version": "0.2.0" }\n' > "$CACHE/.claude-plugin/plugin.json"
@@ -101,6 +103,13 @@ chmod +x "$SHIM_BIN/claude"
 run_update() {
   HOME="$HOME_DIR" ATELIER_CONFIG_DIR="$CFG" ATELIER_RUNTIME_DIR="$RT" \
     FAKE_CLAUDE_STATE="$STATE" SHELL=/bin/zsh NO_COLOR=1 \
+    PATH="$SHIM_BIN:$PATH" "$BIN/atelier-update" "$@" 2>&1 </dev/null
+}
+# Same, but ATELIER_TEST_FORCE_TTY=1 and the y/N answer ($1) on stdin (#456).
+run_update_tty() {
+  local answer="$1"; shift
+  printf '%s\n' "$answer" | HOME="$HOME_DIR" ATELIER_CONFIG_DIR="$CFG" ATELIER_RUNTIME_DIR="$RT" \
+    FAKE_CLAUDE_STATE="$STATE" SHELL=/bin/zsh NO_COLOR=1 ATELIER_TEST_FORCE_TTY=1 \
     PATH="$SHIM_BIN:$PATH" "$BIN/atelier-update" "$@" 2>&1
 }
 
@@ -206,6 +215,80 @@ rc3=$?
 printf '%s' "$out3" | grep -q 'resynced' \
   && pass "reports the resync" \
   || fail "no resync report (out: $out3)"
+
+# ---------------------------------------------------------------------------
+# Group 5 (#456): the managed autoMode rule reaches $CFG/settings.json ONLY
+# with the operator's explicit OK. Groups 2-4 ran without one (stdin
+# /dev/null, no flag) and must not have written it.
+# ---------------------------------------------------------------------------
+MANAGED_MARK='[atelier-managed:gate-runs]'
+if [ -f "$CFG/settings.json" ] && jq -e '.autoMode' "$CFG/settings.json" >/dev/null 2>&1; then
+  fail "autoMode written by a non-interactive update (settings: $(cat "$CFG/settings.json"))"
+else
+  pass "non-interactive updates (no flag, no TTY) never write autoMode"
+fi
+printf '%s' "$out1" | grep -q 'autoMode rule NOT applied' \
+  && pass "managed update reports the autoMode rule was NOT applied" || fail "no NOT-applied notice (out: $out1)"
+printf '%s' "$out1" | grep -qF '+ [gate-runs]' \
+  && pass "managed path shows the managed-entry diff" || fail "no managed-entry diff (out: $out1)"
+printf '%s' "$out1" | grep -q 'atelier-update --apply-automode' \
+  && pass "NOT-applied notice says how to apply later" || fail "no apply-later hint"
+
+# --yes never applies.
+out5y="$(run_update --yes)"
+if jq -e '.autoMode' "$CFG/settings.json" >/dev/null 2>&1; then
+  fail "--yes applied the autoMode rule (out: $out5y)"
+else
+  pass "--yes never applies the autoMode rule"
+fi
+
+# --dry-run never evaluates or applies it.
+out5d="$(run_update --dry-run --apply-automode)"
+if jq -e '.autoMode' "$CFG/settings.json" >/dev/null 2>&1; then
+  fail "--dry-run --apply-automode wrote autoMode"
+else
+  pass "--dry-run never applies, even with --apply-automode"
+fi
+printf '%s' "$out5d" | grep -qF '+ [gate-runs]' \
+  && fail "--dry-run printed the autoMode diff" || pass "--dry-run prints no autoMode diff"
+
+# Declined confirmation: nothing written.
+out5n="$(run_update_tty n)"
+if jq -e '.autoMode' "$CFG/settings.json" >/dev/null 2>&1; then
+  fail "declined confirmation still wrote autoMode"
+else
+  pass "declined (n) confirmation does not apply"
+fi
+printf '%s' "$out5n" | grep -q '\[y/N\]' && printf '%s' "$out5n" | grep -q 'autoMode rule NOT applied' \
+  && pass "declined run prompted and reported NOT applied" || fail "declined output (out: $out5n)"
+
+# Accepted confirmation: applied with $defaults first, operator content kept.
+jq '. + {model: "opus"}' "$CFG/settings.json" > "$CFG/settings.json.tmp" && mv "$CFG/settings.json.tmp" "$CFG/settings.json"
+out5y2="$(run_update_tty y)"
+[ "$(jq -r '.autoMode.allow[0]' "$CFG/settings.json")" = '$defaults' ] \
+  && [ "$(jq -r '.autoMode.allow[1]' "$CFG/settings.json" | cut -c1-27)" = "$MANAGED_MARK" ] \
+  && [ "$(jq '.autoMode.allow | length' "$CFG/settings.json")" -eq 2 ] \
+  && pass "accepted (y) confirmation applies: [\"\$defaults\", managed]" || fail "y did not apply (settings: $(cat "$CFG/settings.json"), out: $out5y2)"
+[ "$(jq -r '.model' "$CFG/settings.json")" = "opus" ] \
+  && pass "other settings keys preserved when applying" || fail "model key lost"
+printf '%s' "$out5y2" | grep -q 'autoMode rule applied' \
+  && pass "reports the rule was applied" || fail "no applied notice (out: $out5y2)"
+
+# Once in sync the step is silent (no diff, no prompt).
+out5s="$(run_update_tty y)"
+printf '%s' "$out5s" | grep -q 'autoMode' \
+  && fail "in-sync run still talks about autoMode (out: $out5s)" || pass "in-sync run prints nothing about autoMode"
+
+# --apply-automode applies without any prompt (slash-command path).
+jq 'del(.autoMode)' "$CFG/settings.json" > "$CFG/settings.json.tmp" && mv "$CFG/settings.json.tmp" "$CFG/settings.json"
+out5f="$(run_update --apply-automode)"
+[ "$(jq '.autoMode.allow | length' "$CFG/settings.json" 2>/dev/null)" = "2" ] \
+  && pass "--apply-automode applies without a TTY" || fail "--apply-automode did not apply (out: $out5f)"
+if ls "$CFG"/settings.json.atelier.* >/dev/null 2>&1; then
+  fail "temp files left next to settings.json"
+else
+  pass "no temp files left behind"
+fi
 
 echo ""
 if [ "$fails" -eq 0 ]; then

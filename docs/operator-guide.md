@@ -398,6 +398,14 @@ Since v0.8.0, atelier-launched Claude Code sessions run with Claude Code's nativ
 
 The setting lives in `~/.claude-work/settings.json` (the atelier config dir, not your personal `~/.claude/`). Your non-atelier `claude` sessions are unaffected. `atelier-doctor` verifies the setting is in place; `atelier-doctor --fix` enables it if missing.
 
+#### atelier's own `autoMode.allow` entry
+
+Auto-mode has its own prose rules under `autoMode.allow` in your user settings. atelier adds one entry there so the classifier lets a project's test scripts (including browser/Storybook runs) proceed inside task worktrees. Things to know:
+
+- **It is only written with your OK.** `/atelier:update` shows the entry and asks; `install.sh` asks `[y/N]` when it has a terminal. Non-interactive runs never write it. `atelier-doctor` only reports it as missing or stale and points you at `/atelier:update`.
+- **Your own entries are never touched.** atelier-managed entries start with `[atelier-managed:<id>]`; everything else in `autoMode.allow` (including `"$defaults"`) keeps its text and position. A brand-new list starts with `"$defaults"` so Claude Code's built-in rules stay in force.
+- **To opt out of a managed entry,** delete its `[atelier-managed:...]` marker (keep the text if you want to own it) or remove the entry. Without the marker atelier no longer manages it; remove the entry entirely and decline the `/atelier:update` offer.
+
 Full design rationale + the empirical validation that drove the adoption: [docs/research/permission-layer-3.md](research/permission-layer-3.md).
 
 ### Optional: a second opinion on high-risk commands (semantic risk judge)
