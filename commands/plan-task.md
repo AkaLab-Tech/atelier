@@ -60,6 +60,9 @@ Invoke the `planner` agent via the `Task` tool. The briefing must include:
 - `task_id`: the parsed id (with `#` prefix).
 - `project_root`: the absolute path resolved in Phase 1.
 - `entry_point`: `plan-task`.
+- **Scope wording (#457)** — the planner brief follows the same Scope wording rule as `/atelier:next-task` §8: facts only, domain named plainly, no discussion of the permission system, no "you may" grants.
+
+**Denied dispatch (#457).** If the `Task` dispatch of the planner is denied by the auto-mode classifier, stop with `held: orchestrator dispatch denied (<tag verbatim>) — <id>` (planner dispatch). The brief is never reworded, split, or handed to another session. Interactive: the operator is asked once via `AskUserQuestion`, in this same session: re-dispatch the unchanged brief (recommended) / leave held. Only on the operator's own answer re-issue the identical brief, once; if it is denied again, stay held. Non-interactive: print the held line and stop.
 
 **Wait for it to return.** Under `planStorage=committed`/`local` the planner writes draft `.plan/<id>.md` file(s) (and, for an oversize task, rewrites the ROADMAP block into an epic via `task-decomposer`) — all as **uncommitted** working-tree changes. Under `planStorage=resident` the planner writes no file at all — it returns the draft plan markdown inline as each unit's `content` field (see `agents/planner.md`'s Output); there is nothing in the working tree to diff or discard until Phase 4 calls `setPlan`.
 

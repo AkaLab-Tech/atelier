@@ -282,6 +282,14 @@ gh pr merge <N> --squash --delete-branch
 
 **Long-term fix (outside atelier's control):** the classifier would need a notion of a second, independent actor identity so an agent-controlled reviewer can legitimately approve an agent-controlled PR; that is a Claude Code harness capability.
 
+### `task-orchestrator` (or planner) dispatch denied with `[Auto-Mode Bypass]`
+
+**Symptom:** `/atelier:next-task`, `/atelier:resume-task` or `/atelier:plan-task` stops with `held: orchestrator dispatch denied ([Auto-Mode Bypass]) — <id>` before any agent ran. Seen on briefs for payment-domain tasks and on tasks with no payment content at all (#457).
+
+**Cause (unverified hypothesis):** the classifier reacts to briefs that talk about the permission system itself (deny rules, "if denied" instructions, explicit "you may / you may only" grants) or that fence off a sensitive area in guardrail terms; briefs that describe scope as files and behaviours were accepted. This is inferred from comparing preserved denied and accepted briefs, not confirmed.
+
+**Fix:** the dispatch is held, not retried. The command asks you once, in the same session, whether to re-dispatch the unchanged brief, leave it held, or abandon the task. An already-denied brief is never reworded. For new briefs, follow the Scope wording rule in `commands/next-task.md` §8: facts only, domain named plainly, no discussion of the permission system. Report the denial to Claude Code as feedback via `/feedback`, quoting the denial tag and the brief path. See `operator-rules.md` § "Multi-session setups (plan + worker sessions)".
+
 ### Worker session asks you to paste a phrase
 
 **Symptom:** in a multi-terminal setup, a worker session asks you to type or paste a sentence (an "authorization phrase") into its terminal before it will review or merge a PR.

@@ -201,6 +201,10 @@ For **interrupted-resume**, the budget continues — `.task-log/` may have N exi
 
 For **PR-open-resume**, the retry budget is not consulted — no specialist runs. If `reviewer` returns `request-changes`, the orchestrator surfaces the findings and leaves the PR open (the operator re-plans a fix), exactly as in the standard post-PR flow.
 
+**Scope wording (#457).** The orchestrator prompt states scope as facts under the same Scope wording rule as `/atelier:next-task` §8: positive file/behaviour scope, domain named plainly, no discussion of the permission system, no "you may" grants, resource limits as setup facts.
+
+**Denied dispatch (#457).** If the `Task` dispatch of `task-orchestrator` is denied by the auto-mode classifier, stop with `held: orchestrator dispatch denied (<tag verbatim>) — <id>`. Keep the worktree and the board/`IN_PROGRESS` state as they are. The brief is never reworded, split, or handed to another session. Interactive: the operator is asked once via `AskUserQuestion`, in this same session: re-dispatch the unchanged brief (recommended) / leave held / abandon via `/atelier:abandon-task`. Only on the operator's own answer re-issue the identical brief, once; if it is denied again, stay held. Non-interactive: print the held line and stop.
+
 ## Output
 
 End the command with a single status block:
