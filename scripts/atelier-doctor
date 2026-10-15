@@ -91,6 +91,7 @@ ATELIER_RUNTIME_BASE="${ATELIER_RUNTIME_DIR:-$HOME/.local/share/atelier}"
 OK="✓"
 FAIL="✗"
 SKIP="–"
+WARN="!"
 
 # Sections accumulated as we go; printed at the end so the final report
 # is one coherent block instead of interleaved across checks.
@@ -1240,6 +1241,65 @@ atelier-migrate-task-ids <project> --apply   # rewrite ROADMAP.md + IN_PROGRESS.
   fi
 }
 
+# #466: registry integrity — offline only (no network, no gh). Flags registered
+# paths that vanished from disk, and one git remote registered at 2+ paths (a
+# stale duplicate left by a moved/renamed checkout). Non-git roots (workspace
+# roots) are skipped silently. Never auto-fixes; never exits.
+check_project_registry() {
+  local pf="$ATELIER_CONFIG_DIR/projects.json"
+  [ -f "$pf" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local p url key ts ref n=0 problems=0
+  local -a keys=() paths=() stamps=()
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    n=$((n + 1))
+    if [ ! -d "$p" ]; then
+      problems=$((problems + 1))
+      push_host "$WARN registered project path missing on disk: $p"
+      push_fix_manual "atelier-remove-project $p --unregister-only   # drops the stale registry entry; nothing on disk to touch"
+      continue
+    fi
+    git -C "$p" rev-parse --git-dir >/dev/null 2>&1 || continue
+    url="$(git -C "$p" remote get-url origin 2>/dev/null || true)"
+    [ -n "$url" ] || continue
+    key="$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]' \
+      | sed -E 's#^(https?|ssh|git)://([^@/]+@)?##; s#^[^@/]+@##; s#^github\.com[:/]#github.com/#; s#\.git$##; s#/+$##')"
+    ts=0
+    for ref in refs/remotes/origin/HEAD refs/heads/main refs/heads/master HEAD; do
+      if git -C "$p" rev-parse --verify -q "$ref" >/dev/null 2>&1; then
+        ts="$(git -C "$p" log -1 --format=%ct "$ref" 2>/dev/null || echo 0)"
+        break
+      fi
+    done
+    keys+=("$key"); paths+=("$p"); stamps+=("${ts:-0}")
+  done < <(jq -r '.projects // {} | keys[]' "$pf" 2>/dev/null)
+
+  local i j seen=" " group_idx stale stale_ts
+  for ((i = 0; i < ${#keys[@]}; i++)); do
+    case "$seen" in *" ${keys[i]} "*) continue ;; esac
+    group_idx=("$i")
+    for ((j = i + 1; j < ${#keys[@]}; j++)); do
+      [ "${keys[j]}" = "${keys[i]}" ] && group_idx+=("$j")
+    done
+    [ ${#group_idx[@]} -ge 2 ] || continue
+    seen="$seen${keys[i]} "
+    problems=$((problems + 1))
+    stale="${paths[i]}"; stale_ts="${stamps[i]}"
+    for j in "${group_idx[@]}"; do
+      if [ "${stamps[j]}" -lt "$stale_ts" ]; then stale="${paths[j]}"; stale_ts="${stamps[j]}"; fi
+    done
+    local list=""
+    for j in "${group_idx[@]}"; do list="$list ${paths[j]}"; done
+    push_host "$WARN remote ${keys[i]} registered at ${#group_idx[@]} paths:$list — likely stale (older tip): $stale"
+    push_fix_manual "atelier-remove-project $stale --unregister-only   # keeps files on disk"
+  done
+
+  if [ "$problems" -eq 0 ]; then
+    push_host "$OK project registry consistent ($n registered, no duplicate remotes)"
+  fi
+}
+
 # ---------- main ----------
 #
 # Args were parsed at the top of the script into $RUN_FIXES; --help also
@@ -1265,6 +1325,7 @@ check_coolify
 check_vercel
 check_neon
 check_workspaces
+check_project_registry
 check_atelier_config_dir
 check_atelier_claude_auth
 check_git_identity

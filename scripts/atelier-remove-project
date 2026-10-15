@@ -22,6 +22,13 @@
 #     - Delete <path>/.claude/CLAUDE.md (atelier-managed even in default).
 #   - Requires --yes when stdin is not a TTY to skip the confirmation.
 #
+# Unregister-only mode (--unregister-only):
+#   - Removes ONLY the registry key from $ATELIER_CONFIG_DIR/projects.json.
+#     No file on disk is touched (settings.json, .atelier.json, tracking
+#     files, .gitignore, .npmrc, .claude/CLAUDE.md all stay). Use it to
+#     retire a duplicate/stale registration of a project that stays in use.
+#   - Cannot be combined with --purge.
+#
 # Out of scope (intentionally not touched):
 #   - Per-task worktrees under <path>-worktrees/. The script warns when
 #     they exist but does not remove them. The operator uses `git wt rm`
@@ -30,7 +37,7 @@
 #     to do with the deletions, whether to stage them, etc.).
 #
 # Usage:
-#   atelier-remove-project <path> [--purge] [--yes|-y]
+#   atelier-remove-project <path> [--purge | --unregister-only] [--yes|-y]
 #   atelier-remove-project --help
 #
 # Exit codes:
@@ -72,6 +79,10 @@ OPTIONS:
                    atelier-added pnpm guardrails from .npmrc (preserving
                    other entries), and delete .claude/CLAUDE.md. Requires
                    --yes in non-interactive mode.
+  --unregister-only
+                   Remove ONLY the registry entry; delete and modify nothing
+                   on disk. For retiring a duplicate/stale registration whose
+                   files are still in use. Cannot be combined with --purge.
   --yes, -y        Non-interactive mode. Skip the confirmation prompt.
                    Required with --purge in non-TTY contexts.
   --help, -h       Show this help and exit.
@@ -86,12 +97,14 @@ EOF
 # ---------- arg parse ----------
 PROJECT_PATH_ARG=""
 PURGE=false
+UNREGISTER_ONLY=false
 NONINTERACTIVE=false
 [ -n "${ATELIER_AUTO:-}" ] && NONINTERACTIVE=true
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --purge)    PURGE=true; shift ;;
+    --unregister-only) UNREGISTER_ONLY=true; shift ;;
     --yes|-y)   NONINTERACTIVE=true; shift ;;
     --help|-h)  usage; exit 0 ;;
     --)         shift; break ;;
@@ -103,6 +116,9 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$PROJECT_PATH_ARG" ] || die "<project-path> is required (run --help for usage)"
+if $PURGE && $UNREGISTER_ONLY; then
+  die "--purge and --unregister-only cannot be combined (--purge deletes files; --unregister-only touches only the registry)"
+fi
 
 # ---------- resolve config ----------
 ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
@@ -129,7 +145,11 @@ fi
 
 log "atelier-remove-project ${VERSION}"
 sublog "project: $PROJECT"
-sublog "mode:    $($PURGE && echo 'purge (tracking + .gitignore + .npmrc + CLAUDE.md)' || echo 'default (preserve operator content)')"
+if $UNREGISTER_ONLY; then
+  sublog "mode:    unregister-only (registry entry only; no file touched)"
+else
+  sublog "mode:    $($PURGE && echo 'purge (tracking + .gitignore + .npmrc + CLAUDE.md)' || echo 'default (preserve operator content)')"
+fi
 
 # ---------- check registry ----------
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -146,6 +166,23 @@ declare -a TO_DELETE=()
 declare -a PRESERVED=()
 add_delete() { [ -e "$1" ] && TO_DELETE+=("$1") || PRESERVED+=("$1 (already absent)"); }
 
+if $UNREGISTER_ONLY; then
+  # Nothing is deleted: every atelier file on disk is listed as preserved.
+  add_preserved() { [ -e "$1" ] && PRESERVED+=("$1 — preserved (--unregister-only)") || true; }
+  add_preserved "$PROJECT/.claude/settings.json"
+  shopt -s nullglob
+  for bak in "$PROJECT/.claude/settings.json.bak."*; do
+    add_preserved "$bak"
+  done
+  shopt -u nullglob
+  add_preserved "$PROJECT/.atelier.json"
+  add_preserved "$PROJECT/.claude/CLAUDE.md"
+  add_preserved "$PROJECT/ROADMAP.md"
+  add_preserved "$PROJECT/IN_PROGRESS.md"
+  add_preserved "$PROJECT/HISTORY.md"
+  add_preserved "$PROJECT/.gitignore"
+  add_preserved "$PROJECT/.npmrc"
+else
 # Always-delete files
 add_delete "$PROJECT/.claude/settings.json"
 # .bak.* may be multiple — glob inside an enabling shopt scope.
@@ -155,6 +192,7 @@ for bak in "$PROJECT/.claude/settings.json.bak."*; do
 done
 shopt -u nullglob
 add_delete "$PROJECT/.atelier.json"
+fi
 
 # Purge-only files
 if $PURGE; then
@@ -165,7 +203,7 @@ if $PURGE; then
 fi
 
 # Preserved-by-policy (always, default mode)
-if ! $PURGE; then
+if ! $PURGE && ! $UNREGISTER_ONLY; then
   [ -f "$PROJECT/.claude/CLAUDE.md" ] && PRESERVED+=("$PROJECT/.claude/CLAUDE.md (preserved — operator-owned)")
   [ -f "$PROJECT/ROADMAP.md" ]        && PRESERVED+=("$PROJECT/ROADMAP.md (preserved — operator-owned)")
   [ -f "$PROJECT/IN_PROGRESS.md" ]    && PRESERVED+=("$PROJECT/IN_PROGRESS.md (preserved — operator-owned)")
@@ -267,5 +305,9 @@ sublog "unregistered from $CONFIG_FILE"
 # ---------- report ----------
 echo ""
 ok "$PROJECT removed from atelier"
-sublog "to reconfigure later: \`atelier-setup-project $PROJECT\`"
+if $UNREGISTER_ONLY; then
+  sublog "files on disk were not touched; to register again: \`atelier-setup-project $PROJECT\`"
+else
+  sublog "to reconfigure later: \`atelier-setup-project $PROJECT\`"
+fi
 exit 0

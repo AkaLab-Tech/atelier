@@ -1096,6 +1096,18 @@ step_decision_policy() {
 
 # ---------- step 4: ROADMAP.md / IN_PROGRESS.md / HISTORY.md ----------
 step_roadmap_files() {
+  # Tracking stubs only belong to the `files` backend. An existing
+  # .roadmap.json naming another backend means the board lives elsewhere;
+  # never create (or touch) the markdown files in that case (#466).
+  local backend
+  backend="$(detect_backend_status)"
+  if [ "$backend" != "files" ]; then
+    ROADMAP_STATUS="skipped (backend: $backend)"
+    INPROGRESS_STATUS="skipped (backend: $backend)"
+    HISTORY_STATUS="skipped (backend: $backend)"
+    return
+  fi
+
   if [ ! -f "$PROJECT/ROADMAP.md" ]; then
     cat > "$PROJECT/ROADMAP.md" <<EOF
 # Roadmap — $PROJECT_NAME
@@ -1172,6 +1184,12 @@ step_npmrc() {
   local needed=("ignore-scripts=true" "minimum-release-age=10080" "audit-level=moderate")
 
   if [ ! -f "$target" ]; then
+    # Guardrails are written once the project has a package.json (#466);
+    # a re-run of setup (or /safe-install) picks them up afterwards.
+    if [ ! -f "$PROJECT/package.json" ]; then
+      NPMRC_STATUS="skipped (no package.json)"
+      return
+    fi
     {
       echo "# atelier supply-chain guardrails (PLAN.md §4) — managed by /setup-project"
       printf '%s\n' "${needed[@]}"

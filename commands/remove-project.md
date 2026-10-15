@@ -1,6 +1,6 @@
 ---
-description: Deconfigure the current project from atelier. Default mode preserves operator content (ROADMAP/IN_PROGRESS/HISTORY, .claude/CLAUDE.md, .gitignore, .npmrc); `--purge` extends the cleanup to those files (with surgical strip of atelier's exact entries in .gitignore/.npmrc). Wraps the `atelier-remove-project` host-OS helper.
-argument-hint: "[--purge] [--yes|-y]"
+description: Deconfigure the current project from atelier. Default mode preserves operator content (ROADMAP/IN_PROGRESS/HISTORY, .claude/CLAUDE.md, .gitignore, .npmrc); `--purge` extends the cleanup to those files (with surgical strip of atelier's exact entries in .gitignore/.npmrc); `--unregister-only` drops just the registry entry and touches no file. Wraps the `atelier-remove-project` host-OS helper.
+argument-hint: "[--purge | --unregister-only] [--yes|-y] [path]"
 allowed-tools: Bash(atelier-remove-project:*), Bash(pwd)
 ---
 
@@ -24,6 +24,16 @@ atelier-remove-project "$ATELIER_REMOVE_TARGET" $ARGUMENTS
 ```
 
 4. **Pass the binary's stdout verbatim** to the operator. The binary's report already lists what was deleted, what was preserved, and the unregister status.
+
+## Retire a duplicate or stale registration
+
+When the same repo is registered under two paths (e.g. an old checkout the doctor flags as "likely stale"), or a registered path no longer exists, drop only that registry entry and keep every file on disk:
+
+```bash
+atelier-remove-project <stale-path> --unregister-only
+```
+
+`--unregister-only` deletes and modifies nothing: every atelier file (`.claude/settings.json`, `.atelier.json`, tracking files, `.gitignore`, `.npmrc`, `.claude/CLAUDE.md`) is listed as preserved and only the `projects.json` key is removed. It cannot be combined with `--purge`. The confirmation / `--yes` contract is unchanged, and this command never adds `--yes` on its own.
 
 ## Stop rule
 
