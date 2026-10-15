@@ -1703,6 +1703,10 @@ phase_c_1_setup_project_helper() {
   # task-orchestrator runs it before /validate and before authoring dispatches.
   _phase_c_1_symlink_helper atelier-diff-scope-check
 
+  # #490: versioned machine-wide CPU turn (port of the loose cpu-slot) with a
+  # bounded --wait; shares /tmp/cpu-slot.lock with the loose script.
+  _phase_c_1_symlink_helper atelier-cpu-slot
+
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it
   # yet. Warn rather than fail.
