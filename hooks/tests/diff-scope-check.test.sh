@@ -237,6 +237,26 @@ OUT=$("$CHECK" --worktree "$WT" --base nosuchbase --plan "$TMP/plan2.md" 2>/dev/
 expect "missing origin/<base> exits 2" 2 ''
 printf '%s\n' "$OUT" | grep -q 'result=pass' && fail "error exit must never print result=pass" || pass "error exit never prints result=pass"
 
+# Flag with no/empty value must exit 2 (regression: trailing --plan looped
+# forever). Hang-guarded so a regression fails instead of hanging CI.
+guarded() { # args... ; a timeout yields rc 124 (timeout) or 142 (perl alarm)
+  if command -v timeout >/dev/null 2>&1; then timeout 10 bash "$CHECK" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout 10 bash "$CHECK" "$@"
+  else perl -e 'alarm 10; exec @ARGV' bash "$CHECK" "$@"; fi
+}
+OUT=$(guarded --worktree "$WT" --base main --plan 2>&1); RC=$?
+expect "trailing --plan without value exits 2 (no hang)" 2 ''
+printf '%s\n' "$OUT" | grep -q 'result=pass' && fail "trailing --plan must not print result=pass" || pass "trailing --plan never prints result=pass"
+OUT=$(guarded --worktree "$WT" --base main --plan "" 2>&1); RC=$?
+expect "empty --plan value exits 2" 2 ''
+printf '%s\n' "$OUT" | grep -q 'result=pass' && fail "empty --plan must not print result=pass" || pass "empty --plan never prints result=pass"
+OUT=$(guarded --worktree "$WT" --plan "$TMP/plan2.md" --base 2>&1); RC=$?
+expect "trailing --base without value exits 2 (no hang)" 2 ''
+printf '%s\n' "$OUT" | grep -q 'result=pass' && fail "trailing --base must not print result=pass" || pass "trailing --base never prints result=pass"
+OUT=$(guarded --base main --plan "$TMP/plan2.md" --worktree 2>&1); RC=$?
+expect "trailing --worktree without value exits 2 (no hang)" 2 ''
+printf '%s\n' "$OUT" | grep -q 'result=pass' && fail "trailing --worktree must not print result=pass" || pass "trailing --worktree never prints result=pass"
+
 echo "== prose contract"
 
 has() { # <file> <fixed phrase> <name>
