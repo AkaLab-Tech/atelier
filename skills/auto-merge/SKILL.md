@@ -67,13 +67,14 @@ This returns an array of check objects (with `conclusion` and `status` fields). 
 
 If the array is **empty**, it is never a pass by itself: GitHub registers check-runs asynchronously after a push, so an empty rollup right after a push usually means "CI has not reported yet". Decide with two probes, run from the project root:
 
-- **Workflows on the base branch** (local, permission-free): `git fetch origin <baseRefName>` then `git ls-tree -d --name-only origin/<baseRefName> .github/workflows`. Non-empty output → the repo has CI. Empty output → no workflows. Any git error → treat as "has CI" (fail closed).
+- **CI coverage of the base branch** (local, permission-free): `atelier-ci-coverage . <baseRefName>` prints `coverage=<covered|uncovered|unknown|none>` plus a `reason=` line. It reads the workflow files on `origin/<baseRefName>` and checks whether any of them triggers on pull requests into that base (an unfiltered `push` trigger also counts as covered, since it runs on the PR head commit; `push` limited to plain branch names does not; a workflow limited to `pull_request: branches: [main]` never runs for a PR into `stage`). Only a narrow, certain `on:` grammar is accepted; expressions, `workflow_call`/`workflow_run`, `branches-ignore`, path filters, `push` with `tags`/`paths`/`branches-ignore`, globs, anchors and anything unclassifiable give `unknown`. `covered` and `unknown` both mean "has CI" (fail closed); a git error, a missing helper or unparseable output is also `unknown`. `none` = no workflow files at all.
 - **Required status checks on the base branch**: query the rulesets / branch-protection read **only if that call is permitted** in the session. If the call is denied, prompts, or errors, the answer is "unknown" — never assume "none".
 
 Outcomes:
 
-1. Workflows present, or required checks present, or either probe could not be determined → **hold**: `held: CI not reported yet` (append `(could not determine required checks)` when the required-checks probe was the unknown one).
-2. Both probes say "none" (no workflows and no required checks) → guardrail 3 **passes vacuously**. Surface it in the report: `CI: no checks configured (no .github/workflows on <base>, no required checks): guardrail 3 passes vacuously`.
+1. Coverage `covered` or `unknown`, or required checks present, or the required-checks probe could not be determined → **hold**: `held: CI not reported yet` (append `(could not determine required checks)` when the required-checks probe was the unknown one).
+2. Coverage `uncovered` and no required checks → no CI will ever report on a PR into this base, so waiting is pointless: guardrail 3 **passes**. Surface it in the report: `CI: no workflow runs on PRs to <base> (<reason>), no required checks: guardrail 3 passes (no CI will report)`. When `.atelier.json` sets `autoMerge.uncoveredBaseCi` to `"hold"` (or to any value other than `"pass"`; absent means `"pass"`), this case ends terminally instead: `held: no CI runs on PRs to <base> — human merge required (autoMerge.uncoveredBaseCi: hold)` — a final state, never an endless wait.
+3. Coverage `none` and no required checks (no workflow files and no required checks) → guardrail 3 **passes vacuously**. Surface it in the report: `CI: no checks configured (no .github/workflows on <base>, no required checks): guardrail 3 passes vacuously`.
 
 → `held: CI not green (<N> check(s) failed | <N> still running)`.
 → `held: CI not reported yet` (empty rollup on a repo with CI, or CI presence could not be determined).

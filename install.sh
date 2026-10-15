@@ -1602,6 +1602,10 @@ phase_c_1_setup_project_helper() {
   # and by reviewer / auto-merge after the PR exists. Reads
   # <project>/.atelier.json or falls back to built-in defaults.
   _phase_c_1_symlink_helper atelier-pr-size-check
+  # #497: atelier-ci-coverage tells "CI not reported yet" from "no workflow
+  # runs on PRs into this base" (auto-merge guardrail 3, the orchestrator's
+  # pre-merge CI wait and /atelier:babysit-prs share this one probe).
+  _phase_c_1_symlink_helper atelier-ci-coverage
   # #45: atelier-branch-protection is the single source of truth for
   # branch-protection classification and application, shared by
   # atelier-setup-project and atelier-doctor. Both report by default;
@@ -2014,6 +2018,8 @@ TERMINAL HELPERS (run directly, no `atelier` prefix needed)
                                     atelier-remove-project for that)
   atelier-pr-size-check             Per-PR size budget check (used by
                                     pr-author + reviewer + auto-merge)
+  atelier-ci-coverage <root> <base> Do workflows run on PRs into <base>?
+                                    (auto-merge CI guardrail + babysit)
   atelier-diff-scope-check          Pre-review check for removals the
                                     plan does not name (orchestrator)
   atelier-measure-merge-rate        Sample N most-recently-merged PRs,
