@@ -314,6 +314,13 @@ OPTIONS:
                          only way to accept new permissions without a TTY
                          on stdin (e.g. from a slash command). Has no
                          effect when there is no pending permission change.
+  --apply-automode       Apply atelier's managed autoMode.allow entry
+                         (templates/automode.user.json) to the user-level
+                         \$ATELIER_CONFIG_DIR/settings.json. Pass it ONLY
+                         after the operator confirmed (the /atelier:update
+                         slash command does, via AskUserQuestion). Without
+                         it the update only shows the pending change; on a
+                         TTY it asks [y/N]. --yes never applies it (#456).
   --help, -h             Show this help and exit.
 
 EXIT CODES:
@@ -338,9 +345,11 @@ EOF
 PLUGIN_ROOT_FLAG=""
 DRY_RUN=false
 ASSUME_YES=false
+APPLY_AUTOMODE=false
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --apply-automode) APPLY_AUTOMODE=true; shift ;;
     --plugin-root)
       [ -n "${2:-}" ] || die "--plugin-root requires a value"
       PLUGIN_ROOT_FLAG="$2"; shift 2 ;;
@@ -549,6 +558,52 @@ managed_update() {
   exit 0
 }
 
+# ---------- managed autoMode rule (#456) ----------
+# Claude Code reads `autoMode` only from user-level settings, so atelier's
+# gate-run classifier rule lives in $ATELIER_CONFIG_DIR/settings.json, synced
+# from templates/automode.user.json by atelier-automode-sync. It is written
+# ONLY with the operator's explicit OK: --apply-automode (passed by the slash
+# command after its AskUserQuestion) or a y/N answer on a TTY. --yes and
+# non-interactive runs never apply it. Runs from an EXIT trap so every
+# successful exit path (updated, resynced, already up to date) shows it, and
+# never changes the script's exit status.
+# Test seam: ATELIER_TEST_FORCE_TTY=1 reads the y/N answer from stdin.
+automode_step() {
+  local rc=$?
+  trap - EXIT
+  { [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; } || return "$rc"
+  $DRY_RUN && return "$rc"
+  local cfg="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+  cfg="${cfg/#\~/$HOME}"
+  local sync="$PLUGIN_ROOT/scripts/atelier-automode-sync"
+  local tmpl="$PLUGIN_ROOT/templates/automode.user.json"
+  [ -x "$sync" ] && [ -f "$tmpl" ] || return "$rc"
+  local out srv=0
+  out="$("$sync" --quiet --template "$tmpl" --config-dir "$cfg" 2>&1)" || srv=$?
+  [ "$srv" -eq 1 ] || return "$rc"
+  echo ""
+  log "atelier's managed autoMode rule (user-level settings) differs from the shipped one"
+  printf '%s\n' "$out" | sed 's/^/    /'
+  local apply=false
+  if $APPLY_AUTOMODE; then
+    apply=true
+  elif [ "${ATELIER_TEST_FORCE_TTY:-}" = "1" ] || [ -t 0 ]; then
+    local reply=""
+    printf '    Apply this autoMode rule to %s/settings.json? [y/N] ' "$cfg"
+    IFS= read -r reply || reply=""
+    case "$reply" in y|Y|yes|YES) apply=true ;; esac
+  fi
+  if $apply; then
+    "$sync" --apply --template "$tmpl" --config-dir "$cfg" >/dev/null \
+      && ok "autoMode rule applied to $cfg/settings.json" \
+      || warn "autoMode rule was NOT written to $cfg/settings.json"
+  else
+    warn "autoMode rule NOT applied — it is written only with your explicit OK (not applied in non-interactive runs)."
+    sublog "apply later: /atelier:update (it asks first), or: atelier-update --apply-automode"
+  fi
+  return "$rc"
+}
+
 # ---------- dependency check ----------
 command -v git >/dev/null 2>&1 || die "git not found in PATH"
 command -v jq >/dev/null 2>&1 || die "jq not found in PATH"
@@ -562,6 +617,7 @@ PLUGIN_ROOT="$(resolve_plugin_root)"
 sublog "plugin-root: $PLUGIN_ROOT"
 
 UPDATE_MODE="$(detect_update_mode "$PLUGIN_ROOT")"
+trap automode_step EXIT
 if [ "$UPDATE_MODE" = "managed" ]; then
   # #39 F4 — cache-driven managed update: `claude plugin update` refreshes
   # the plugin cache, the new version is copied into $RUNTIME_BASE/<version>/

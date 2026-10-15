@@ -1,0 +1,7 @@
+{
+  "autoMode": {
+    "allow": [
+      "[atelier-managed:gate-runs] Running the project's own test scripts (pnpm test, pnpm exec vitest, pnpm exec playwright test, pnpm run test*) from inside an atelier task worktree (a directory under <project>-worktrees/) or the root of an atelier-registered project, including Storybook browser runs through vitest or Playwright, with a leading PW_CHROME_CHANNEL=chrome, CI=1 or CI=true environment assignment and no other environment assignment, is allowed. Never with dangerouslyDisableSandbox, and never outside an atelier task worktree or registered project root."
+    ]
+  }
+}

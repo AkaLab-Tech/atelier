@@ -2116,6 +2116,56 @@ phase_c_1_plugin_prefer_https() {
   sublog "set env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS = \"1\" in $target"
 }
 
+# #456: Claude Code reads `autoMode` only from user/managed settings, so the
+# gate-run classifier rule (#451) ships at user level
+# (templates/automode.user.json -> $ATELIER_CONFIG_DIR/settings.json). It is
+# written ONLY with the operator's explicit OK: show the diff, ask y/N on a
+# TTY, apply via `atelier-automode-sync --apply` on y. No TTY, --yes, or any
+# other answer => nothing is written; print how to apply it later.
+# Test seam: ATELIER_TEST_FORCE_TTY=1 takes the interactive branch (answer is
+# read from stdin) without a real terminal.
+phase_c_1_atelier_automode_allow() {
+  local sync="$ATELIER_SOURCE_ROOT/scripts/atelier-automode-sync"
+  local template="$ATELIER_SOURCE_ROOT/templates/automode.user.json"
+  if [ ! -x "$sync" ] || [ ! -f "$template" ]; then
+    step_skip "autoMode gate-run rule skipped (atelier-automode-sync or template not found under $ATELIER_SOURCE_ROOT)"
+    return 0
+  fi
+  local diff_out rc=0
+  diff_out="$("$sync" --quiet --template "$template" --config-dir "$ATELIER_CONFIG_DIR" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    step_skip "autoMode gate-run rule already in sync (or settings.json not editable)"
+    return 0
+  fi
+  if [ "$rc" -ne 1 ]; then
+    warn "could not evaluate the autoMode gate-run rule: $diff_out"
+    return 0
+  fi
+  local later="run /atelier:update (it asks first) or: $sync --apply"
+  if [ "${ATELIER_TEST_FORCE_TTY:-}" != "1" ] && { [ "$NONINTERACTIVE" = true ] || [ ! -t 0 ]; }; then
+    step_skip "autoMode gate-run rule not applied (no TTY / --yes) — to apply later: $later"
+    return 0
+  fi
+  log "atelier can add a classifier rule to your user settings ($ATELIER_CONFIG_DIR/settings.json)"
+  sublog "so auto mode lets the gate runs (project test scripts) proceed inside task worktrees."
+  sublog "Your other autoMode entries are preserved; only the atelier-managed entry changes."
+  printf '%s\n' "$diff_out" | sed 's/^/    /'
+  printf '    Add this rule to %s/settings.json? [y/N] ' "$ATELIER_CONFIG_DIR"
+  local reply=""
+  IFS= read -r reply || reply=""
+  case "$reply" in
+    y|Y|yes|YES)
+      "$sync" --apply --template "$template" --config-dir "$ATELIER_CONFIG_DIR" >/dev/null \
+        && step_ok "autoMode gate-run rule written to $ATELIER_CONFIG_DIR/settings.json" \
+        || warn "autoMode gate-run rule was not written — to apply later: $later"
+      ;;
+    *)
+      step_skip "autoMode gate-run rule not applied — to apply later: $later"
+      ;;
+  esac
+  return 0
+}
+
 # #41: reconcile the Notification hook entry in $ATELIER_CONFIG_DIR/settings.json
 # against the operator's .notification.enabled preference (operator.json),
 # at install time — so the FIRST session already has the hook if the
@@ -2203,6 +2253,7 @@ phase_c_1() {
   phase_c_1_atelier_help_file
   phase_c_1_atelier_auto_mode
   phase_c_1_plugin_prefer_https
+  phase_c_1_atelier_automode_allow
   phase_c_1_atelier_notification_hook
   phase_c_1_import_conversations
   phase_c_1_shellrc_hooks
