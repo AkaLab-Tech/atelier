@@ -125,6 +125,38 @@ touch -t 200001010000 "$D/cpu-slot.lock"
 CPU_SLOT_DIR="$D" bounded 15 "$SLOT" --wait --timeout 5; check "old pid-less lock is abandoned (--wait 0)" "$?" "0"
 [ ! -e "$D/cpu-slot.lock" ] && pass "old pid-less lock reclaimed" || fail "old pid-less lock still present"
 
+# GNU-shaped stat: `stat -f` succeeds and prints filesystem text (as on GNU
+# coreutils), `stat -c %Y` prints the epoch mtime. Computed with perl so the
+# stub behaves the same on macOS and Linux.
+GNUBIN="$TMP/gnubin"
+mkdir -p "$GNUBIN"
+cat > "$GNUBIN/stat" <<'STUB'
+#!/bin/sh
+if [ "$1" = "-c" ] && [ "$2" = "%Y" ]; then
+  perl -e 'my @s = stat($ARGV[0]) or exit 1; print $s[9], "\n"' "$3"
+  exit $?
+fi
+if [ "$1" = "-f" ]; then
+  printf '  File: "%s"\n    ID: 0 Namelen: 255 Type: ext2/ext3\n' "$3"
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "$GNUBIN/stat"
+
+echo "Group 3b — pid-less lock with a GNU-shaped stat on PATH"
+D="$(new_dir)"
+mkdir "$D/cpu-slot.lock"
+PATH="$GNUBIN:$PATH" CPU_SLOT_DIR="$D" bounded 15 "$SLOT" --wait --timeout 1 2>/dev/null
+check "GNU stat: young pid-less lock counts as held (--wait 75)" "$?" "75"
+[ -d "$D/cpu-slot.lock" ] && pass "GNU stat: young pid-less lock is not reclaimed" || fail "GNU stat: young pid-less lock was reclaimed"
+out="$(PATH="$GNUBIN:$PATH" CPU_SLOT_DIR="$D" bounded 10 "$SLOT" --status 2>&1 | head -1)"
+contains "GNU stat: status reports a young pid-less lock as held" "$out" "held by pid"
+touch -t 200001010000 "$D/cpu-slot.lock"
+PATH="$GNUBIN:$PATH" CPU_SLOT_DIR="$D" bounded 15 "$SLOT" --wait --timeout 5
+check "GNU stat: old pid-less lock is abandoned (--wait 0)" "$?" "0"
+[ ! -e "$D/cpu-slot.lock" ] && pass "GNU stat: old pid-less lock reclaimed" || fail "GNU stat: old pid-less lock still present"
+
 # ---------------------------------------------------------------------------
 echo "Group 4 — dead ticket pruning"
 D="$(new_dir)"
@@ -179,6 +211,55 @@ check "lock pid is one of the contenders' owners" "$found" "1"
 stale_left=0
 for f in "$D"/*stale*; do [ -e "$f" ] && stale_left=1; done
 check "no .stale leftovers" "$stale_left" "0"
+
+# Two run-mode reclaimers race for one stale lock: their critical sections
+# (enter/exit markers around a short sleep) must never overlap, and both run.
+echo "Group 5b — reclaimers' critical sections never overlap"
+for round in 1 2 3; do
+  D="$(new_dir)"
+  dead_pid
+  mkdir "$D/cpu-slot.lock"
+  echo "$DEAD" > "$D/cpu-slot.lock/pid"
+  LOG="$D/log"; : > "$LOG"
+  body='echo "enter $$" >> "$LOG_FILE"; sleep 0.4; echo "exit $$" >> "$LOG_FILE"'
+  rp=()
+  for i in 1 2; do
+    (LOG_FILE="$LOG" CPU_SLOT_DIR="$D" bounded 30 "$SLOT" bash -c "$body" 2>/dev/null) &
+    rp+=("$!"); PIDS+=("$!")
+  done
+  rc_all=0
+  for p in "${rp[@]}"; do wait "$p" || rc_all=1; done
+  check "round $round: both contenders exit 0" "$rc_all" "0"
+  # Well-formed iff lines alternate enter X / exit X with the same pid.
+  verdict="$(awk '
+    { if ($1 == "enter") { if (open != "") bad = 1; open = $2; n++ }
+      else if ($1 == "exit") { if (open != $2) bad = 1; open = "" } }
+    END { print (bad || open != "" || n != 2) ? "overlap-or-missing(n=" n ")" : "serial" }' "$LOG")"
+  check "round $round: critical sections are serial and both ran" "$verdict" "serial"
+  [ ! -e "$D/cpu-slot.lock" ] && pass "round $round: slot free afterwards" || fail "round $round: slot still held"
+  [ ! -e "$D/cpu-slot.lock.reclaim" ] && pass "round $round: no reclaim guard left" || fail "round $round: reclaim guard left behind"
+done
+
+# A guard left by a dead reclaimer: dropped once 30 s old, honoured while young.
+echo "Group 5c — stale reclaim guard"
+D="$(new_dir)"
+dead_pid
+mkdir "$D/cpu-slot.lock" "$D/cpu-slot.lock.reclaim"
+echo "$DEAD" > "$D/cpu-slot.lock/pid"
+touch -t 200001010000 "$D/cpu-slot.lock.reclaim"
+CPU_SLOT_DIR="$D" bounded 15 "$SLOT" --wait --timeout 5 2>/dev/null
+check "old reclaim guard is cleared and reclaim proceeds (--wait 0)" "$?" "0"
+[ ! -e "$D/cpu-slot.lock" ] && pass "stale lock reclaimed past an old guard" || fail "stale lock still present"
+[ ! -e "$D/cpu-slot.lock.reclaim" ] && pass "old reclaim guard removed" || fail "old reclaim guard still present"
+
+D="$(new_dir)"
+dead_pid
+mkdir "$D/cpu-slot.lock" "$D/cpu-slot.lock.reclaim"
+echo "$DEAD" > "$D/cpu-slot.lock/pid"
+CPU_SLOT_DIR="$D" bounded 8 "$SLOT" --wait --timeout 1 2>/dev/null
+rc=$?
+[ -d "$D/cpu-slot.lock" ] && pass "young reclaim guard blocks the reclaim" || fail "lock removed despite a young guard"
+check "young guard: --wait still honours its timeout (75)" "$rc" "75"
 
 # ---------------------------------------------------------------------------
 echo "Group 6 — legacy layout interop"

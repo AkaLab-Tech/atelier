@@ -21,8 +21,8 @@
 #   atelier-cpu-slot --help
 #
 # The slot is a directory created with mkdir (atomic on macOS, which has no
-# flock). A holder whose pid is dead is reclaimed by an atomic rename, so
-# only one waiter wins. A young lock with no pid yet (<10 s) counts as held.
+# flock). A holder whose pid is dead is reclaimed under a guard dir that
+# serializes reclaimers, so only one waiter removes it A young lock with no pid yet (<10 s) counts as held.
 #
 # Exit codes:
 #   0    ok (run mode: the command's own exit status)
@@ -58,7 +58,13 @@ usage() {
 die_usage() { echo "$SCRIPT_NAME: $*" >&2; exit 2; }
 
 mtime_of() {
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0
+  # GNU first: on GNU `stat -f` means filesystem status and exits 0 with text,
+  # so the BSD form must only be tried after GNU `-c` failed. Each result is
+  # validated as a pure integer.
+  local m
+  m=$(stat -c %Y "$1" 2>/dev/null) && is_uint "$m" && { echo "$m"; return; }
+  m=$(stat -f %m "$1" 2>/dev/null) && is_uint "$m" && { echo "$m"; return; }
+  echo 0
 }
 
 holder_alive() {
@@ -74,9 +80,26 @@ holder_alive() {
   kill -0 "$pid" 2>/dev/null
 }
 
-# Reclaim a lock whose holder is gone: atomic rename, so one waiter wins.
+# Reclaim a lock whose holder is gone. Reclaimers are serialized by a guard
+# dir, and staleness is re-checked inside it, so a slow waiter that judged the
+# old lock stale never removes the fresh lock a faster waiter just created
+# (a fresh lock is held: live pid, or pid-less and young). A guard left by a
+# dead reclaimer is dropped once it is older than 30 s. Returns non-zero when
+# another reclaimer holds the guard; callers just retry.
 reclaim_stale() {
-  mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$"
+  local guard="$LOCK.reclaim"
+  if ! mkdir "$guard" 2>/dev/null; then
+    if [ $(( $(date +%s) - $(mtime_of "$guard") )) -ge 30 ]; then
+      rmdir "$guard" 2>/dev/null
+    fi
+    sleep 0.2
+    return 1
+  fi
+  if [ -d "$LOCK" ] && ! holder_alive; then
+    mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$"
+  fi
+  rmdir "$guard" 2>/dev/null
+  return 0
 }
 
 prune_queue() {
@@ -119,8 +142,7 @@ acquire_loop() {
   while ! mkdir "$LOCK" 2>/dev/null; do
     prune_queue
     if ! holder_alive; then
-      reclaim_stale
-      continue
+      reclaim_stale && continue
     fi
     if [ $announced -eq 0 ]; then
       echo "$SCRIPT_NAME: waiting, $(describe_holder)" >&2
@@ -182,8 +204,7 @@ cmd_wait() {
     if holder_alive; then
       :
     else
-      reclaim_stale
-      continue
+      reclaim_stale && continue
     fi
     left=$(( deadline - $(date +%s) ))
     if [ "$left" -le 0 ]; then
