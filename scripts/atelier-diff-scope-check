@@ -2,9 +2,10 @@
 #
 # atelier-diff-scope-check — read-only pre-review diff scope check (#452).
 #
-# Usage: atelier-diff-scope-check --worktree <wt> --base <ref> --plan <file|->
+# Usage: atelier-diff-scope-check --worktree <wt> --base <branch> --plan <file|->
 #
-# Compares the working tree against `git merge-base HEAD origin/<base>` and lists
+# <branch> is a branch name without the remote; a leading `origin/` is accepted and stripped.
+# Compares the working tree against `git merge-base HEAD origin/<branch>` and lists
 # removals the approved plan does not name. `--plan -` reads the plan from stdin;
 # only the text between `<!-- atelier:plan:start -->` and `<!-- atelier:plan:end -->`
 # is used when those markers are present.
@@ -21,7 +22,7 @@
 set -u
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 fi
 
@@ -31,16 +32,18 @@ while [ $# -gt 0 ]; do
     --worktree|--base|--plan)
       if [ $# -lt 2 ] || [ -z "$2" ]; then
         echo "atelier-diff-scope-check: $1 needs a non-empty value" >&2
-        echo "usage: atelier-diff-scope-check --worktree <wt> --base <ref> --plan <file|->" >&2
+        echo "usage: atelier-diff-scope-check --worktree <wt> --base <branch> --plan <file|->" >&2
         exit 2
       fi
       case "$1" in --worktree) wt="$2" ;; --base) base="$2" ;; --plan) plan="$2" ;; esac
       shift 2 ;;
-    *) echo "usage: atelier-diff-scope-check --worktree <wt> --base <ref> --plan <file|->" >&2; exit 2 ;;
+    *) echo "usage: atelier-diff-scope-check --worktree <wt> --base <branch> --plan <file|->" >&2; exit 2 ;;
   esac
 done
 [ -n "$wt" ] && [ -n "$base" ] && [ -n "$plan" ] || {
-  echo "usage: atelier-diff-scope-check --worktree <wt> --base <ref> --plan <file|->" >&2; exit 2; }
+  echo "usage: atelier-diff-scope-check --worktree <wt> --base <branch> --plan <file|->" >&2; exit 2; }
+base="${base#origin/}"
+[ -n "$base" ] || { echo "atelier-diff-scope-check: --base needs a branch name (e.g. main), got \"origin/\"" >&2; exit 2; }
 
 g() { git -C "$wt" "$@"; }
 g rev-parse --git-dir >/dev/null 2>&1 || { echo "atelier-diff-scope-check: $wt is not a git worktree" >&2; exit 2; }
