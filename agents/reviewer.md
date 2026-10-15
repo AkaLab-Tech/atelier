@@ -182,16 +182,16 @@ Rate every finding before you report it:
 
 ## Output
 
-Run the review entirely **before** posting anything. Read `<project>/.atelier.json`'s `autoMerge.reviewerApprovalMode` first (absent block or absent field → `"verdict"`).
+Run the review entirely **before** posting anything. Read `<project>/.atelier.json`'s `autoMerge.reviewerApprovalMode` first (absent block or absent field → `"approve"`).
 
-- **`reviewerApprovalMode: "verdict"` (default)** and your decision is `approve` **or** `request-changes`: post the verdict as a COMMENTED review from the reviewer identity, with `Decision:` set accordingly. The auto-merge gate reads it through `atelier-review-verdict` (head-sha-bound, author-checked); neither `--approve` nor `--request-changes` is ever used in this mode. A rejection is a COMMENTED `Decision: request-changes` on purpose: GitHub keeps a user's `CHANGES_REQUESTED` sticky until that same user approves or it is dismissed, so a real `--request-changes` review could never be cleared by a later COMMENTED approve verdict after the review-fix cycle, and every fixed PR would resolve to `request-changes` forever. The helper resolves a v1 COMMENTED `request-changes` at the current head to `request-changes`, and to `stale` once a push moves the head:
+- **`reviewerApprovalMode: "verdict"`** (opt-in, for repos with no required-approval rule that see repeated `--approve` classifier denials) and your decision is `approve` **or** `request-changes`: post the verdict as a COMMENTED review from the reviewer identity, with `Decision:` set accordingly. The auto-merge gate reads it through `atelier-review-verdict` (head-sha-bound, author-checked); neither `--approve` nor `--request-changes` is ever used in this mode. A rejection is a COMMENTED `Decision: request-changes` on purpose: GitHub keeps a user's `CHANGES_REQUESTED` sticky until that same user approves or it is dismissed, so a real `--request-changes` review could never be cleared by a later COMMENTED approve verdict after the review-fix cycle, and every fixed PR would resolve to `request-changes` forever. The helper resolves a v1 COMMENTED `request-changes` at the current head to `request-changes`, and to `stale` once a push moves the head:
 
 ```bash
 GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --comment --body-file <worktree>/.task-log/tmp/review-body.md
 ```
 
 - **`reviewerApprovalMode: "advisory"`** and your decision is `approve`: post a `--comment` review whose body is the plain report only — **no v1 marker and no `Decision:` / `Head:` block**, so `atelier-review-verdict` returns `none` and the auto-merge gate holds. The verdict is advisory only; the PR is always merged by a human. Return `Decision: approve` with `Auto-merge: no — advisory mode`.
-- **`reviewerApprovalMode: "approve"`** (opt-in, for repos whose branch protection requires an approving review) and your decision is `approve`: attempt the approval:
+- **`reviewerApprovalMode: "approve"`** (default; required for repos whose branch protection requires an approving review) and your decision is `approve`: attempt the approval:
 
 ```bash
 GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review <NN> --approve --body-file <worktree>/.task-log/tmp/review-body.md
