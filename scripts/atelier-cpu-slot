@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+#
+# atelier-cpu-slot — machine-wide turn for CPU-heavy work (test suites, builds).
+#
+# Versioned port of the loose ~/.local/bin/cpu-slot. It is CLI-compatible and
+# shares the same on-disk turn (slot dir /tmp/cpu-slot.lock, queue tickets
+# /tmp/cpu-slot.queue/<pid>), so the loose script and this helper never run
+# a heavy job at the same time.
+#
+# Usage:
+#   atelier-cpu-slot <command> [args...]      wait for the slot, run, release
+#   atelier-cpu-slot --status                 show holder and waiters
+#   atelier-cpu-slot --wait [--timeout S]     one foreground call: exit 0 as
+#                                             soon as the slot can be acquired
+#                                             (it is NOT held afterwards), or
+#                                             exit 75 after S seconds
+#   atelier-cpu-slot acquire --owner <pid> [--max-wait S]
+#                                             take the slot on behalf of a
+#                                             long-lived process <pid>
+#   atelier-cpu-slot release --owner <pid>    give it back
+#   atelier-cpu-slot --help
+#
+# The slot is a directory created with mkdir (atomic on macOS, which has no
+# flock). A holder whose pid is dead is reclaimed under a guard dir that
+# serializes reclaimers, so only one waiter removes it A young lock with no pid yet (<10 s) counts as held.
+#
+# Exit codes:
+#   0    ok (run mode: the command's own exit status)
+#   2    usage error
+#   75   timeout (EX_TEMPFAIL) from --wait or acquire --max-wait
+#   130  interrupted
+#
+# --wait --timeout is capped at 540 s, below the Bash tool's 600 s limit.
+#
+# Env:
+#   CPU_SLOT_LABEL   free text shown in --status (default: cwd basename)
+#   CPU_SLOT_POLL    seconds between attempts while waiting (default: 5)
+#   CPU_SLOT_HELD    set by run mode for nested calls: runs directly under
+#                    the outer turn instead of deadlocking behind it
+#   CPU_SLOT_DIR     TEST ONLY: root of lock/queue (default /tmp)
+#   CPU_SLOT_FAKE_LOAD, CPU_SLOT_FAKE_CORES   TEST ONLY: override the load
+#                    average / core count printed on --wait timeout
+
+set -u
+
+SCRIPT_NAME="atelier-cpu-slot"
+ROOT=${CPU_SLOT_DIR:-/tmp}
+LOCK="$ROOT/cpu-slot.lock"
+QUEUE="$ROOT/cpu-slot.queue"
+POLL=${CPU_SLOT_POLL:-5}
+LABEL=${CPU_SLOT_LABEL:-$(basename "$PWD")}
+WAIT_CAP=540
+
+usage() {
+  sed -n '3,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+die_usage() { echo "$SCRIPT_NAME: $*" >&2; exit 2; }
+
+mtime_of() {
+  # GNU first: on GNU `stat -f` means filesystem status and exits 0 with text,
+  # so the BSD form must only be tried after GNU `-c` failed. Each result is
+  # validated as a pure integer.
+  local m
+  m=$(stat -c %Y "$1" 2>/dev/null) && is_uint "$m" && { echo "$m"; return; }
+  m=$(stat -f %m "$1" 2>/dev/null) && is_uint "$m" && { echo "$m"; return; }
+  echo 0
+}
+
+holder_alive() {
+  local pid age
+  pid=$(cat "$LOCK/pid" 2>/dev/null)
+  if [ -z "$pid" ]; then
+    # The winner has created the lock but not written its pid yet. Treat a
+    # young lock with no pid as held; only an old one is abandoned.
+    age=$(( $(date +%s) - $(mtime_of "$LOCK") ))
+    [ "$age" -lt 10 ]
+    return
+  fi
+  kill -0 "$pid" 2>/dev/null
+}
+
+# Reclaim a lock whose holder is gone. Reclaimers are serialized by a guard
+# dir, and staleness is re-checked inside it, so a slow waiter that judged the
+# old lock stale never removes the fresh lock a faster waiter just created
+# (a fresh lock is held: live pid, or pid-less and young). A guard left by a
+# dead reclaimer is dropped once it is older than 30 s. Returns non-zero when
+# another reclaimer holds the guard; callers just retry.
+reclaim_stale() {
+  local guard="$LOCK.reclaim"
+  if ! mkdir "$guard" 2>/dev/null; then
+    if [ $(( $(date +%s) - $(mtime_of "$guard") )) -ge 30 ]; then
+      rmdir "$guard" 2>/dev/null
+    fi
+    sleep 0.2
+    return 1
+  fi
+  if [ -d "$LOCK" ] && ! holder_alive; then
+    mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$"
+  fi
+  rmdir "$guard" 2>/dev/null
+  return 0
+}
+
+prune_queue() {
+  local f
+  [ -d "$QUEUE" ] || return 0
+  for f in "$QUEUE"/*; do
+    [ -f "$f" ] || continue
+    kill -0 "$(basename "$f")" 2>/dev/null || rm -f "$f"
+  done
+}
+
+load_avg() {
+  if [ -n "${CPU_SLOT_FAKE_LOAD:-}" ]; then echo "$CPU_SLOT_FAKE_LOAD"; return; fi
+  if [ -r /proc/loadavg ]; then cut -d' ' -f1 /proc/loadavg; return; fi
+  sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}'
+}
+
+core_count() {
+  if [ -n "${CPU_SLOT_FAKE_CORES:-}" ]; then echo "$CPU_SLOT_FAKE_CORES"; return; fi
+  nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "?"
+}
+
+describe_holder() {
+  echo "held by pid $(cat "$LOCK/pid" 2>/dev/null) [$(cat "$LOCK/label" 2>/dev/null)] since $(cat "$LOCK/since" 2>/dev/null)"
+}
+
+is_uint() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+# acquire_loop <holder-pid> <label> <cmd-text> <max-wait-seconds; 0 = forever>
+# Returns 0 with the slot held by <holder-pid>, or 75 on timeout.
+acquire_loop() {
+  local holder=$1 label=$2 cmdtext=$3 max=$4
+  local deadline=0 announced=0 left nap
+  [ "$max" -gt 0 ] && deadline=$(( $(date +%s) + max ))
+
+  mkdir -p "$QUEUE"
+  local ticket="$QUEUE/$$"
+  echo "pid $$ [$label] $cmdtext" > "$ticket"
+
+  while ! mkdir "$LOCK" 2>/dev/null; do
+    prune_queue
+    if ! holder_alive; then
+      reclaim_stale && continue
+    fi
+    if [ $announced -eq 0 ]; then
+      echo "$SCRIPT_NAME: waiting, $(describe_holder)" >&2
+      announced=1
+    fi
+    nap=$POLL
+    if [ "$deadline" -gt 0 ]; then
+      left=$(( deadline - $(date +%s) ))
+      if [ "$left" -le 0 ]; then
+        rm -f "$ticket"
+        return 75
+      fi
+      [ "$left" -lt "$nap" ] && nap=$left
+    fi
+    sleep "$nap"
+  done
+  rm -f "$ticket"
+
+  echo "$holder" > "$LOCK/pid"
+  echo "$label" > "$LOCK/label"
+  date '+%H:%M:%S' > "$LOCK/since"
+  echo "$cmdtext" > "$LOCK/cmd"
+  return 0
+}
+
+cmd_status() {
+  if [ -d "$LOCK" ] && holder_alive; then
+    describe_holder
+    echo "  $(cat "$LOCK/cmd" 2>/dev/null)"
+  else
+    echo "free"
+  fi
+  # A waiter killed with SIGKILL never removes its ticket; tickets are named
+  # after the waiter's pid, so drop the ones whose process is gone.
+  prune_queue
+  local f
+  [ -d "$QUEUE" ] && for f in "$QUEUE"/*; do
+    [ -f "$f" ] || continue
+    echo "waiting: $(cat "$f")"
+  done
+  exit 0
+}
+
+cmd_wait() {
+  local timeout=$WAIT_CAP deadline left nap
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --timeout) [ $# -ge 2 ] || die_usage "--timeout needs a value"; timeout=$2; shift 2 ;;
+      *) die_usage "unknown arg for --wait: $1" ;;
+    esac
+  done
+  is_uint "$timeout" || die_usage "--timeout must be a non-negative integer"
+  [ "$timeout" -gt "$WAIT_CAP" ] && timeout=$WAIT_CAP
+  deadline=$(( $(date +%s) + timeout ))
+
+  while :; do
+    prune_queue
+    if [ ! -d "$LOCK" ]; then exit 0; fi
+    if holder_alive; then
+      :
+    else
+      reclaim_stale && continue
+    fi
+    left=$(( deadline - $(date +%s) ))
+    if [ "$left" -le 0 ]; then
+      echo "$SCRIPT_NAME: timeout after ${timeout}s, $(describe_holder)" >&2
+      echo "  load $(load_avg) on $(core_count) cores" >&2
+      exit 75
+    fi
+    nap=$POLL
+    [ "$left" -lt "$nap" ] && nap=$left
+    sleep "$nap"
+  done
+}
+
+cmd_acquire() {
+  local owner="" max=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --owner) [ $# -ge 2 ] || die_usage "--owner needs a pid"; owner=$2; shift 2 ;;
+      --max-wait) [ $# -ge 2 ] || die_usage "--max-wait needs a value"; max=$2; shift 2 ;;
+      *) die_usage "unknown arg for acquire: $1" ;;
+    esac
+  done
+  is_uint "$owner" || die_usage "acquire needs --owner <pid>"
+  is_uint "$max" || die_usage "--max-wait must be a non-negative integer"
+  trap 'rm -f "$QUEUE/$$"; exit 130' INT TERM
+  acquire_loop "$owner" "$LABEL" "acquire --owner $owner"  "$max"
+  local rc=$?
+  trap - INT TERM
+  if [ $rc -eq 75 ]; then
+    echo "$SCRIPT_NAME: timeout after ${max}s, $(describe_holder)" >&2
+    echo "  load $(load_avg) on $(core_count) cores" >&2
+  fi
+  exit $rc
+}
+
+cmd_release() {
+  local owner=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --owner) [ $# -ge 2 ] || die_usage "--owner needs a pid"; owner=$2; shift 2 ;;
+      *) die_usage "unknown arg for release: $1" ;;
+    esac
+  done
+  is_uint "$owner" || die_usage "release needs --owner <pid>"
+  [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$owner" ] && rm -rf "$LOCK"
+  exit 0
+}
+
+[ $# -eq 0 ] && { echo "usage: $SCRIPT_NAME <command> [args...] | --status | --wait [--timeout S] | acquire|release --owner <pid> | --help" >&2; exit 2; }
+
+case "$1" in
+  --help|-h) usage; exit 0 ;;
+  --status) cmd_status ;;
+  --wait) shift; cmd_wait "$@" ;;
+  acquire) shift; cmd_acquire "$@" ;;
+  release) shift; cmd_release "$@" ;;
+esac
+
+# Nested call from inside a command that already holds the slot: waiting
+# would deadlock behind our own holder, so run directly under the outer turn.
+if [ -n "${CPU_SLOT_HELD:-}" ] && [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$CPU_SLOT_HELD" ] && kill -0 "$CPU_SLOT_HELD" 2>/dev/null; then
+  exec "$@"
+fi
+
+trap 'rm -f "$QUEUE/$$"' EXIT
+trap 'exit 130' INT TERM
+acquire_loop "$$" "$LABEL" "$*" 0
+
+release() { [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"; }
+trap release EXIT
+trap 'exit 130' INT TERM
+
+export CPU_SLOT_HELD=$$
+"$@"
