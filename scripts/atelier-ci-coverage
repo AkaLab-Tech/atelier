@@ -8,7 +8,7 @@
 #   coverage=<covered|uncovered|unknown|none>
 #   reason=<one line>
 #
-#   covered    some workflow runs on PRs into <base> -> CI will report
+#   covered    some workflow runs on PRs into <base> (or on every push) -> CI will report
 #   uncovered  workflows exist but none triggers on PRs into <base>
 #   unknown    could not be classified with certainty (callers treat it as
 #              "has CI": fail closed)
@@ -73,12 +73,16 @@ function flowitems(v, mode,   inner, parts, i, cnt) {
 function evt(name) {
   if (name ~ /^workflow_(call|run)$/) { fail(name " trigger"); return }
   if (name ~ /^pull_request(_target)?$/) { cov = 1; covwhy = name " without a branch filter"; return }
+  if (name == "push") { cov = 1; covwhy = "unfiltered push trigger"; return }
   if (name !~ /^[A-Za-z_][A-Za-z0-9_-]*$/) { fail("unclassifiable trigger: " name); return }
   other = 1
 }
-function startpr() { cur = "pr"; prci = -1; sub_ = ""; haschild = 0; hasbr = 0; nn = 0; matched = 0; names = "" }
+function startpr(kind) { cur = kind; prci = -1; sub_ = ""; haschild = 0; hasbr = 0; nn = 0; matched = 0; names = "" }
 function finish() {
-  if (cur == "pr") {
+  if (cur == "push") {
+    if (!haschild) { cov = 1; covwhy = "unfiltered push trigger" }
+    else if (nn == 0) fail("empty branches list")
+  } else if (cur == "pr") {
     if (!hasbr) { cov = 1; covwhy = "pull_request without a branch filter" }
     else if (nn == 0) fail("empty branches list")
     else if (matched) { cov = 1; covwhy = "pull_request branches include " BASE }
@@ -150,8 +154,8 @@ BEGIN { SQ = "\047"; BASE = ENVIRON["CIB"]; ci = -1; ONRE = "^(on|\"on\"|" SQ "o
       if (index(item, ":")) fail("unclassifiable trigger item: " item); else evt(item)
     } else if (keyval(body)) {
       if (K ~ /^workflow_(call|run)$/) fail(K " trigger")
-      else if (K ~ /^pull_request(_target)?$/) {
-        startpr()
+      else if (K ~ /^(pull_request(_target)?|push)$/) {
+        startpr(K == "push" ? "push" : "pr")
         if (V == "") { }
         else if (V == "null" || V == "~" || V == "{}") { }
         else fail("unsupported " K " value: " V)
@@ -159,7 +163,7 @@ BEGIN { SQ = "\047"; BASE = ENVIRON["CIB"]; ci = -1; ONRE = "^(on|\"on\"|" SQ "o
     }
     next
   }
-  if (cur != "pr") next
+  if (cur != "pr" && cur != "push") next
   if (prci < 0) prci = ind
   haschild = 1
   if (ind == prci) {
@@ -170,8 +174,8 @@ BEGIN { SQ = "\047"; BASE = ENVIRON["CIB"]; ci = -1; ONRE = "^(on|\"on\"|" SQ "o
       if (K == "branches") {
         sub_ = "branches"; hasbr = 1
         if (V != "") { if (substr(V, 1, 1) == "[") flowitems(V, "branches"); else addname(unq(V)) }
-      } else if (K == "types") sub_ = "types"
-      else fail("unsupported pull_request key: " K)
+      } else if (K == "types" && cur == "pr") sub_ = "types"
+      else fail("unsupported " cur " key: " K)
     }
   } else {
     if (sub_ == "branches") {

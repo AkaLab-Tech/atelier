@@ -177,7 +177,7 @@ one "push-only (block) -> uncovered" uncovered stage 'on:
   push:
     branches: [main]
 jobs: {}'
-one "bare 'on: push' -> uncovered" uncovered stage 'on: push
+one "bare 'on: push' -> covered" covered stage 'on: push
 jobs: {}'
 one "schedule + workflow_dispatch only -> uncovered" uncovered stage 'on:
   schedule:
@@ -314,11 +314,68 @@ repo=$(mkrepo \
     - cron: \"0 0 * * *\"")
 expect "uncovered + uncovered -> uncovered" uncovered stage "$repo"
 repo=$(mkrepo \
-  "a.yml=on: push" \
+  "a.yml=on: schedule" \
   "b.yml=on:
   pull_request:
     branches: [stage]")
 expect "uncovered + covered -> covered" covered stage "$repo"
+
+echo "Group I — push triggers"
+one "flow list 'on: [push]' -> covered" covered stage 'on: [push]
+jobs: {}'
+one "push: with no children -> covered" covered stage 'on:
+  push:
+jobs: {}'
+one "push: {} -> covered" covered stage 'on:
+  push: {}
+jobs: {}'
+one "push: null -> covered" covered stage 'on:
+  push: null
+jobs: {}'
+one "push: ~ -> covered" covered stage 'on:
+  push: ~
+jobs: {}'
+one "push branches [main] block form, base stage -> uncovered" uncovered stage 'on:
+  push:
+    branches: [main]
+jobs: {}'
+one "push branches [main] block form, base main -> uncovered" uncovered main 'on:
+  push:
+    branches: [main]
+jobs: {}'
+one "push branches block-sequence names, base stage -> uncovered" uncovered stage 'on:
+  push:
+    branches:
+      - main
+jobs: {}'
+one "push with branches-ignore -> unknown" unknown stage 'on:
+  push:
+    branches-ignore: [main]
+jobs: {}'
+one "push with tags -> unknown" unknown stage 'on:
+  push:
+    tags: ["v1.0.0"]
+jobs: {}'
+one "push with paths -> unknown" unknown stage 'on:
+  push:
+    paths: ["src/**"]
+jobs: {}'
+one "push with a glob branch -> unknown" unknown stage 'on:
+  push:
+    branches: ["release/*"]
+jobs: {}'
+one "push with an empty branches list -> unknown" unknown stage 'on:
+  push:
+    branches: []
+jobs: {}'
+repo=$(mkrepo \
+  "a.yml=on:
+  push:
+    branches: [main]" \
+  "b.yml=on:
+  pull_request:
+    branches: [stage]")
+expect "push-branches-only file + covering pull_request file -> covered" covered stage "$repo"
 
 echo "Group G — missing ref"
 repo=$(mkrepo "ci.yml=on: pull_request")
