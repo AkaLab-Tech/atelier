@@ -48,6 +48,7 @@
 #   exit 0 — allow the commit
 #   exit 2 — block (stderr goes to Claude's context with the explanation)
 
+# shellcheck disable=SC1003,SC2016 # the #504 lexer matches literal `\`, `$(` and backtick
 set -uo pipefail
 
 # shellcheck source=lib/log-decision.sh
@@ -88,74 +89,728 @@ if [ -z "$command_str" ]; then
   exit 0
 fi
 
-# Only intercept `git commit`. We deliberately do NOT match `git commit`
-# inside an unrelated quoted string (e.g. a `git log --grep="git commit"`)
-# — the pattern `git commit ` (with the trailing space) avoids most of
-# those edge cases, and the rest are not security-relevant.
+# #504 — decide whether this command REALLY invokes `git … commit`, and
+# which tree it commits to.
 #
-# M7.1.F57 — also match `git -C <path> commit`, the atelier convention
-# for committing inside a task worktree. Without this the gate never
-# fired on the real per-task commit pattern (the `-C <path>` token sits
-# between `git` and `commit`, so the plain substring above misses it).
+# History: the matcher used to be a glob over the whole command string
+# (`*"git -C "*"commit"*` and friends), which fired on any text that merely
+# contained those words — a `--jq '.commit_id'` filter, a heredoc, an
+# `echo "git commit"` — and then guessed the target tree with regexes that
+# silently fell back to `$PWD` whenever the path was unexpanded (`"$W"`,
+# `~/wt`, `$(pwd)/wt`) or missing. The gate then validated the wrong tree and
+# a red branch could be committed. Both halves are replaced:
 #
-# #277 — also match `git --git-dir=…`/`--work-tree=…` commit forms. A
-# `git --git-dir=… --work-tree=… commit` matched NEITHER arm above and
-# fell through to the `exit 0` default (silent allow) — exactly the
-# gate-bypass vector observed in #208. These forms are refused outright
-# by the bypass-signature check below (they are not a legitimate way to
-# address a task worktree — `git -C <path>` is), so intercepting them
-# here only ensures they reach that refusal instead of slipping past.
-case "$command_str" in
-  *"git commit "*|*"git commit"|*"git commit;"*|*"git commit&"*)
-    ;;
-  *"git -C "*"commit "*|*"git -C "*"commit"|*"git -C "*"commit;"*|*"git -C "*"commit&"*)
-    ;;
-  *"--git-dir"*"commit "*|*"--git-dir"*"commit"|*"--git-dir"*"commit;"*|*"--git-dir"*"commit&"*)
-    ;;
-  *"--work-tree"*"commit "*|*"--work-tree"*"commit"|*"--work-tree"*"commit;"*|*"--work-tree"*"commit&"*)
-    ;;
-  *)
-    exit 0
-    ;;
-esac
+#   1. A small pure-bash (3.2-compatible) lexer, `lx_*`, splits the command
+#      into segments (`;` `&&` `||` `|` `&` newline, `(` `)`, `$(` and
+#      backticks), honouring quotes and backslashes, dropping heredoc bodies,
+#      and emitting dequoted words with an "expansion" flag (unquoted or
+#      double-quoted `$`, a backtick, or a leading `~`). `bash|sh|zsh -c`
+#      payloads and `eval` strings are lexed again, up to a small depth.
+#   2. A segment is a commit when it has a word `git` (or `…/git`) and the
+#      first non-option word after it is exactly `commit`; the git global
+#      options that take an argument (-C, -c, --git-dir, --work-tree,
+#      --namespace, --config-env, plus =value forms) are consumed so they can
+#      sit in between. `git` need not be first (`FOO=1 git commit`, `env`,
+#      `xargs`, `nohup`). Quoted text, heredoc bodies and `--jq` arguments
+#      are single words / dropped, so they never match.
+#   3. When the lexer is unsure (unbalanced quote, unterminated heredoc or
+#      `$(`, nesting too deep) the old glob (`legacy_matches`) decides, so a
+#      real commit is never skipped — running the gate needlessly is accepted.
+#
+# The target tree is resolved from the matched segment and FAILS CLOSED: a
+# value carrying an expansion, or a literal path that is not a directory, is
+# "unresolved" and the commit is refused (see the `target-unresolved` block
+# below) instead of validating `$PWD`. Commits in one command that resolve to
+# different trees are refused the same way. A plain `git commit` (no -C, no
+# `cd`) still targets `$PWD`.
+legacy_matches() {
+  case "$command_str" in
+    *"git commit "*|*"git commit"|*"git commit;"*|*"git commit&"*) return 0 ;;
+    *"git -C "*"commit "*|*"git -C "*"commit"|*"git -C "*"commit;"*|*"git -C "*"commit&"*) return 0 ;;
+    *"--git-dir"*"commit "*|*"--git-dir"*"commit"|*"--git-dir"*"commit;"*|*"--git-dir"*"commit&"*) return 0 ;;
+    *"--work-tree"*"commit "*|*"--work-tree"*"commit"|*"--work-tree"*"commit;"*|*"--work-tree"*"commit&"*) return 0 ;;
+  esac
+  return 1
+}
 
-# M7.1.F57 — resolve the directory the commit actually targets.
-#
-# Atelier's cwd-vs-worktree rule (operator-rules.md) means an agent keeps
-# its cwd at the main repo / home and addresses the task worktree through
-# `git -C <worktree>` (or, less often, a `cd <worktree> &&` prefix). The
-# hook inherits that cwd, so `$PWD` is the WRONG tree: validating it runs
-# the gate against the main repo, not the change being committed. Derive
-# the target directory from the command itself, falling back to `$PWD`
-# only for a plain `git commit` with no `-C` / `cd`.
-target_dir="$PWD"
-if printf '%s' "$command_str" | grep -qE 'git[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-C[[:space:]]'; then
-  # `git -C <path> ... commit` — the atelier convention.
-  c_path="$(printf '%s' "$command_str" | sed -nE "s/.*git[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-C[[:space:]]+(\"([^\"]+)\"|'([^']+)'|([^[:space:]]+)).*/\3\4\5/p")"
-  [ -n "$c_path" ] && target_dir="$c_path"
-elif printf '%s' "$command_str" | grep -qE -- '--work-tree(=|[[:space:]])'; then
-  # #277 — `git --work-tree=<path> ... commit`. The bypass-signature check
-  # below refuses this form on a commit; resolving it here keeps the
-  # refusal message pointed at the tree the agent was trying to redirect
-  # to (both `--flag=value` and `--flag value` forms).
-  wt_path="$(printf '%s' "$command_str" | sed -nE "s/.*--work-tree(=|[[:space:]]+)(\"([^\"]+)\"|'([^']+)'|([^[:space:]]+)).*/\3\4\5/p")"
-  [ -n "$wt_path" ] && target_dir="$wt_path"
-elif printf '%s' "$command_str" | grep -qE -- '--git-dir(=|[[:space:]])'; then
-  # #277 — `git --git-dir=<path> ... commit`. Same redirection family and
-  # same refusal treatment as `--work-tree` above.
-  gd_path="$(printf '%s' "$command_str" | sed -nE "s/.*--git-dir(=|[[:space:]]+)(\"([^\"]+)\"|'([^']+)'|([^[:space:]]+)).*/\3\4\5/p")"
-  [ -n "$gd_path" ] && target_dir="$gd_path"
-elif printf '%s' "$command_str" | grep -qE '^[[:space:]]*cd[[:space:]]'; then
-  # `cd <path> && git commit …` prefix.
-  cd_path="$(printf '%s' "$command_str" | sed -nE "s/^[[:space:]]*cd[[:space:]]+(\"([^\"]+)\"|'([^']+)'|([^[:space:]&;|]+)).*/\2\3\4/p")"
-  [ -n "$cd_path" ] && target_dir="$cd_path"
-fi
-# Canonicalise relative paths against $PWD and validate the directory
-# exists; fall back to $PWD if it doesn't.
-if [ -d "$target_dir" ]; then
-  target_dir="$(cd "$target_dir" 2>/dev/null && pwd)" || target_dir="$PWD"
+US=$'\001'
+TAB=$'\t'
+SQ=$'\047'
+LX_S=""
+LX_I=0
+LX_FAIL=0
+LX_DEPTH=0
+LX_OUT=()
+LX_HD=()
+
+# lx_word_end / lx_seg_end act on the calling lx_body frame's locals
+# (w wf winw seg) through bash's dynamic scoping.
+# shellcheck disable=SC2154
+lx_word_end() {
+  if [ "$winw" = 1 ]; then
+    if [ -n "$seg" ]; then seg="$seg$US$wf$w"; else seg="$wf$w"; fi
+  fi
+  w=""
+  wf=0
+  winw=0
+}
+
+lx_seg_end() {
+  lx_word_end
+  if [ -n "$seg" ]; then LX_OUT[${#LX_OUT[@]}]="S$seg"; fi
+  seg=""
+}
+
+# Substitution `$( … )` / `` ` … ` ``: its body becomes its own segments
+# (bracketed by "(" ")" markers); the raw source text is kept in the word so
+# an unresolved value can be shown as written.
+lx_subst() {
+  local kind="$1" start="$LX_I"
+  LX_OUT[${#LX_OUT[@]}]="("
+  if [ "$kind" = paren ]; then
+    LX_I=$((LX_I + 2))
+    lx_body paren
+  else
+    LX_I=$((LX_I + 1))
+    lx_body btick
+  fi
+  LX_OUT[${#LX_OUT[@]}]=")"
+  w="$w${LX_S:start:LX_I-start}"
+  wf=1
+  winw=1
+}
+
+# Consume the bodies of the heredocs registered on the line just finished.
+lx_heredocs() {
+  local n=${#LX_HD[@]} k spec strip quoted delim line rest cmp found
+  for ((k = 0; k < n; k++)); do
+    spec="${LX_HD[k]}"
+    strip="${spec%%|*}"
+    spec="${spec#*|}"
+    quoted="${spec%%|*}"
+    delim="${spec#*|}"
+    found=0
+    while [ "$LX_I" -lt "${#LX_S}" ]; do
+      rest="${LX_S:LX_I}"
+      case "$rest" in
+        *$'\n'*)
+          line="${rest%%$'\n'*}"
+          LX_I=$((LX_I + ${#line} + 1))
+          ;;
+        *)
+          line="$rest"
+          LX_I=${#LX_S}
+          ;;
+      esac
+      cmp="$line"
+      if [ "$strip" = 1 ]; then
+        while [ "${cmp#"$TAB"}" != "$cmp" ]; do cmp="${cmp#"$TAB"}"; done
+      fi
+      if [ "$cmp" = "$delim" ]; then
+        found=1
+        break
+      fi
+      if [ "$quoted" = 0 ]; then
+        case "$line" in
+          *'$('* | *'`'*) LX_FAIL=1 ;;
+        esac
+      fi
+    done
+    [ "$found" = 1 ] || LX_FAIL=1
+  done
+  LX_HD=()
+}
+
+# At `<<` (not `<<<`): read the delimiter word and register the heredoc.
+lx_heredoc_start() {
+  local p=$((LX_I + 2)) len=${#LX_S} strip=0 quoted=0 delim="" ch rest inner
+  if [ "${LX_S:p:1}" = "-" ]; then
+    strip=1
+    p=$((p + 1))
+  fi
+  while [ "$p" -lt "$len" ]; do
+    case "${LX_S:p:1}" in ' ' | "$TAB") p=$((p + 1)) ;; *) break ;; esac
+  done
+  while [ "$p" -lt "$len" ]; do
+    ch="${LX_S:p:1}"
+    case "$ch" in
+      ' ' | "$TAB" | $'\n' | ';' | '|' | '&' | '(' | ')' | '<' | '>') break ;;
+      "$SQ" | '"')
+        rest="${LX_S:p+1}"
+        case "$rest" in
+          *"$ch"*) inner="${rest%%"$ch"*}" ;;
+          *)
+            LX_FAIL=1
+            return 0
+            ;;
+        esac
+        delim="$delim$inner"
+        quoted=1
+        p=$((p + ${#inner} + 2))
+        ;;
+      '\')
+        delim="$delim${LX_S:p+1:1}"
+        quoted=1
+        p=$((p + 2))
+        ;;
+      *)
+        delim="$delim$ch"
+        p=$((p + 1))
+        ;;
+    esac
+  done
+  if [ -z "$delim" ]; then
+    LX_FAIL=1
+    return 0
+  fi
+  LX_HD[${#LX_HD[@]}]="$strip|$quoted|$delim"
+  LX_I=$p
+}
+
+# lx_body <top|paren|btick> — lex from LX_I until EOF / the closing `)` /
+# the closing backtick, appending segment records to LX_OUT.
+lx_body() {
+  local mode="$1" w="" wf=0 winw=0 seg="" c n rest inner len=${#LX_S}
+  LX_DEPTH=$((LX_DEPTH + 1))
+  if [ "$LX_DEPTH" -gt 8 ]; then
+    LX_FAIL=1
+    return 0
+  fi
+  while :; do
+    [ "$LX_FAIL" = 1 ] && return 0
+    if [ "$LX_I" -ge "$len" ]; then
+      [ "$mode" = top ] || LX_FAIL=1
+      break
+    fi
+    c="${LX_S:LX_I:1}"
+    case "$c" in
+      '\')
+        n="${LX_S:LX_I+1:1}"
+        if [ -z "$n" ]; then
+          LX_I=$((LX_I + 1))
+        elif [ "$n" = $'\n' ]; then
+          LX_I=$((LX_I + 2))
+        else
+          w="$w$n"
+          winw=1
+          LX_I=$((LX_I + 2))
+        fi
+        ;;
+      "$SQ")
+        rest="${LX_S:LX_I+1}"
+        case "$rest" in
+          *"$SQ"*)
+            inner="${rest%%"$SQ"*}"
+            w="$w$inner"
+            winw=1
+            LX_I=$((LX_I + ${#inner} + 2))
+            ;;
+          *)
+            LX_FAIL=1
+            return 0
+            ;;
+        esac
+        ;;
+      '"')
+        winw=1
+        LX_I=$((LX_I + 1))
+        while :; do
+          [ "$LX_FAIL" = 1 ] && return 0
+          if [ "$LX_I" -ge "$len" ]; then
+            LX_FAIL=1
+            return 0
+          fi
+          c="${LX_S:LX_I:1}"
+          case "$c" in
+            '"')
+              LX_I=$((LX_I + 1))
+              break
+              ;;
+            '\')
+              n="${LX_S:LX_I+1:1}"
+              case "$n" in
+                '$' | '"' | '\' | '`')
+                  w="$w$n"
+                  LX_I=$((LX_I + 2))
+                  ;;
+                $'\n') LX_I=$((LX_I + 2)) ;;
+                *)
+                  w="$w\\"
+                  LX_I=$((LX_I + 1))
+                  ;;
+              esac
+              ;;
+            '$')
+              if [ "${LX_S:LX_I+1:1}" = "(" ]; then
+                lx_subst paren
+              else
+                w="$w\$"
+                wf=1
+                LX_I=$((LX_I + 1))
+              fi
+              ;;
+            '`') lx_subst btick ;;
+            *)
+              w="$w$c"
+              LX_I=$((LX_I + 1))
+              ;;
+          esac
+        done
+        ;;
+      '$')
+        n="${LX_S:LX_I+1:1}"
+        if [ "$n" = "(" ]; then
+          lx_subst paren
+        elif [ "$n" = "{" ]; then
+          rest="${LX_S:LX_I}"
+          case "$rest" in
+            *'}'*)
+              inner="${rest%%\}*}}"
+              w="$w$inner"
+              wf=1
+              winw=1
+              LX_I=$((LX_I + ${#inner}))
+              ;;
+            *)
+              LX_FAIL=1
+              return 0
+              ;;
+          esac
+        else
+          w="$w\$"
+          wf=1
+          winw=1
+          LX_I=$((LX_I + 1))
+        fi
+        ;;
+      '`')
+        if [ "$mode" = btick ]; then
+          LX_I=$((LX_I + 1))
+          break
+        fi
+        lx_subst btick
+        ;;
+      '~')
+        if [ "$winw" = 0 ]; then wf=1; fi
+        w="$w~"
+        winw=1
+        LX_I=$((LX_I + 1))
+        ;;
+      '#')
+        if [ "$winw" = 0 ]; then
+          rest="${LX_S:LX_I}"
+          case "$rest" in
+            *$'\n'*)
+              inner="${rest%%$'\n'*}"
+              LX_I=$((LX_I + ${#inner}))
+              ;;
+            *) LX_I=$len ;;
+          esac
+        else
+          w="$w#"
+          LX_I=$((LX_I + 1))
+        fi
+        ;;
+      ' ' | "$TAB")
+        lx_word_end
+        LX_I=$((LX_I + 1))
+        ;;
+      $'\n')
+        lx_seg_end
+        LX_I=$((LX_I + 1))
+        if [ "${#LX_HD[@]}" -gt 0 ]; then lx_heredocs; fi
+        ;;
+      ';' | '|' | '&')
+        lx_seg_end
+        LX_I=$((LX_I + 1))
+        ;;
+      '(')
+        lx_seg_end
+        LX_OUT[${#LX_OUT[@]}]="("
+        LX_I=$((LX_I + 1))
+        lx_body paren
+        LX_OUT[${#LX_OUT[@]}]=")"
+        ;;
+      ')')
+        if [ "$mode" = paren ]; then
+          LX_I=$((LX_I + 1))
+          break
+        fi
+        LX_FAIL=1
+        return 0
+        ;;
+      '<')
+        if [ "${LX_S:LX_I:3}" = "<<<" ]; then
+          w="$w<<<"
+          winw=1
+          LX_I=$((LX_I + 3))
+        elif [ "${LX_S:LX_I:2}" = "<<" ]; then
+          lx_word_end
+          lx_heredoc_start
+        else
+          w="$w<"
+          winw=1
+          LX_I=$((LX_I + 1))
+        fi
+        ;;
+      *)
+        w="$w$c"
+        winw=1
+        LX_I=$((LX_I + 1))
+        ;;
+    esac
+  done
+  lx_seg_end
+  LX_DEPTH=$((LX_DEPTH - 1))
+}
+
+lx_run() {
+  LX_S="$1"
+  LX_I=0
+  LX_FAIL=0
+  LX_DEPTH=0
+  LX_OUT=()
+  LX_HD=()
+  lx_body top
+  if [ "${#LX_HD[@]}" -gt 0 ]; then LX_FAIL=1; fi
+}
+
+# Split one "S" record body into SW_T (dequoted text) / SW_F (expansion flag).
+SW_N=0
+SW_T=()
+SW_F=()
+cf_split() {
+  local s="$1" word
+  SW_N=0
+  SW_T=()
+  SW_F=()
+  [ -n "$s" ] || return 0
+  while :; do
+    case "$s" in
+      *"$US"*)
+        word="${s%%"$US"*}"
+        s="${s#*"$US"}"
+        ;;
+      *)
+        word="$s"
+        s=""
+        ;;
+    esac
+    SW_F[SW_N]="${word:0:1}"
+    SW_T[SW_N]="${word:1}"
+    SW_N=$((SW_N + 1))
+    [ -n "$s" ] || break
+  done
+}
+
+# If the split segment runs `bash|sh|zsh … -c <payload>` or `eval …`, set
+# CF_PAYLOAD to the string to lex again and return 0.
+CF_PAYLOAD=""
+cf_shell_payload() {
+  local k j t rest
+  for ((k = 0; k < SW_N; k++)); do
+    t="${SW_T[k]##*/}"
+    case "$t" in
+      bash | sh | zsh | dash | ksh)
+        for ((j = k + 1; j < SW_N; j++)); do
+          case "${SW_T[j]}" in
+            -c | -[!-]*c*)
+              if [ $((j + 1)) -lt "$SW_N" ]; then
+                CF_PAYLOAD="${SW_T[j+1]}"
+                return 0
+              fi
+              return 1
+              ;;
+            -*) ;;
+            *) return 1 ;;
+          esac
+        done
+        return 1
+        ;;
+      eval)
+        rest=""
+        for ((j = k + 1; j < SW_N; j++)); do rest="$rest ${SW_T[j]}"; done
+        CF_PAYLOAD="$rest"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+# Lex <string> and append its records to CF_REC, re-lexing shell payloads.
+# Sets CF_FAIL=1 when unsure.
+CF_FAIL=0
+CF_REC=()
+cf_collect() {
+  local str="$1" depth="$2" recs=() n i rec payload
+  if [ "$depth" -gt 3 ]; then
+    CF_FAIL=1
+    return 0
+  fi
+  lx_run "$str"
+  if [ "$LX_FAIL" = 1 ]; then
+    CF_FAIL=1
+    return 0
+  fi
+  n=${#LX_OUT[@]}
+  for ((i = 0; i < n; i++)); do recs[i]="${LX_OUT[i]}"; done
+  for ((i = 0; i < n; i++)); do
+    rec="${recs[i]}"
+    CF_REC[${#CF_REC[@]}]="$rec"
+    case "$rec" in
+      S*)
+        cf_split "${rec#S}"
+        if cf_shell_payload; then
+          payload="$CF_PAYLOAD"
+          CF_REC[${#CF_REC[@]}]="("
+          cf_collect "$payload" $((depth + 1))
+          CF_REC[${#CF_REC[@]}]=")"
+          [ "$CF_FAIL" = 1 ] && return 0
+        fi
+        ;;
+    esac
+  done
+}
+
+# Is the split segment (SW_*) a `git … commit`? Fills CM_* with the path
+# options found between `git` and `commit`, in order.
+CM_CN=0
+CM_CV=()
+CM_CF=()
+CM_WT=""
+CM_WTF=0
+CM_GD=""
+CM_GDF=0
+cf_find_commit() {
+  local k j t
+  for ((k = 0; k < SW_N; k++)); do
+    case "${SW_T[k]}" in git | */git) ;; *) continue ;; esac
+    CM_CN=0
+    CM_CV=()
+    CM_CF=()
+    CM_WT=""
+    CM_WTF=0
+    CM_GD=""
+    CM_GDF=0
+    j=$((k + 1))
+    while [ "$j" -lt "$SW_N" ]; do
+      t="${SW_T[j]}"
+      case "$t" in
+        -C)
+          [ $((j + 1)) -lt "$SW_N" ] || break
+          CM_CV[CM_CN]="${SW_T[j+1]}"
+          CM_CF[CM_CN]="${SW_F[j+1]}"
+          CM_CN=$((CM_CN + 1))
+          j=$((j + 2))
+          ;;
+        --work-tree)
+          [ $((j + 1)) -lt "$SW_N" ] || break
+          CM_WT="${SW_T[j+1]}"
+          CM_WTF="${SW_F[j+1]}"
+          j=$((j + 2))
+          ;;
+        --git-dir)
+          [ $((j + 1)) -lt "$SW_N" ] || break
+          CM_GD="${SW_T[j+1]}"
+          CM_GDF="${SW_F[j+1]}"
+          j=$((j + 2))
+          ;;
+        -c | --namespace | --config-env)
+          [ $((j + 1)) -lt "$SW_N" ] || break
+          j=$((j + 2))
+          ;;
+        --work-tree=*)
+          CM_WT="${t#*=}"
+          CM_WTF="${SW_F[j]}"
+          j=$((j + 1))
+          ;;
+        --git-dir=*)
+          CM_GD="${t#*=}"
+          CM_GDF="${SW_F[j]}"
+          j=$((j + 1))
+          ;;
+        -*) j=$((j + 1)) ;;
+        [0-9]*[\<\>]* | \<* | \>*) j=$((j + 1)) ;;
+        commit) return 0 ;;
+        *) break ;;
+      esac
+    done
+  done
+  return 1
+}
+
+# rp_resolve <base> <value> <expansion-flag> — canonical directory in RP_OUT,
+# or return 1 when the value is unresolvable (expansion, relative to an
+# unknown base, or not an existing directory).
+RP_OUT=""
+rp_resolve() {
+  local b="$1" v="$2" f="$3" p
+  [ "$f" = 0 ] || return 1
+  if [ -z "$v" ]; then
+    RP_OUT="$b"
+    [ -n "$b" ]
+    return
+  fi
+  case "$v" in
+    /*) p="$v" ;;
+    *)
+      [ -n "$b" ] || return 1
+      p="$b/$v"
+      ;;
+  esac
+  [ -d "$p" ] || return 1
+  RP_OUT="$(cd "$p" 2>/dev/null && pwd)" || return 1
+  [ -n "$RP_OUT" ]
+}
+
+TGT_DIR=""
+TGT_UNRES=0
+TGT_RAW=""
+TGT_N=0
+tgt_note() {
+  # <dir> — record a resolved target; differing trees are unresolved.
+  if [ "$TGT_N" -eq 0 ]; then
+    TGT_DIR="$1"
+  elif [ "$TGT_UNRES" = 0 ] && [ "$TGT_DIR" != "$1" ]; then
+    TGT_UNRES=1
+    TGT_RAW="commits in one command target different trees: $TGT_DIR, $1"
+  fi
+  TGT_N=$((TGT_N + 1))
+}
+tgt_fail() {
+  # <raw> — record an unresolved target (first raw wins).
+  if [ "$TGT_UNRES" = 0 ]; then
+    TGT_UNRES=1
+    TGT_RAW="$1"
+  fi
+  TGT_N=$((TGT_N + 1))
+}
+
+# Walk the lexed records: track `cd` (scoped by subshell markers) and resolve
+# each commit segment's target.
+resolve_commit_targets() {
+  local base braw rec i n j v f ok cur raw
+  local bstack=() rstack=() sp=0
+  base="$(cd "$PWD" 2>/dev/null && pwd)" || base="$PWD"
+  braw=""
+  TGT_DIR=""
+  TGT_UNRES=0
+  TGT_RAW=""
+  TGT_N=0
+  n=${#CF_REC[@]}
+  for ((i = 0; i < n; i++)); do
+    rec="${CF_REC[i]}"
+    case "$rec" in
+      "(")
+        bstack[sp]="$base"
+        rstack[sp]="$braw"
+        sp=$((sp + 1))
+        continue
+        ;;
+      ")")
+        if [ "$sp" -gt 0 ]; then
+          sp=$((sp - 1))
+          base="${bstack[sp]}"
+          braw="${rstack[sp]}"
+        fi
+        continue
+        ;;
+    esac
+    cf_split "${rec#S}"
+    if [ "$SW_N" -gt 0 ] && [ "${SW_T[0]}" = "cd" ]; then
+      j=1
+      while [ "$j" -lt "$SW_N" ]; do
+        case "${SW_T[j]}" in -?*) j=$((j + 1)) ;; *) break ;; esac
+      done
+      if [ "$j" -ge "$SW_N" ]; then
+        base=""
+        braw="cd (no argument)"
+      elif [ "${SW_T[j]}" = "-" ]; then
+        base=""
+        braw="cd -"
+      elif rp_resolve "$base" "${SW_T[j]}" "${SW_F[j]}"; then
+        base="$RP_OUT"
+        braw=""
+      else
+        base=""
+        braw="${SW_T[j]}"
+      fi
+      continue
+    fi
+    cf_find_commit || continue
+    cur="$base"
+    raw="$braw"
+    ok=1
+    if [ "$CM_CN" -gt 0 ]; then
+      for ((j = 0; j < CM_CN; j++)); do
+        v="${CM_CV[j]}"
+        f="${CM_CF[j]}"
+        if rp_resolve "$cur" "$v" "$f"; then
+          cur="$RP_OUT"
+        else
+          ok=0
+          raw="$v"
+          break
+        fi
+      done
+    elif [ -n "$CM_WT" ]; then
+      if rp_resolve "$cur" "$CM_WT" "$CM_WTF"; then cur="$RP_OUT"; else ok=0; raw="$CM_WT"; fi
+    elif [ -n "$CM_GD" ]; then
+      if rp_resolve "$cur" "$CM_GD" "$CM_GDF"; then cur="$RP_OUT"; else ok=0; raw="$CM_GD"; fi
+    elif [ -z "$cur" ]; then
+      ok=0
+    fi
+    if [ "$ok" = 1 ] && [ -n "$cur" ]; then
+      tgt_note "$cur"
+    else
+      tgt_fail "${raw:-$cur}"
+    fi
+  done
+}
+
+# Fallback target resolution for the "lexer unsure" path: the historical
+# regex extraction, but fail-closed instead of falling back to $PWD.
+legacy_target() {
+  local v="" f=0
+  TGT_DIR="$(cd "$PWD" 2>/dev/null && pwd)" || TGT_DIR="$PWD"
+  TGT_UNRES=0
+  TGT_RAW=""
+  TGT_N=1
+  if printf '%s' "$command_str" | grep -qE 'git[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-C[[:space:]]'; then
+    v="$(printf '%s' "$command_str" | sed -nE "s/.*git[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-C[[:space:]]+(\"([^\"]+)\"|'([^']+)'|([^[:space:]]+)).*/\3\4\5/p")"
+  elif printf '%s' "$command_str" | grep -qE -- '--work-tree(=|[[:space:]])'; then
+    v="$(printf '%s' "$command_str" | sed -nE "s/.*--work-tree(=|[[:space:]]+)(\"([^\"]+)\"|'([^']+)'|([^[:space:]]+)).*/\3\4\5/p")"
+  elif printf '%s' "$command_str" | grep -qE -- '--git-dir(=|[[:space:]])'; then
+    v="$(printf '%s' "$command_str" | sed -nE "s/.*--git-dir(=|[[:space:]]+)(\"([^\"]+)\"|'([^']+)'|([^[:space:]]+)).*/\3\4\5/p")"
+  elif printf '%s' "$command_str" | grep -qE '^[[:space:]]*cd[[:space:]]'; then
+    v="$(printf '%s' "$command_str" | sed -nE "s/^[[:space:]]*cd[[:space:]]+(\"([^\"]+)\"|'([^']+)'|([^[:space:]&;|]+)).*/\2\3\4/p")"
+  fi
+  [ -n "$v" ] || return 0
+  case "$v" in *'$'* | *'`'* | '~'*) f=1 ;; esac
+  if rp_resolve "$TGT_DIR" "$v" "$f"; then
+    TGT_DIR="$RP_OUT"
+  else
+    TGT_UNRES=1
+    TGT_RAW="$v"
+  fi
+}
+
+cf_collect "$command_str" 0
+if [ "$CF_FAIL" = 1 ]; then
+  legacy_matches || exit 0
+  legacy_target
 else
+  resolve_commit_targets
+  [ "$TGT_N" -gt 0 ] || exit 0
+fi
+
+if [ "$TGT_UNRES" = 1 ]; then
   target_dir="$PWD"
+  target_label="(unresolved: $TGT_RAW)"
+else
+  target_dir="$TGT_DIR"
+  target_label="$target_dir"
 fi
 
 # #277 review-fix cycle 1 — strip the commit-message PAYLOAD before the
@@ -231,12 +886,30 @@ if [ -n "$bypass_signature" ]; then
    Tool:   Bash(git commit)
    Reason: gate-bypass attempt refused — the push gate cannot be routed around; fix the red gate or hand back to tester
    Signature: $bypass_signature
-   Target: $target_dir
+   Target: $target_label
    Rule:   PLAN.md §6 push gate — lint + typecheck + tests must pass before every commit; this signature would route the commit around that gate.
    Action: fix the underlying red check, or hand back to tester. The operator's out-of-band ATELIER_SKIP_SAFE_COMMIT=1 escape hatch must be set in the shell environment — never inline it in the commit command.
 MSG
 
   log_decision "$HOOK_NAME" "Bash" "bypass-attempt" "block" "gate-bypass signature: $bypass_signature"
+  exit 2
+fi
+
+# #504 — fail closed when the target tree could not be determined. Placed
+# after the bypass refusal (so #277 output is unchanged) and BEFORE the F48
+# docs-only and no-package-json N/A allows, which would otherwise judge the
+# wrong tree.
+if [ "$TGT_UNRES" = 1 ]; then
+  cat >&2 <<MSG
+🚫 atelier:safe-commit BLOCKED
+   Tool:   Bash(git commit)
+   Reason: could not determine the target tree; pass the literal absolute path
+   Value:  $TGT_RAW
+   Rule:   PLAN.md §6 push gate — the gate must validate the tree being committed, never \$PWD by default.
+   Action: re-run with the literal absolute worktree path, e.g. git -C /abs/path/to/worktree commit …
+MSG
+
+  log_decision "$HOOK_NAME" "Bash" "target-unresolved" "block" "could not resolve the commit target tree: $TGT_RAW"
   exit 2
 fi
 
