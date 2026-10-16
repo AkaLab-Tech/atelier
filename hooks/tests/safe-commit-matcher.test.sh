@@ -176,6 +176,38 @@ run_case bypass - "$CWD" 'unresolved --git-dir="$X" still gets the #277 bypass r
 run_case gated p "$CWD" "fallback (unbalanced quote containing git commit) still gates" \
   "git -C $P commit -m 'unterminated"
 
+echo "#504 — commit fed to a shell on stdin (fail-closed, legacy path)"
+run_case gated p "$CWD" "bash heredoc carrying git -C <p> commit" \
+  $'bash <<\'EOF\'\ngit -C '"$P"$' commit -m x\nEOF'
+run_case gated p "$CWD" "echo '...' | sh" \
+  "echo 'git -C $P commit -m x' | sh"
+run_case gated p "$CWD" "pipe into /bin/bash" \
+  "echo 'git -C $P commit -m x' | /bin/bash"
+run_case gated p "$CWD" "pipe into env bash" \
+  "echo 'git -C $P commit -m x' | env bash"
+run_case gated p "$CWD" "pipe into sh -s" \
+  "echo 'git -C $P commit -m x' | sh -s"
+run_case gated p "$CWD" "pipe into bash -" \
+  "echo 'git -C $P commit -m x' | bash -"
+run_case gated p "$CWD" "pipe into bash -o pipefail" \
+  "echo 'git -C $P commit -m x' | bash -o pipefail"
+run_case gated p "$CWD" "bash < file with a commit in the line" \
+  "bash < /tmp/x.sh; git -C $P commit -m x"
+run_case gated p "$CWD" "bash <<< here-string" \
+  "bash <<< 'git -C $P commit -m x'"
+run_case gated p "$CWD" "pipe into xargs sh" \
+  "echo 'git -C $P commit -m x' | xargs sh"
+run_case gated p "$CWD" "pipe into source /dev/stdin" \
+  "echo 'git -C $P commit -m x' | source /dev/stdin"
+run_case unres - "$CWD" "pipe into sh with an unresolved target is refused" \
+  "echo 'git -C \"\$W\" commit -m x' | sh"
+run_case none - "$CWD" "bash script.sh without a commit does not trigger" \
+  "bash script.sh"
+run_case none - "$CWD" "heredoc into bash without a commit does not trigger" \
+  $'bash <<EOF\necho hi\nEOF'
+run_case none - "$CWD" "cat heredoc body mentioning a commit does not trigger" \
+  $'cat <<EOF\ngit -C /x commit\nEOF'
+
 echo
 if [ "$fails" -eq 0 ]; then
   echo "All #504 matcher checks passed."

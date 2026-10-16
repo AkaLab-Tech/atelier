@@ -538,6 +538,40 @@ cf_shell_payload() {
   return 1
 }
 
+# Does the split segment run a shell that reads its script from stdin (a
+# heredoc, a pipe, `-s`, `-`, `< file`, `source /dev/stdin`)? The script text
+# is then not visible to the lexer, so the caller treats the command as
+# "unsure" (legacy matcher + fail-closed target). Over-triggering is fine.
+cf_reads_stdin_shell() {
+  local k j t o
+  for ((k = 0; k < SW_N; k++)); do
+    case "${SW_T[k]}" in
+      /dev/stdin | /dev/fd/0 | /proc/self/fd/0) return 0 ;;
+    esac
+  done
+  for ((k = 0; k < SW_N; k++)); do
+    t="${SW_T[k]##*/}"
+    case "$t" in
+      bash | sh | zsh | dash | ksh)
+        for ((j = k + 1; j < SW_N; j++)); do
+          o="${SW_T[j]}"
+          case "$o" in
+            -c | -[!-]*c*) continue 2 ;;
+            -s | -[!-]*s* | -) return 0 ;;
+            -o | +o | -O | +O | --rcfile | --init-file) j=$((j + 1)) ;;
+            -* | +*) ;;
+            '<' | '>' | '<<<' | '>>' | [0-9]'<' | [0-9]'>') j=$((j + 1)) ;;
+            [0-9]*[\<\>]* | \<* | \>*) ;;
+            *) continue 2 ;;
+          esac
+        done
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 # Lex <string> and append its records to CF_REC, re-lexing shell payloads.
 # Sets CF_FAIL=1 when unsure.
 CF_FAIL=0
@@ -567,6 +601,9 @@ cf_collect() {
           cf_collect "$payload" $((depth + 1))
           CF_REC[${#CF_REC[@]}]=")"
           [ "$CF_FAIL" = 1 ] && return 0
+        elif cf_reads_stdin_shell; then
+          CF_FAIL=1
+          return 0
         fi
         ;;
     esac
