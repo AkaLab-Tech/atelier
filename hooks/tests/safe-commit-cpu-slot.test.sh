@@ -70,6 +70,9 @@ chmod +x "$SHIM_BIN/pnpm"
 export PATH="$SHIM_BIN:$PATH"
 
 CPU_SLOT_DIR="$TMP/cpu-slot"; mkdir -p "$CPU_SLOT_DIR"; export CPU_SLOT_DIR
+# Hermetic load gate: the real machine load must never make acquire wait.
+# Per-call env (group 4 sets CPU_SLOT_FAKE_LOAD=7.5) overrides this export.
+export CPU_SLOT_FAKE_LOAD=0
 LOCK="$CPU_SLOT_DIR/cpu-slot.lock"
 
 # Plugin roots the hook is pointed at. The hook only needs hooks/lib (log
