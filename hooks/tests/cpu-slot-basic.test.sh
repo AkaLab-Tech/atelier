@@ -58,6 +58,7 @@ wait_held() {
 }
 
 export CPU_SLOT_POLL=1
+export CPU_SLOT_FAKE_LOAD=0   # the load gate never depends on this machine's real load
 unset CPU_SLOT_HELD
 
 # ---------------------------------------------------------------------------
@@ -76,7 +77,7 @@ check "lock carries the label while held" "$lbl" "lbl"
 # ---------------------------------------------------------------------------
 echo "Group 2 — --status"
 D="$(new_dir)"
-out="$(CPU_SLOT_DIR="$D" bounded 10 "$SLOT" --status 2>&1)"
+out="$(CPU_SLOT_DIR="$D" bounded 10 "$SLOT" --status 2>&1 | head -1)"
 check "free when nothing holds the slot" "$out" "free"
 CPU_SLOT_DIR="$D" CPU_SLOT_LABEL="status-lbl" "$SLOT" sleep 30 &
 hp=$!; PIDS+=("$hp")
@@ -90,7 +91,7 @@ else
 fi
 kill "$(pgrep -P "$hp" | head -1)" 2>/dev/null
 wait "$hp" 2>/dev/null
-out="$(CPU_SLOT_DIR="$D" bounded 10 "$SLOT" --status 2>&1)"
+out="$(CPU_SLOT_DIR="$D" bounded 10 "$SLOT" --status 2>&1 | head -1)"
 check "free again after the holder ends" "$out" "free"
 
 # ---------------------------------------------------------------------------

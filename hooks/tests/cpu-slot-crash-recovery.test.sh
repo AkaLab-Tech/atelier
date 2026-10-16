@@ -65,6 +65,7 @@ live_sleeper() { sleep 60 & SLP=$!; PIDS+=("$SLP"); }
 dead_pid() { sleep 0 & DEAD=$!; wait "$DEAD" 2>/dev/null; }
 
 export CPU_SLOT_POLL=1
+export CPU_SLOT_FAKE_LOAD=0   # the load gate never depends on this machine's real load
 unset CPU_SLOT_HELD
 
 # ---------------------------------------------------------------------------
@@ -272,6 +273,7 @@ echo "legacy-proj" > "$D/cpu-slot.lock/label"
 echo "10:11:12" > "$D/cpu-slot.lock/since"
 echo "pnpm test" > "$D/cpu-slot.lock/cmd"
 echo "pid $legacy_waiter [legacy-wait] pnpm build" > "$D/cpu-slot.queue/$legacy_waiter"
+touch -t 203001010000 "$D/cpu-slot.queue/$legacy_waiter"  # newer than any real waiter: ticket order is not what this group checks
 
 out="$(CPU_SLOT_DIR="$D" bounded 10 "$SLOT" --status 2>&1)"
 contains "status reads the legacy holder" "$out" "held by pid $legacy_holder [legacy-proj] since 10:11:12"
