@@ -54,8 +54,10 @@ Run the steps in order. Stop on the first red step — do not waste time running
 ```sh
 pnpm run lint
 pnpm run typecheck
-pnpm run test
+CPU_SLOT_LABEL="<project> #<task-id>" atelier-cpu-slot pnpm run test
 ```
+
+The full-suite `test` run takes the machine-wide CPU slot (`atelier-cpu-slot`) so parallel tasks and projects do not run heavy suites at once; `lint` and `typecheck` stay unwrapped, and so does any single-file test run. The per-commit hook (`hooks/safe-commit.sh`) takes the slot itself for its whole lint + typecheck + test pass, waiting up to `safeCommit.slotMaxWait` seconds (default 240, max 400) and otherwise blocking with `BLOCKED — CPU slot busy ...` — re-run the same commit and it waits again.
 
 For each command:
 
