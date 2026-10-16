@@ -512,7 +512,7 @@ What it does:
 
 If you're inside a Claude session, `/atelier:update` does the same thing. After updating, run `atelier-doctor` to confirm everything lines up.
 
-**Sessions that were already open.** You do not have to restart them. In each open session, type `/reload-plugins` (add `--force` if it warns about reloading MCP tools), then run `/atelier:refresh`. The first reloads atelier's commands, agents, skills and hooks; the second re-loads the operator rules and session-start context and tells you what, if anything, still needs a restart. On its next prompt after an update, each open session shows a one-time note naming both versions and these two commands. Limits are in [troubleshooting](troubleshooting.md#a-session-still-runs-the-old-atelier-version).
+**Sessions that were already open.** You do not have to restart them. In each open session, type `/reload-plugins` (add `--force` if it warns about reloading MCP tools), . That reloads atelier's commands, agents, skills and hooks; atelier then finishes the refresh on your next message by re-loading the operator rules and session-start context (or run `/atelier:reload` to do it now and see what, if anything, still needs a restart). On its next prompt after an update, each open session shows a one-time note naming both versions and the command to type. Limits are in [troubleshooting](troubleshooting.md#a-session-still-runs-the-old-atelier-version).
 
 `atelier-doctor` will warn you when there's a version mismatch between the installed plugin and the latest released tag. That warning is your nudge to run `atelier-update`.
 

@@ -361,7 +361,7 @@ Legacy case: in `verdict` mode, a PR that already carries a real `CHANGES_REQUES
 
 **Cause:** Claude Code loads plugins when a session starts. `atelier-update` refreshes the plugin cache, but open sessions keep the old version's hooks, commands, agents and the operator rules injected at start.
 
-**Fix:** In that session, type `/reload-plugins` (use `/reload-plugins --force` if it warns that reloading would change MCP tools), then run `/atelier:refresh`. The refresh command compares the loaded, installed and helper versions; on a match it re-loads the operator rules and session-start context. The nudge stops once the session runs the new version. The old version's directory stays on disk for 14 days, so stale sessions keep working meanwhile. Details and sources: [research/session-reload.md](research/session-reload.md).
+**Fix:** In that session, type `/reload-plugins` (use `/reload-plugins --force` if it warns that reloading would change MCP tools), . atelier cannot type it for you. On your next message atelier finishes the refresh itself (it re-loads the operator rules and session-start context). `/atelier:reload` does the same on demand: it compares the loaded, installed and helper versions and, on a match, re-loads the rules and context. `/atelier:refresh` still works as a deprecated alias. The nudge stops once the session runs the new version. The old version's directory stays on disk for 14 days, so stale sessions keep working meanwhile. Details and sources: [research/session-reload.md](research/session-reload.md).
 
 **Still needs a restart:**
 
@@ -370,7 +370,7 @@ Legacy case: in `verdict` mode, a PR that already carries a real `CHANGES_REQUES
 - Settings keys that Claude Code reads only at session start.
 - A new Claude Code binary.
 
-**Bootstrap caveat:** a session started before this feature shipped has no nudge hook and no `/atelier:refresh` command in its loaded version. Type `/reload-plugins` once by hand; from then on the new hook and command exist. If the version you are updating from predates it and `/atelier:refresh` is not found after the reload, restart that session once.
+**Bootstrap caveat:** a session started before this feature shipped has no auto-finish (before #505) and no `/atelier:reload` in its loaded version. Type `/reload-plugins`, then `/atelier:reload` once by hand (the second is `/atelier:refresh` on versions before #505). If neither is found after the reload, restart that session once.
 
 ---
 

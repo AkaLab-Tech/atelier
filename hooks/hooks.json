@@ -40,6 +40,14 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/sync-notification-hook.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/version-drift-nudge.sh"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
