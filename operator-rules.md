@@ -543,11 +543,11 @@ clone-mode feature; managed mode backs up the previous instantiated
 template instead.)
 
 After any successful update, in each open Claude Code session type
-**`/reload-plugins`** (`--force` when it warns): the plugin cache is
-refreshed and `/reload-plugins` reloads agents / skills / commands / hooks.
-On the next message atelier finishes the refresh by re-injecting these
-operator rules and the session-start context (or run `/atelier:reload`
-yourself). Open sessions get a one-time nudge on their next prompt. Restart only for
+**`/reload-plugins`** (`--force` when it warns), then run
+**`/atelier:refresh`**: the plugin cache is refreshed, `/reload-plugins`
+reloads agents / skills / commands / hooks, and `/atelier:refresh`
+re-injects these operator rules and the session-start context. Open
+sessions get a one-time nudge on their next prompt. Restart only for
 plugin monitors, non-interactive MCP changes, settings keys read at
 session start, or a new Claude Code binary.
 
