@@ -44,6 +44,7 @@ exit 0
 SHIM
 chmod +x "$SHIM_BIN/pnpm"
 export PATH="$SHIM_BIN:$PATH"
+CPU_SLOT_DIR="$TMP/cpu-slot"; mkdir -p "$CPU_SLOT_DIR"; export CPU_SLOT_DIR
 
 # --- helpers ----------------------------------------------------------------
 
