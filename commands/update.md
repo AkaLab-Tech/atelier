@@ -68,7 +68,7 @@ In non-interactive runs (`claude -p`, `$ATELIER_AUTO`) never apply it: print the
 
 If the helper returned 0 and **something was applied** (not `--dry-run`):
 
-1. Surface a reminder: *"The plugin cache has been refreshed. In each open Claude Code session, type `/reload-plugins` (or `/reload-plugins --force` if it warns), then run `/atelier:refresh` to pick up the new agents/skills/commands/hooks and operator rules without restarting. Restart only for plugin monitors, non-interactive MCP changes, or a new Claude Code binary. Open sessions also show a one-time nudge on their next prompt."*
+1. Surface a reminder: *"The plugin cache has been refreshed. In each open Claude Code session, type `/reload-plugins` (or `/reload-plugins --force` if it warns), atelier finishes the refresh (operator rules and session context) on your next message, or run `/atelier:reload`. Restart only for plugin monitors, non-interactive MCP changes, or a new Claude Code binary. Open sessions also show a one-time nudge on their next prompt."*
 2. If `settings.template.json` changed and the operator **declined** in the no-TTY fallback above (or a `claude -p` / `$ATELIER_AUTO` run left the refusal unresolved), surface a follow-up note: *"The new permissions were not applied. The agent will keep using the old set until you re-run `/atelier:update` and accept."*
 
 If `--dry-run` was used, remind the operator: *"This was a dry run — nothing changed on disk. Re-run `/atelier:update` (without --dry-run) to apply."*
