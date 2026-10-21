@@ -38,8 +38,8 @@ fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 command -v jq >/dev/null 2>&1 || { echo "  SKIP: jq not on PATH"; exit 0; }
 
 # --- gh shim -----------------------------------------------------------------
-# Intercepts `gh pr view <NN> [--repo ...] --json files --jq '.files[]'` and
-# emits a fixture JSON files array.  The shim ignores --repo so both the
+# Intercepts `gh pr view <NN> [--repo ...] --json files,changedFiles` and
+# emits a fixture JSON object.  The shim ignores --repo so both the
 # no-repo and with-repo invocations return the same fixture.
 #
 # Fixture: two non-exempt source files with real additions+deletions.
@@ -56,10 +56,9 @@ command -v jq >/dev/null 2>&1 || { echo "  SKIP: jq not on PATH"; exit 0; }
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'SHIMEOF'
 #!/usr/bin/env bash
-# Minimal gh shim: respond to `gh pr view <NN> [flags...] --json files --jq '.files[]'`
-# Consume all positional / flag arguments; emit two fixture file objects.
-printf '{"path":"scripts/atelier-pr-size-check","additions":30,"deletions":8}\n'
-printf '{"path":"hooks/safe-commit.sh","additions":15,"deletions":4}\n'
+# Minimal gh shim: respond to `gh pr view <NN> [flags...] --json files,changedFiles`
+# with the real object shape: {"files":[{path,additions,deletions}],"changedFiles":N}.
+printf '{"files":[{"path":"scripts/atelier-pr-size-check","additions":30,"deletions":8},{"path":"hooks/safe-commit.sh","additions":15,"deletions":4}],"changedFiles":2}\n'
 SHIMEOF
 chmod +x "$TMP/bin/gh"
 export PATH="$TMP/bin:$PATH"
