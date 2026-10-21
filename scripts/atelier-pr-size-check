@@ -24,12 +24,16 @@
 # Defaults (override via <project-root>/.atelier.json):
 #   prSize.maxLines = 200
 #   prSize.maxFiles = 10
-#   prSize.exempt   = (see DEFAULT_EXEMPT below)
+#   prSize.exempt   = (see DEFAULT_EXEMPT below; entries EXTEND the defaults)
+#   prSize.maxExemptOnlyLines = 400 (cap for PRs whose changes are all exempt)
 #
 # Exit codes:
 #   0  within limits (or AND-fail-but-only-one-side-exceeds)
-#   1  oversize (BOTH limits exceeded post-exemptions)
-#   2  error (missing deps, bad args, unreachable PR, malformed .atelier.json)
+#   1  oversize (BOTH limits exceeded post-exemptions, or an exempt-only
+#      PR above prSize.maxExemptOnlyLines)
+#   2  error (missing deps, bad args, unreachable ref or PR, failed diff,
+#      truncated gh file list, malformed .atelier.json). Never reports OK
+#      after a failure.
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -49,7 +53,12 @@ die() { printf '!!  ERROR: %s\n' "$*" >&2; exit 2; }
 # reviewability calculus for every atelier project that doesn't override.
 DEFAULT_MAX_LINES=200
 DEFAULT_MAX_FILES=10
+DEFAULT_MAX_EXEMPT_ONLY_LINES=400
 DEFAULT_EXEMPT=(
+  # Root tracking files (bare names, root only)
+  "ROADMAP.md"
+  "IN_PROGRESS.md"
+  "HISTORY.md"
   # Lockfiles + manifest helpers (operator never hand-edits these)
   "pnpm-lock.yaml"
   "package-lock.json"
@@ -57,6 +66,8 @@ DEFAULT_EXEMPT=(
   # Auto-generated artifacts
   "**/*.snap"
   "**/*.generated.*"
+  "**/generated/**"
+  "**/__generated__/**"
   # Test code (encouraged; not part of reviewability budget)
   "**/*.test.*"
   "**/*.spec.*"
@@ -85,9 +96,12 @@ USAGE:
 
 OPTIONS:
   --branch <name>     Local mode. Diff <name> against <base> (default: main).
-                      Use BEFORE pushing (pr-author / pr-flow step 4.5).
+                      The base resolves to origin/<base> when it exists
+                      (else local <base>, else exit 2). Offline: no fetch.
+                      Use BEFORE pushing (pr-author / pr-flow step 3).
   --base <ref>        Base ref for --branch mode. Default: main.
-  --pr <NN>           Remote mode. Fetch the PR's file list via 'gh pr view'.
+  --pr <NN>           Remote mode. Fetch the PR's file list via 'gh pr view'
+                      (run from --project when --repo is not given).
                       Use AFTER the PR exists (reviewer / auto-merge).
   --repo <owner/name> Repo for --pr mode. Default: gh's auto-detection.
   --project <root>    Project root (where .atelier.json lives). Default: cwd.
@@ -95,18 +109,24 @@ OPTIONS:
 
 EXIT CODES:
   0  within limits
-  1  oversize (BOTH limits exceeded after exemptions)
-  2  error
+  1  oversize (BOTH limits exceeded after exemptions, or an exempt-only
+     PR above prSize.maxExemptOnlyLines)
+  2  error (unknown ref, failed git/gh call, truncated gh file list)
 
 CONFIG (<project-root>/.atelier.json):
   {
     "prSize": {
       "maxLines": 200,
       "maxFiles": 10,
-      "exempt": ["pnpm-lock.yaml", "**/*.test.*", ...]
+      "maxExemptOnlyLines": 400,
+      "exempt": ["docs/**", ...]
     }
   }
-Missing file or missing key falls back to built-in defaults.
+Missing file or missing key falls back to built-in defaults. "exempt"
+entries are ADDED to the built-in defaults (lockfiles, snapshots,
+generated dirs, tests, migrations, root ROADMAP.md / IN_PROGRESS.md /
+HISTORY.md); they never replace them.
+"maxExemptOnlyLines" must be a non-negative integer.
 EOF
 }
 
@@ -151,7 +171,8 @@ fi
 CONFIG_FILE="$PROJECT/.atelier.json"
 MAX_LINES="$DEFAULT_MAX_LINES"
 MAX_FILES="$DEFAULT_MAX_FILES"
-EXEMPT=("${DEFAULT_EXEMPT[@]+"${DEFAULT_EXEMPT[@]}"}")
+MAX_EXEMPT_ONLY_LINES="$DEFAULT_MAX_EXEMPT_ONLY_LINES"
+EXEMPT=("${DEFAULT_EXEMPT[@]}")
 
 if [ -f "$CONFIG_FILE" ]; then
   jq empty "$CONFIG_FILE" >/dev/null 2>&1 \
@@ -162,14 +183,24 @@ if [ -f "$CONFIG_FILE" ]; then
   [ -n "$local_max_lines" ] && MAX_LINES="$local_max_lines"
   [ -n "$local_max_files" ] && MAX_FILES="$local_max_files"
 
-  # Only override exempt list when it is present AND non-empty —
-  # otherwise the operator's empty / missing array would silently
-  # disable every built-in exemption (likely a config mistake, not intent).
-  exempt_len="$(jq -r '(.prSize.exempt // []) | length' "$CONFIG_FILE")"
-  if [ "$exempt_len" -gt 0 ]; then
-    # shellcheck disable=SC2207  # we want word-splitting on newlines
-    EXEMPT=($(jq -r '.prSize.exempt[]' "$CONFIG_FILE"))
+  cap_type="$(jq -r '.prSize.maxExemptOnlyLines | type' "$CONFIG_FILE")" \
+    || die "cannot read prSize.maxExemptOnlyLines from $CONFIG_FILE"
+  if [ "$cap_type" != "null" ]; then
+    local_cap="$(jq -r 'if (.prSize.maxExemptOnlyLines | type) == "number" then .prSize.maxExemptOnlyLines | tostring else "" end' "$CONFIG_FILE")"
+    case "$local_cap" in
+      ''|*[!0-9]*) die "prSize.maxExemptOnlyLines in $CONFIG_FILE must be a non-negative integer" ;;
+    esac
+    MAX_EXEMPT_ONLY_LINES="$local_cap"
   fi
+
+  # Config exempt globs EXTEND the defaults. They are read line by line into
+  # the array (never word-split via $(...)) so a glob such as `**/*.spec.*`
+  # is not pathname-expanded against the cwd.
+  raw_exempt="$(jq -r '(.prSize.exempt // [])[] | strings' "$CONFIG_FILE")" \
+    || die "cannot read prSize.exempt from $CONFIG_FILE"
+  while IFS= read -r g; do
+    [ -n "$g" ] && EXEMPT+=("$g")
+  done <<<"$raw_exempt"
 fi
 
 # ---------- glob matching ----------
@@ -180,9 +211,9 @@ fi
 # characters *including* `/` — so `**/foo.test.*` parses as `*/foo.test.*`
 # in bash 3.2 (macOS default) and matches paths with at least one slash.
 # This is portable to bash 3.2 without `shopt -s globstar`. Root-level
-# files (no `/`) match the bare-name patterns (`pnpm-lock.yaml`) but not
-# `**/...` patterns — projects that want root-level test exemptions can
-# add `*.test.*` to their .atelier.json explicitly.
+# files (no `/`) match the bare-name patterns (`pnpm-lock.yaml`), and the
+# loop below also tries every `**/`-prefixed pattern without the prefix, so
+# `**/*.test.*` and `**/generated/**` match at the root too.
 path_is_exempt() {
   local path="$1" pat pat_no_prefix
   for pat in "${EXEMPT[@]+"${EXEMPT[@]}"}"; do
@@ -206,31 +237,55 @@ path_is_exempt() {
 }
 
 # ---------- gather diff stats ----------
-# We need two numbers per file: additions + deletions, and a count of
-# non-exempt files. Emit a JSONL stream of {path, additions, deletions}
-# and let downstream code sum it after filtering.
-emit_diff_jsonl() {
-  if [ "$MODE" = "branch" ]; then
-    # `git diff --numstat` produces: <add>\t<del>\t<path>. Binary files
-    # show as `-\t-\t<path>` — count them as 0 lines, 1 file.
-    git -C "$PROJECT" diff --numstat "${BASE}...${BRANCH}" \
-      | while IFS=$'\t' read -r a d p; do
-          [ "$a" = "-" ] && a=0
-          [ "$d" = "-" ] && d=0
-          jq -nc --arg p "$p" --argjson a "$a" --argjson d "$d" \
-            '{path: $p, additions: $a, deletions: $d}'
-        done
-  else
-    local repo_flag=()
-    [ -n "$REPO" ] && repo_flag=(--repo "$REPO")
-    # bash 3.2 (macOS system bash) treats an empty array's [@] expansion as
-    # "unbound" under set -u, aborting here when --repo is not passed. The
-    # "${arr[@]+"${arr[@]}"}" idiom expands to nothing when the array is
-    # empty/unset, and to the quoted elements otherwise — portable to 3.2+.
-    gh pr view "$PR" "${repo_flag[@]+"${repo_flag[@]}"}" --json files --jq '.files[]' \
-      | jq -c '{path: .path, additions: .additions, deletions: .deletions}'
-  fi
-}
+# Produce TSV text (<additions>\t<deletions>\t<path>) per changed file. Every
+# failure exits 2: the diff is captured into a variable (never read through
+# process substitution, which would swallow the exit status) so a failed git
+# or gh call can never be mistaken for an empty, in-limits diff.
+BASE_REF=""
+BASE_NOTE=""
+diff_tsv=""
+
+if [ "$MODE" = "branch" ]; then
+  git -C "$PROJECT" rev-parse --verify -q "${BRANCH}^{commit}" >/dev/null 2>&1 \
+    || die "branch '$BRANCH' not found in $PROJECT; cannot evaluate PR size"
+  case "$BASE" in
+    origin/*) BASE_REF="$BASE" ;;
+    *)
+      if git -C "$PROJECT" rev-parse --verify -q "refs/remotes/origin/${BASE}^{commit}" >/dev/null 2>&1; then
+        BASE_REF="origin/${BASE}"
+      elif git -C "$PROJECT" rev-parse --verify -q "refs/heads/${BASE}^{commit}" >/dev/null 2>&1; then
+        BASE_REF="$BASE"
+        BASE_NOTE="Base: ${BASE} (local; origin/${BASE} not found)"
+      else
+        die "base '$BASE' not found as origin/${BASE} or local ${BASE} in $PROJECT; run: git -C $PROJECT fetch origin ${BASE}"
+      fi
+      ;;
+  esac
+  git -C "$PROJECT" rev-parse --verify -q "${BASE_REF}^{commit}" >/dev/null 2>&1 \
+    || die "base ref '$BASE_REF' not found in $PROJECT; run: git -C $PROJECT fetch origin ${BASE#origin/}"
+  # `git diff --numstat` produces: <add>\t<del>\t<path>. Binary files
+  # show as `-\t-\t<path>` — counted as 0 lines, 1 file (see loop below).
+  diff_tsv="$(git -C "$PROJECT" diff --numstat "${BASE_REF}...${BRANCH}")" \
+    || die "git diff ${BASE_REF}...${BRANCH} failed in $PROJECT; run: git -C $PROJECT fetch origin ${BASE#origin/}"
+else
+  repo_flag=()
+  [ -n "$REPO" ] && repo_flag=(--repo "$REPO")
+  # bash 3.2 (macOS system bash) treats an empty array's [@] expansion as
+  # "unbound" under set -u, aborting here when --repo is not passed. The
+  # "${arr[@]+"${arr[@]}"}" idiom expands to nothing when the array is
+  # empty/unset, and to the quoted elements otherwise — portable to 3.2+.
+  # Run from the project so gh resolves the repo from it when --repo is absent.
+  pr_json="$(cd "$PROJECT" && gh pr view "$PR" "${repo_flag[@]+"${repo_flag[@]}"}" --json files,changedFiles)" \
+    || die "gh pr view $PR failed; check 'gh auth status' and that the PR/repo exist"
+  jq -e '(.files|type=="array") and (.changedFiles|type=="number")' <<<"$pr_json" >/dev/null 2>&1 \
+    || die "gh pr view $PR returned an unexpected payload (no files/changedFiles); check 'gh auth status'"
+  pr_changed="$(jq -r '.changedFiles' <<<"$pr_json")"
+  pr_listed="$(jq -r '.files|length' <<<"$pr_json")"
+  [ "$pr_changed" -le "$pr_listed" ] \
+    || die "PR #$PR has $pr_changed files but gh returned $pr_listed; size cannot be evaluated"
+  diff_tsv="$(jq -r '.files[] | [.additions, .deletions, .path] | @tsv' <<<"$pr_json")" \
+    || die "could not parse the file list of PR #$PR"
+fi
 
 # ---------- evaluate ----------
 total_lines=0
@@ -240,11 +295,10 @@ exempt_files=0
 exempt_paths=()
 counted_paths=()
 
-while IFS= read -r line; do
-  [ -z "$line" ] && continue
-  path="$(jq -r '.path' <<<"$line")"
-  a="$(jq -r '.additions' <<<"$line")"
-  d="$(jq -r '.deletions' <<<"$line")"
+while IFS=$'\t' read -r a d path; do
+  [ -z "$path" ] && continue
+  [ "$a" = "-" ] && a=0
+  [ "$d" = "-" ] && d=0
   s=$((a + d))
 
   if path_is_exempt "$path"; then
@@ -256,16 +310,23 @@ while IFS= read -r line; do
     total_files=$((total_files + 1))
     counted_paths+=("$path")
   fi
-done < <(emit_diff_jsonl)
+done <<<"$diff_tsv"
 
 # ---------- decide ----------
 # AND-gate: BOTH limits exceeded → oversize. Either alone passes.
+# Exempt-only PRs (nothing counted) are capped separately so exemptions
+# cannot hide an arbitrarily large change.
+verdict="OK"
+exit_code=0
+reason=""
 if [ "$total_lines" -gt "$MAX_LINES" ] && [ "$total_files" -gt "$MAX_FILES" ]; then
   verdict="OVERSIZE"
   exit_code=1
-else
-  verdict="OK"
-  exit_code=0
+  reason="counted lines $total_lines > $MAX_LINES AND counted files $total_files > $MAX_FILES."
+elif [ "$total_files" -eq 0 ] && [ "$exempt_files" -gt 0 ] && [ "$exempt_lines" -gt "$MAX_EXEMPT_ONLY_LINES" ]; then
+  verdict="OVERSIZE"
+  exit_code=1
+  reason="exempt-only PR: $exempt_lines exempt lines > $MAX_EXEMPT_ONLY_LINES"
 fi
 
 # ---------- suggest slicing boundaries (oversize only) ----------
@@ -275,7 +336,7 @@ fi
 # task splitting. Implementation uses sort + uniq instead of associative
 # arrays so it stays portable to bash 3.2 (macOS system bash).
 suggest_slicing() {
-  [ "${#counted_paths[@]}" -gt 0 ] || return
+  [ "${#counted_paths[@]}" -gt 0 ] || return 0
   printf '  Suggested slice boundaries by top-level dir (file count):\n'
   printf '%s\n' "${counted_paths[@]}" \
     | awk -F/ '{print (NF > 1 ? $1 : ".")}' \
@@ -286,19 +347,19 @@ suggest_slicing() {
 # ---------- report ----------
 printf '== atelier-pr-size-check ==\n'
 printf 'Mode:        %s\n' "$MODE"
-[ "$MODE" = "branch" ] && printf 'Branch:      %s ... %s\n' "$BRANCH" "$BASE"
+[ "$MODE" = "branch" ] && printf 'Branch:      %s ... %s\n' "$BRANCH" "$BASE_REF"
+[ -n "$BASE_NOTE" ] && printf '%s\n' "$BASE_NOTE"
 [ "$MODE" = "pr" ]     && printf 'PR:          #%s%s\n' "$PR" "${REPO:+ ($REPO)}"
 printf 'Project:     %s\n' "$PROJECT"
 printf 'Config:      %s\n' "$([ -f "$CONFIG_FILE" ] && echo "$CONFIG_FILE" || echo "(defaults — no .atelier.json)")"
-printf 'Limits:      lines=%d  files=%d  (AND-gate: both must exceed)\n' "$MAX_LINES" "$MAX_FILES"
+printf 'Limits:      lines=%d  files=%d  (AND-gate: both must exceed)  exempt-only cap=%d lines\n' "$MAX_LINES" "$MAX_FILES" "$MAX_EXEMPT_ONLY_LINES"
 printf '\n'
 printf 'Counted:     %d line(s) across %d file(s)\n' "$total_lines" "$total_files"
 printf 'Exempt:      %d line(s) across %d file(s)\n' "$exempt_lines" "$exempt_files"
 printf '\n'
 printf 'Verdict:     %s\n' "$verdict"
 if [ "$exit_code" = "1" ]; then
-  printf '             counted lines %d > %d AND counted files %d > %d.\n' \
-    "$total_lines" "$MAX_LINES" "$total_files" "$MAX_FILES"
+  printf '             %s\n' "$reason"
   suggest_slicing
 fi
 

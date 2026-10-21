@@ -252,7 +252,7 @@ To check whether auto-mode is currently active, inside any atelier session: `/st
 - Touches `package.json` / `pnpm-lock.yaml`
 - Touches `Dockerfile` / `docker-compose*`
 - Touches `.github/workflows/**`
-- Trips the **size gate** — the default budget is `>200 lines AND >10 files` (AND-gate, after exemptions for tests/lockfiles/migrations) per `scripts/atelier-pr-size-check`. Override per-project in `<project>/.atelier.json`. PRs that trip the gate are tagged `[OVERSIZE]` by `pr-author` and the orchestrator stops without retrying (M4.24 + M7.1.F27).
+- Trips the **size gate** — the default budget is `>200 lines AND >10 files` (AND-gate, after exemptions for tests/lockfiles/migrations) per `scripts/atelier-pr-size-check`. Override per-project in `<project>/.atelier.json` (`prSize.exempt` entries add to the built-in exemptions; a PR whose changes are all exempt is still OVERSIZE above `prSize.maxExemptOnlyLines`, default 400 lines). If the check exits 2 ("size check failed"), it could not evaluate the PR: fetch the base (`git fetch origin <base>`) or check `gh auth status` and the repo. PRs that trip the gate are tagged `[OVERSIZE]` by `pr-author` and the orchestrator stops without retrying (M4.24 + M7.1.F27).
 - Has pending human review comments
 - Has a `request-changes` from the reviewer
 
