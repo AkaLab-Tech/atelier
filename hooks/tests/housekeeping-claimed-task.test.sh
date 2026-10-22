@@ -36,6 +36,8 @@
 #   10 gh says stage, origin/HEAD says main: GitHub wins
 #   11 repo view fails and no origin/HEAD: base unresolved, nothing deleted as
 #      merged (fail closed, no main fallback)
+#   12 next part of a multi-part task (#557): task/<id>-<slug>-part2 worktree
+#      and branch, board In Progress, no commits -> kept, claimed reason
 #
 # Extra shim contract (#550/#551):
 #   gh repo view ... --json defaultBranchRef --jq ... -> env GH_DEFAULT_BRANCH
@@ -316,6 +318,26 @@ check_exit "case 11"
 if has_branch task/700-on-stage; then pass "case 11: task/700-on-stage kept"; else fail "case 11: task/700-on-stage deleted with unresolved base — output: $OUT"; fi
 if has_branch task/701-on-main; then pass "case 11: task/701-on-main kept (no main fallback)"; else fail "case 11: task/701-on-main deleted with unresolved base — output: $OUT"; fi
 check_out "case 11" "base branch unresolved — merged-branch deletion skipped"
+
+# ---- Case 12 (#557) -------------------------------------------------------
+# Next part of a multi-part task: branch task/524-fresh-part2 keeps the
+# task/<id>- prefix, so the board claim (In Progress) must protect it.
+new_fixture c12 no
+WT="$TMP/c12/worktrees/task-524-fresh-part2"
+git -C "$REPO" worktree add -q -b task/524-fresh-part2 "$WT"
+mkdir -p "$WT/.claude"
+printf '{}\n' > "$WT/.claude/settings.json"
+export GH_DEFAULT_BRANCH=main GH_STATUS_524="In Progress" GH_PR_STATE=NONE
+run_hk
+check_exit "case 12"
+check_wt_kept "case 12"
+if has_branch task/524-fresh-part2; then pass "case 12: part2 local branch kept"; else fail "case 12: task/524-fresh-part2 deleted — output: $OUT"; fi
+check_out "case 12" "claimed task #524"
+if printf '%s\n' "$OUT" | grep -qiE 'delet|remov' && printf '%s\n' "$OUT" | grep -F 'task/524-fresh-part2' | grep -qiE 'would (delete|remove)|^(deleted|removed)'; then
+  fail "case 12: part2 proposed for deletion — output: $OUT"
+else
+  pass "case 12: part2 not proposed for deletion"
+fi
 
 echo ""
 if [ "$fails" -eq 0 ]; then
