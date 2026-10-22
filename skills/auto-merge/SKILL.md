@@ -108,7 +108,7 @@ atelier-pr-size-check --pr <NN> --project <project-root>
 Exit codes:
 
 - **0** within budget → continue to guardrail #6.
-- **1** OVERSIZE → `held: PR exceeds size budget (<counted-lines> lines AND <counted-files> files, limits <maxLines>/<maxFiles>)`. Include the tool's stdout — particularly the suggested slice boundaries — in the held-state report so the operator (and the orchestrator on the next pass) see the slicing hints.
+- **1** OVERSIZE → `held: PR exceeds size budget (<counted-lines> lines AND <counted-files> files, limits <maxLines>/<maxFiles>)`. Quote the helper's `Counted:`/`Exempt:` lines verbatim (never gh's `additions`/`deletions`). Include the tool's stdout — particularly the suggested slice boundaries — in the held-state report so the operator (and the orchestrator on the next pass) see the slicing hints.
 - **2** error → `held: size check failed (<stderr-tail>)`. Do not silently widen the gate.
 
 The AND-gate is deliberate: a tightly-scoped diff that grows long, or a broad refactor that stays small, both pass — only PRs that breach **both** axes after exemptions auto-block. Per-project overrides live in `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`. The skill never widens the gate at runtime; if a project legitimately needs a higher ceiling, that decision is made in `.atelier.json` and version-controlled.
@@ -196,7 +196,8 @@ Absent block or absent key → treat as `true`. Setting a key to `false` disable
    `git-wt` confirms before removing; the skill must pass that confirmation through to the operator (do not auto-confirm). If the worktree is dirty (unexpected after a clean merge), surface that and **do not** force-remove.
 
 2. **Roadmap item closure**.
-   - When the project uses the `roadmap-tracking-flow` layout (`ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md`), `pr-flow` already moved the entry to `HISTORY.md` in the merged PR's own commits. **Verify** by reading `HISTORY.md` for the task ID; if it's there, the cleanup is already done.
+   - **Non-`files` backend (`github-project` / `linear`).** `pr-author` neither closed the issue nor set Done when the PR opened; the close happens now, on merge, via `Closes #<id>`. After the squash, check the issue is CLOSED (`gh issue view <id> --json state`), then move the board item to the history bucket through the `roadmap-tracking-flow` skill (`appendHistoryEntry` / `moveTask` to history). If the issue is still open, report `Roadmap: manual follow-up needed`. A PR closed without merging leaves the issue open (correct).
+   - `files` backend, `roadmap-tracking-flow` layout (`ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md`), `pr-flow` already moved the entry to `HISTORY.md` in the merged PR's own commits. **Verify** by reading `HISTORY.md` for the task ID; if it's there, the cleanup is already done.
    - When the project uses the PLAN.md §5 single-file ROADMAP (with `- [ ]` / `- [x]` checkboxes), the skill replaces the matching `- [ ]` line with `- [x]` and commits the change with a Conventional Commits message:
      ```text
      chore(roadmap): mark <#id> done (auto-merge after PR <#NN>)
@@ -247,15 +248,15 @@ Absent block or absent key → treat as `true`. Setting a key to `false` disable
 PR:           <url>
 Title:        <title>
 Branch:       <head> → <base>
-Lines:        +<additions> / -<deletions> (total: <sum>)
-Files:        <count>
+Size:         <the helper's `Counted:` line, verbatim>
+Exempt:       <the helper's `Exempt:` line, verbatim>
 
 Guardrails:
   draft:          ✓ | ✗ — <reason>
   review:         ✓ APPROVED | ✗ <state>
   CI:             ✓ <N>/<N> checks SUCCESS | ✗ <state>
   forbidden:      ✓ none | ✗ <comma-separated paths>
-  size:           ✓ <N> lines / <M> files (within budget) | ✗ OVERSIZE <N>/<M> (limits <maxLines>/<maxFiles>)
+  size:           ✓ <helper's Counted: figures> (within budget) | ✗ OVERSIZE <N>/<M> (limits <maxLines>/<maxFiles>)
   comments:       ✓ no pending | ✗ <N> pending (latest @<user>)
 
 Decision: merged | held — <comma-separated failed guardrails>

@@ -100,19 +100,19 @@
 #       gained the OVERSIZE and backend-tracked variants; the no-skip rule
 #       is scoped to *outside* that terminal
 #     - NEGATIVE: "should always read exactly that" is gone
-#   Group 10 — pr-author + SKILL: the local size verdict is a LOWER BOUND
-#     - both files claimed bookkeeping stays out of the count "by
-#       construction". It does not: `atelier-pr-size-check`'s
-#       `DEFAULT_EXEMPT` covers lockfiles/generated/tests/migrations and NOT
-#       `IN_PROGRESS.md` / `HISTORY.md`, so the `--pr`-mode run the reviewer
-#       and the auto-merge gate perform counts the tracking commit. The two
-#       gates disagreed by ~1 file / ~15 lines.
-#     - resolution asserted here is prose-only: the local `--branch` count is
-#       code-only *only because step 4's commit does not exist yet*, and the
-#       verdict is an early lower bound (near-budget pass = provisional)
-#     - NEGATIVE: both "by construction" claims are gone
-#     - `scripts/atelier-pr-size-check` was deliberately NOT changed and is
-#       deliberately NOT asserted against here.
+#   Group 10 — pr-author + SKILL: the local size verdict equals the later one
+#     (rewritten for #413; the earlier "lower bound / provisional" prose was
+#     retired when the helper started exempting root bookkeeping files)
+#     - `atelier-pr-size-check` always exempts root `ROADMAP.md` /
+#       `IN_PROGRESS.md` / `HISTORY.md`, so the `--branch` verdict equals the
+#       later `--pr` verdict the reviewer and auto-merge gate compute
+#     - a project's `prSize.exempt` globs in `.atelier.json` are additive to
+#       the defaults
+#     - the PR body / `oversized` return quote the helper's `Counted:` /
+#       `Exempt:` lines verbatim
+#     - NEGATIVE: "lower bound", "DEFAULT_EXEMPT does not exempt",
+#       "provisional", "not the authoritative one" and both old "by
+#       construction" claims are gone
 #   Group 11 — agents/task-orchestrator.md: step 8 discriminates first-pass
 #     from `follow_up: true` `oversized`
 #     - step 8 was keyed only on "pr-author returned oversized", but on a
@@ -222,7 +222,7 @@ chk_prose "$PR_AUTHOR" \
   "pr-author: the push is step 5 (after the gate and the tracking move)"
 
 chk_prose "$PR_AUTHOR" \
-  '6. **Open the PR with `gh pr create`' \
+  '6. **Open the PR with `gh pr create --base <base>`' \
   "pr-author: gh pr create is step 6 (last, and unreachable on the OVERSIZE path)"
 
 chk_prose "$PR_AUTHOR" \
@@ -558,8 +558,8 @@ chk_prose "$PR_AUTHOR" \
   "pr-author Output: the Tracking: bullet has a backend-tracked variant (no marker written)"
 
 chk_prose "$PR_AUTHOR" \
-  'Outside that terminal there is no "skipped" path' \
-  "pr-author Output: the no-skipped-path rule is scoped to outside the OVERSIZE terminal"
+  'On the `files` backend outside the OVERSIZE terminal there is no "skipped" path' \
+  "pr-author Output: the no-skipped-path rule is scoped to the files backend, outside the OVERSIZE terminal"
 
 # Regression guards — the unqualified absolutes must be gone.
 chk_absent "$PR_AUTHOR" \
@@ -571,54 +571,77 @@ chk_absent "$PR_AUTHOR" \
   "pr-author Output: OLD two-outcome PR: bullet (no OVERSIZE alternative) gone"
 
 # ---------------------------------------------------------------------------
-# Group 10: pr-author + SKILL — the local `--branch` size verdict is an early
-# LOWER BOUND, not an exempt-by-construction final word. `DEFAULT_EXEMPT` in
-# `scripts/atelier-pr-size-check` covers lockfiles / generated / tests /
-# migrations and NOT `IN_PROGRESS.md` / `HISTORY.md`, so the `--pr`-mode run
-# the reviewer and the auto-merge gate perform counts the tracking commit —
-# the two gates disagreed by ~1 file / ~15 lines. The resolution asserted
-# here is prose-only; the script is deliberately unchanged and unasserted.
+# Group 10: pr-author + SKILL — the local `--branch` size verdict equals the
+# later `--pr` verdict. Root bookkeeping files (`ROADMAP.md` /
+# `IN_PROGRESS.md` / `HISTORY.md`) are always exempt in
+# `atelier-pr-size-check`, and a project's `prSize.exempt` globs are additive
+# to the defaults. The old "lower bound / provisional / not authoritative"
+# prose (which said DEFAULT_EXEMPT did not cover the tracking files) is gone.
 # ---------------------------------------------------------------------------
 
 chk_prose "$PR_AUTHOR" \
-  'This verdict is a lower bound' \
-  "pr-author: the local size verdict is stated to be a lower bound"
+  'are always exempt in `atelier-pr-size-check`, so this `--branch` verdict equals the later `--pr` verdict' \
+  "pr-author: root bookkeeping files are always exempt, so the --branch verdict equals the --pr verdict"
 
 chk_prose "$PR_AUTHOR" \
+  'they are additive to the defaults' \
+  "pr-author: prSize.exempt globs are additive to the defaults"
+
+chk_prose "$PR_AUTHOR" \
+  "quotes the helper's \`Counted:\`/\`Exempt:\` lines verbatim" \
+  "pr-author: the PR body quotes the helper's Counted:/Exempt: lines verbatim"
+
+chk_absent "$PR_AUTHOR" \
+  'lower bound' \
+  "pr-author: OLD 'lower bound' verdict claim gone"
+
+chk_absent "$PR_AUTHOR" \
   '`DEFAULT_EXEMPT` does not exempt' \
-  "pr-author: states DEFAULT_EXEMPT does not exempt the tracking files"
+  "pr-author: OLD 'DEFAULT_EXEMPT does not exempt the tracking files' claim gone"
 
-chk_prose "$PR_AUTHOR" \
-  'either limit as provisional' \
-  "pr-author: a near-budget pass is explicitly provisional"
+chk_absent "$PR_AUTHOR" \
+  'provisional' \
+  "pr-author: OLD 'near-budget pass is provisional' claim gone"
 
 chk_absent "$PR_AUTHOR" \
   'keeps bookkeeping lines out of the counted diff' \
   "pr-author: OLD false 'keeps bookkeeping out of the counted diff' claim gone"
 
 chk_prose "$SKILL" \
-  "step 4's commit does not exist yet" \
-  "pr-flow: the count is code-only only because step 4's commit does not exist yet"
+  'Root bookkeeping files (`ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md`) are always exempt in `atelier-pr-size-check`, so this `--branch` verdict equals the later `--pr` verdict' \
+  "pr-flow: root bookkeeping files are always exempt, so the --branch verdict equals the --pr verdict"
 
 chk_prose "$SKILL" \
-  '`DEFAULT_EXEMPT`' \
-  "pr-flow: names DEFAULT_EXEMPT as the actual exemption mechanism"
-
-chk_prose "$SKILL" \
-  'not `IN_PROGRESS.md` / `HISTORY.md`' \
-  "pr-flow: states the tracking files are NOT in DEFAULT_EXEMPT"
-
-chk_prose "$SKILL" \
-  'counts the tracking commit too' \
-  "pr-flow: the later --pr-mode run counts the tracking commit too"
-
-chk_prose "$SKILL" \
-  'not the authoritative one' \
-  "pr-flow: this gate is the cheap early check, not the authoritative one"
+  'they are additive to the defaults' \
+  "pr-flow: prSize.exempt globs are additive to the defaults"
 
 chk_prose "$SKILL" \
   '`prSize.exempt`' \
-  "pr-flow: points at the per-project prSize.exempt escape hatch"
+  "pr-flow: points at the per-project prSize.exempt setting"
+
+chk_prose "$SKILL" \
+  'Quote the helper'"'"'s `Counted:`/`Exempt:` lines verbatim' \
+  "pr-flow: the helper's Counted:/Exempt: lines are quoted verbatim"
+
+chk_absent "$SKILL" \
+  'lower bound' \
+  "pr-flow: OLD 'lower bound' claim gone"
+
+chk_absent "$SKILL" \
+  'DEFAULT_EXEMPT' \
+  "pr-flow: OLD DEFAULT_EXEMPT-does-not-cover-tracking prose gone"
+
+chk_absent "$SKILL" \
+  'provisional' \
+  "pr-flow: OLD 'provisional' claim gone"
+
+chk_absent "$SKILL" \
+  'not the authoritative one' \
+  "pr-flow: OLD 'not the authoritative one' claim gone"
+
+chk_absent "$SKILL" \
+  'counts the tracking commit too' \
+  "pr-flow: OLD 'the --pr run counts the tracking commit too' claim gone"
 
 chk_absent "$SKILL" \
   'stay out of the count by construction' \
@@ -800,9 +823,9 @@ chk_prose "$PR_AUTHOR" \
   'so the branch carries the code commit alone' \
   "pr-author: step 5 states the backend-tracked exit-1 branch carries neither bookkeeping commit"
 
-chk_prose "$PR_AUTHOR" \
+chk_absent "$PR_AUTHOR" \
   'counts two files' \
-  "pr-author: the --pr-mode overcount is two files (the tracking move touches IN_PROGRESS + HISTORY)"
+  "pr-author: OLD '--pr-mode counts two files more' overcount claim gone (bookkeeping is exempt)"
 
 chk_prose "$SKILL" \
   'the edit and the commit are skipped' \
