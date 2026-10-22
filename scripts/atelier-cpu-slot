@@ -9,7 +9,7 @@
 #
 # Usage:
 #   atelier-cpu-slot <command> [args...]      wait for a slot, run, release
-#   atelier-cpu-slot --status                 show slots, queue, load vs threshold
+#   atelier-cpu-slot --status                 show slots, queue, load (informational)
 #   atelier-cpu-slot --wait [--timeout S]     one foreground call: exit 0 as
 #                                             soon as a slot can be acquired
 #                                             (it is NOT held afterwards), or
@@ -26,10 +26,8 @@
 # in ticket order (oldest mtime first): a waiter only tries when its ticket is
 # among the oldest <free slot count> live tickets.
 #
-# Load gate: a slot is taken only while the 1-minute load average is below the
-# threshold; otherwise the caller keeps waiting inside the same bounded wait.
-# threshold = loadFactor x cores (cores detected at run time: nproc, or
-# hw.ncpu on macOS), unless an explicit loadThreshold overrides it.
+# Load is shown for information only; it never holds a slot. The only limit is
+# the slot count (max).
 #
 # A holder whose pid is dead is reclaimed under a guard dir that serializes
 # reclaimers, so only one waiter removes it. A young lock with no pid yet
@@ -44,7 +42,7 @@
 # --wait --timeout is capped at 540 s, below the Bash tool's 600 s limit.
 #
 # Config: $ATELIER_CONFIG_DIR/cpu-slot.json (default dir ~/.claude-work), e.g.
-#   { "max": 2, "loadFactor": 1.0 }   optional: "cores", "loadThreshold"
+#   { "max": 2 }   optional: "cores"
 # A missing file means defaults; invalid JSON means defaults plus a warning.
 # Precedence per setting: env var, then config file, then default/detected.
 #
@@ -53,7 +51,7 @@
 #   CPU_SLOT_POLL    seconds between attempts while waiting (default: 5)
 #   CPU_SLOT_HELD    set by run mode for nested calls: runs directly under
 #                    the outer turn instead of deadlocking behind it
-#   CPU_SLOT_MAX, CPU_SLOT_LOAD_FACTOR, CPU_SLOT_CORES, CPU_SLOT_LOAD_THRESHOLD
+#   CPU_SLOT_MAX, CPU_SLOT_CORES
 #                    override the matching cpu-slot.json keys
 #   CPU_SLOT_DIR     TEST ONLY: root of lock/queue (default /tmp)
 #   CPU_SLOT_FAKE_LOAD, CPU_SLOT_FAKE_CORES, CPU_SLOT_FAKE_VITEST
@@ -72,7 +70,7 @@ CONFIG_FILE="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}/cpu-slot.json"
 WAIT_CAP=540
 
 # Filled by load_config.
-MAX=1 CORES="" CORES_SRC="" FACTOR="1.0" THRESHOLD="" THRESHOLD_SRC="" MAX_SRC="default"
+MAX=1 CORES="" CORES_SRC="" MAX_SRC="default"
 # Filled by free_slots / acquire_loop.
 FREE=""
 ACQUIRED_DIR=""
@@ -116,14 +114,16 @@ resolve() {
 }
 
 load_config() {
-  local c_max="" c_factor="" c_cores="" c_thr="" out=""
+  local c_max="" c_cores="" legacy="" k out=""
   if [ -f "$CONFIG_FILE" ]; then
     if ! command -v jq >/dev/null 2>&1; then
       warn "jq not found, ignoring $CONFIG_FILE"
-    elif out=$(jq -r '(.max // ""), (.loadFactor // ""), (.cores // ""), (.loadThreshold // "")' "$CONFIG_FILE" 2>/dev/null); then
-      { read -r c_max; read -r c_factor; read -r c_cores; read -r c_thr; } <<EOF
+    elif out=$(jq -r '(.max // ""), (.cores // ""), (if has("loadFactor") then "loadFactor" else "" end), (if has("loadThreshold") then "loadThreshold" else "" end)' "$CONFIG_FILE" 2>/dev/null); then
+      { read -r c_max; read -r c_cores; read -r k; legacy=$k; read -r k; legacy="$legacy $k"; } <<EOF
 $out
 EOF
+      legacy=$(echo "$legacy" | awk '{$1=$1; gsub(/ /,","); print}')
+      [ -z "$legacy" ] || warn "ignoring cpu-slot.json $legacy: cpu-slot no longer gates on load (#524)"
     else
       warn "$CONFIG_FILE is not valid JSON, using defaults"
     fi
@@ -135,11 +135,6 @@ EOF
   MAX=${RES_VAL:-1} MAX_SRC=${RES_SRC:-default}
 
   RES_VAL="" RES_SRC=""
-  resolve num CPU_SLOT_LOAD_FACTOR "${CPU_SLOT_LOAD_FACTOR:-}"
-  resolve num "cpu-slot.json loadFactor" "$c_factor"
-  FACTOR=${RES_VAL:-1.0}
-
-  RES_VAL="" RES_SRC=""
   resolve int CPU_SLOT_FAKE_CORES "${CPU_SLOT_FAKE_CORES:-}"
   resolve int CPU_SLOT_CORES "${CPU_SLOT_CORES:-}"
   resolve int "cpu-slot.json cores" "$c_cores"
@@ -149,17 +144,6 @@ EOF
   fi
   CORES=$RES_VAL CORES_SRC=$RES_SRC
 
-  RES_VAL="" RES_SRC=""
-  resolve num CPU_SLOT_LOAD_THRESHOLD "${CPU_SLOT_LOAD_THRESHOLD:-}"
-  resolve num "cpu-slot.json loadThreshold" "$c_thr"
-  if [ -n "$RES_VAL" ]; then
-    THRESHOLD=$RES_VAL THRESHOLD_SRC="override ($RES_SRC)"
-  elif [ -n "$CORES" ]; then
-    THRESHOLD=$(awk -v c="$CORES" -v f="$FACTOR" 'BEGIN { printf "%g", c * f }')
-    THRESHOLD_SRC="$CORES cores ($CORES_SRC) x factor $FACTOR"
-  else
-    THRESHOLD="" THRESHOLD_SRC="none (cores unknown, load gate off)"
-  fi
 }
 
 slot_dir() { if [ "$1" -eq 0 ]; then echo "$LOCK"; else echo "$LOCK.$1"; fi; }
@@ -237,15 +221,6 @@ load_avg() {
   sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}'
 }
 
-# True when the load gate lets a slot be taken (also when it cannot be judged).
-load_ok() {
-  local l
-  [ -n "$THRESHOLD" ] || return 0
-  l=$(load_avg)
-  is_decimal "$l" || return 0
-  awk -v l="$l" -v t="$THRESHOLD" 'BEGIN { exit !(l < t) }'
-}
-
 # describe_holder <slot-dir>
 describe_holder() {
   echo "held by pid $(cat "$1/pid" 2>/dev/null) [$(cat "$1/label" 2>/dev/null)] since $(cat "$1/since" 2>/dev/null)"
@@ -289,15 +264,32 @@ queue_rank() {
   echo "$rank"
 }
 
+# "N ahead in the queue (oldest: pid P [label])" from the live tickets. The
+# bracketed label is what the safe-commit hook parses as the holder.
+describe_queue() {
+  local f n=0 oldest="" oldest_mt=0 t
+  prune_queue
+  [ -d "$QUEUE" ] || return 0
+  for f in "$QUEUE"/*; do
+    [ -f "$f" ] || continue
+    n=$(( n + 1 ))
+    t=$(mtime_of "$f")
+    if [ -z "$oldest" ] || [ "$t" -lt "$oldest_mt" ]; then oldest=$f oldest_mt=$t; fi
+  done
+  [ -n "$oldest" ] || return 0
+  echo "$n ahead in the queue (oldest: $(sed -n '1s/^\(pid [0-9]* \[[^]]*\]\).*/\1/p' "$oldest"))"
+}
+
 timeout_report() {
   local secs=$1 why
   if [ -z "${FREE// /}" ]; then
     why=$(describe_any_holder)
   else
-    why="load above threshold"
+    why=$(describe_queue)
+    why=${why:-waiting for a free slot}
   fi
   echo "$SCRIPT_NAME: timeout after ${secs}s, $why" >&2
-  echo "  load $(load_avg) on ${CORES:-?} cores (threshold ${THRESHOLD:-none})" >&2
+  echo "  load $(load_avg) on ${CORES:-?} cores (informational)" >&2
 }
 
 # acquire_loop <holder-pid> <label> <cmd-text> <max-wait-seconds; 0 = forever>
@@ -320,8 +312,6 @@ acquire_loop() {
       reason="held"
     elif rank=$(queue_rank); [ "$rank" -ge "$nfree" ]; then
       reason="queue"
-    elif ! load_ok; then
-      reason="load"
     else
       for k in $FREE; do
         d=$(slot_dir "$k")
@@ -333,7 +323,6 @@ acquire_loop() {
       case "$reason" in
         held) echo "$SCRIPT_NAME: waiting, $(describe_any_holder)" >&2 ;;
         queue) echo "$SCRIPT_NAME: waiting for a free slot, $rank ahead in the queue" >&2 ;;
-        load) echo "$SCRIPT_NAME: waiting for load to drop (load $(load_avg), threshold $THRESHOLD)" >&2 ;;
       esac
       last=$reason
     fi
@@ -403,7 +392,7 @@ cmd_status() {
     echo "waiting: $(cat "$f")"
   done
   echo "slots: max $MAX ($MAX_SRC)"
-  echo "load: $(load_avg) vs threshold ${THRESHOLD:-none}, $THRESHOLD_SRC"
+  echo "load: $(load_avg) on ${CORES:-?} cores (${CORES_SRC:-unknown}) - informational, not a gate"
   echo "vitest outside the slot: $(unslotted_vitest)"
   exit 0
 }
@@ -424,7 +413,7 @@ cmd_wait() {
   while :; do
     prune_queue
     free_slots
-    if [ -n "${FREE// /}" ] && load_ok; then exit 0; fi
+    if [ -n "${FREE// /}" ]; then exit 0; fi
     left=$(( deadline - $(date +%s) ))
     if [ "$left" -le 0 ]; then
       timeout_report "$timeout"

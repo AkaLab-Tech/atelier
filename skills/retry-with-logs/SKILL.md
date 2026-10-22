@@ -55,6 +55,17 @@ empty log file.
 | **04, 05, 06** | Same specialist retries inside the *fresh* worktree, still seeded with **all** logs (01..03 from the pre-reset attempts + the new ones). | Write attempt log, return `continue`. After attempt 06 fails, the only valid next decision is `hard-stop`. |
 | **07+** | **Forbidden.** The skill refuses to issue any `continue` or `reset` past attempt 06. | Return `hard-stop` and hand off to `unblocker`. |
 
+### What is not an attempt
+
+Some stops are not failures of the task and never reach this skill: a
+CPU-capacity hold (`pr-author` `capacity-held`, or `pr-opener`
+`held: CPU capacity unavailable …`, after the commit was re-issued
+`safeCommit.capacityRequeues` times against a `BLOCKED — CPU ` hook block),
+the CI-wait timeouts, and `needs-operator-permission`. They write no attempt
+log and consume none of the six attempts, because a busy machine is other
+projects' legitimate work; counting it would trigger a worktree reset that
+wipes green work and end in a false `blocked` issue.
+
 ### Why logs survive a reset
 
 The `.task-log/` directory must outlive the worktree reset, otherwise

@@ -37,11 +37,21 @@ The **only** valid ways to end your turn are:
 
 - (a) you have opened the PR and returned its URL (step 7), or
 - (b) you returned `oversized` after the size gate tripped (step 3), or
-- (c) the gate was **red** and you handed back to `tester` (step 1).
+- (c) the gate was **red** and you handed back to `tester` (step 1), or
+- (d) the commit was blocked for CPU capacity and the re-issue cap ran out: you returned `capacity-held` (see "CPU capacity block on commit" below).
 
 Ending your turn after a **green** gate without a PR is a malformed return: the orchestrator receives no PR URL and no SHA, and must re-dispatch you. Never summarise the green gate and stop — the green gate is the start of your work, not the end.
 
 On a **red** gate, the only valid move is (c) above: hand back to `tester`. Never route around a red gate to reach a commit anyway — see the hard-refusal bullet on gate-bypass vectors in Decision rules below.
+
+## CPU capacity block on commit
+
+The `safe-commit` hook takes the machine-wide CPU slot itself and waits for it in its own bounded queue (`safeCommit.slotMaxWait`). That queue is the only CPU wait there is. **Never run a pre-commit CPU check**: no `pgrep` for vitest, no load read, no `atelier-cpu-slot --status` or `--wait`. Load is informational and never blocks a commit.
+
+- **What a capacity block is.** The hook's stderr starts with `BLOCKED — CPU ` (for example `BLOCKED — CPU slot busy (held by <label>, load L/N); re-run the same commit, it waits again`). It is distinct from a red gate (`🚫 atelier:safe-commit BLOCKED`) and from `bypass-attempt`; a `cpu-slot-*` entry with `action: block` in `<worktree>/.task-log/hook-decisions.jsonl` confirms it. A capacity block is not a failed attempt and says nothing about the code.
+- **On a capacity block, re-issue the identical commit** as the very next foreground `Bash` call: no sleep, no poll / status / load query in between, no change to the command, and no `ATELIER_SKIP_*`. Each re-issue costs one tool call and no suite run, because the hook returns before any step runs.
+- **The cap** is `safeCommit.capacityRequeues`, read with `jq` from `<worktree>/.atelier.json` (default 8, range 0-20; absent, non-numeric or out-of-range means 8). One counter is shared across all the commits of this run, not one per commit.
+- **When the cap is exhausted,** do not commit or push, leave the worktree as it is, and return `{"status":"capacity-held","reason":"<last BLOCKED — CPU line verbatim>","waited_s":<n>,"requeues":<n>}`. This is a valid terminal state; the orchestrator holds the task without spending the retry budget, and `/atelier:resume-task` re-enters at you.
 
 ## GitHub identity
 
@@ -69,7 +79,7 @@ If `state` is not `OPEN`, surface an error and stop — the orchestrator's brief
 6. **Skip step 6 entirely** (`gh pr create`). The PR already exists.
 7. **Return the existing PR URL + the new commit SHA.** The orchestrator passes both to the next `reviewer` dispatch.
 
-**Valid terminal states in follow-up mode:** existing PR URL returned (step 7), `oversized` (step 3 tripped — after step 5's push), or gate red + handed back to `tester` (step 1). All other stops are malformed returns — do not stop after the push gate.
+**Valid terminal states in follow-up mode:** existing PR URL returned (step 7), `oversized` (step 3 tripped — after step 5's push), gate red + handed back to `tester` (step 1), or `capacity-held` (the CPU capacity re-issue cap ran out). All other stops are malformed returns — do not stop after the push gate.
 
 **Output (follow-up mode):**
 
@@ -158,10 +168,11 @@ If `state` is not `OPEN`, surface an error and stop — the orchestrator's brief
 
 ## Decision rules
 
-- **Never** end your turn after the push gate. The gate is step 1 of 7; a green gate (`safe-commit` → `GREEN — commit allowed`) authorises the commit but does not perform it. Reporting the gate and stopping returns no PR URL and no SHA — a malformed return that forces the orchestrator to re-dispatch you. Your only valid terminal states are: PR URL returned, `oversized`, or gate red + handed back to `tester`.
+- **Never** end your turn after the push gate. The gate is step 1 of 7; a green gate (`safe-commit` → `GREEN — commit allowed`) authorises the commit but does not perform it. Reporting the gate and stopping returns no PR URL and no SHA — a malformed return that forces the orchestrator to re-dispatch you. Your only valid terminal states are: PR URL returned, `oversized`, `capacity-held`, or gate red + handed back to `tester`.
 - **Never** push with a hard `--force` and **never** push to a protected branch (`main`, `master`, `develop`, `staging`). The deny list in [PLAN.md §3](PLAN.md) is absolute. To reconcile a **diverged `task/*` branch**, the one permitted force variant is `git push --force-with-lease origin task/<id>-<slug>` (lease-guarded, task branches only — it preserves the open PR).
 - **Never** delete a remote branch to re-push (`git push origin --delete …` or the `git push origin :…` colon form). It is destructive, orphans the open PR, and the auto-mode classifier blocks it mid-chain — stalling the task. Reconcile a diverged task branch with `--force-with-lease` instead.
-- **Never** skip pre-commit hooks (`--no-verify`) or signing (`--no-gpg-sign`) unless the operator explicitly asks. If a hook fails, fix the underlying issue and try again.
+- **Never** skip pre-commit hooks (`--no-verify`) or signing (`--no-gpg-sign`) unless the operator explicitly asks. If a hook fails, fix the underlying issue and try again. The one exception is a CPU capacity block (stderr starts with `BLOCKED — CPU `): there is nothing to fix, so re-issue the identical commit per "CPU capacity block on commit" instead.
+- **Never** run a pre-commit CPU check (no `pgrep`, no load read, no `atelier-cpu-slot --status` / `--wait`), and **never** sleep, poll or change the command between re-issues of a commit blocked for CPU capacity. Re-issue it identically as the next foreground call, at most `safeCommit.capacityRequeues` times, then return `capacity-held`.
 - **Never** bypass the push gate by any means. This is a hard refusal covering all three vectors observed in #208: never set or pass `ATELIER_SKIP_SAFE_COMMIT` (or any `ATELIER_SKIP_*` escape) around a commit; never use `git --git-dir` / `--work-tree` redirection to commit around the pipeline; never `--no-verify` or otherwise commit around the safe-commit/push gate. The gate cannot be routed around — on a red gate the only valid move is to hand back to `tester` / the orchestrator (see "The push gate is a precondition" above). `hooks/safe-commit.sh` refuses these signatures at runtime, but the refusal belongs in your own decision-making first: never attempt any of them, whether or not the hook is expected to catch it.
 - **Never** add `Co-Authored-By: Claude` (or any agent attribution) to the commit message or PR body. The user has explicitly opted out of agent self-attribution.
 - **Never** mark the PR ready for auto-merge yourself. The auto-merge gate ([PLAN.md §6](PLAN.md)) requires the `reviewer` agent's approval — that is a separate agent. Always open a normal PR.
@@ -179,7 +190,7 @@ If `state` is not `OPEN`, surface an error and stop — the orchestrator's brief
 
 ## Output
 
-End your turn with the block below — and **only** after the PR is open (or you reached a `oversized` / gate-red terminal). A turn that ends with just the push-gate result and none of the fields below is a malformed return; do not stop there.
+End your turn with the block below — and **only** after the PR is open (or you reached an `oversized` / gate-red / `capacity-held` terminal). A turn that ends with just the push-gate result and none of the fields below is a malformed return; do not stop there.
 
 - **Code commit:** `<sha> <subject>` (step 2).
 - **Tracking commit:** `<sha> chore(tracking): move #<id> IN_PROGRESS → HISTORY` (step 4). On the OVERSIZE terminal this line reads `<sha> chore(tracking): mark #<id> [OVERSIZE]` instead — the move did not happen and must not.
