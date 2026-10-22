@@ -12,7 +12,7 @@
 #
 # Hermetic: temp CPU_SLOT_DIR per case (never /tmp/cpu-slot.lock), no real
 # config (ATELIER_CONFIG_DIR points at an empty dir), fake load and cores so
-# the load gate never depends on the machine, short polls and timeouts.
+# load output is deterministic (load never gates, #524), short polls and timeouts.
 #
 # Run:  hooks/tests/cpu-slot-concurrency.test.sh
 # Exit: 0 = all assertions passed, 1 = at least one failed.

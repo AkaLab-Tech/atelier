@@ -127,6 +127,7 @@ If a caller hands you a `task/<id>-<slug>` branch, stop and say so — that brie
 - **Never** invent a `task/<id>` branch, edit `ROADMAP.md`/`IN_PROGRESS.md`/`HISTORY.md`, or run the size gate — those are out of scope by design (see previous section). If the caller's briefing implies any of these, it is the wrong agent for the job.
 - **Never** run `gh pr create` when the briefing carries `follow_up: true` — the PR named by `pr_number` already exists; follow-up mode's deliverable is a push, not a new PR.
 - Use `GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf"` on `git commit` so Author/Committer match the atelier-author identity, not the operator's personal global git config.
+- **CPU capacity block on commit.** The `safe-commit` hook waits for the machine-wide CPU slot in its own bounded queue; that queue is the only CPU wait. **Never** run a pre-commit CPU check (no `pgrep`, no load read, no `atelier-cpu-slot --status` / `--wait`). A capacity block is a commit whose stderr starts with `BLOCKED — CPU ` (distinct from a red gate, `🚫 atelier:safe-commit BLOCKED`, and from `bypass-attempt`). On one, re-issue the identical commit as the very next foreground call: no sleep, no poll / status / load query in between, no change to the command, no `ATELIER_SKIP_*`. The cap is `safeCommit.capacityRequeues` (default 8, range 0-20, invalid means 8), read with `jq` from `<worktree>/.atelier.json`, one counter for the whole run. When it runs out, commit and push nothing and return `held: CPU capacity unavailable after <n>s — <reason>` with the last `BLOCKED — CPU ` line verbatim as `<reason>`. A capacity block is not a failed attempt.
 
 ## Output
 
@@ -135,5 +136,6 @@ End your turn with one of:
 - **PR opened:** `<url>` (`#<number>`), `head: <branch>`, `base: <base>`, and whether you performed the commit (step 2) or found it already done.
 - **PR re-pushed (follow-up mode):** `<existing-url>` (`#<pr_number>`), the new commit SHA, and whether you performed the fix commit (step 2 of Follow-up mode) or found it already done — see "Output (follow-up mode)" above for the exact shape.
 - **`held: <reason>`** — the push gate was red; nothing was committed or pushed.
+- **`held: CPU capacity unavailable after <n>s — <reason>`** — the commit was blocked for CPU capacity (`BLOCKED — CPU `) and the `safeCommit.capacityRequeues` re-issue cap ran out; nothing was committed or pushed. See the CPU capacity rule in Decision rules.
 - **`not-open: <state>`** (follow-up mode only) — the entry check found the PR is no longer `OPEN`; nothing was committed or pushed. See "Output (follow-up mode)" above.
 - **Refused** — the briefing named a protected `head` branch, or a `task/<id>-<slug>` shape (redirect the caller to `pr-author`), or was missing a required field.

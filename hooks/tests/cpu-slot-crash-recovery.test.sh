@@ -65,7 +65,7 @@ live_sleeper() { sleep 60 & SLP=$!; PIDS+=("$SLP"); }
 dead_pid() { sleep 0 & DEAD=$!; wait "$DEAD" 2>/dev/null; }
 
 export CPU_SLOT_POLL=1
-export CPU_SLOT_FAKE_LOAD=0   # the load gate never depends on this machine's real load
+export CPU_SLOT_FAKE_LOAD=0   # load is informational only (#524); fake it so output is deterministic
 unset CPU_SLOT_HELD
 
 # ---------------------------------------------------------------------------

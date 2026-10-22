@@ -57,7 +57,7 @@ pnpm run typecheck
 CPU_SLOT_LABEL="<project> #<task-id>" atelier-cpu-slot pnpm run test
 ```
 
-The full-suite `test` run takes the machine-wide CPU slot (`atelier-cpu-slot`) so parallel tasks and projects do not run heavy suites at once; `lint` and `typecheck` stay unwrapped, and so does any single-file test run. The per-commit hook (`hooks/safe-commit.sh`) takes the slot itself for its whole lint + typecheck + test pass, waiting up to `safeCommit.slotMaxWait` seconds (default 240, max 400) and otherwise blocking with `BLOCKED — CPU slot busy ...` — re-run the same commit and it waits again.
+The full-suite `test` run takes the machine-wide CPU slot (`atelier-cpu-slot`) so parallel tasks and projects do not run heavy suites at once; `lint` and `typecheck` stay unwrapped, and so does any single-file test run. The per-commit hook (`hooks/safe-commit.sh`) takes the slot itself for its whole lint + typecheck + test pass, waiting up to `safeCommit.slotMaxWait` seconds (default 240, max 400) and otherwise blocking with `BLOCKED — CPU slot busy ...` — re-run the same commit and it waits again. The slot limits concurrency only; machine load is informational and never blocks a commit, and there is no pre-commit CPU check (no `pgrep`, no load read, no `atelier-cpu-slot --status` / `--wait`). The re-run is bounded by `safeCommit.capacityRequeues` (default 8): `pr-author` / `pr-opener` re-issue the identical commit as the next foreground call, with no sleep and no poll, and when the bound runs out the task is held (`held: CPU capacity unavailable …`). A `BLOCKED — CPU ` block is not a red gate and is budget-exempt: it never consumes the §8 retry budget.
 
 For each command:
 

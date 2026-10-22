@@ -5,6 +5,8 @@
 # (scripts/atelier-cpu-slot acquire/release --owner <hook pid>):
 #   - the slot is held while the steps run and released on green, red and
 #     TERM;
+#   - machine load never blocks: load 50 on 4 cores with a free slot runs the
+#     gate (#524);
 #   - a busy slot (live unrelated holder) blocks with exit 2, a BLOCKED
 #     message and a `cpu-slot-busy` log entry once safeCommit.slotMaxWait
 #     elapses;
@@ -70,7 +72,7 @@ chmod +x "$SHIM_BIN/pnpm"
 export PATH="$SHIM_BIN:$PATH"
 
 CPU_SLOT_DIR="$TMP/cpu-slot"; mkdir -p "$CPU_SLOT_DIR"; export CPU_SLOT_DIR
-# Hermetic load gate: the real machine load must never make acquire wait.
+# Load never gates a slot (#524); fake it anyway so the message is deterministic.
 # Per-call env (group 4 sets CPU_SLOT_FAKE_LOAD=7.5) overrides this export.
 export CPU_SLOT_FAKE_LOAD=0
 LOCK="$CPU_SLOT_DIR/cpu-slot.lock"
@@ -239,6 +241,18 @@ log_has "cpu-slot-busy" && pass "logged cpu-slot-busy" || fail "no cpu-slot-busy
 [ "$(lock_pid)" = "$HOLDER" ] && pass "foreign holder's lock left untouched" || fail "foreign lock changed: '$(lock_pid)'"
 kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
 rm -rf "$LOCK"
+
+# === 4b: high load + free slot → the gate runs, nothing blocks (#524) ========
+P4B="$TMP/p4b"
+make_project "$P4B" '{ "name": "f", "version": "0.0.0", "scripts": { "test": "echo ran >> ran.txt" } }'
+printf '{ "safeCommit": { "slotMaxWait": 1 } }\n' > "$P4B/.atelier.json"
+stage_feature "$P4B"
+run_hook "$P4B" "git commit -m x" CPU_SLOT_POLL=1 CPU_SLOT_FAKE_LOAD=50 CPU_SLOT_FAKE_CORES=4
+[ "$RC" = "0" ] && pass "load 50 on 4 cores with a free slot → exit 0 (not blocked)" || fail "high load: expected exit 0, got $RC ($(cat "$ERR"))"
+[ "$(cat "$P4B/ran.txt" 2>/dev/null)" = "ran" ] && pass "load 50: the gate steps ran" || fail "load 50: steps did not run"
+grep -q 'BLOCKED' "$ERR" && fail "load 50: stderr carries BLOCKED: $(cat "$ERR")" || pass "load 50: no BLOCKED message"
+log_has "cpu-slot-busy" && fail "load 50: wrongly logged cpu-slot-busy" || pass "load 50: no cpu-slot-busy log"
+[ ! -e "$LOCK" ] && pass "load 50: slot released after the run" || fail "load 50: lock left behind"
 
 # === 5: N/A paths never touch the slot ========================================
 # Control: the recorder helper IS called for a real gate (acquire + release).
