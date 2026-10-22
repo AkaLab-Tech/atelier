@@ -227,7 +227,7 @@ This edit lives on the per-task branch and travels through the task's PR; the ro
 
 **For both backends** — the claim lives only on the task branch (files) or in the remote backend (non-files), so `origin/<base>`'s `ROADMAP.md` / `IN_PROGRESS.MD` are unchanged until the PR merges — which is exactly why step 2 uses the open `task/*` PRs (not the base `IN_PROGRESS.md`) as the claim registry.
 
-> **Forward reference — closing the task (pr-author).** When the PR is ready to close, `pr-author` must update tracking in the same PR. For the `files` backend that means the `IN_PROGRESS.md` → `HISTORY.md` move already documented in `skills/pr-flow/SKILL.md` §4. For a non-`files` backend, `pr-author` calls `appendHistoryEntry(id, prMetadata)` (per `docs/RoadmapBackend.md`) instead of editing local files directly — `prMetadata` carries `{ number, url, title, deliveredBullets[], testsNote, followUps? }` from the PR that is about to merge.
+> **Forward reference — closing the task (pr-author).** When the PR is ready to close, `pr-author` must update tracking in the same PR. For the `files` backend that means the `IN_PROGRESS.md` → `HISTORY.md` move already documented in `skills/pr-flow/SKILL.md` §4. For a non-`files` backend, `pr-author` does not call `appendHistoryEntry`/`moveTask`, does not close the issue and does not set Done; its only tracking duty is the `Closes #<id>` line in the PR body. The history move happens after merge, in `auto-merge` post-merge step 2, which calls `appendHistoryEntry(id, prMetadata)` (per `docs/RoadmapBackend.md`; `prMetadata` carries `{ number, url, title, deliveredBullets[], testsNote, followUps? }` from the merged PR).
 
 ### 7. Instantiate the per-task `.claude/settings.json`
 
@@ -255,6 +255,7 @@ Exit codes:
 Launch the `atelier:task-orchestrator` agent (Opus) via the `Task` tool. The briefing must include:
 
 - **`worktree_path`** — absolute path to the per-task worktree from step 5.
+- **`base: <base>`** — the base branch resolved in step 1; the orchestrator passes it to `pr-author` (PR base and size check), the reviewer and auto-merge.
 - **task record** — structured fields from step 3 (`id`, `title`, `type`, `priority`, `estimate`, `worktree`, `acceptance`, `context`).
 - **plan source + plan-storage mode (TASK_027 / #31 union gate)** — always pass `plan_source: <committed|local|resident>` (the `PLAN_SOURCE` discovered in step 3 — for the `files` backend this always equals `PLAN_STORAGE`; for a non-`files` backend it is the winner of the per-task union check and may diverge from the project's `PLAN_STORAGE` default) and `plan_storage: <PLAN_STORAGE>` (the preferred write mode captured in step 1, unchanged since — pass both so the orchestrator can tell the discovered source apart from the project default if they differ). For `PLAN_SOURCE` of `committed`/`local`, also pass `main_checkout_root: <MAIN_ROOT>`.
   - Under **`PLAN_SOURCE=committed`** (`files` backend, or a non-`files` backend holding a legacy/explicitly-committed plan file), the plan is on `origin/<base>` and therefore already checked out at `<worktree>/.plan/<id>.md`; the orchestrator Reads it there as today — nothing extra to carry. This behaviour is identical for both backend families.

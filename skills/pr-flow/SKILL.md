@@ -91,7 +91,7 @@ The identity file is written at install time by `install.sh` Phase B (`phase_b_c
 The gate runs here, on the code commit alone: it is local-only (`git diff <base>...<branch>`, no network, no PR object), so this is the earliest point at which it can run at all — and running it before step 4 is what keeps the OVERSIZE path coherent, because the task's `IN_PROGRESS.md` entry is still active and can carry the `[OVERSIZE]` marker. Once step 4 has moved that entry to `HISTORY.md` there is nothing left to mark.
 
 ```sh
-atelier-pr-size-check --branch task/<id>-<slug> --base main --project <worktree>
+atelier-pr-size-check --branch task/<id>-<slug> --base <base> --project <worktree>
 ```
 
 The tool reads `<worktree>/.atelier.json` (or built-in defaults) and applies the AND-gate over post-exemption counts. Exit codes:
@@ -100,7 +100,7 @@ The tool reads `<worktree>/.atelier.json` (or built-in defaults) and applies the
 - **1** OVERSIZE → **do NOT open the PR**, and **do not run step 4** — the task is not done, so its tracking entry must not move to `HISTORY.md`. Prepend the `[OVERSIZE]` marker to the task's heading in `<worktree>/IN_PROGRESS.md` and commit it as `chore(tracking): mark #<id> [OVERSIZE] — see size-check output` — on a project whose tracking lives in a backend rather than in files, **both** the edit and the commit are skipped (nothing was written, so there is nothing to commit, and the branch carries the code commit alone); then still run step 5 so the branch reaches `origin` and the operator can open the PR by hand. Surface the tool's stdout (including the suggested slice boundaries) back to the caller (`pr-author` agent or the operator). The marker rides the task branch, whose PR is never opened — landing an operator-visible marker on the base branch is `task-orchestrator`'s step 8. Opening the PR in this oversized shape would only consume a `reviewer` cycle and land at the auto-merge gate as held.
 - **2** error → fail loudly (typical causes: `jq` / `gh` missing, malformed `.atelier.json`).
 
-The count here is code-only in the literal sense — step 4's commit does not exist yet, so nothing bookkeeping can be counted. That does **not** mean the budget exempts bookkeeping: `DEFAULT_EXEMPT` covers lockfiles, generated files, tests and migrations, not `IN_PROGRESS.md` / `HISTORY.md`, so the `--pr`-mode run later (reviewer / auto-merge, on the pushed branch) counts the tracking commit too and lands slightly above this verdict. This gate is the cheap early check, not the authoritative one — a near-budget pass here can still be held there. A project that genuinely wants its tracking files out of the count sets its own `prSize.exempt` in `.atelier.json`. Deferring the check entirely to `auto-merge` would be too late (the reviewer already spent their cycle).
+Root bookkeeping files (`ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md`) are always exempt in `atelier-pr-size-check`, so this `--branch` verdict equals the later `--pr` verdict. A project can add its own `prSize.exempt` globs in `.atelier.json`; they are additive to the defaults. Quote the helper's `Counted:`/`Exempt:` lines verbatim in the PR body and the `oversized` return, never a self-computed total. Deferring the check entirely to `auto-merge` would be too late (the reviewer already spent their cycle).
 
 ### 4. Move tracking — same commit set, not a follow-up
 
@@ -176,13 +176,17 @@ Then open the PR with that file:
 
 ```sh
 gh pr create \
-  --base main \
+  --base <base> \
   --head task/<id>-<slug> \
   --title "<type>(<scope>): <subject>" \
   --body-file <worktree>/.task-log/tmp/pr-body.md
 ```
 
+`<base>` is the task base from the briefing (resolved by `/atelier:next-task` step 1) — never a literal `main`.
+
 The title must be **under 70 characters** (GitHub truncates anything longer in lists). Keep the body's `## Summary` to 1–3 bullets; details belong in commit messages, not PR descriptions.
+
+Then check the closing reference (GitHub backends): `gh pr view <N> --json closingIssuesReferences` must list the task id. If missing, fix the body once with `gh pr edit <N> --body-file <worktree>/.task-log/tmp/pr-body.md` and check again; if still missing, return hard failure `missing-closing-reference`, never "ready". Opening the PR never closes the issue or sets Done (no `gh issue close`): on non-`files` backends it closes on merge via `Closes #<id>`. Linear has no `closingIssuesReferences`; there only refrain from state changes.
 
 ### 7. Report the PR URL
 
@@ -192,6 +196,7 @@ Return:
 commit:     <short-sha> <subject>
 branch:     origin task/<id>-<slug>
 PR:         <url>
+closing:    <resolved closingIssuesReferences numbers>
 tracking:   IN_PROGRESS → HISTORY updated in this PR
 ```
 
