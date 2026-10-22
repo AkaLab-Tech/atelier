@@ -57,7 +57,9 @@
 #       identity must never go silent); a successful command with EMPTY
 #       stdout still prints the bare "✓ OK" line unchanged.
 #
-# Hermetic: gh AND atelier-branch-protection are stubbed on PATH; no network
+# Hermetic: gh AND atelier-branch-protection are stubbed on PATH, and the
+# inherited PATH is stripped of host atelier helper copies (e.g. ~/.local/bin)
+# so D8 cannot resolve a real helper; no network
 # calls, no real gh api, no dependency on the operator's ~/.config/gh.
 # The git rev-parse check inside check_branch_protection() relies on CWD
 # being inside a git repo — this file cd's into $TMP/repo at the start.
@@ -141,6 +143,21 @@ fi
 
 mkdir -p "$TMP/bin"
 export PATH="$TMP/bin:$PATH"
+
+# Drop every inherited PATH dir that ships its own atelier-branch-protection
+# (e.g. ~/.local/bin on a host with a managed atelier install), so the stub
+# is the only reachable copy and "helper not on PATH" cases stay hermetic.
+_clean_path=""
+_old_ifs=$IFS
+IFS=:
+for _d in $PATH; do
+  [ "$_d" = "$TMP/bin" ] && continue
+  [ -x "$_d/atelier-branch-protection" ] && continue
+  _clean_path="${_clean_path:+$_clean_path:}$_d"
+done
+IFS=$_old_ifs
+export PATH="$TMP/bin${_clean_path:+:$_clean_path}"
+unset _clean_path _old_ifs _d
 
 cat > "$TMP/bin/gh" << 'SHIMEOF'
 #!/usr/bin/env bash
@@ -445,6 +462,10 @@ fi
 reset_capture
 rm -f "$TMP/bin/atelier-branch-protection"
 unset CLAUDE_PLUGIN_ROOT
+_leak=$(command -v atelier-branch-protection 2>/dev/null || true)
+if [ -n "$_leak" ]; then
+  fail "D8 precondition: host helper leaked at $_leak"
+fi
 run_check
 
 if [ -f "$HOST_OUT" ] && grep -q "helper not found" "$HOST_OUT"; then
