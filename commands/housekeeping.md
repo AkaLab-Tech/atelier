@@ -82,5 +82,9 @@ if they authorized). No "all clean!" epilogue.
 - **Unresolvable task branch**: if the board cannot resolve a task branch's
   issue, it is reported by name with its reason under Kept (protected) and left
   untouched; the other tasks are classified normally.
+  The board is read from `.githubProject.owner`/`projectNumber`; when the
+  issue's own project items cannot see the item (a board owned by another
+  account, or a user-owned aggregated board), an owner-side scan of that board
+  resolves it, and an unreadable or incomplete scan keeps the item as unknown.
 - **Non-interactive context**: this command is interactive by design (it waits
   for the operator's authorization). Do not auto-add `--yes` to bypass that.
