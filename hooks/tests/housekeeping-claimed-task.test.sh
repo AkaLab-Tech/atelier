@@ -27,6 +27,23 @@
 #   6  board In Progress, branch pushed, no worktree, ancestor of base, PR
 #      NONE and PR MERGED -> local AND remote branch kept, claimed reason
 #
+#   7  partial GraphQL data (#550): one unresolvable issue (BADID, null alias +
+#      errors[]) makes only that task unknown; the resolvable Done/MERGED task
+#      is still cleaned up; --json lists the unknown one under skipped
+#   8  GitHub default branch is `stage` -> merged-into-stage branch deleted,
+#      merged-into-main-only branch goes to needs-review (#551)
+#   9  gh repo view fails, origin/HEAD -> stage: base is stage via fallback
+#   10 gh says stage, origin/HEAD says main: GitHub wins
+#   11 repo view fails and no origin/HEAD: base unresolved, nothing deleted as
+#      merged (fail closed, no main fallback)
+#
+# Extra shim contract (#550/#551):
+#   gh repo view ... --json defaultBranchRef --jq ... -> env GH_DEFAULT_BRANCH
+#       (unset = exit 1)
+#   GH_STATUS_<id>=BADID -> that alias is null + a matching errors[] entry,
+#       body printed, exit 1 (like the real gh on a partial result)
+#   GH_PR_STATE_<id> overrides GH_PR_STATE per task id
+#
 # Run:  hooks/tests/housekeeping-claimed-task.test.sh
 # Exit: 0 = all assertions passed, 1 = at least one failed.
 
@@ -54,8 +71,20 @@ mkdir -p "$BIN"
 cat > "$BIN/gh" <<'GHSHIM'
 #!/usr/bin/env bash
 case "${1:-}" in
+  repo)
+    [ -n "${GH_DEFAULT_BRANCH:-}" ] || exit 1
+    printf '%s\n' "$GH_DEFAULT_BRANCH"
+    exit 0 ;;
   pr)
-    printf '%s' "${GH_PR_STATE:-NONE}"
+    head=""
+    prev=""
+    for a in "$@"; do
+      [ "$prev" = "--head" ] && head="$a"
+      prev="$a"
+    done
+    pid="${head#task/}"; pid="${pid%%-*}"
+    var="GH_PR_STATE_$pid"
+    printf '%s' "${!var:-${GH_PR_STATE:-NONE}}"
     exit 0 ;;
   api)
     [ "${GH_GRAPHQL_FAIL:-0}" = "1" ] && exit 1
@@ -65,10 +94,16 @@ case "${1:-}" in
     done
     ids="$(printf '%s' "$q" | grep -oE 'i[0-9]+:issue' | sed -E 's/^i([0-9]+):issue$/\1/')"
     out='{"data":{"r":{'
-    sep=""
+    sep=""; errs=""; esep=""; rc=0
     for id in $ids; do
       var="GH_STATUS_$id"
       st="${!var:-NOITEM}"
+      if [ "$st" = "BADID" ]; then
+        out="$out$sep\"i$id\":null"
+        errs="$errs$esep{\"type\":\"NOT_FOUND\",\"path\":[\"r\",\"i$id\"],\"message\":\"Could not resolve to an Issue with the number of $id.\"}"
+        esep=","; rc=1; sep=","
+        continue
+      fi
       if [ "$st" = "NOITEM" ]; then
         nodes='[]'
       else
@@ -77,8 +112,12 @@ case "${1:-}" in
       out="$out$sep\"i$id\":{\"projectItems\":{\"nodes\":$nodes}}"
       sep=","
     done
-    printf '%s}}}\n' "$out"
-    exit 0 ;;
+    if [ -n "$errs" ]; then
+      printf '%s}},"errors":[%s]}\n' "$out" "$errs"
+    else
+      printf '%s}}}\n' "$out"
+    fi
+    exit "$rc" ;;
 esac
 exit 0
 GHSHIM
@@ -137,6 +176,9 @@ check_wt_kept() {
   if [ -d "$WT" ]; then pass "$1: worktree kept"; else fail "$1: worktree $WT was removed — data loss"; fi
 }
 
+# Cases 1-6 run with GitHub answering "main" as the default branch.
+export GH_DEFAULT_BRANCH=main
+
 # ---- Case 1 ---------------------------------------------------------------
 new_fixture c1
 export GH_STATUS_524="In Progress" GH_PR_STATE=NONE; unset GH_GRAPHQL_FAIL
@@ -161,6 +203,7 @@ run_hk
 check_exit "case 3"
 check_wt_kept "case 3"
 check_out "case 3" "claim state unknown"
+check_out "case 3" "board query failed (gh api graphql exit 1)"
 unset GH_GRAPHQL_FAIL
 
 # ---- Case 4 ---------------------------------------------------------------
@@ -190,6 +233,89 @@ for pr in NONE MERGED; do
   if has_remote task/524-fresh; then pass "case 6 ($pr): remote branch kept"; else fail "case 6 ($pr): remote branch deleted — output: $OUT"; fi
   check_out "case 6 ($pr)" "claimed task #524"
 done
+
+# helper: branch $1 (task/<n>-<slug>) with one commit on top of <from>.
+mk_branch() { # <name> <from> <file>
+  git -C "$REPO" branch "$1" "$2"
+  local d="$TMP/mkb-$$-$RANDOM"
+  git -C "$REPO" worktree add -q "$d" "$1"
+  printf '%s\n' "$1" > "$d/$3"
+  git -C "$d" add "$3"
+  git -C "$d" -c user.email=f@t -c user.name=F commit -qm "work $1"
+  git -C "$REPO" worktree remove --force "$d"
+}
+
+# stage_fixture <name> — branches: stage (base+1 commit, holds 700),
+# task/700-on-stage (merged into stage only), task/701-on-main (merged into main only).
+stage_fixture() {
+  new_fixture "$1" no
+  mk_branch task/700-on-stage main f700
+  mk_branch task/701-on-main main f701
+  git -C "$REPO" branch stage task/700-on-stage
+  git -C "$REPO" merge -q --ff-only task/701-on-main
+  export GH_STATUS_700=Done GH_STATUS_701=Done GH_PR_STATE=NONE
+}
+
+# ---- Case 7 ---------------------------------------------------------------
+new_fixture c7
+git -C "$REPO" branch task/999-gone main
+git -C "$REPO" push -q origin task/999-gone 2>/dev/null
+export GH_DEFAULT_BRANCH=main GH_STATUS_524=Done GH_STATUS_999=BADID GH_PR_STATE=MERGED
+run_hk
+check_exit "case 7"
+if [ ! -d "$WT" ]; then pass "case 7: resolvable Done/MERGED worktree #524 removed"; else fail "case 7: worktree #524 still present — one bad id poisoned the batch — output: $OUT"; fi
+if has_branch task/999-gone; then pass "case 7: local task/999-gone kept"; else fail "case 7: local task/999-gone deleted — output: $OUT"; fi
+if has_remote task/999-gone; then pass "case 7: remote task/999-gone kept"; else fail "case 7: remote task/999-gone deleted — output: $OUT"; fi
+check_out "case 7" "claim state unknown for #999 (task/999-gone)"
+check_out "case 7" "Could not resolve"
+JOUT="$(PATH="$BIN:$REPO_ROOT/scripts:$PATH" ATELIER_CONFIG_DIR="$CFG" \
+          bash "$HOUSEKEEPING" --project "$REPO" --json --no-stamp 2>/dev/null)"
+if printf '%s' "$JOUT" | jq -e '[.skipped[] | select(.target == "task/999-gone" and (.reason | contains("claim state unknown for #999") and contains("Could not resolve")))] | length >= 1' >/dev/null 2>&1; then
+  pass "case 7: --json skipped lists task/999-gone"
+else
+  fail "case 7: --json skipped lacks task/999-gone — json: $JOUT"
+fi
+
+# ---- Case 8 ---------------------------------------------------------------
+stage_fixture c8
+export GH_DEFAULT_BRANCH=stage
+run_hk
+check_exit "case 8"
+if ! has_branch task/700-on-stage; then pass "case 8: merged-into-stage branch deleted"; else fail "case 8: task/700-on-stage kept — output: $OUT"; fi
+if has_branch task/701-on-main; then pass "case 8: merged-into-main-only branch kept"; else fail "case 8: task/701-on-main deleted though not merged into stage — output: $OUT"; fi
+check_out "case 8" "merged into stage"
+check_out "case 8" "not merged into stage"
+
+# ---- Case 9 ---------------------------------------------------------------
+stage_fixture c9
+unset GH_DEFAULT_BRANCH
+git -C "$REPO" update-ref refs/remotes/origin/stage stage
+git -C "$REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/stage
+run_hk
+check_exit "case 9"
+if ! has_branch task/700-on-stage; then pass "case 9: base stage via origin/HEAD fallback, 700 deleted"; else fail "case 9: task/700-on-stage kept — output: $OUT"; fi
+if has_branch task/701-on-main; then pass "case 9: 701 kept"; else fail "case 9: task/701-on-main deleted — output: $OUT"; fi
+check_out "case 9" "not merged into stage"
+
+# ---- Case 10 --------------------------------------------------------------
+stage_fixture c10
+export GH_DEFAULT_BRANCH=stage
+git -C "$REPO" update-ref refs/remotes/origin/main main
+git -C "$REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+run_hk
+check_exit "case 10"
+if ! has_branch task/700-on-stage; then pass "case 10: GitHub (stage) wins over origin/HEAD (main), 700 deleted"; else fail "case 10: task/700-on-stage kept — output: $OUT"; fi
+if has_branch task/701-on-main; then pass "case 10: merged-into-main-only branch not classified merged"; else fail "case 10: task/701-on-main deleted — output: $OUT"; fi
+check_out "case 10" "not merged into stage"
+
+# ---- Case 11 --------------------------------------------------------------
+stage_fixture c11
+unset GH_DEFAULT_BRANCH
+run_hk
+check_exit "case 11"
+if has_branch task/700-on-stage; then pass "case 11: task/700-on-stage kept"; else fail "case 11: task/700-on-stage deleted with unresolved base — output: $OUT"; fi
+if has_branch task/701-on-main; then pass "case 11: task/701-on-main kept (no main fallback)"; else fail "case 11: task/701-on-main deleted with unresolved base — output: $OUT"; fi
+check_out "case 11" "base branch unresolved — merged-branch deletion skipped"
 
 echo ""
 if [ "$fails" -eq 0 ]; then

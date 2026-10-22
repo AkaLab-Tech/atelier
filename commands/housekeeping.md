@@ -73,7 +73,10 @@ if they authorized). No "all clean!" epilogue.
 - **No registered projects / no config**: the binary errors with a clear
   message (atelier not installed). Relay it; do not try to repair.
 - **`gh` not installed**: the binary notes it and falls back to
-  merged-into-main detection only (PR state unknown). Relay the note; the
+  merged-into-base detection only (PR state unknown). Relay the note; the
   reduced sweep is still safe.
+- **Unresolvable task branch**: if the board cannot resolve a task branch's
+  issue, it is reported by name with its reason under Kept (protected) and left
+  untouched; the other tasks are classified normally.
 - **Non-interactive context**: this command is interactive by design (it waits
   for the operator's authorization). Do not auto-add `--yes` to bypass that.
