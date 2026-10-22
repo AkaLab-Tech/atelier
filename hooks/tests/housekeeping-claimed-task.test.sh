@@ -92,6 +92,7 @@ case "${1:-}" in
     for a in "$@"; do
       case "$a" in query=*) q="${a#query=}" ;; esac
     done
+    case "$q" in *'name:\"'*) echo "shim: GraphQL query contains literal name:\\\" (backslash-quote); quote the query properly" >&2; exit 97 ;; esac
     case "$q" in
       *'items(first:100,after:$c,query:"repo:'*)
         # owner-side scan (#561): always an empty page here

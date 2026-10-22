@@ -317,7 +317,7 @@ load_claims() {
   ip="$(jq -c '(.githubProject.stateMap.inProgress // ["In Progress"]) | if type=="array" then . else [.] end' "$cfg" 2>/dev/null)" || return 0
   owner="$(jq -r '.githubProject.owner // empty' "$cfg" 2>/dev/null || true)"
   case "$owner" in ''|*[!A-Za-z0-9._-]*) owner="${slug%%/*}" ;; esac
-  local aidf='aid:fieldValueByName(name:\"Atelier ID\"){...on ProjectV2ItemFieldTextValue{text} ...on ProjectV2ItemFieldNumberValue{number}}'
+  local aidf='aid:fieldValueByName(name:"Atelier ID"){...on ProjectV2ItemFieldTextValue{text} ...on ProjectV2ItemFieldNumberValue{number}}'
   local ob=""
   q="query{r:repository(owner:\"${slug%%/*}\",name:\"${slug#*/}\"){"
   for id in "$@"; do

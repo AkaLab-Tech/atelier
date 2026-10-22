@@ -59,6 +59,7 @@ case "${1:-}" in
     for a in "$@"; do
       case "$a" in query=*) q="${a#query=}" ;; c=*) cur="${a#c=}" ;; esac
     done
+    case "$q" in *'name:\"'*) echo "shim: GraphQL query contains literal name:\\\" (backslash-quote); quote the query properly" >&2; exit 97 ;; esac
     case "$q" in
       *'items(first:100,after:$c,query:"repo:'*)
         if [ -n "$cur" ]; then echo "owner cursor=$cur" >> "$GH_CALL_LOG"; else echo "owner" >> "$GH_CALL_LOG"; fi
