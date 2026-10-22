@@ -124,7 +124,9 @@
 #     phase infers it from status wording or a stubbed intermediary, this
 #     one pins it at the real `gh` boundary.
 #
-# Hermetic: gh and atelier-branch-protection are stubbed on PATH throughout
+# Hermetic: gh and atelier-branch-protection are stubbed on PATH throughout,
+# and the inherited PATH is stripped of host atelier helper copies (e.g.
+# ~/.local/bin) so B3 cannot resolve a real helper
 # (Phase G is the one exception — it stubs only gh, against the real
 # helper); no network calls, no real gh api. macOS bash 3.2 compatible.
 #
@@ -149,6 +151,21 @@ fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 
 mkdir -p "$TMP/bin"
 export PATH="$TMP/bin:$PATH"
+
+# Drop every inherited PATH dir that ships its own atelier-branch-protection
+# (e.g. ~/.local/bin on a host with a managed atelier install), so the stub
+# is the only reachable copy and "helper not on PATH" cases stay hermetic.
+_clean_path=""
+_old_ifs=$IFS
+IFS=:
+for _d in $PATH; do
+  [ "$_d" = "$TMP/bin" ] && continue
+  [ -x "$_d/atelier-branch-protection" ] && continue
+  _clean_path="${_clean_path:+$_clean_path:}$_d"
+done
+IFS=$_old_ifs
+export PATH="$TMP/bin${_clean_path:+:$_clean_path}"
+unset _clean_path _old_ifs _d
 
 AUTH_DIR="$TMP/auth"
 mkdir -p "$AUTH_DIR"
@@ -613,6 +630,10 @@ rm -f "$HELPER_INVOKED"
 mv "$TMP/bin/atelier-branch-protection" "$TMP/bin/atelier-branch-protection.disabled"
 NO_BRANCH_PROTECTION_FLAG=false
 BRANCH_PROTECTION_STATUS=""
+_leak=$(command -v atelier-branch-protection 2>/dev/null || true)
+if [ -n "$_leak" ]; then
+  fail "B3 precondition: host helper leaked at $_leak"
+fi
 step_branch_protection
 step_rc=$?
 
