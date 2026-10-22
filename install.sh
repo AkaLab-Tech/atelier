@@ -1711,6 +1711,9 @@ phase_c_1_setup_project_helper() {
   # bounded --wait; shares /tmp/cpu-slot.lock with the loose script.
   _phase_c_1_symlink_helper atelier-cpu-slot
 
+  # #457: local record of denied task-orchestrator / planner dispatches.
+  _phase_c_1_symlink_helper atelier-dispatch-denial
+
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it
   # yet. Warn rather than fail.

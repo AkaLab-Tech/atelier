@@ -281,6 +281,23 @@ session:
   operator is asked once in the same session, the identical brief is re-issued
   once only on their answer, and it is never reworded or moved to another
   session.
+- **Dispatch prompts are inline; briefs stay lean (#457).** The `Task`/`Agent`
+  prompt carries the whole brief; files are data only, never "Read X and follow
+  it". Workers and plan sessions dispatch `task-orchestrator` and the planner
+  only through `/atelier:next-task`, `/atelier:resume-task` and
+  `/atelier:plan-task` (no freehand brief files). A brief carries no restated
+  enforcement lists (hooks and agent definitions already enforce them), no
+  contract overrides (a departure from an atelier contract belongs in the
+  approved plan; the brief points to it) and no task or session history.
+- **Session context hygiene (#457).** A held dispatch stays in the session
+  where it was denied: the session never compacts, restarts or clears itself
+  to re-send it, and atelier never suggests `/clear` plus re-dispatch as a
+  reaction to a denial (that launders the denial through a fresh context, like
+  moving it to another session). Independently of any denial, the standing
+  practice is a fresh context per task: the operator runs `/clear` between
+  tasks, before `/atelier:next-task`. Consent comes only from the held-path
+  `AskUserQuestion` answer. Each denied dispatch is recorded locally by
+  `atelier-dispatch-denial`.
 - **No paste-phrases.** Never compose a phrase for the operator to type or paste
   into another terminal. It cannot clear an auto-mode block (the classifier
   does not treat consent as clearing adversarial-pattern denials) and it
