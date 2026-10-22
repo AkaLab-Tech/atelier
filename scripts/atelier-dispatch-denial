@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+#
+# atelier-dispatch-denial — local record of denied task-orchestrator / planner
+# dispatches (#457), so the operator has evidence to file via /feedback.
+#
+# Usage:
+#   atelier-dispatch-denial record --project <root> --command <next-task|resume-task|plan-task>
+#       --agent <task-orchestrator|planner> --task <id> --tag '<verbatim>'
+#       --attempt <1|2> --prompt-file <path>
+#       [--session-role plan|worker|unknown] [--prior-denials-in-session <n>]
+#     Appends one JSON line to dispatch-denials.jsonl and keeps a copy of the
+#     exact dispatch prompt (dir 0700, file 0600). Prints the ref (a timestamp)
+#     on stdout.
+#   atelier-dispatch-denial outcome --ref <ref> --choice <redispatch|held|abandon>
+#       [--reissue accepted|denied]
+#     Records the operator's answer and the re-issue result.
+#   atelier-dispatch-denial report [--since <YYYY-MM-DD>] [--project <name>]
+#     Prints a markdown table.
+#
+# State lives in ${ATELIER_STATE_DIR:-~/.local/state/atelier}. Local only;
+# removed by atelier-uninstall.
+
+set -euo pipefail
+
+STATE_DIR="${ATELIER_STATE_DIR:-$HOME/.local/state/atelier}"
+LOG="$STATE_DIR/dispatch-denials.jsonl"
+COPIES="$STATE_DIR/dispatch-denials"
+
+die() { echo "atelier-dispatch-denial: $*" >&2; exit 2; }
+
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+cmd_record() {
+  local project="" command="" agent="" task="" tag="" attempt="" pfile=""
+  local role="unknown" prior=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project="${2-}"; shift 2 ;;
+      --command) command="${2-}"; shift 2 ;;
+      --agent) agent="${2-}"; shift 2 ;;
+      --task) task="${2-}"; shift 2 ;;
+      --tag) tag="${2-}"; shift 2 ;;
+      --attempt) attempt="${2-}"; shift 2 ;;
+      --prompt-file) pfile="${2-}"; shift 2 ;;
+      --session-role) role="${2-}"; shift 2 ;;
+      --prior-denials-in-session) prior="${2-}"; shift 2 ;;
+      *) die "record: unknown argument: $1" ;;
+    esac
+  done
+  [ -n "$project" ] || die "record: --project is required"
+  [ -n "$command" ] || die "record: --command is required"
+  [ -n "$agent" ] || die "record: --agent is required"
+  [ -n "$task" ] || die "record: --task is required"
+  [ -n "$tag" ] || die "record: --tag is required"
+  [ -n "$attempt" ] || die "record: --attempt is required"
+  [ -f "$pfile" ] || die "record: --prompt-file must be an existing file"
+  case "$attempt" in 1|2) ;; *) die "record: --attempt must be 1 or 2" ;; esac
+  case "$role" in plan|worker|unknown) ;; *) die "record: --session-role must be plan|worker|unknown" ;; esac
+  [ -z "$prior" ] || case "$prior" in *[!0-9]*) die "record: --prior-denials-in-session must be a number" ;; esac
+
+  local pname ts ref copy sha lines form
+  pname=$(basename "$project")
+  ts=$(date -u +%Y%m%dT%H%M%SZ)
+  ref="$ts"
+  mkdir -p "$COPIES"
+  chmod 700 "$COPIES"
+  local n=1
+  while compgen -G "$COPIES/$ref-*" >/dev/null; do n=$((n + 1)); ref="$ts-$n"; done
+  copy="$COPIES/$ref-$pname-${task#\#}.md"
+  (umask 077; cp "$pfile" "$copy")
+  chmod 600 "$copy"
+  sha=$(sha256_of "$copy")
+  lines=$(wc -l < "$copy" | tr -d ' ')
+  form=inline
+  if [ "$lines" -le 3 ] && grep -Eiq '(read|open) .* and follow' "$copy"; then form=file-pointer; fi
+
+  (umask 077; jq -cn \
+    --arg ref "$ref" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg project "$pname" \
+    --arg root "$project" --arg command "$command" --arg agent "$agent" --arg task "$task" \
+    --arg tag "$tag" --argjson attempt "$attempt" --arg copy "$copy" --arg sha "$sha" \
+    --argjson lines "$lines" --arg form "$form" --arg role "$role" --arg prior "$prior" \
+    '{type:"denial",ref:$ref,date:$date,project:$project,project_root:$root,command:$command,
+      agent:$agent,task:$task,tag:$tag,attempt:$attempt,prompt_copy:$copy,prompt_sha256:$sha,
+      prompt_lines:$lines,prompt_form:$form,session_role:$role,
+      prior_denials_in_session:(if $prior == "" then null else ($prior|tonumber) end)}' >> "$LOG")
+  chmod 600 "$LOG"
+  echo "$ref"
+}
+
+cmd_outcome() {
+  local ref="" choice="" reissue=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ref) ref="${2-}"; shift 2 ;;
+      --choice) choice="${2-}"; shift 2 ;;
+      --reissue) reissue="${2-}"; shift 2 ;;
+      *) die "outcome: unknown argument: $1" ;;
+    esac
+  done
+  [ -n "$ref" ] || die "outcome: --ref is required"
+  case "$choice" in redispatch|held|abandon) ;; *) die "outcome: --choice must be redispatch|held|abandon" ;; esac
+  [ -z "$reissue" ] || case "$reissue" in accepted|denied) ;; *) die "outcome: --reissue must be accepted|denied" ;; esac
+  if [ ! -f "$LOG" ] || ! grep -q "\"ref\":\"$ref\"" "$LOG"; then die "outcome: unknown ref: $ref"; fi
+  (umask 077; jq -cn --arg ref "$ref" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg choice "$choice" --arg reissue "$reissue" \
+    '{type:"outcome",ref:$ref,date:$date,choice:$choice,reissue:(if $reissue == "" then null else $reissue end)}' >> "$LOG")
+}
+
+cmd_report() {
+  local since="" project=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --since) since="${2-}"; shift 2 ;;
+      --project) project="${2-}"; shift 2 ;;
+      *) die "report: unknown argument: $1" ;;
+    esac
+  done
+  echo "| date | project | agent | task | tag | attempt | prompt sha256 | lines | form | prior denials | choice | re-issue |"
+  echo "|---|---|---|---|---|---|---|---|---|---|---|---|"
+  [ -f "$LOG" ] || return 0
+  jq -rs --arg since "$since" --arg project "$project" '
+    (map(select(.type == "outcome")) | group_by(.ref) | map({key: .[0].ref, value: .[-1]}) | from_entries) as $out
+    | map(select(.type == "denial"))
+    | map(select(($since == "") or (.date[0:10] >= $since)))
+    | map(select(($project == "") or (.project == $project)))
+    | .[] | . as $d | ($out[$d.ref] // {}) as $o
+    | "| \($d.date[0:10]) | \($d.project) | \($d.agent) | \($d.task) | \($d.tag) | \($d.attempt) | \($d.prompt_sha256[0:12]) | \($d.prompt_lines) | \($d.prompt_form) | \($d.prior_denials_in_session // "?") | \($o.choice // "-") | \($o.reissue // "-") |"
+  ' "$LOG"
+}
+
+sub="${1-}"
+[ $# -eq 0 ] || shift
+case "$sub" in
+  record) cmd_record "$@" ;;
+  outcome) cmd_outcome "$@" ;;
+  report) cmd_report "$@" ;;
+  -h|--help|help|"") sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//'; [ -n "$sub" ] || exit 2 ;;
+  *) die "unknown subcommand: $sub" ;;
+esac
