@@ -20,6 +20,9 @@
 #     IN_PROGRESS.md reference (main checkout or the task's worktree; also
 #     [BLOCKED]/[OVERSIZE]) on files. A claim that cannot be read (gh failing,
 #     non-numeric id, no board item, linear) is "unknown" and also skipped.
+#     The board is read from .githubProject.owner/projectNumber, with an
+#     owner-side fallback when issue.projectItems cannot see the item
+#     (cross-owner or user-owned aggregated boards).
 #     On github-project `task/<N>-<slug>` carries the GitHub ISSUE number; the
 #     board's Atelier ID is only a cross-check. An item whose Atelier ID differs
 #     from N, or whose N is the Atelier ID of another issue, is a "mismatch":
@@ -220,6 +223,76 @@ branch_task_id() {
 # Claim context for the project being enumerated (set by load_claims).
 CLAIM_BACKEND=""; BOARD_CLAIMS=""; CLAIM_SRC=""; CLAIM_PROJ_REASON=""
 
+# Owner-side fallback for ids the issue side left at "no item on project #PN"
+# (issue.projectItems cannot see items of a board owned by another account, or
+# of a user-owned aggregated board). One cursor-paged scan of the configured
+# board filtered to the repo; only those ids' BOARD_CLAIMS lines are rewritten.
+# Every failure keeps the ids unknown (fail closed) with a clear reason.
+load_claims_owner_scan() {
+  local slug="$1" owner="$2" pn="$3" ip="$4" aidf="$5"
+  local ids line id q out cursor="" page=0 more=1 err="" found="" pg res rep
+  ids="$(printf '%s\n' "$BOARD_CLAIMS" | awk -F'\t' -v r="no item on project #$pn" '$2 == "unknown" && $3 == r { print $1 }')"
+  [ -n "$ids" ] || return 0
+  q="query(\$c:String){o:repositoryOwner(login:\"$owner\"){...on ProjectV2Owner{p:projectV2(number:$pn){items(first:100,after:\$c,query:\"repo:$slug\"){pageInfo{hasNextPage endCursor} nodes{content{...on Issue{number repository{nameWithOwner}}} st:fieldValueByName(name:\"Status\"){...on ProjectV2ItemFieldSingleSelectValue{name}} $aidf}}}}}}"
+  while [ "$more" = 1 ] && [ "$page" -lt 10 ]; do
+    page=$((page + 1))
+    local rc=0
+    if [ -n "$cursor" ]; then
+      out="$(env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api graphql -f query="$q" -f c="$cursor" 2>/dev/null)" || rc=$?
+    else
+      out="$(env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api graphql -f query="$q" 2>/dev/null)" || rc=$?
+    fi
+    if ! printf '%s' "$out" | jq -e '.data.o.p.items | type == "object"' >/dev/null 2>&1; then
+      err="$(printf '%s' "$out" | jq -r '.errors[0].message // empty' 2>/dev/null || true)"
+      err="${err:-gh api graphql exit $rc}"
+      break
+    fi
+    pg="$(printf '%s' "$out" | jq -r --argjson ip "$ip" --arg slug "$slug" '
+      def norm: (if . == null then "" else tostring end) | gsub("^\\s+|\\s+$"; "") | sub("^#"; "") | sub("\\.0+$"; "");
+      .data.o.p.items.nodes[]?
+      | select((.content.number? // null) != null
+               and ((.content.repository.nameWithOwner // "") | ascii_downcase) == ($slug | ascii_downcase))
+      | (.aid // {} | (.text // .number // "") | norm) as $a
+      | (.st.name // "") as $s
+      | "\(.content.number)\t\(if any($ip[]; . == $s) then "claimed" else "free" end)\t\($a)"')"
+    [ -z "$pg" ] || found="$found$pg"$'\n'
+    more=0; cursor=""
+    if [ "$(printf '%s' "$out" | jq -r '.data.o.p.items.pageInfo.hasNextPage')" = true ]; then
+      cursor="$(printf '%s' "$out" | jq -r '.data.o.p.items.pageInfo.endCursor')"
+      more=1
+    fi
+    # stop early once every id has been seen
+    local all=1
+    for id in $ids; do
+      printf '%s' "$found" | awk -F'\t' -v i="$id" '$1 == i { f = 1 } END { exit !f }' || all=0
+    done
+    [ "$all" = 1 ] && { more=0; break; }
+  done
+  [ -z "$err" ] || warn "board: cannot read project $owner/#$pn with the author identity: $err"
+  res=""
+  for id in $ids; do
+    line="$(printf '%s' "$found" | awk -F'\t' -v i="$id" '$1 == i { print; exit }')"
+    if [ -n "$line" ]; then
+      local st aid
+      st="$(printf '%s' "$line" | cut -f2)"; aid="$(printf '%s' "$line" | cut -f3)"
+      if [ -n "$aid" ] && [ "$aid" != "$id" ]; then
+        rep="$id"$'\t'"mismatch"$'\t'"board Atelier ID is $aid"
+      else
+        rep="$id"$'\t'"$st"$'\t'
+      fi
+    elif [ -n "$err" ]; then
+      rep="$id"$'\t'"unknown"$'\t'"cannot read project $owner/#$pn with the author identity: $err"
+    elif [ "$more" = 1 ]; then
+      rep="$id"$'\t'"unknown"$'\t'"board scan truncated at 1000 items — claim unknown"
+    else
+      rep="$id"$'\t'"unknown"$'\t'"no item for $slug#$id on project $owner/#$pn"
+    fi
+    res="$res$rep"$'\n'
+  done
+  BOARD_CLAIMS="$(awk -F'\t' 'NR == FNR { m[$1] = $0; next } ($1 in m) { print m[$1]; next } { print }' \
+    <(printf '%s' "$res") <(printf '%s\n' "$BOARD_CLAIMS"))"
+}
+
 # Resolve the backend once and, on github-project, read every candidate task's
 # board Status with ONE batched, aliased `gh api graphql` (never item-list,
 # never the cache: a deletion gate must not read stale data). BOARD_CLAIMS gets
@@ -248,7 +321,7 @@ load_claims() {
   local ob=""
   q="query{r:repository(owner:\"${slug%%/*}\",name:\"${slug#*/}\"){"
   for id in "$@"; do
-    q="$q i$id:issue(number:$id){projectItems(first:10){nodes{project{number} fieldValueByName(name:\"Status\"){...on ProjectV2ItemFieldSingleSelectValue{name}} $aidf}}}"
+    q="$q i$id:issue(number:$id){projectItems(first:10){nodes{project{number owner{...on User{login} ...on Organization{login}}} fieldValueByName(name:\"Status\"){...on ProjectV2ItemFieldSingleSelectValue{name}} $aidf}}}"
     ob="$ob a$id:items(first:5,query:\"\\\"Atelier ID\\\":$id\"){nodes{content{...on Issue{number repository{nameWithOwner}}} $aidf}}"
   done
   q="$q},o:repositoryOwner(login:\"$owner\"){...on ProjectV2Owner{p:projectV2(number:$pn){$ob}}}"
@@ -259,14 +332,15 @@ load_claims() {
     CLAIM_PROJ_REASON="${msg:-board query failed (gh api graphql exit $rc)}"
     return 0
   fi
-  BOARD_CLAIMS="$(printf '%s' "$out" | jq -r --argjson pn "$pn" --argjson ip "$ip" --arg slug "$slug" '
+  BOARD_CLAIMS="$(printf '%s' "$out" | jq -r --argjson pn "$pn" --argjson ip "$ip" --arg slug "$slug" --arg owner "$owner" '
+    def pm: .project.number == $pn and ((.project.owner.login // "") | ascii_downcase) == ($owner | ascii_downcase);
     def norm: (if . == null then "" else tostring end) | gsub("^\\s+|\\s+$"; "") | sub("^#"; "") | sub("\\.0+$"; "");
     def aidv: (.aid // {}) | (.text // .number // "") | norm;
     (.errors // []) as $errs
     | (.data.o.p) as $p
     | .data.r | to_entries[] | .key[1:] as $id
     | (if .value == null then []
-       else [.value.projectItems.nodes[]? | select(.project.number == $pn) | aidv | select(. != "" and . != $id)] end) as $ma
+       else [.value.projectItems.nodes[]? | select(pm) | aidv | select(. != "" and . != $id)] end) as $ma
     | (if ($p | type) == "object" and ($p["a\($id)"] == null or (($p["a\($id)"].nodes?) | type) == "array")
        then [($p["a\($id)"].nodes // [])[]
              | select(aidv == $id and ((.content.number? // null) != null)
@@ -275,7 +349,7 @@ load_claims() {
              | .content.number]
        else null end) as $mb
     | (if .value == null then ["unknown", ([$errs[] | select(.path == ["r", "i\($id)"]) | .message][0]) // "could not resolve issue #\($id)"]
-       else [.value.projectItems.nodes[]? | select(.project.number == $pn)] as $m
+       else [.value.projectItems.nodes[]? | select(pm)] as $m
          | if ($m | length) == 0 then ["unknown", "no item on project #\($pn)"]
            else [(if any($m[]; (.fieldValueByName.name // "") as $s | any($ip[]; . == $s)) then "claimed" else "free" end), ""]
            end
@@ -285,6 +359,7 @@ load_claims() {
       elif $mb == null and $b[0] != "unknown" then "\($id)\tunknown\tAtelier ID cross-check unreadable"
       else "\($id)\t\($b[0])\t\($b[1])" end' 2>/dev/null)" || BOARD_CLAIMS=""
   [ -n "$BOARD_CLAIMS" ] || CLAIM_PROJ_REASON="board query returned no readable items"
+  [ -z "$BOARD_CLAIMS" ] || load_claims_owner_scan "$slug" "$owner" "$pn" "$ip" "$aidf"
   local bad
   bad="$(printf '%s\n' "$BOARD_CLAIMS" | awk -F'\t' '$2 == "unknown" { print "task/" $1 }' | paste -sd, - | sed 's/,/, /g')"
   [ -z "$bad" ] || warn "board: some task branches unresolvable ($bad)"

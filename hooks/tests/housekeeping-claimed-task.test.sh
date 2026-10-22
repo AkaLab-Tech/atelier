@@ -92,6 +92,12 @@ case "${1:-}" in
     for a in "$@"; do
       case "$a" in query=*) q="${a#query=}" ;; esac
     done
+    case "$q" in
+      *'items(first:100,after:$c,query:"repo:'*)
+        # owner-side scan (#561): always an empty page here
+        printf '{"data":{"o":{"p":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}\n'
+        exit 0 ;;
+    esac
     ids="$(printf '%s' "$q" | grep -oE 'i[0-9]+:issue' | sed -E 's/^i([0-9]+):issue$/\1/')"
     out='{"data":{"r":{'
     sep=""; errs=""; esep=""; rc=0
@@ -107,7 +113,7 @@ case "${1:-}" in
       if [ "$st" = "NOITEM" ]; then
         nodes='[]'
       else
-        nodes="[{\"project\":{\"number\":1},\"fieldValueByName\":{\"name\":\"$st\"}}]"
+        nodes="[{\"project\":{\"number\":1,\"owner\":{\"login\":\"fixture\"}},\"fieldValueByName\":{\"name\":\"$st\"}}]"
       fi
       out="$out$sep\"i$id\":{\"projectItems\":{\"nodes\":$nodes}}"
       sep=","
