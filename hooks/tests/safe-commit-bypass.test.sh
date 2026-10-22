@@ -49,6 +49,8 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=../lib/portable-timeout.sh
+source "$REPO_ROOT/hooks/lib/portable-timeout.sh"
 HOOK="$REPO_ROOT/hooks/safe-commit.sh"
 
 TMP="$(mktemp -d)"
@@ -113,7 +115,7 @@ run_hook_env_skip() {
   echo "$?"
 }
 
-# Like run_hook, but wraps the actual hook invocation in a hard `timeout`
+# Like run_hook, but wraps the actual hook invocation in a hard `atelier_timeout`
 # so that if strip_message_payload's anti-hang guard ever regresses (the
 # #277 cycle-2 bug: an unquoted glob operand in ${var/pat/repl} spins
 # forever on bracket/glob-metachar commit messages), the ASSERTION fails
@@ -128,7 +130,7 @@ run_hook_bounded() {
     cd "$pwd_dir" || exit 99
     CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
     CLAUDE_PROJECT_DIR="$TMP/logs" \
-      timeout 8 bash "$HOOK" <<<"$payload" >/dev/null 2>&1
+      atelier_timeout 8 bash "$HOOK" <<<"$payload" >/dev/null 2>&1
   )
   echo "$?"
 }

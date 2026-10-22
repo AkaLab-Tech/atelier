@@ -19,6 +19,8 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=../lib/portable-timeout.sh
+source "$REPO_ROOT/hooks/lib/portable-timeout.sh"
 CHECK="$REPO_ROOT/scripts/atelier-diff-scope-check"
 IMPL="$REPO_ROOT/agents/implementer.md"
 ORCH="$REPO_ROOT/agents/task-orchestrator.md"
@@ -239,10 +241,8 @@ printf '%s\n' "$OUT" | grep -q 'result=pass' && fail "error exit must never prin
 
 # Flag with no/empty value must exit 2 (regression: trailing --plan looped
 # forever). Hang-guarded so a regression fails instead of hanging CI.
-guarded() { # args... ; a timeout yields rc 124 (timeout) or 142 (perl alarm)
-  if command -v timeout >/dev/null 2>&1; then timeout 10 bash "$CHECK" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then gtimeout 10 bash "$CHECK" "$@"
-  else perl -e 'alarm 10; exec @ARGV' bash "$CHECK" "$@"; fi
+guarded() { # args... ; a hang yields rc 124 (atelier_timeout deadline)
+  atelier_timeout 10 bash "$CHECK" "$@"
 }
 OUT=$(guarded --worktree "$WT" --base main --plan 2>&1); RC=$?
 expect "trailing --plan without value exits 2 (no hang)" 2 ''
