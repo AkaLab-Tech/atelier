@@ -208,6 +208,36 @@ assert_allow "fast path: git status"             'git status'
 assert_allow "commit message mentions gh pr review" 'git commit -m "docs: explain gh pr review --approve and gh auth token"'
 assert_allow "echo mentions gh pr review"        'echo "run gh pr review later"'
 
+echo "== env option handling (inherited GH_CONFIG_DIR=author, no inherited token) =="
+A="$AUTHOR"
+EI="GH_CONFIG_DIR=$A"
+assert_block "env -i clears inherited config"          'env -i HOME=/tmp PATH=/usr/bin gh pr review 1 --approve' "$EI"
+assert_block "env - (bare dash) clears"                'env - gh pr review 1 --approve' "$EI"
+assert_block "env --ignore-environment clears"         'env --ignore-environment gh pr review 1 --approve' "$EI"
+assert_block "env --unset=GH_CONFIG_DIR"               'env --unset=GH_CONFIG_DIR gh pr review 1 --approve' "$EI"
+assert_block "env -uGH_CONFIG_DIR"                     'env -uGH_CONFIG_DIR gh pr review 1 --approve' "$EI"
+assert_block "env --unset GH_CONFIG_DIR"               'env --unset GH_CONFIG_DIR gh pr review 1 --approve' "$EI"
+assert_block "env -S unsets inside the string"         "env -S'-u GH_CONFIG_DIR gh pr review 1 --approve'" "$EI"
+assert_block "env -i then GH_TOKEN=x (token applies)"  "env -i GH_TOKEN=x GH_CONFIG_DIR=$A gh pr comment 1 -b x" "$EI"
+assert_block "env -C arg consumed, then -u"            'env -C /tmp -u GH_CONFIG_DIR gh pr comment 1 -b x' "$EI"
+assert_block "env -vi cluster clears"                  'env -vi gh pr review 1 --approve' "$EI"
+assert_block "env -iu X cluster, -u takes next arg"    'env -iu X gh pr review 1 --approve' "$EI"
+assert_block "env unknown long option fails closed"    'env --bogus gh pr review 1 --approve' "$EI"
+assert_block "env -iS'...' cluster recurses"           "env -iS'gh pr review 1 --approve'" "$EI"
+assert_block "env unknown -x before gh auth token"     'env -x gh auth token' "$EI"
+assert_block "env unknown -z before -S review"         "env -z -S 'gh pr review 1 --approve'" "$EI"
+
+assert_allow "env -i with author config re-set"        "env -i GH_CONFIG_DIR=$A gh pr review 1 --approve" "$EI"
+assert_allow "env -S with inherited author"            "env -S 'gh pr review 1 --approve'" "$EI"
+assert_allow "env -S with inline author"               "env -S 'GH_CONFIG_DIR=$A gh pr review 1 --approve'" "$EI"
+assert_allow "env -C consumes its argument"            'env -C /tmp gh pr comment 1 -b x' "$EI"
+assert_allow "env --chdir=/tmp -0"                     'env --chdir=/tmp -0 gh pr comment 1 -b x' "$EI"
+assert_allow "env -iuGH_TOKEN then author config"      "env -iuGH_TOKEN GH_CONFIG_DIR=$A gh pr review 1 --approve" "$EI"
+assert_allow "env -v is harmless"                      'env -v gh pr comment 1 -b x' "$EI"
+assert_allow "env -iS'...' with author config"         "env -iS'GH_CONFIG_DIR=$A gh pr review 1 --approve'" "$EI"
+assert_allow "env unknown option before a read"        'env -x gh pr list' "$EI"
+assert_allow "env -0 -u GH_TOKEN (token only)"         'env -0 -u GH_TOKEN gh pr comment 1 -b x' "$EI"
+
 echo
 echo "blocked cases: $blocked_n, allowed cases: $allowed_n"
 total=$((blocked_n + allowed_n))

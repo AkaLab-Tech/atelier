@@ -301,9 +301,19 @@ identity_allowed() { # value of the effective GH_CONFIG_DIR
   return 1
 }
 
+ENV_UNK_IN=""
+# An env option this hook cannot model might change gh's environment: fail closed.
+block_env_unknown() { # label
+  [ -z "${E_UNK:-}" ] && return 0
+  block "$1 behind an env option the guard cannot model ($E_UNK)" \
+    "env $E_UNK may alter the environment gh runs under (config dir / token), so the identity cannot be verified" \
+    "drop the unrecognised env option (supported: -i, -u NAME, -S STR, -C DIR, -P PATH, -a ARG, -0, -v and NAME=value) and retry."
+}
+
 # Allowed only under an atelier identity with no token override.
 check_identity() { # label
   local n st stvar cfgval
+  block_env_unknown "$1"
   for n in $TOKEN_VARS; do
     stvar="E_TS_$n"; st="${!stvar}"
     if [ "$st" = "SET" ]; then
@@ -427,6 +437,7 @@ analyze_gh() { # args after `gh` live in GH_ARGS
 
 check_exfil_identity() { # label — credential read under a non-atelier config
   local cfgval
+  block_env_unknown "credential grab: $1"
   case "$E_CFG_STATE" in
     set) cfgval="$E_CFG_VAL" ;;
     cleared) cfgval="" ;;
@@ -443,7 +454,7 @@ process_script() { # script depth
   local script="$1" depth="$2"
   [ "$depth" -gt 4 ] && return 0
   local out seg toks nt i t base j sub skip_next prev a lc cmd_idx
-  local sv1 sv2 sv3 sv4 sv5
+  local sv1 sv2 sv3 sv4 sv5 sv6 sv7 env_split E_UNK k c rest do_split
   lex "$script"
   out="$LEX_OUT"
   while [ -n "$out" ]; do
@@ -455,6 +466,7 @@ process_script() { # script depth
     nt=${#toks[@]}
     CUR_SEG_TEXT=""
     for t in "${toks[@]}"; do CUR_SEG_TEXT+="$t "; done
+    E_UNK="$ENV_UNK_IN"; ENV_UNK_IN=""
 
     E_CFG_STATE="$S_CFG_STATE"; E_CFG_VAL="$S_CFG_VAL"
     E_TS_GH_TOKEN="$S_TS_GH_TOKEN"; E_TS_GITHUB_TOKEN="$S_TS_GITHUB_TOKEN"; E_TS_GH_ENTERPRISE_TOKEN="$S_TS_GH_ENTERPRISE_TOKEN"
@@ -492,14 +504,59 @@ process_script() { # script depth
           i=$((i + 1))
           while [ "$i" -lt "$nt" ]; do
             t="${toks[$i]}"
+            do_split=0
             if [[ "$t" =~ $ASSIGN_RE ]]; then
               apply_assign E "${t%%=*}" "${t#*=}"; i=$((i + 1))
-            elif [ "$t" = "-u" ] && [ $((i + 1)) -lt "$nt" ]; then
-              apply_unset E "${toks[$((i + 1))]}"; i=$((i + 2))
-            elif [ "${t:0:1}" = "-" ]; then
+            elif [ "$t" = "-" ] || [ "$t" = "--ignore-environment" ]; then
+              # Starts from an empty environment: nothing inherited reaches gh.
+              apply_unset E GH_CONFIG_DIR; apply_unset E GH_TOKEN; apply_unset E GITHUB_TOKEN; apply_unset E GH_ENTERPRISE_TOKEN
               i=$((i + 1))
+            elif { [ "$t" = "--unset" ] || [ "$t" = "--split-string" ] || [ "$t" = "--chdir" ] || [ "$t" = "--path" ] || [ "$t" = "--argv0" ]; }; then
+              if [ "$t" = "--unset" ]; then [ $((i + 1)) -lt "$nt" ] && apply_unset E "${toks[$((i + 1))]}"
+              elif [ "$t" = "--split-string" ]; then sub="${toks[$((i + 1))]:-}"; do_split=1; fi
+              i=$((i + 2))
+            elif [[ "$t" == --unset=* ]]; then
+              apply_unset E "${t#--unset=}"; i=$((i + 1))
+            elif [[ "$t" == --split-string=* ]]; then
+              sub="${t#--split-string=}"; do_split=1; i=$((i + 1))
+            elif [[ "$t" == --chdir=* || "$t" == --path=* || "$t" == --argv0=* || "$t" == --block-signal* || "$t" == --default-signal* || "$t" == --ignore-signal* ]] \
+              || [ "$t" = "--null" ] || [ "$t" = "--debug" ] || [ "$t" = "--list-signal-handling" ]; then
+              i=$((i + 1))
+            elif [[ "$t" == -[!-]* ]]; then
+              # Short-option cluster (-i, -iu NAME, -vi, -0i, -iS'...'): walk it.
+              i=$((i + 1)); k=1
+              while [ "$k" -lt "${#t}" ]; do
+                c="${t:$k:1}"; k=$((k + 1))
+                case "$c" in
+                  i) apply_unset E GH_CONFIG_DIR; apply_unset E GH_TOKEN; apply_unset E GITHUB_TOKEN; apply_unset E GH_ENTERPRISE_TOKEN ;;
+                  0|v) : ;;
+                  u|S|C|P|a)
+                    rest="${t:$k}"; k=${#t}
+                    if [ -z "$rest" ] && [ "$i" -lt "$nt" ]; then rest="${toks[$i]}"; i=$((i + 1)); fi
+                    case "$c" in
+                      u) [ -n "$rest" ] && apply_unset E "$rest" ;;
+                      S) sub="$rest"; do_split=1 ;;
+                    esac ;;
+                  *) E_UNK="-$c" ;;
+                esac
+              done
+            elif [ "${t:0:1}" = "-" ]; then
+              E_UNK="$t"; i=$((i + 1))
             else
               break
+            fi
+            if [ "$do_split" = 1 ]; then
+              # The split string is a command line env will run: analyse it
+              # (plus the remaining words) under the env built so far.
+              for ((j = i; j < nt; j++)); do sub+=" ${toks[$j]}"; done
+              case "$sub" in -*) sub="env $sub" ;; esac
+              sv1="$S_CFG_STATE"; sv2="$S_CFG_VAL"; sv6="$S_CFG_LOCAL"; sv7="$S_CFG_LOCAL_VAL"; sv3="$S_TS_GH_TOKEN"; sv4="$S_TS_GITHUB_TOKEN"; sv5="$S_TS_GH_ENTERPRISE_TOKEN"
+              S_CFG_STATE="$E_CFG_STATE"; S_CFG_VAL="$E_CFG_VAL"; S_CFG_LOCAL=""; S_CFG_LOCAL_VAL=""
+              S_TS_GH_TOKEN="$E_TS_GH_TOKEN"; S_TS_GITHUB_TOKEN="$E_TS_GITHUB_TOKEN"; S_TS_GH_ENTERPRISE_TOKEN="$E_TS_GH_ENTERPRISE_TOKEN"
+              ENV_UNK_IN="$E_UNK"
+              process_script "$sub" $((depth + 1))
+              S_CFG_STATE="$sv1"; S_CFG_VAL="$sv2"; S_CFG_LOCAL="$sv6"; S_CFG_LOCAL_VAL="$sv7"; S_TS_GH_TOKEN="$sv3"; S_TS_GITHUB_TOKEN="$sv4"; S_TS_GH_ENTERPRISE_TOKEN="$sv5"
+              env_split=1; i=$nt
             fi
           done
           continue ;;
@@ -513,6 +570,8 @@ process_script() { # script depth
       esac
       break
     done
+
+    [ "${env_split:-}" = 1 ] && { env_split=""; continue; }
 
     if [ "$i" -ge "$nt" ]; then
       # Bare assignments persist in the shell.
