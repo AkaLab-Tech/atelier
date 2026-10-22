@@ -1,7 +1,7 @@
 ---
 description: Continue a task after interruption or unblocking. Auto-detects the resume mode from `IN_PROGRESS.md` state — "interrupted" (active entry, partial progress) vs "blocked-resumed" (entry has the `[BLOCKED]` marker and the GitHub issue has been closed by the operator). Runs the mode-specific cleanup, then hands off to `task-orchestrator`.
 argument-hint: "<task-id> [--yes|-y]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(git worktree:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(env:*), Bash(jq:*), Bash(test:*), Bash(gh issue view:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh api graphql:*), Bash(atelier-task-backend:*), Skill, Task
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(git worktree:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(env:*), Bash(jq:*), Bash(test:*), Bash(gh issue view:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh api graphql:*), Bash(atelier-task-backend:*), Bash(atelier-resolve-base:*), Bash(git fetch:*), Skill, Task
 ---
 
 You are running the `/resume-task` slash command. Three distinct entry points lead here — all end with the same orchestrator hand-off, but they require different pre-flight cleanup:
@@ -98,7 +98,7 @@ The board says the task is in progress, but there is no open PR to inherit from 
 
 2. **Worktree found** → the common case (the interruption happened after `/atelier:next-task` step 5 but before its step 8 hand-off, or partway through the specialist chain). Use it as-is; any partial work is preserved. Proceed to step 5 with `resume_mode: interrupted`.
 
-3. **Worktree not found** (the operator, or a housekeeping sweep, removed it after the interruption) → recreate it exactly the way `/atelier:next-task` step 5 does, cut from the current `origin/<base>`:
+3. **Worktree not found** (the operator, or a housekeeping sweep, removed it after the interruption) → recreate it exactly the way `/atelier:next-task` step 5 does, cut from the current `origin/<base>`. Resolve `<base>` now (only on this path; resumes that reuse an existing worktree are never blocked): `atelier-resolve-base "$(git rev-parse --show-toplevel)"` (`base=`, `source=`). On a non-zero exit stop and print its `reason=`. Then `git fetch origin <base>`:
    ```bash
    git wt switch task/<id>-<slug> --from origin/<base>
    ```
@@ -148,6 +148,8 @@ The contract: closing the issue is the operator's signal. The 6 attempt logs are
 
 4. **Prepare the unmark on a dedicated branch, then hand commit/push/PR/review/merge to `task-orchestrator`.** This session only prepares the edit; it never commits, pushes or opens the PR (top-level sessions only orchestrate — `operator-rules.md` § "Top-level sessions only orchestrate"). From a temporary worktree (the main checkout stays untouched):
 
+   Resolve `<base>` first with `atelier-resolve-base "$(git rev-parse --show-toplevel)"` and `git fetch origin <base>`; on a non-zero exit stop and print its `reason=` (no worktree is created against a guessed base).
+
    ```bash
    git worktree add -b docs/resume-<id> <tmp-wt> origin/<base>
    ```
@@ -156,7 +158,7 @@ The contract: closing the issue is the operator's signal. The 6 attempt logs are
 
    Capture the PR URL / terminal state from the orchestrator's response — it goes into the final output. On `held`, surface the reason, leave the temporary worktree in place and **stop here without running step 5's task resume**: the unmark has not landed on base, so the task is still `[BLOCKED]` and resuming it would contradict the tracking state (the operator re-runs `/atelier:resume-task` once the docs PR lands); do **not** edit the task-worktree copy as a fallback (same reasoning as the `unblocker`). On `merged`, remove the temporary worktree.
 
-5. **Stay on the base branch.** The temporary worktree in step 4 means the main checkout never left `main`, so the next step's task-orchestrator hand-off runs from a clean base branch.
+5. **Stay on the base branch.** The temporary worktree in step 4 means the main checkout never left its current branch, so the next step's task-orchestrator hand-off runs from a clean base branch.
 
 ### 4c. PR-open-resume preflight — verify the PR is genuinely orphaned
 

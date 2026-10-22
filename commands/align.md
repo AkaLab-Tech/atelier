@@ -1,7 +1,7 @@
 ---
 description: Align every registered atelier project/workspace to the installed atelier in one pass — version-drift resync + decision policy (Tier 1, applied by atelier-align), §5 ROADMAP adoption + legacy IN_PROGRESS reset (Tier 2, via /adopt-roadmap), and one commit-to-base PR per changed repo (Tier 3). Surveys read-only first; applies nothing without confirmation (or pre-consent via `auto` policy).
 argument-hint: "[<workspace-slug>] [--policy <auto|ask>]"
-allowed-tools: Bash(atelier-align:*), Bash(atelier-setup-project:*), Bash(git rev-parse:*), Bash(git -C * rev-parse:*), Bash(git remote:*), Bash(git -C * remote:*), Bash(git ls-remote:*), Bash(git -C * ls-remote:*), Bash(git branch:*), Bash(git status:*), Bash(git fetch:*), Bash(git -C * fetch:*), Bash(git worktree:*), Bash(git -C * worktree:*), Bash(git pull --ff-only*), Bash(git -C * pull --ff-only*), Bash(gh pr view:*), Bash(gh pr list:*), Read, AskUserQuestion, SlashCommand, Task
+allowed-tools: Bash(atelier-align:*), Bash(atelier-resolve-base:*), Bash(atelier-setup-project:*), Bash(git rev-parse:*), Bash(git -C * rev-parse:*), Bash(git remote:*), Bash(git -C * remote:*), Bash(git ls-remote:*), Bash(git -C * ls-remote:*), Bash(git branch:*), Bash(git status:*), Bash(git fetch:*), Bash(git -C * fetch:*), Bash(git worktree:*), Bash(git -C * worktree:*), Bash(git pull --ff-only*), Bash(git -C * pull --ff-only*), Bash(gh pr view:*), Bash(gh pr list:*), Read, AskUserQuestion, SlashCommand, Task
 ---
 
 You are running `/atelier:align` — the one-pass project/workspace aligner. It
@@ -90,8 +90,9 @@ repo's base branch (`next-task` reads `origin/<base>`; the broker reads
 `.atelier.json` from the per-task worktree). For each repo with pending changes,
 open one PR per repo:
 
-- Resolve the base branch (prefer `dev` if `origin/dev` exists, else the default
-  branch). Use a **temporary worktree** so the operator's checkout is untouched:
+- Resolve the base branch with `atelier-resolve-base <repo>` (GitHub default branch,
+  else `origin/HEAD`). If it exits non-zero, skip Tier 3 for that repo and report
+  its `reason=` — never open a PR against a guessed base. Use a **temporary worktree** so the operator's checkout is untouched:
   `git -C <repo> worktree add -b chore/atelier-align <tmp> origin/<base>`, copy in
   the changed `.atelier.json` / settings / adopted tracking, and leave the diff
   uncommitted — `pr-opener` commits it (Conventional Commits, **no AI

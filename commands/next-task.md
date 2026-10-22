@@ -1,7 +1,7 @@
 ---
 description: Pick the next task from `ROADMAP.md`, set up its worktree, and hand it to the `task-orchestrator` agent end-to-end.
 argument-hint: "[task-id] [--yes|-y] [--refresh]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git fetch:*), Bash(git ls-remote:*), Bash(git show:*), Bash(git cat-file:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(gh pr list:*), Bash(gh api graphql:*), Bash(atelier-setup-project:*), Bash(atelier-resolve-dep:*), Bash(atelier-task-backend:*), Bash(atelier-project-cache:*), Bash(jq:*), Bash(env:*), Bash(test:*), Skill, Task, AskUserQuestion, SlashCommand
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git fetch:*), Bash(atelier-resolve-base:*), Bash(git ls-remote:*), Bash(git show:*), Bash(git cat-file:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(gh pr list:*), Bash(gh api graphql:*), Bash(atelier-setup-project:*), Bash(atelier-resolve-dep:*), Bash(atelier-task-backend:*), Bash(atelier-project-cache:*), Bash(jq:*), Bash(env:*), Bash(test:*), Skill, Task, AskUserQuestion, SlashCommand
 ---
 
 You are running the `/next-task` slash command. Drive the full pickup-to-PR flow for one task from the project's `ROADMAP.md`, exactly as [PLAN.md §7](PLAN.md) prescribes.
@@ -28,7 +28,7 @@ If none of those is true, you are **interactive**.
 
 The task runs in an **isolated worktree cut from the remote base branch**, so the operator's current branch and any uncommitted work are irrelevant. **Never** inspect, stash, switch, or commit to the operator's checkout, and never refuse on account of its state — it is left completely untouched.
 
-- Resolve the **base branch**: `dev` if `origin/dev` exists, else `main` (the same policy the `git-wt` skill uses). Probe with `git ls-remote --heads origin dev`.
+- Resolve the **base branch** with the shared helper: `atelier-resolve-base "$(git rev-parse --show-toplevel)"`. It prints `base=<name>` and `source=<github|origin-head>` (GitHub's default branch first, else the local `origin/HEAD`). On a non-zero exit it prints `base=` and a `reason=` line: **stop in both modes** (interactive or `--yes`), print the `reason=`, and hint: set the default branch on GitHub, or run `git remote set-head origin --auto`. Never fall back to `main` or probe for `dev`. Log the resolved base and its source. Step 5 passes `--from origin/<base>` to `git wt switch`, which overrides git-wt's own default.
 - `git fetch origin <base>` so everything downstream reads the freshest **merged** backlog — a recently-merged PR may have added or reprioritised tasks. Every later step reads `origin/<base>`, never the local working copy.
 - **Capture the operator main-checkout root and the plan-storage mode (TASK_027).** This command runs in the operator's main checkout, which is where a `planStorage=local` plan physically lives — the task worktree (cut from `origin/<base>`) will **not** contain it, because `git worktree add` does a clean checkout of the tree and never copies gitignored/untracked files. Capture both now:
   ```bash

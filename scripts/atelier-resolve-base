@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# atelier-resolve-base — resolve a project's base branch from GitHub's default
+# branch, never from a dev-else-main guess.  (#556)
+#
+# Usage: atelier-resolve-base <project_root>
+#
+# Output (key=value):
+#   success  base=<name>   source=<github|origin-head>      exit 0
+#   failure  base=         reason=<why both lookups failed>  exit 1
+#   usage error (no/invalid argument)                        exit 2
+#
+# Order: (1) GitHub's defaultBranchRef for the `origin` slug (needs a github.com
+# origin and a working `gh`); (2) only if that fails, the local
+# refs/remotes/origin/HEAD. Neither resolves -> fail closed: no `main`
+# fallback, no `dev` probe. Read-only: never runs `set-head`, never fetches.
+# The caller's GH_CONFIG_DIR is inherited.
+
+set -u
+
+if [ "$#" -ne 1 ] || [ -z "$1" ] || [ ! -d "$1" ]; then
+  echo "usage: atelier-resolve-base <project_root>" >&2
+  exit 2
+fi
+root=$1
+
+valid_name() {
+  [ -n "$1" ] && git check-ref-format --branch "$1" >/dev/null 2>&1
+}
+
+gh_reason=""
+head_reason=""
+
+url=$(git -C "$root" remote get-url origin 2>/dev/null || true)
+slug=""
+case "$url" in
+  https://github.com/*) slug=${url#https://github.com/} ;;
+  http://github.com/*) slug=${url#http://github.com/} ;;
+  git@github.com:*) slug=${url#git@github.com:} ;;
+  ssh://git@github.com/*) slug=${url#ssh://git@github.com/} ;;
+esac
+slug=${slug%/}
+slug=${slug%.git}
+
+if [ -z "$slug" ]; then
+  gh_reason="origin is not a github.com URL"
+elif ! command -v gh >/dev/null 2>&1; then
+  gh_reason="gh not installed"
+else
+  name=$(gh repo view "$slug" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null || true)
+  if valid_name "$name"; then
+    printf 'base=%s\nsource=github\n' "$name"
+    exit 0
+  fi
+  gh_reason="gh repo view $slug returned no default branch"
+fi
+
+ref=$(git -C "$root" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)
+name=${ref#origin/}
+if [ -n "$ref" ] && valid_name "$name"; then
+  printf 'base=%s\nsource=origin-head\n' "$name"
+  exit 0
+fi
+head_reason="refs/remotes/origin/HEAD is not set"
+
+printf 'base=\nreason=github: %s; origin-head: %s\n' "$gh_reason" "$head_reason"
+exit 1

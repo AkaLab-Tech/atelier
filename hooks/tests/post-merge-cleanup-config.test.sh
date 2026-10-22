@@ -138,8 +138,17 @@ chk_prose "$SKILL" 'merge --ff-only origin/' \
 chk_prose "$SKILL" 'skip and surface' \
   "SKILL.md: step 4 specifies skip-and-surface on guard failure (not force)"
 
-chk_prose "$SKILL" 'ls-remote --heads origin dev' \
-  "SKILL.md: step 4 uses ls-remote to resolve dev-or-main base branch"
+chk_prose "$SKILL" "merged PR's \`baseRefName\`" \
+  "SKILL.md: step 4 takes <base> from the merged PR's baseRefName first (#556)"
+
+chk_prose "$SKILL" 'atelier-resolve-base <project_root>' \
+  "SKILL.md: step 4 falls back to atelier-resolve-base when baseRefName is missing (#556)"
+
+chk_prose "$SKILL" 'base not fast-forwarded: base branch unresolved' \
+  "SKILL.md: step 4 skips with 'base not fast-forwarded' when the base is unresolved (#556)"
+
+chk_absent "$SKILL" 'ls-remote --heads origin dev' \
+  "SKILL.md: step 4 no longer probes for a dev branch (#556)"
 
 # ---------------------------------------------------------------------------
 # Group 4: SKILL.md step 5 — orphan sweep prose

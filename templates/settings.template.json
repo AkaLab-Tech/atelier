@@ -290,6 +290,7 @@
       "Bash(atelier-list-projects:*)",
       "Bash(atelier-pr-size-check:*)",
       "Bash(atelier-ci-coverage:*)",
+      "Bash(atelier-resolve-base:*)",
       "Bash(atelier-update:*)",
       "Bash(atelier-cpu-slot:*)",
       "Bash(atelier-permission-diff:*)",
