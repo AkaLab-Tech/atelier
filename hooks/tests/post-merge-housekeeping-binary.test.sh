@@ -86,6 +86,11 @@ printf 'initial\n' > "$REPO/README.md"
 git -C "$REPO" add README.md
 git -C "$REPO" commit -qm "init"
 
+# Resolvable base (#550/#551): housekeeping no longer assumes `main`; give the
+# fixture a remote default branch via refs/remotes/origin/HEAD -> origin/main.
+git -C "$REPO" update-ref refs/remotes/origin/main "$(git -C "$REPO" rev-parse HEAD)"
+git -C "$REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+
 # task/1-old-merged: merged into main via --no-ff, branch intentionally left
 # as a stale local orphan (simulates a prior auto-merge that deleted the
 # remote but not the local branch).
