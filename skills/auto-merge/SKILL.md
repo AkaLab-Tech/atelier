@@ -234,7 +234,7 @@ Absent block or absent key → treat as `true`. Setting a key to `false` disable
    - `--yes` non-interactively applies the sweep; this is justified by the auto-merge "the gate is the consent" authorization model (§ Authorization model above).
    - `--no-stamp` prevents the per-task sweep from silencing the operator's daily `/atelier:housekeeping` nudge (`housekeeping-last-check`).
    - No `--include-unmerged` — unmerged orphans are reported but never deleted.
-   - The binary already enforces every safety rail: protected branches, open PRs, dirty worktrees, active/`[BLOCKED]`/`[OVERSIZE]` tasks (via `IN_PROGRESS.md`), unmerged-work skip, no `--force`/non-ff push.
+   - The binary already enforces every safety rail: protected branches, open PRs, dirty worktrees, claimed tasks (board Status In Progress on `github-project`; `IN_PROGRESS.md` in the main checkout or the task's worktree, incl. `[BLOCKED]`/`[OVERSIZE]`, on `files`; unreadable claim state is skipped), unmerged-work skip, no `--force`/non-ff push. A worktree is removed only when its PR is MERGED; ancestry alone never qualifies.
    - The merge deleted *this* task's remote branch via `--delete-branch`; the sweep mops up **prior cycles'** local + remote `task/*` debris.
    - Capture stdout and fold counts into the structured report (§ Structured output — `Swept:` line).
    - Idempotent: re-running enumerates fresh and exits `OK: nothing to clean up`.

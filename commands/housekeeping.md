@@ -1,5 +1,5 @@
 ---
-description: Review and clean up the task-cycle debris that auto-merge's per-task cleanup leaves behind — orphan worktrees, merged/closed local `task/*` branches, and merged/closed `origin/task/*` remotes — across every atelier-registered project. Always enumerates first and requires your explicit authorization before deleting anything; never touches active/blocked/oversize tasks, open PRs, dirty worktrees, or protected branches.
+description: Review and clean up the task-cycle debris that auto-merge's per-task cleanup leaves behind — orphan worktrees, merged/closed local `task/*` branches, and merged/closed `origin/task/*` remotes — across every atelier-registered project. Always enumerates first and requires your explicit authorization before deleting anything; never touches claimed tasks (board Status In Progress, or an `IN_PROGRESS.md` entry), open PRs, dirty worktrees, or protected branches.
 argument-hint: "[--project PATH] [--include-unmerged]"
 allowed-tools: Bash(atelier-housekeeping:*)
 ---
@@ -61,8 +61,11 @@ if they authorized). No "all clean!" epilogue.
   owns all git/gh enumeration and every deletion — do not run `git worktree
   remove`, `git branch -d`, or `git push --delete` yourself.
 - **Never** re-interpret the safety rails. The binary already refuses to touch
-  active/blocked/oversize tasks, open PRs, dirty worktrees, and protected
-  branches. If the operator asks you to force-remove one of those, decline and
+  claimed tasks (board Status In Progress on `github-project`; an
+  `IN_PROGRESS.md` entry in the main checkout or the task's worktree on
+  `files`; any task whose claim state cannot be read), open PRs, dirty
+  worktrees, and protected branches. A worktree is removed only when its PR is
+  MERGED; ancestry alone never qualifies. If the operator asks you to force-remove one of those, decline and
   explain it is a deliberate safety rail.
 
 ## Edge cases
