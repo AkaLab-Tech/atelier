@@ -1606,6 +1606,9 @@ phase_c_1_setup_project_helper() {
   # runs on PRs into this base" (auto-merge guardrail 3, the orchestrator's
   # pre-merge CI wait and /atelier:babysit-prs share this one probe).
   _phase_c_1_symlink_helper atelier-ci-coverage
+  # #556: atelier-resolve-base is the one place the task base branch is
+  # resolved (GitHub default branch, else origin/HEAD, else fail closed).
+  _phase_c_1_symlink_helper atelier-resolve-base
   # #45: atelier-branch-protection is the single source of truth for
   # branch-protection classification and application, shared by
   # atelier-setup-project and atelier-doctor. Both report by default;
@@ -2023,6 +2026,8 @@ TERMINAL HELPERS (run directly, no `atelier` prefix needed)
                                     pr-author + reviewer + auto-merge)
   atelier-ci-coverage <root> <base> Do workflows run on PRs into <base>?
                                     (auto-merge CI guardrail + babysit)
+  atelier-resolve-base <root>       Resolve the base branch (GitHub default,
+                                    else origin/HEAD; fails closed)
   atelier-diff-scope-check          Pre-review check for removals the
                                     plan does not name (orchestrator)
   atelier-measure-merge-rate        Sample N most-recently-merged PRs,

@@ -79,7 +79,7 @@ Inside the session / from the right directory:
   - Whole workspace: `/atelier:onboard-workspace <slug>`
   - Single project: `/adopt-roadmap --format atelier`
 - **Commit to base** — `.atelier.json` (policy) and the adopted tracking files
-  must be committed and merged to each repo's **base branch** (`dev`/`main`),
+  must be committed and merged to each repo's **base branch** (your GitHub default branch),
   one PR per repo. This is required: `/atelier:next-task` reads the ROADMAP from
   `origin/<base>`, and the decision broker reads `.atelier.json` from each
   task's worktree (branched from base).

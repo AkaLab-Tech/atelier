@@ -207,7 +207,7 @@ Absent block or absent key → treat as `true`. Setting a key to `false` disable
 
 4. **Fast-forward the local base branch** (when `postMergeCleanup.fastForwardBase` is `true`). The squash commit now lives on `origin/<base>`; this step closes the gap so the operator's local ref is current without a manual pull.
 
-   - **Resolve `<base>`**: run `git -C <project_root> ls-remote --heads origin dev`. Non-empty → `<base>` is `dev`; empty → `<base>` is `main`. (Same policy as `/next-task` step 1 and `git-wt`.)
+   - **Resolve `<base>`**: `<base>` is the merged PR's `baseRefName` (already read for the CI-coverage probe). If it is missing, run `atelier-resolve-base <project_root>`; if that exits non-zero too, skip and surface `base not fast-forwarded: base branch unresolved (<reason>)`.
    - **Refresh the remote-tracking ref**: `git -C <project_root> fetch origin <base>`. Safe and unconditional — updates `origin/<base>` only.
    - **Bring the local ref forward** — branch on the main worktree's checkout state:
      - If `<base>` is the branch currently checked out in the main worktree **and** `git -C <project_root> status --porcelain` is empty:
