@@ -65,7 +65,11 @@ if they authorized). No "all clean!" epilogue.
   `IN_PROGRESS.md` entry in the main checkout or the task's worktree on
   `files`; any task whose claim state cannot be read), open PRs, dirty
   worktrees, and protected branches. A worktree is removed only when its PR is
-  MERGED; ancestry alone never qualifies. If the operator asks you to force-remove one of those, decline and
+  MERGED; ancestry alone never qualifies. On `github-project`, `task/<N>-<slug>`
+  carries the GitHub issue number and the board's Atelier ID is only a
+  cross-check: an item whose Atelier ID differs from N, or whose N is another
+  issue's Atelier ID, is kept and reported as an Atelier ID mismatch, never
+  removed (not even with `--yes`). If the operator asks you to force-remove one of those, decline and
   explain it is a deliberate safety rail.
 
 ## Edge cases

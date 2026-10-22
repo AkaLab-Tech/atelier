@@ -20,6 +20,10 @@
 #     IN_PROGRESS.md reference (main checkout or the task's worktree; also
 #     [BLOCKED]/[OVERSIZE]) on files. A claim that cannot be read (gh failing,
 #     non-numeric id, no board item, linear) is "unknown" and also skipped.
+#     On github-project `task/<N>-<slug>` carries the GitHub ISSUE number; the
+#     board's Atelier ID is only a cross-check. An item whose Atelier ID differs
+#     from N, or whose N is the Atelier ID of another issue, is a "mismatch":
+#     kept and reported, never removed (not even with --yes/--include-unmerged).
 #   - A worktree is removed only when its PR is MERGED; ancestry of base alone
 #     never qualifies (a freshly cut task branch is an ancestor of base).
 #   - Never a DIRTY worktree (uncommitted changes).
@@ -219,12 +223,16 @@ CLAIM_BACKEND=""; BOARD_CLAIMS=""; CLAIM_SRC=""; CLAIM_PROJ_REASON=""
 # Resolve the backend once and, on github-project, read every candidate task's
 # board Status with ONE batched, aliased `gh api graphql` (never item-list,
 # never the cache: a deletion gate must not read stale data). BOARD_CLAIMS gets
-# "<id>\t<claimed|free|unknown>\t<reason>" lines, read per item from the
-# (possibly partial) GraphQL data: one unresolvable issue makes only that id
-# unknown. Ids absent from BOARD_CLAIMS fall back to CLAIM_PROJ_REASON.
+# "<id>\t<claimed|free|mismatch|unknown>\t<detail>" lines, read per item from
+# the (possibly partial) GraphQL data: one unresolvable issue makes only that
+# id unknown. Ids absent from BOARD_CLAIMS fall back to CLAIM_PROJ_REASON.
+# The same call also carries the Atelier ID cross-check: shape A (the item's
+# own Atelier ID is set and != N) and shape B (an owner-level lookup finds
+# another same-repo issue whose Atelier ID == N). Mismatch overrides claimed
+# and free; an unreadable cross-check makes the id unknown.
 load_claims() {
   local proj="$1" slug="$2"; shift 2
-  local cfg="$proj/.roadmap.json" tb pn ip q id out rc=0 msg
+  local cfg="$proj/.roadmap.json" tb pn ip q id out rc=0 msg owner
   BOARD_CLAIMS=""; CLAIM_PROJ_REASON=""
   tb="$(command -v atelier-task-backend || true)"
   [ -n "$tb" ] || tb="$(dirname "${BASH_SOURCE[0]}")/atelier-task-backend"
@@ -234,35 +242,56 @@ load_claims() {
   pn="$(jq -r '.githubProject.projectNumber // empty' "$cfg" 2>/dev/null || true)"
   case "$pn" in ''|*[!0-9]*) return 0 ;; esac
   ip="$(jq -c '(.githubProject.stateMap.inProgress // ["In Progress"]) | if type=="array" then . else [.] end' "$cfg" 2>/dev/null)" || return 0
+  owner="$(jq -r '.githubProject.owner // empty' "$cfg" 2>/dev/null || true)"
+  case "$owner" in ''|*[!A-Za-z0-9._-]*) owner="${slug%%/*}" ;; esac
+  local aidf='aid:fieldValueByName(name:\"Atelier ID\"){...on ProjectV2ItemFieldTextValue{text} ...on ProjectV2ItemFieldNumberValue{number}}'
+  local ob=""
   q="query{r:repository(owner:\"${slug%%/*}\",name:\"${slug#*/}\"){"
   for id in "$@"; do
-    q="$q i$id:issue(number:$id){projectItems(first:10){nodes{project{number} fieldValueByName(name:\"Status\"){...on ProjectV2ItemFieldSingleSelectValue{name}}}}}"
+    q="$q i$id:issue(number:$id){projectItems(first:10){nodes{project{number} fieldValueByName(name:\"Status\"){...on ProjectV2ItemFieldSingleSelectValue{name}} $aidf}}}"
+    ob="$ob a$id:items(first:5,query:\"\\\"Atelier ID\\\":$id\"){nodes{content{...on Issue{number repository{nameWithOwner}}} $aidf}}"
   done
+  q="$q},o:repositoryOwner(login:\"$owner\"){...on ProjectV2Owner{p:projectV2(number:$pn){$ob}}}"
   # gh exits 1 on a partial result (one alias null) but still prints the body.
-  out="$(env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api graphql -f query="$q}}" 2>/dev/null)" || rc=$?
+  out="$(env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api graphql -f query="$q}" 2>/dev/null)" || rc=$?
   if ! printf '%s' "$out" | jq -e '.data.r | type == "object"' >/dev/null 2>&1; then
     msg="$(printf '%s' "$out" | jq -r '.errors[0].message // empty' 2>/dev/null || true)"
     CLAIM_PROJ_REASON="${msg:-board query failed (gh api graphql exit $rc)}"
     return 0
   fi
-  BOARD_CLAIMS="$(printf '%s' "$out" | jq -r --argjson pn "$pn" --argjson ip "$ip" '
+  BOARD_CLAIMS="$(printf '%s' "$out" | jq -r --argjson pn "$pn" --argjson ip "$ip" --arg slug "$slug" '
+    def norm: (if . == null then "" else tostring end) | gsub("^\\s+|\\s+$"; "") | sub("^#"; "") | sub("\\.0+$"; "");
+    def aidv: (.aid // {}) | (.text // .number // "") | norm;
     (.errors // []) as $errs
+    | (.data.o.p) as $p
     | .data.r | to_entries[] | .key[1:] as $id
-    | if .value == null then
-        "\($id)\tunknown\t\(([$errs[] | select(.path == ["r", "i\($id)"]) | .message][0]) // "could not resolve issue #\($id)")"
-      else
-        [.value.projectItems.nodes[]? | select(.project.number == $pn)] as $m
-        | if ($m | length) == 0 then "\($id)\tunknown\tno item on project #\($pn)"
-          else "\($id)\t\(if any($m[]; (.fieldValueByName.name // "") as $s | any($ip[]; . == $s)) then "claimed" else "free" end)\t"
-          end
-      end' 2>/dev/null)" || BOARD_CLAIMS=""
+    | (if .value == null then []
+       else [.value.projectItems.nodes[]? | select(.project.number == $pn) | aidv | select(. != "" and . != $id)] end) as $ma
+    | (if ($p | type) == "object" and ($p["a\($id)"] == null or (($p["a\($id)"].nodes?) | type) == "array")
+       then [($p["a\($id)"].nodes // [])[]
+             | select(aidv == $id and ((.content.number? // null) != null)
+                      and ((.content.repository.nameWithOwner // "") | ascii_downcase) == ($slug | ascii_downcase)
+                      and .content.number != ($id | tonumber))
+             | .content.number]
+       else null end) as $mb
+    | (if .value == null then ["unknown", ([$errs[] | select(.path == ["r", "i\($id)"]) | .message][0]) // "could not resolve issue #\($id)"]
+       else [.value.projectItems.nodes[]? | select(.project.number == $pn)] as $m
+         | if ($m | length) == 0 then ["unknown", "no item on project #\($pn)"]
+           else [(if any($m[]; (.fieldValueByName.name // "") as $s | any($ip[]; . == $s)) then "claimed" else "free" end), ""]
+           end
+       end) as $b
+    | if ($ma | length) > 0 then "\($id)\tmismatch\tboard Atelier ID is \($ma[0])"
+      elif $mb != null and ($mb | length) > 0 then "\($id)\tmismatch\tAtelier ID #\($id) is issue #\($mb[0])"
+      elif $mb == null and $b[0] != "unknown" then "\($id)\tunknown\tAtelier ID cross-check unreadable"
+      else "\($id)\t\($b[0])\t\($b[1])" end' 2>/dev/null)" || BOARD_CLAIMS=""
   [ -n "$BOARD_CLAIMS" ] || CLAIM_PROJ_REASON="board query returned no readable items"
   local bad
   bad="$(printf '%s\n' "$BOARD_CLAIMS" | awk -F'\t' '$2 == "unknown" { print "task/" $1 }' | paste -sd, - | sed 's/,/, /g')"
   [ -z "$bad" ] || warn "board: some task branches unresolvable ($bad)"
 }
 
-# Claim state of a task: 0 claimed, 1 not claimed, 2 unknown (fail closed).
+# Claim state of a task: 0 claimed, 1 not claimed, 2 unknown (fail closed),
+# 3 Atelier ID mismatch (github-project; kept and reported).
 # files: the id/branch appears in IN_PROGRESS.md of the main checkout (where
 # [BLOCKED]/[OVERSIZE] land) or of the task's own worktree (where /next-task
 # records the claim). github-project: board Status in stateMap.inProgress.
@@ -286,6 +315,7 @@ task_claimed() {
       case "$s" in
         claimed) CLAIM_SRC="board Status In Progress"; return 0 ;;
         free)    return 1 ;;
+        mismatch) CLAIM_SRC="$(printf '%s' "$line" | cut -f3)"; return 3 ;;
       esac
       CLAIM_SRC="$(printf '%s' "$line" | cut -f3)"
       [ -n "$CLAIM_SRC" ] || CLAIM_SRC="${CLAIM_PROJ_REASON:-no board item found}"
@@ -301,6 +331,7 @@ claim_gate() {
   task_claimed "$1" "$4" "$5" "${6:-}" || rc=$?
   case "$rc" in
     0) add_skip "$1" "$2" "$3" "claimed task #$4 ($CLAIM_SRC)"; return 0 ;;
+    3) add_skip "$1" "$2" "$3" "issue/Atelier ID mismatch for #$4 ($CLAIM_SRC) — left untouched"; return 0 ;;
     2) add_skip "$1" "$2" "$3" "claim state unknown for #$4 ($5): ${CLAIM_SRC:-no readable claim source} — left untouched"; return 0 ;;
   esac
   return 1

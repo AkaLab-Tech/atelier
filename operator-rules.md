@@ -50,6 +50,7 @@ For every code change, create a branch first:
 
 1. `git checkout -b task/<id>-<slug>` for ROADMAP-driven tasks. The
    `/atelier:next-task` flow does this automatically via the `git-wt` skill.
+   On `github-project`, `<id>` is the GitHub issue number; the board's Atelier ID is only a cross-check, and housekeeping keeps and reports a mismatch rather than removing it.
 2. `git checkout -b chore/<short-name>` for non-roadmap chores
    (migrations, dependency bumps, cleanups, infrastructure).
 3. `git checkout -b docs/<topic>` for documentation-only changes.
