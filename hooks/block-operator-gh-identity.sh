@@ -21,6 +21,12 @@
 # writes are exactly: `gh pr review`, `gh pr comment`, `gh api` writes to the
 # PR review/comment REST endpoints, and `gh api graphql` review/comment
 # mutations. Everything else (reads, board mutations, ...) is untouched.
+# A GH_CONFIG_DIR assignment counts only if it reaches gh's environment: inline
+# (`GH_CONFIG_DIR=x gh ...`), `env`, `export`, `declare -x` / `typeset -x`, or a
+# plain assignment / `declare` without -x when GH_CONFIG_DIR is already exported
+# (inherited, or an earlier export in the same command). Otherwise the value is
+# shell-local, gh still uses the personal ~/.config/gh, and the call is blocked
+# (until a later bare `export GH_CONFIG_DIR` promotes it).
 # Credential-exfiltration shapes are blocked whatever the subcommand.
 #
 # Contract per Claude Code hooks reference (PreToolUse):
@@ -75,7 +81,7 @@ MUTATIONS="addpullrequestreview|submitpullrequestreview|updatepullrequestreview|
 # assignments, unset); E_* = the effective env of the segment being examined
 # (S_* plus its inline / `env` assignments). *_STATE: "" untouched, "set",
 # "cleared"; token vars: "" untouched, "SET", "CLEARED".
-S_CFG_STATE=""; S_CFG_VAL=""; S_TS_GH_TOKEN=""; S_TS_GITHUB_TOKEN=""; S_TS_GH_ENTERPRISE_TOKEN=""
+S_CFG_STATE=""; S_CFG_VAL=""; S_CFG_LOCAL=""; S_CFG_LOCAL_VAL=""; S_TS_GH_TOKEN=""; S_TS_GITHUB_TOKEN=""; S_TS_GH_ENTERPRISE_TOKEN=""
 E_CFG_STATE=""; E_CFG_VAL=""; E_TS_GH_TOKEN=""; E_TS_GITHUB_TOKEN=""; E_TS_GH_ENTERPRISE_TOKEN=""
 CUR_SEG_TEXT=""
 
@@ -87,7 +93,31 @@ apply_assign() { # P name value
   esac
 }
 
+# Shell-level assignment (bare `NAME=v`, export, declare, ...). `exported` is
+# 1 for export / declare -x / typeset -x, 0 otherwise. A GH_CONFIG_DIR that is
+# not exported never reaches gh, so a non-exporting assignment only takes effect
+# when the variable is already exported (inherited, or an earlier export in
+# this command); otherwise it is remembered as shell-local (S_CFG_LOCAL) and
+# only a later `export GH_CONFIG_DIR` promotes it.
+shell_assign() { # name value exported
+  if [ "$1" != "GH_CONFIG_DIR" ]; then apply_assign S "$1" "$2"; return; fi
+  if [ "$3" = "1" ] || [ "$S_CFG_STATE" = "set" ] || { [ -z "$S_CFG_STATE" ] && [ -n "${GH_CONFIG_DIR+x}" ]; }; then
+    S_CFG_STATE="set"; S_CFG_VAL="$2"
+  else
+    S_CFG_LOCAL="set"; S_CFG_LOCAL_VAL="$2"
+  fi
+}
+
+# `export GH_CONFIG_DIR` / `declare -x GH_CONFIG_DIR` with no value: exports
+# the shell-local value if there is one.
+shell_export_bare() { # name
+  if [ "$1" = "GH_CONFIG_DIR" ] && [ -n "$S_CFG_LOCAL" ]; then
+    S_CFG_STATE="set"; S_CFG_VAL="$S_CFG_LOCAL_VAL"
+  fi
+}
+
 apply_unset() { # P name
+  [ "$1" = "S" ] && [ "$2" = "GH_CONFIG_DIR" ] && { S_CFG_LOCAL=""; S_CFG_LOCAL_VAL=""; }
   case "$2" in
     GH_CONFIG_DIR) printf -v "$1_CFG_STATE" '%s' "cleared"; printf -v "$1_CFG_VAL" '%s' "" ;;
     GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN) printf -v "$1_TS_$2" '%s' "CLEARED" ;;
@@ -434,11 +464,11 @@ process_script() { # script depth
       case "$t" in
         *'$('*|*'`'*)
           sub="${t//\$\(/ ; }"; sub="${sub//\`/ ; }"; sub="${sub//)/ ; }"
-          sv1="$S_CFG_STATE"; sv2="$S_CFG_VAL"; sv3="$S_TS_GH_TOKEN"; sv4="$S_TS_GITHUB_TOKEN"; sv5="$S_TS_GH_ENTERPRISE_TOKEN"
+          sv1="$S_CFG_STATE"; sv2="$S_CFG_VAL"; sv6="$S_CFG_LOCAL"; sv7="$S_CFG_LOCAL_VAL"; sv3="$S_TS_GH_TOKEN"; sv4="$S_TS_GITHUB_TOKEN"; sv5="$S_TS_GH_ENTERPRISE_TOKEN"
           S_CFG_STATE="$E_CFG_STATE"; S_CFG_VAL="$E_CFG_VAL"
           S_TS_GH_TOKEN="$E_TS_GH_TOKEN"; S_TS_GITHUB_TOKEN="$E_TS_GITHUB_TOKEN"; S_TS_GH_ENTERPRISE_TOKEN="$E_TS_GH_ENTERPRISE_TOKEN"
           process_script "$sub" $((depth + 1))
-          S_CFG_STATE="$sv1"; S_CFG_VAL="$sv2"; S_TS_GH_TOKEN="$sv3"; S_TS_GITHUB_TOKEN="$sv4"; S_TS_GH_ENTERPRISE_TOKEN="$sv5"
+          S_CFG_STATE="$sv1"; S_CFG_VAL="$sv2"; S_CFG_LOCAL="$sv6"; S_CFG_LOCAL_VAL="$sv7"; S_TS_GH_TOKEN="$sv3"; S_TS_GITHUB_TOKEN="$sv4"; S_TS_GH_ENTERPRISE_TOKEN="$sv5"
           ;;
       esac
     done
@@ -487,7 +517,7 @@ process_script() { # script depth
     if [ "$i" -ge "$nt" ]; then
       # Bare assignments persist in the shell.
       for t in "${toks[@]}"; do
-        if [[ "$t" =~ $ASSIGN_RE ]]; then apply_assign S "${t%%=*}" "${t#*=}"; fi
+        if [[ "$t" =~ $ASSIGN_RE ]]; then shell_assign "${t%%=*}" "${t#*=}" 0; fi
       done
       continue
     fi
@@ -498,9 +528,15 @@ process_script() { # script depth
 
     case "$base" in
       export|declare|typeset|readonly|local)
+        # Only export and declare/typeset -x put the variable in gh's env.
+        xflag=0; [ "$base" = "export" ] && xflag=1
         for ((j = i + 1; j < nt; j++)); do
           t="${toks[$j]}"
-          if [[ "$t" =~ $ASSIGN_RE ]]; then apply_assign S "${t%%=*}" "${t#*=}"; fi
+          if [[ "$t" =~ ^-[A-Za-z]*x ]]; then xflag=1
+          elif [[ "$t" =~ ^\+[A-Za-z]*x ]]; then xflag=0
+          elif [[ "$t" =~ $ASSIGN_RE ]]; then shell_assign "${t%%=*}" "${t#*=}" "$xflag"
+          elif [ "$xflag" = 1 ] && [ "${t:0:1}" != "-" ]; then shell_export_bare "$t"
+          fi
         done
         continue ;;
       unset)
@@ -521,21 +557,21 @@ process_script() { # script depth
           fi
         done
         if [ -n "$sub" ]; then
-          sv1="$S_CFG_STATE"; sv2="$S_CFG_VAL"; sv3="$S_TS_GH_TOKEN"; sv4="$S_TS_GITHUB_TOKEN"; sv5="$S_TS_GH_ENTERPRISE_TOKEN"
-          S_CFG_STATE="$E_CFG_STATE"; S_CFG_VAL="$E_CFG_VAL"
+          sv1="$S_CFG_STATE"; sv2="$S_CFG_VAL"; sv6="$S_CFG_LOCAL"; sv7="$S_CFG_LOCAL_VAL"; sv3="$S_TS_GH_TOKEN"; sv4="$S_TS_GITHUB_TOKEN"; sv5="$S_TS_GH_ENTERPRISE_TOKEN"
+          S_CFG_STATE="$E_CFG_STATE"; S_CFG_VAL="$E_CFG_VAL"; S_CFG_LOCAL=""; S_CFG_LOCAL_VAL=""
           S_TS_GH_TOKEN="$E_TS_GH_TOKEN"; S_TS_GITHUB_TOKEN="$E_TS_GITHUB_TOKEN"; S_TS_GH_ENTERPRISE_TOKEN="$E_TS_GH_ENTERPRISE_TOKEN"
           process_script "$sub" $((depth + 1))
-          S_CFG_STATE="$sv1"; S_CFG_VAL="$sv2"; S_TS_GH_TOKEN="$sv3"; S_TS_GITHUB_TOKEN="$sv4"; S_TS_GH_ENTERPRISE_TOKEN="$sv5"
+          S_CFG_STATE="$sv1"; S_CFG_VAL="$sv2"; S_CFG_LOCAL="$sv6"; S_CFG_LOCAL_VAL="$sv7"; S_TS_GH_TOKEN="$sv3"; S_TS_GITHUB_TOKEN="$sv4"; S_TS_GH_ENTERPRISE_TOKEN="$sv5"
         fi ;;
       eval)
         sub=""
         for ((j = i + 1; j < nt; j++)); do sub+="${toks[$j]} "; done
         if [ -n "$sub" ]; then
-          sv1="$S_CFG_STATE"; sv2="$S_CFG_VAL"; sv3="$S_TS_GH_TOKEN"; sv4="$S_TS_GITHUB_TOKEN"; sv5="$S_TS_GH_ENTERPRISE_TOKEN"
+          sv1="$S_CFG_STATE"; sv2="$S_CFG_VAL"; sv6="$S_CFG_LOCAL"; sv7="$S_CFG_LOCAL_VAL"; sv3="$S_TS_GH_TOKEN"; sv4="$S_TS_GITHUB_TOKEN"; sv5="$S_TS_GH_ENTERPRISE_TOKEN"
           S_CFG_STATE="$E_CFG_STATE"; S_CFG_VAL="$E_CFG_VAL"
           S_TS_GH_TOKEN="$E_TS_GH_TOKEN"; S_TS_GITHUB_TOKEN="$E_TS_GITHUB_TOKEN"; S_TS_GH_ENTERPRISE_TOKEN="$E_TS_GH_ENTERPRISE_TOKEN"
           process_script "$sub" $((depth + 1))
-          S_CFG_STATE="$sv1"; S_CFG_VAL="$sv2"; S_TS_GH_TOKEN="$sv3"; S_TS_GITHUB_TOKEN="$sv4"; S_TS_GH_ENTERPRISE_TOKEN="$sv5"
+          S_CFG_STATE="$sv1"; S_CFG_VAL="$sv2"; S_CFG_LOCAL="$sv6"; S_CFG_LOCAL_VAL="$sv7"; S_TS_GH_TOKEN="$sv3"; S_TS_GITHUB_TOKEN="$sv4"; S_TS_GH_ENTERPRISE_TOKEN="$sv5"
         fi ;;
     esac
 

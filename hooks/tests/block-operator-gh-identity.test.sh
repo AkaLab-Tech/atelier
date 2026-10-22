@@ -143,6 +143,22 @@ assert_block "eval unset config"                 "eval \"gh pr review 1 --approv
 assert_block "bash -c token"                     "bash -c 'GH_TOKEN=abc gh pr review 1 --approve'"
 assert_block "bash -c graphql"                   "bash -c \"gh api graphql -f query='mutation { addPullRequestReview(input:{}) { clientMutationId } }'\""
 
+echo "== exported vs shell-local GH_CONFIG_DIR assignments =="
+assert_block "local plain assign, nothing inherited"  "GH_CONFIG_DIR=$AUTHOR; gh pr review 1 --approve"
+assert_block "local declare, nothing inherited"       "declare GH_CONFIG_DIR=$AUTHOR; gh pr review 1 --approve"
+assert_block "local readonly, nothing inherited"      "readonly GH_CONFIG_DIR=$AUTHOR; gh pr review 1 --approve"
+assert_block "inherited author, plain assign personal" "GH_CONFIG_DIR=$PERSONAL; gh pr review 1 --approve" GH_CONFIG_DIR="$AUTHOR"
+assert_block "export, unset, plain reviewer"          "export GH_CONFIG_DIR=$AUTHOR; unset GH_CONFIG_DIR; GH_CONFIG_DIR=$REVIEWER; gh pr review 1 --approve"
+assert_block "plain, unset, bare export"              "GH_CONFIG_DIR=$AUTHOR; unset GH_CONFIG_DIR; export GH_CONFIG_DIR; gh pr review 1 --approve"
+assert_block "local value not carried into bash -c"   "GH_CONFIG_DIR=$AUTHOR; bash -c 'export GH_CONFIG_DIR; gh pr review 1 --approve'"
+assert_allow "inherited author, plain assign reviewer" "GH_CONFIG_DIR=$REVIEWER; gh pr review 1 --approve" GH_CONFIG_DIR="$AUTHOR"
+assert_allow "export author"                          "export GH_CONFIG_DIR=$AUTHOR; gh pr review 1 --approve"
+assert_allow "declare -x author"                      "declare -x GH_CONFIG_DIR=$AUTHOR; gh pr review 1 --approve"
+assert_allow "typeset -x author"                      "typeset -x GH_CONFIG_DIR=$AUTHOR; gh pr review 1 --approve"
+assert_allow "plain assign then bare export"          "GH_CONFIG_DIR=$AUTHOR; export GH_CONFIG_DIR; gh pr review 1 --approve"
+assert_allow "export author then plain reviewer"      "export GH_CONFIG_DIR=$AUTHOR; GH_CONFIG_DIR=$REVIEWER; gh pr review 1 --approve"
+assert_allow "inline author prefix"                   "GH_CONFIG_DIR=$AUTHOR gh pr review 1 --approve"
+
 echo "== credential grabs =="
 assert_block "gh auth token under personal"      "GH_CONFIG_DIR=$PERSONAL gh auth token"
 assert_block "gh auth token unset config"        'gh auth token'
