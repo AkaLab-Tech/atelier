@@ -113,9 +113,9 @@ case "${1:-}" in
       sep=","
     done
     if [ -n "$errs" ]; then
-      printf '%s}},"errors":[%s]}\n' "$out" "$errs"
+      printf '%s},"o":{"p":{}}},"errors":[%s]}\n' "$out" "$errs"
     else
-      printf '%s}}}\n' "$out"
+      printf '%s},"o":{"p":{}}}}\n' "$out"
     fi
     exit "$rc" ;;
 esac
