@@ -35,6 +35,8 @@ set -uo pipefail
 
 # shellcheck source=lib/log-decision.sh
 source "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT must be set by Claude Code}/hooks/lib/log-decision.sh"
+# shellcheck source=lib/portable-timeout.sh
+source "${CLAUDE_PLUGIN_ROOT}/hooks/lib/portable-timeout.sh"
 
 HOOK_NAME="semantic-risk-judge"
 PATTERNS_FILE="${CLAUDE_PLUGIN_ROOT}/hooks/patterns/semantic-risk-judge.json"
@@ -149,37 +151,22 @@ Respond with ONLY a single-line JSON object, no prose, no code fences:
 
 # --- Call Haiku (bounded, no tool access, re-entrancy-guarded) --------------
 # Env assignments prefixed to the command apply to it and its children, so the
-# sentinel + config dir reach `claude` whether or not `timeout` wraps it.
-# Prefer `timeout`/`gtimeout`; otherwise rely on --max-turns 1 to bound it.
+# sentinel + config dir reach `claude` through atelier_timeout (portable: no
+# GNU timeout needed). A deadline hit returns 124 and fails open below.
 if ! command -v claude >/dev/null 2>&1; then
   printf '⚠️  atelier:%s — claude CLI missing; hook safety layer degraded, failing open (allow) on %s\n' "$HOOK_NAME" "$matched_name" >&2
   log_decision "$HOOK_NAME" "Bash" "$matched_class" "allow" "claude CLI missing — fail-open on $matched_name"
   exit 0
 fi
 
-timeout_bin=""
-if command -v timeout >/dev/null 2>&1; then
-  timeout_bin="timeout"
-elif command -v gtimeout >/dev/null 2>&1; then
-  timeout_bin="gtimeout"
-fi
-
 verdict_raw=""
 rc=0
-if [ -n "$timeout_bin" ]; then
-  verdict_raw="$(
-    ATELIER_SEMANTIC_RISK_JUDGE_ACTIVE=1 \
-    CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}" \
-      "$timeout_bin" "$HAIKU_TIMEOUT_SECONDS" \
-      claude -p "$prompt" --model "$HAIKU_MODEL" --output-format json --max-turns 1 2>/dev/null
-  )" || rc=$?
-else
-  verdict_raw="$(
-    ATELIER_SEMANTIC_RISK_JUDGE_ACTIVE=1 \
-    CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}" \
-      claude -p "$prompt" --model "$HAIKU_MODEL" --output-format json --max-turns 1 2>/dev/null
-  )" || rc=$?
-fi
+verdict_raw="$(
+  ATELIER_SEMANTIC_RISK_JUDGE_ACTIVE=1 \
+  CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}" \
+    atelier_timeout "$HAIKU_TIMEOUT_SECONDS" \
+    claude -p "$prompt" --model "$HAIKU_MODEL" --output-format json --max-turns 1 2>/dev/null
+)" || rc=$?
 
 # --- Fail-open on any non-success -------------------------------------------
 if [ "$rc" -ne 0 ] || [ -z "$verdict_raw" ]; then

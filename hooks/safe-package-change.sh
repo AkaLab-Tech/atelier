@@ -17,6 +17,8 @@ set -uo pipefail
 
 # shellcheck source=lib/log-decision.sh
 source "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT must be set by Claude Code}/hooks/lib/log-decision.sh"
+# shellcheck source=lib/portable-timeout.sh
+source "${CLAUDE_PLUGIN_ROOT}/hooks/lib/portable-timeout.sh"
 
 HOOK_NAME="safe-package-change"
 PATTERNS_FILE="${CLAUDE_PLUGIN_ROOT}/hooks/patterns/safe-package-change.json"
@@ -99,7 +101,7 @@ is_lifecycle_allowed() {
 # stdout. Empty on any failure — callers must tolerate missing data.
 pnpm_view() {
   local pkg="$1" field="$2"
-  ( timeout 8 pnpm view "$pkg" "$field" --json 2>/dev/null || true )
+  ( atelier_timeout 8 pnpm view "$pkg" "$field" --json 2>/dev/null || true )
 }
 
 # Resolve a "pkg@spec" arg into its bare name and version spec.
