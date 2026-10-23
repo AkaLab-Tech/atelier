@@ -74,34 +74,38 @@ auth_status_shows_token() {
 # Sets REASON and returns 0 when the call is review-like or exfiltrating.
 classify() {
   REASON=""
-  local a skip=0 npos=0 pos1="" pos2=""
+  # The shim cannot know every flag's arity (gh finds the subcommand after
+  # value-taking flags: `gh pr -b x review 1`), so any word after the group
+  # equal to review/comment/token counts. Trade-off: a flag value literally
+  # equal to one of them is refused under a non-atelier identity (fail
+  # closed); the atelier identities never reach this code.
+  local a skip=0 group="" w has_status=0
   for a in "$@"; do
-    if [ "$skip" = 1 ]; then skip=0; continue; fi
-    case "$a" in
-      -R|--repo|--hostname) skip=1 ;;
-      -*) ;;
-      *)
-        npos=$((npos + 1))
-        case "$npos" in 1) pos1="$a" ;; 2) pos2="$a" ;; esac
-        ;;
+    if [ -z "$group" ]; then
+      if [ "$skip" = 1 ]; then skip=0; continue; fi
+      case "$a" in
+        -R|--repo|--hostname) skip=1 ;;
+        -*) ;;
+        *) group="$a" ;;
+      esac
+      continue
+    fi
+    w="$a"
+    case "$group" in
+      pr)
+        case "$w" in review|comment) REASON="gh pr $w posts as the active identity"; return 0 ;; esac ;;
+      issue)
+        if [ "$w" = comment ]; then REASON="gh issue comment posts as the active identity"; return 0; fi ;;
+      auth)
+        if [ "$w" = token ]; then REASON="gh auth token reveals a credential"; return 0; fi
+        if [ "$w" = status ]; then has_status=1; fi ;;
     esac
   done
 
-  case "$pos1" in
-    pr)
-      case "$pos2" in
-        review|comment) REASON="gh pr $pos2 posts as the active identity"; return 0 ;;
-      esac
-      ;;
-    issue)
-      if [ "$pos2" = "comment" ]; then REASON="gh issue comment posts as the active identity"; return 0; fi
-      ;;
+  case "$group" in
     auth)
-      if [ "$pos2" = "token" ]; then REASON="gh auth token reveals a credential"; return 0; fi
-      if [ "$pos2" = "status" ]; then
-        if auth_status_shows_token "$@"; then
-          REASON="gh auth status --show-token reveals a credential"; return 0
-        fi
+      if [ "$has_status" = 1 ] && auth_status_shows_token "$@"; then
+        REASON="gh auth status --show-token reveals a credential"; return 0
       fi
       ;;
     api) classify_api "$@" && return 0 ;;

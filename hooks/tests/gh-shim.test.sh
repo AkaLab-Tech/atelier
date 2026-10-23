@@ -152,6 +152,12 @@ blocked "graphql --input fails closed" personal 'gh api graphql --input q.json'
 blocked "graphql query=@file fails closed" personal 'gh api graphql -F query=@q.graphql'
 blocked "gh alias (non built-in)"  personal 'gh myalias foo'
 blocked "gh extension"             personal 'gh someext run'
+# Value-taking flags before the subcommand must not hide it (classify scans every word, no flag arity).
+blocked "pr -b x review (flag value before subcommand)" personal 'gh pr -b x review 1 --approve'
+blocked "pr --body x comment"      personal 'gh pr --body x comment 1'
+blocked "issue -b hi comment"      personal 'gh issue -b hi comment 3'
+blocked "auth -h host token"       personal 'gh auth -h github.com token'
+blocked "auth -h host status -t"   personal 'gh auth -h github.com status -t'
 
 echo "== shell-level evasions are refused at exec time =="
 blocked "reserved word time"       personal 'time gh pr review 1'
@@ -243,6 +249,9 @@ passes "personal: auth status -h host" personal 'gh auth status -h github.com' $
 passes "personal: auth status -ah host" personal 'gh auth status -ah github.com' $'ARG[auth]\nARG[status]\nARG[-ah]\nARG[github.com]'
 passes "personal: GET pulls/1" personal 'gh api repos/o/r/pulls/1' $'ARG[api]\nARG[repos/o/r/pulls/1]'
 passes "personal: graphql viewer query" personal "gh api graphql -f query='{viewer{login}}'" $'ARG[api]\nARG[graphql]\nARG[-f]\nARG[query={viewer{login}}]'
+passes "personal: pr -q .title view" personal 'gh pr -q .title view 603' $'ARG[pr]\nARG[-q]\nARG[.title]\nARG[view]\nARG[603]'
+passes "personal: auth -h host status (no token flag)" personal 'gh auth -h github.com status' $'ARG[auth]\nARG[-h]\nARG[github.com]\nARG[status]'
+passes "author: pr -b x review" author 'gh pr -b x review 1' $'ARG[pr]\nARG[-b]\nARG[x]\nARG[review]\nARG[1]'
 passes "argv with spaces and empty arg preserved" personal 'gh pr view "a b" ""' $'ARG[pr]\nARG[view]\nARG[a b]\nARG[]'
 
 for sh in "${SHELLS[@]}"; do
