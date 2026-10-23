@@ -1,7 +1,7 @@
 ---
 description: Stop and discard an in-flight task — close its open PR without merging, remove the worktree and branch, and move tracking to a terminal state. The inverse of `/atelier:next-task`'s claim; preserves the approved plan and the task itself for re-claiming later — not a permanent kill.
 argument-hint: "<id> [--yes|-y]"
-allowed-tools: Read, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git worktree:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr close:*), Bash(gh issue view:*), Bash(gh issue close:*), Bash(gh api graphql:*), Bash(atelier-task-backend:*), Bash(atelier-housekeeping:*), Bash(jq:*), Bash(env:*), Bash(test:*), Skill, Task, AskUserQuestion
+allowed-tools: Read, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git worktree:*), Bash(git rev-parse:*), Bash(git ls-remote:*), Bash(git wt:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr close:*), Bash(gh issue view:*), Bash(gh issue close:*), Bash(gh api graphql:*), Bash(atelier-task-backend:*), Bash(atelier-housekeeping:*), Bash(jq:*), Bash(env:*), Bash(test:*), Skill, Task, AskUserQuestion
 ---
 
 You are running the `/atelier:abandon-task` slash command. Its job is the **inverse of `/atelier:next-task`'s claim**: stop an in-flight task cleanly — close its open PR without merging, remove its worktree and local branch, and move tracking back to a re-plannable terminal state. It does **not** delete the approved plan, does **not** touch `ROADMAP.md`'s eligibility of the task, and does **not** close it out as delivered — the task stays re-claimable via `/atelier:next-task <id>` or `/atelier:resume-task <id>` afterward.
@@ -105,7 +105,7 @@ If Anchor A found an open PR:
 gh pr close <NN> --delete-branch --comment "Abandoned via /atelier:abandon-task"
 ```
 
-`--delete-branch` removes the *remote* branch through GitHub's API — it is not a force push, which is why this command needs no `git push` permission at all. If there is no open PR (Anchor B only), skip this step entirely.
+`--delete-branch` removes the *remote* branch through GitHub's API — it is not a force push, which is why this command needs no `git push` permission at all. If the close succeeded but the branch delete failed, run `git ls-remote --heads origin <branch>`: empty output means the branch is already deleted (success); anything else is reported verbatim. Never retry the close. If there is no open PR (Anchor B only), skip this step entirely.
 
 ### 6. Remove the worktree and local branch
 

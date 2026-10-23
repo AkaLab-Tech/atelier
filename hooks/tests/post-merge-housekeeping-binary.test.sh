@@ -264,6 +264,9 @@ git -C "$REPO9" commit -qm "init"
 
 # A github.com origin remote so repo_slug() resolves a non-empty owner/name.
 git -C "$REPO9" remote add origin https://github.com/fixture/closed-unmerged.git
+# Local bare push URL: housekeeping's ls-remote uses it, so the test never reaches github.com.
+git init -q --bare "$TMP/remote9.git"
+git -C "$REPO9" remote set-url --push origin "$TMP/remote9.git"
 
 # Build the unmerged commit on a throwaway local branch, then point a
 # remote-tracking ref at it directly (no push / no network) and delete the
@@ -275,6 +278,7 @@ git -C "$REPO9" commit -qm "task 9 unmerged work"
 SHA9="$(git -C "$REPO9" rev-parse task/9-closed-unmerged)"
 git -C "$REPO9" checkout -q main
 git -C "$REPO9" branch -D task/9-closed-unmerged >/dev/null 2>&1
+git -C "$REPO9" push -q origin "$SHA9:refs/heads/task/9-closed-unmerged" 2>/dev/null  # branch is live on the bare remote
 git -C "$REPO9" update-ref refs/remotes/origin/task/9-closed-unmerged "$SHA9"
 
 # No IN_PROGRESS.md reference, no local task/9-* branch, no worktree — the

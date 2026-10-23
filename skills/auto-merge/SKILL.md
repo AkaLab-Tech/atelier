@@ -152,7 +152,7 @@ gh pr merge <NN> --squash --delete-branch --match-head-commit <sha> --body-file 
 ```
 
 - `--squash` is the only strategy atelier ships (PLAN.md §6).
-- `--delete-branch` removes the remote branch in the same call.
+- `--delete-branch` removes the remote branch in the same call. If the merge succeeded but the branch delete failed, run `git ls-remote --heads origin <branch>`: empty output means the branch is already deleted (success, log it quietly); anything else is reported verbatim. Never retry the merge.
 - `--match-head-commit <sha>` is the `sha` recorded in guardrail #2 (the reviewed head): a push racing the gate makes the merge fail instead of landing unreviewed code. On that failure report `held: head moved after review` and do not retry.
 - `--body-file <(echo "")` clears the squash-commit body to just the title — the original PR body lives on the closed PR for history; the merge commit on `main` should be terse.
 
@@ -238,6 +238,7 @@ Absent block or absent key → treat as `true`. Setting a key to `false` disable
    - The binary already enforces every safety rail: protected branches, open PRs, dirty worktrees, claimed tasks (board Status In Progress on `github-project`; `IN_PROGRESS.md` in the main checkout or the task's worktree, incl. `[BLOCKED]`/`[OVERSIZE]`, on `files`; unreadable claim state is skipped), unmerged-work skip, no `--force`/non-ff push. A worktree is removed only when its PR is MERGED; ancestry alone never qualifies.
    - The merge deleted *this* task's remote branch via `--delete-branch`; the sweep mops up **prior cycles'** local + remote `task/*` debris.
    - Capture stdout and fold counts into the structured report (§ Structured output — `Swept:` line).
+   - Stale `origin/task/*` tracking refs whose branch is already gone on origin are pruned locally and reported as "already deleted", never as failures; a remote delete that fails because the branch is gone counts as success, while a real failure is reported with git's error text.
    - Idempotent: re-running enumerates fresh and exits `OK: nothing to clean up`.
 
 ## Structured output
