@@ -100,6 +100,9 @@ fi
 describe_permission() {
   local entry="$1"
   case "$entry" in
+    # ---------- subagent dispatch (#590) ----------
+    "Agent(atelier:task-orchestrator)")          echo "dispatch the atelier task-orchestrator agent" ;;
+    "Agent(atelier:planner)")                    echo "dispatch the atelier planner agent" ;;
     # ---------- atelier helpers (host-OS layer) ----------
     "Bash(atelier-setup-project:*)")             echo "bootstrap a project for atelier" ;;
     "Bash(atelier-setup-project --per-task-settings:*)") echo "regenerate per-task .claude/settings.json" ;;
