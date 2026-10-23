@@ -65,7 +65,7 @@ esac
 # Protected names in a segment, one per line.
 protected_tokens() {
   printf '%s\n' "$1" \
-    | grep -Eo "(^|[[:space:]/'\"<>=(:])\\.env[^[:space:]/'\"<>;|&)\`]*" \
+    | grep -Eo "(^|[[:space:]/'\"<>=(:{,])\\.env[^[:space:]/'\"<>;|&)\`{},]*" \
     | sed -E 's/^[^.]*//' \
     | grep -Ev '\.(example|sample|template|dist)$' || true
   # Attached short option on a commit (`git commit -F.env`, `-aF.env`).

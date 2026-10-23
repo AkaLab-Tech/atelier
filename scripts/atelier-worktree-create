@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+#
+# atelier-worktree-create — create a task worktree via git-wt WITHOUT
+# git-wt's blanket .env* copy (--no-env), then copy only the env files the
+# project allowlists in .atelier.json `worktreeEnvFiles` (default
+# [".env.local"]). Production/staging env files are never copied.
+#
+# Usage:
+#   atelier-worktree-create <project_root> <branch> --from <ref>
+#   atelier-worktree-create --scan-env <dir>
+#   atelier-worktree-create --help
+#
+# Create mode prints the worktree path as the LAST stdout line on success.
+# Env files are only ever handled by name (copied with cp, never opened).
+#
+# Exit codes:
+#   create:    0 ok; 1 prod/stage env file present in the new worktree;
+#              2 error (bad args, git-wt failure, malformed .atelier.json)
+#   --scan-env: 0 none flagged; 1 flagged names printed one per line; 2 error
+
+set -euo pipefail
+IFS=$'\n\t'
+
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+DEFAULT_ENV_FILES=(".env.local")
+
+die() { printf '!!  ERROR: %s\n' "$*" >&2; exit 2; }
+warn() { printf '!!  %s: %s\n' "$SCRIPT_NAME" "$*" >&2; }
+
+usage() {
+  cat <<USAGE
+Usage:
+  $SCRIPT_NAME <project_root> <branch> --from <ref>
+  $SCRIPT_NAME --scan-env <dir>
+  $SCRIPT_NAME --help
+
+Creates a worktree with 'git wt switch <branch> --from <ref> --no-env', then
+copies only the files listed in <project_root>/.atelier.json worktreeEnvFiles
+(default [".env.local"]) from the main checkout. Prod/stage env files
+(.env.prod*, .env.production*, .env.stage*, .env.staging*) are never copied
+and make the command exit 1 if present in the new worktree.
+
+--scan-env <dir> lists prod/stage .env* names directly under <dir> (name-only;
+no file is opened). Exit 0 none, 1 flagged, 2 error.
+USAGE
+}
+
+# Case-insensitive basename classifier for production/staging env files.
+is_prod_stage() {
+  local lower
+  lower="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  [[ "$lower" =~ ^\.env\.(prod|production|stage|staging)([._-].*)?$ ]]
+}
+
+is_valid_env_name() {
+  [[ "$1" != */* && "$1" != *..* && "$1" =~ ^\.env(\..+)?$ ]]
+}
+
+scan_env() {
+  local dir="$1" f name flagged=0
+  [[ -d "$dir" ]] || die "not a directory: $dir"
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    name="$(basename "$f")"
+    if is_prod_stage "$name"; then
+      printf '%s\n' "$name"
+      flagged=1
+    fi
+  done < <(find "$dir" -maxdepth 1 -iname '.env*' 2>/dev/null | sort) || die "cannot scan $dir"
+  return "$flagged"
+}
+
+main() {
+  case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    --scan-env)
+      [[ $# -eq 2 ]] || { usage >&2; exit 2; }
+      rc=0; scan_env "$2" || rc=$?
+      exit "$rc"
+      ;;
+  esac
+
+  [[ $# -eq 4 && "$3" == "--from" ]] || { usage >&2; exit 2; }
+  local root="$1" branch="$2" ref="$4"
+  command -v jq >/dev/null 2>&1 || die "jq is required"
+  [[ -d "$root" ]] || die "project root not found: $root"
+
+  local out wt
+  out="$(git -C "$root" wt switch "$branch" --from "$ref" --no-env)" \
+    || die "git wt switch failed for $branch"
+  wt="$(printf '%s\n' "$out" | awk 'NF{l=$0} END{print l}')"
+  [[ -n "$wt" && -d "$wt" ]] || die "could not determine worktree path from git-wt output"
+
+  local main_wt
+  main_wt="$(git -C "$root" worktree list --porcelain | awk '/^worktree /{sub(/^worktree /,""); print; exit}')"
+  [[ -n "$main_wt" ]] || die "could not determine main worktree"
+
+  local entries=() cfg="$root/.atelier.json"
+  if [[ -f "$cfg" ]] && jq -e 'has("worktreeEnvFiles")' "$cfg" >/dev/null 2>&1; then
+    while IFS= read -r e; do entries+=("$e"); done \
+      < <(jq -r '.worktreeEnvFiles[]? | strings' "$cfg") || die "malformed worktreeEnvFiles in $cfg"
+  elif [[ -f "$cfg" ]] && ! jq -e . "$cfg" >/dev/null 2>&1; then
+    die "malformed JSON: $cfg"
+  else
+    entries=("${DEFAULT_ENV_FILES[@]}")
+  fi
+
+  local e
+  for e in ${entries[@]+"${entries[@]}"}; do
+    if ! is_valid_env_name "$e"; then
+      warn "skipping invalid worktreeEnvFiles entry (must be a bare .env* basename): $e"
+      continue
+    fi
+    if is_prod_stage "$e"; then
+      warn "refusing to copy production/staging env file: $e"
+      continue
+    fi
+    [[ -f "$main_wt/$e" ]] || continue
+    [[ -e "$wt/$e" ]] && continue
+    cp "$main_wt/$e" "$wt/$e"
+  done
+
+  local flagged
+  if ! flagged="$(scan_env "$wt")"; then
+    printf '!!  prod/stage env files present in %s:\n' "$wt" >&2
+    printf '    %s\n' "$flagged" >&2
+    printf '    Remove them (rm <file> inside the worktree) before continuing.\n' >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$wt"
+}
+
+main "$@"

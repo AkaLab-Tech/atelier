@@ -112,6 +112,9 @@
       "Read(~/.gnupg/**)",
       "Read(~/.config/gh/**)",
       "Read(<atelier-config-dir>/gh/**)",
+      "Read(./.env*)",
+      "Read(<worktree>/.env*)",
+      "Read(<worktree>-worktrees/**/.env*)",
 
       "Edit(~/.zshrc)",
       "Edit(~/.bashrc)",
@@ -295,6 +298,7 @@
       "Bash(atelier-update:*)",
       "Bash(atelier-cpu-slot:*)",
       "Bash(atelier-permission-diff:*)",
+      "Bash(atelier-worktree-create:*)",
       "Bash(atelier-setup-coolify:*)",
       "Bash(atelier-setup-vercel:*)",
       "Bash(atelier-setup-neon:*)",

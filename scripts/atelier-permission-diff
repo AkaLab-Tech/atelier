@@ -110,6 +110,7 @@ describe_permission() {
     "Bash(atelier-pr-size-check:*)")             echo "check PR size against budget (M7.1.F27)" ;;
     "Bash(atelier-update:*)")                    echo "update atelier (git pull + plugin cache refresh)" ;;
     "Bash(atelier-permission-diff:*)")           echo "render permission diff (M6.1.b)" ;;
+    "Bash(atelier-worktree-create:*)")           echo "create a task worktree without copying secrets (--no-env)" ;;
     # ---------- pnpm + JS toolchain ----------
     "Bash(pnpm install*)")                       echo "install dependencies" ;;
     "Bash(pnpm add*)")                           echo "add a dependency" ;;
@@ -234,6 +235,9 @@ describe_permission() {
     "Read(~/.ssh/**)")                           echo "BLOCKED: SSH keys" ;;
     "Read(~/.aws/**)")                           echo "BLOCKED: AWS credentials" ;;
     "Read(~/.gnupg/**)")                         echo "BLOCKED: GPG keys" ;;
+    "Read(./.env*)")                             echo "BLOCKED: read .env* secrets in the project root" ;;
+    "Read(<worktree>/.env*)")                    echo "BLOCKED: read .env* secrets in the task worktree" ;;
+    "Read(<worktree>-worktrees/**/.env*)")       echo "BLOCKED: read .env* secrets in any sibling task worktree" ;;
     # ---------- mcp ----------
     "mcp__plugin_atelier_playwright__*")         echo "Playwright MCP tools" ;;
     "mcp__plugin_atelier_playwright__browser_run_code_unsafe") echo "BLOCKED: arbitrary JS execution" ;;

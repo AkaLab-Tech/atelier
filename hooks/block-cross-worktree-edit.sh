@@ -304,7 +304,7 @@ block() {
    Reason:    this worktree is owned by a different, still-active session, and your session already owns a different worktree of the same repository ($other_worktree).
    Rule:      PLAN.md #196a — per-task worktree isolation is enforced categorically by this hook, not by the (necessarily shared) Edit/Write permission glob.
    Action:    finish or hand off the worktree you already own before touching this one, or run this edit from a session that owns nothing yet (e.g. a fresh /atelier:resume-task on this worktree).
-   Override:  none from inside this session — a genuine deliberate cross-worktree edit is the operator's call, made manually outside Claude Code, or after the owning session's claim ages out (ownerTtlSeconds in .atelier.json, default ${DEFAULT_TTL_SECONDS}s).
+   Override:  none from inside this session — a genuine deliberate cross-worktree edit is the operator's call, made manually outside Claude Code, or after the owning session's claim ages out and 'atelier-subagent-ledger live' reports no running sub-agent there (ownerTtlSeconds in .atelier.json, default ${DEFAULT_TTL_SECONDS}s).
 MSG
   log_decision "$HOOK_NAME" "$tool_name" "$key" "block" "worktree $W owned by a foreign fresh session; caller already owns $other_worktree (token-source: $token_source)"
   exit 2

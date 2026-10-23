@@ -178,6 +178,25 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/semantic-risk-judge.sh"
           }
         ]
+      },
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/subagent-ledger.sh"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/subagent-ledger.sh"
+          }
+        ]
       }
     ]
   }
