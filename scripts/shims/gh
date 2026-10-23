@@ -113,72 +113,98 @@ classify() {
   return 1
 }
 
+# Fail closed: the argv grammar of `gh api` (clusters, =-forms, global flags
+# before `api`) is not worth chasing form by form, so every word after `api` is
+# inspected as text. Trade-off: a non-atelier identity may see a false refusal
+# (e.g. a field value that mentions a review endpoint on a write); atelier
+# identities never reach this code.
 classify_api() {
-  local a skip=0 endpoint="" method="" haswrite=0 body="" opaque=0 first=1
+  local a skip=0 seen=0 gskip=0 ep_hit="" nonget=0 hasget=0 haswrite=0 opaque=0
+  local isgql=0 text="" lw v i ch n rest m
   for a in "$@"; do
-    if [ "$first" = 1 ]; then first=0; continue; fi
+    if [ "$seen" = 0 ]; then
+      if [ "$gskip" = 1 ]; then gskip=0; continue; fi
+      case "$a" in
+        -R|--repo|--hostname) gskip=1 ;;
+        -*) ;;
+        *) seen=1 ;;
+      esac
+      continue
+    fi
+    lw="$(printf '%s' "$a" | tr '[:upper:]' '[:lower:]')"
+    text="$text $lw"
+    case "$lw" in *=@*) opaque=1 ;; esac
+
+    # Normalised candidates: the word and any --opt=value value.
+    for v in "$lw" "${lw#*=}"; do
+      v="${v%%#*}"; v="${v%%\?*}"; v="${v%/}"
+      case "$v" in graphql|*/graphql) isgql=1 ;; esac
+    done
+    case "$lw" in
+      *pulls/*/reviews*|*pulls/*/comments*|*pulls/comments/*|*issues/*/comments*|*issues/comments/*)
+        REASON="gh api write to $a posts as the active identity"; ep_hit="$a" ;;
+    esac
+
     if [ "$skip" != 0 ]; then
       case "$skip" in
-        method) method="$a" ;;
-        field) body="$body $a"; case "$a" in *=@*) opaque=1 ;; esac ;;
-        input) opaque=1 ;;
+        method) if [ "$lw" = get ]; then hasget=1; else nonget=1; fi ;;
+        field) haswrite=1 ;;
       esac
       skip=0
       continue
     fi
     case "$a" in
-      api) ;;
-      -X|--method) skip=method ;;
-      -X?*) method="${a#-X}" ;;
-      --method=*) method="${a#--method=}" ;;
-      -f|-F|--field|--raw-field) haswrite=1; skip=field ;;
-      -f?*|-F?*) haswrite=1; body="$body ${a#-?}"; case "$a" in *=@*) opaque=1 ;; esac ;;
-      --field=*|--raw-field=*) haswrite=1; body="$body ${a#*=}"; case "$a" in *=@*) opaque=1 ;; esac ;;
-      --input) haswrite=1; opaque=1; skip=input ;;
-      --input=*) haswrite=1; opaque=1 ;;
-      -H|--header|-q|--jq|-t|--template|--hostname|--cache|-p|--preview) skip=other ;;
-      -*) ;;
-      *) [ -n "$endpoint" ] || endpoint="$a" ;;
+      --method=*) if [ "$lw" = "--method=get" ]; then hasget=1; else nonget=1; fi ;;
+      --method) skip=method ;;
+      --field=*|--raw-field=*) haswrite=1 ;;
+      --field|--raw-field) skip=field ;;
+      --input|--input=*) haswrite=1; opaque=1 ;;
+      --header|--jq|--template|--hostname|--cache|--preview) skip=other ;;
+      --*) ;;
+      -?*)
+        n="${#a}"; i=1
+        while [ "$i" -lt "$n" ]; do
+          ch="${a:$i:1}"
+          case "$ch" in
+            X|f|F|H|q|t|p)
+              rest="${a:$((i + 1))}"
+              case "$ch" in
+                X)
+                  if [ -n "$rest" ]; then
+                    if [ "$(printf '%s' "$rest" | tr '[:lower:]' '[:upper:]')" = GET ]; then hasget=1; else nonget=1; fi
+                  else skip=method; fi ;;
+                f|F)
+                  haswrite=1
+                  [ -n "$rest" ] || skip=field ;;
+                *) [ -n "$rest" ] || skip=other ;;
+              esac
+              break ;;
+          esac
+          i=$((i + 1))
+        done
+        ;;
     esac
   done
 
-  local ep method_uc
-  ep="$(printf '%s' "$endpoint" | tr '[:upper:]' '[:lower:]')"
-  ep="${ep%%#*}"
-  ep="${ep%%\?*}"
-  case "$ep" in
-    *://*) ep="${ep#*://}"; case "$ep" in */*) ep="${ep#*/}" ;; *) ep="" ;; esac ;;
-  esac
-  ep="${ep#/}"
-  ep="${ep%/}"
-  method_uc="$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')"
-
-  if [ "$ep" = "graphql" ] || [ "${ep%/graphql}" != "$ep" ]; then
+  if [ "$isgql" = 1 ]; then
     if [ "$opaque" = 1 ]; then
       REASON="gh api graphql with a body the shim cannot inspect"; return 0
     fi
-    local lb
-    lb="$(printf '%s' "$body" | tr '[:upper:]' '[:lower:]')"
-    local m
     for m in addpullrequestreview submitpullrequestreview updatepullrequestreview \
              addpullrequestreviewcomment addpullrequestreviewthread addcomment \
              dismisspullrequestreview; do
-      case "$lb" in *"$m"*) REASON="gh api graphql mutation $m posts as the active identity"; return 0 ;; esac
+      case "$text" in *"$m"*) REASON="gh api graphql mutation $m posts as the active identity"; return 0 ;; esac
     done
-    return 1
   fi
 
   local write=0
-  if [ -n "$method_uc" ]; then
-    [ "$method_uc" = "GET" ] || write=1
-  else
-    write="$haswrite"
+  if [ "$nonget" = 1 ]; then write=1
+  elif [ "$hasget" = 0 ] && [ "$haswrite" = 1 ]; then write=1
   fi
-  [ "$write" = 1 ] || return 1
-  case "$ep" in
-    *pulls/*/reviews*|*pulls/*/comments*|*pulls/comments/*|*issues/*/comments*|*issues/comments/*)
-      REASON="gh api write to $ep posts as the active identity"; return 0 ;;
-  esac
+  if [ "$write" = 1 ] && [ -n "${ep_hit:-}" ]; then
+    REASON="gh api write to $ep_hit posts as the active identity"; return 0
+  fi
+  REASON=""
   return 1
 }
 

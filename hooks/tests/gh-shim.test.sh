@@ -150,6 +150,13 @@ blocked "graphql addPullRequestReview" personal "gh api graphql -f query='mutati
 blocked "graphql addComment"       personal "gh api graphql -f query='mutation{addComment(input:{})}'"
 blocked "graphql --input fails closed" personal 'gh api graphql --input q.json'
 blocked "graphql query=@file fails closed" personal 'gh api graphql -F query=@q.graphql'
+blocked "api -iX POST reviews (cluster)" personal 'gh api -iX POST repos/o/r/pulls/1/reviews -f event=APPROVE'
+blocked "api -iH hdr reviews (cluster)" personal "gh api -iH 'Accept: x' repos/o/r/pulls/1/reviews -f event=APPROVE"
+blocked "--hostname before api" personal 'gh --hostname github.com api -X POST repos/o/r/pulls/1/reviews -f event=APPROVE'
+blocked "api -if graphql mutation (cluster)" personal "gh api -if 'query=mutation{addPullRequestReview(input:{})}' graphql"
+blocked "api --method=post lowercase" personal 'gh api --method=post repos/o/r/pulls/1/reviews'
+blocked "api --raw-field=body=x comments" personal 'gh api --raw-field=body=x repos/o/r/pulls/1/comments'
+blocked "api -fbody=x attached value" personal 'gh api -fbody=x repos/o/r/issues/1/comments'
 blocked "gh alias (non built-in)"  personal 'gh myalias foo'
 blocked "gh extension"             personal 'gh someext run'
 # Value-taking flags before the subcommand must not hide it (classify scans every word, no flag arity).
@@ -252,6 +259,13 @@ passes "personal: graphql viewer query" personal "gh api graphql -f query='{view
 passes "personal: pr -q .title view" personal 'gh pr -q .title view 603' $'ARG[pr]\nARG[-q]\nARG[.title]\nARG[view]\nARG[603]'
 passes "personal: auth -h host status (no token flag)" personal 'gh auth -h github.com status' $'ARG[auth]\nARG[-h]\nARG[github.com]\nARG[status]'
 passes "author: pr -b x review" author 'gh pr -b x review 1' $'ARG[pr]\nARG[-b]\nARG[x]\nARG[review]\nARG[1]'
+passes "author: api -iX POST reviews" author 'gh api -iX POST repos/o/r/pulls/1/reviews -f event=APPROVE' $'ARG[api]\nARG[-iX]\nARG[POST]\nARG[repos/o/r/pulls/1/reviews]\nARG[-f]\nARG[event=APPROVE]'
+passes "author: api -iH hdr reviews" author "gh api -iH 'Accept: x' repos/o/r/pulls/1/reviews -f event=APPROVE" $'ARG[api]\nARG[-iH]\nARG[Accept: x]\nARG[repos/o/r/pulls/1/reviews]\nARG[-f]\nARG[event=APPROVE]'
+passes "author: --hostname before api" author 'gh --hostname github.com api -X POST repos/o/r/pulls/1/reviews -f event=APPROVE' $'ARG[--hostname]\nARG[github.com]\nARG[api]\nARG[-X]\nARG[POST]\nARG[repos/o/r/pulls/1/reviews]\nARG[-f]\nARG[event=APPROVE]'
+passes "author: api -if graphql mutation" author "gh api -if 'query=mutation{addPullRequestReview(input:{})}' graphql" $'ARG[api]\nARG[-if]\nARG[query=mutation{addPullRequestReview(input:{})}]\nARG[graphql]'
+passes "personal: api -iq .login user" personal 'gh api -iq .login user' $'ARG[api]\nARG[-iq]\nARG[.login]\nARG[user]'
+passes "personal: api -iX GET user" personal 'gh api -iX GET user' $'ARG[api]\nARG[-iX]\nARG[GET]\nARG[user]'
+passes "personal: --hostname before api, GET" personal 'gh --hostname github.com api user' $'ARG[--hostname]\nARG[github.com]\nARG[api]\nARG[user]'
 passes "argv with spaces and empty arg preserved" personal 'gh pr view "a b" ""' $'ARG[pr]\nARG[view]\nARG[a b]\nARG[]'
 
 for sh in "${SHELLS[@]}"; do
