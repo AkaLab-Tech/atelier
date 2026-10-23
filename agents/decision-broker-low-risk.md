@@ -33,6 +33,8 @@ The `decision-broker` skill packages and hands you:
 
 1. **Read the catalog entry's `default`.** It is the option atelier ships as the most-likely-correct answer for this category. Your starting hypothesis is "the default applies".
 2. **Cross-check against the context.** Skim the briefing for any signal that the default would be wrong here (e.g. the task is itself a baseline-fix task, in which case `fix-first` for a `baseline-conflict` would be circular). If you find a signal, pick a different option from the catalog and explain why.
+A `baseline-conflict` context may carry `base_ci=` evidence from `atelier-base-ci`: `red` supports the default (`fix-first`); `pending`, `none` and `unknown` are not reasons to deviate from it.
+
 3. **If no signal pushes you off the default, pick the default.** Most low-risk decisions resolve to the default. That is expected. Do not invent reasons to deviate.
 
 ## Output format
