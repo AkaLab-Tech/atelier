@@ -25,6 +25,11 @@
 #   atelier-update [--dry-run] [--yes|-y] [--plugin-root <path>]
 #   atelier-update --help
 #
+# Managed mode also checks the cached plugin's gitCommitSha against the peeled
+# v<version> tag (#548) and refuses the swap on a mismatch or missing tag
+# (exit 1, runtime untouched); when the tag cannot be looked up it warns and
+# continues. $ATELIER_RELEASE_REPO_URL overrides the remote (tests).
+#
 # --yes/-y applies a pending settings.template.json permission change without
 # the interactive [y/N] prompt (which needs a TTY on stdin). This is the only
 # escape hatch for a non-interactive caller (e.g. the /atelier:update slash
@@ -467,6 +472,50 @@ runtime_swap_from_source() {
   ) || die "runtime dir swap from $src failed"
 }
 
+# Peeled commit of tag v$1 on the atelier repo (#548). Echoes the sha, or
+# nothing when the tag does not exist. Returns 1 when the lookup itself could
+# not be made (offline, rate limit). git ls-remote first, `gh api` fallback.
+# $ATELIER_RELEASE_REPO_URL overrides the remote (hermetic tests).
+released_tag_sha() {
+  local tag="v$1" url out sha
+  url="${ATELIER_RELEASE_REPO_URL:-https://github.com/AkaLab-Tech/atelier.git}"
+  if out="$(git ls-remote "$url" "refs/tags/$tag" "refs/tags/$tag^{}" 2>/dev/null)"; then
+    sha="$(printf '%s\n' "$out" | awk '/\^\{\}$/ {print $1; exit}')"
+    [ -n "$sha" ] || sha="$(printf '%s\n' "$out" | awk 'NR==1 {print $1}')"
+    printf '%s\n' "$sha"
+    return 0
+  fi
+  if command -v gh >/dev/null 2>&1 \
+     && sha="$(gh api "repos/AkaLab-Tech/atelier/commits/$tag" --jq .sha 2>/dev/null)" \
+     && [ -n "$sha" ]; then
+    printf '%s\n' "$sha"
+    return 0
+  fi
+  return 1
+}
+
+# Refuse a swap when the cached plugin is not the released tag (#548): the
+# marketplace entry used to track main HEAD, so a cache stamped vX.Y.Z could
+# hold unreleased code. Mismatch or missing tag -> die before anything under
+# $RUNTIME_BASE is touched. Unverifiable (no gitCommitSha, offline) -> warn.
+verify_cache_matches_tag() {
+  local manifest="$1" ver="$2" cached tag_sha
+  cached="$(jq -r '.plugins["atelier@akalab-tech"][0].gitCommitSha // empty' "$manifest" 2>/dev/null || true)"
+  if [ -z "$cached" ]; then
+    warn "cannot verify the cache against tag v$ver: no gitCommitSha in $manifest"
+    return 0
+  fi
+  if ! tag_sha="$(released_tag_sha "$ver")"; then
+    warn "cannot verify the cache against tag v$ver (offline or rate limited) — continuing unverified"
+    return 0
+  fi
+  [ "$tag_sha" != "$cached" ] || return 0
+  warn "cached atelier $ver is commit $cached"
+  warn "released tag v$ver is  ${tag_sha:-<no such tag>}"
+  warn "refusing to swap: the cache holds unreleased code under a release number; runtime and helper symlinks are untouched"
+  die "remedy: \`claude plugin marketplace update akalab-tech\` then \`claude plugin update atelier@akalab-tech\` once the catalog pins the tag; if it persists, report it (#548)"
+}
+
 # Managed-mode update (#39 F4): `claude plugin update` refreshes Claude
 # Code's plugin cache (that IS the fetch step — no git), then the freshly
 # cached version is copied into $RUNTIME_BASE/<version>/ and `current` is
@@ -515,6 +564,7 @@ managed_update() {
   fi
   [ -n "$new_version" ] || die "cannot determine the cached atelier version (no version in $manifest or the cached plugin.json)"
   sublog "cache:       $new_version ($install_path)"
+  verify_cache_matches_tag "$manifest" "$new_version"
 
   # 3) Same version → no swap needed; the drift checks below still run so
   #    templates/symlinks that lag the runtime converge (mirrors clone

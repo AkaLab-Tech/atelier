@@ -252,6 +252,71 @@ check_plugin_drift() {
   fi
 }
 
+# #548 — the cached atelier must be the released tag, not main HEAD stamped
+# with a release number. Compares installed_plugins.json gitCommitSha with the
+# peeled v<version> tag (git ls-remote, gh api fallback). Never FAILs when it
+# cannot know: offline, no gitCommitSha, clone install, or local ahead of the
+# latest published tag. $ATELIER_RELEASE_REPO_URL overrides the remote (tests).
+check_plugin_tag_match() {
+  local manifest="$ATELIER_CONFIG_DIR/plugins/installed_plugins.json"
+  local url="${ATELIER_RELEASE_REPO_URL:-https://github.com/AkaLab-Tech/atelier.git}"
+  local ver cached out tag_sha latest="" t
+  if [ ! -L "$ATELIER_RUNTIME_BASE/current" ]; then
+    push_plugin "$SKIP atelier release tag match (not a managed install)"
+    return
+  fi
+  ver="$(jq -r '.plugins["atelier@akalab-tech"][0].version // empty' "$manifest" 2>/dev/null)"
+  cached="$(jq -r '.plugins["atelier@akalab-tech"][0].gitCommitSha // empty' "$manifest" 2>/dev/null)"
+  if [ -z "$ver" ] || [ -z "$cached" ]; then
+    push_plugin "$SKIP atelier release tag match (no gitCommitSha recorded in $manifest)"
+    return
+  fi
+  if out="$(git ls-remote "$url" "refs/tags/v*" 2>/dev/null)"; then
+    tag_sha="$(printf '%s\n' "$out" | awk -v r="refs/tags/v$ver^{}" '$2 == r {print $1}')"
+    [ -n "$tag_sha" ] || tag_sha="$(printf '%s\n' "$out" | awk -v r="refs/tags/v$ver" '$2 == r {print $1}')"
+    if [ -z "$tag_sha" ]; then
+      while read -r t; do
+        t="${t#refs/tags/v}"; t="${t%^\{\}}"
+        [ -z "$latest" ] || [ "$(version_cmp "$t" "$latest")" -gt 0 ] && latest="$t"
+      done < <(printf '%s\n' "$out" | awk '{print $2}')
+      if [ -n "$latest" ] && [ "$(version_cmp "$ver" "$latest")" -gt 0 ]; then
+        push_plugin "$SKIP atelier release tag match ($ver is ahead of published $latest)"
+        return
+      fi
+    fi
+  else
+    tag_sha="$(gh api "repos/AkaLab-Tech/atelier/commits/v$ver" --jq .sha 2>/dev/null)"
+    if [ -z "$tag_sha" ]; then
+      push_plugin "$SKIP atelier release tag match (tag lookup failed — offline or rate limited)"
+      return
+    fi
+  fi
+  if [ "$tag_sha" = "$cached" ]; then
+    push_plugin "$OK atelier $ver cache matches tag v$ver (${cached:0:7})"
+    return
+  fi
+  tag_sha="${tag_sha:0:7}"
+  push_plugin "$FAIL atelier $ver cache is ${cached:0:7} but tag v$ver is ${tag_sha:-<no such tag>} — unreleased code under a release number"
+  push_fix_manual "# the plugin cache holds a commit that is not the released tag. Once the catalog pins the tag:
+CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 CLAUDE_CONFIG_DIR=\$ATELIER_CONFIG_DIR claude plugin marketplace update akalab-tech
+# then update the plugin and the runtime with /atelier:update (or atelier-update)"
+}
+
+# #548 — offline: the cached catalog entry for atelier is pinned to a release
+# tag (ref v*), not left to track the default branch.
+check_marketplace_pinned() {
+  local mp="$ATELIER_CONFIG_DIR/plugins/marketplaces/akalab-tech/.claude-plugin/marketplace.json" ref
+  if [ ! -f "$mp" ] || ! jq empty "$mp" >/dev/null 2>&1; then
+    push_plugin "$SKIP marketplace entry pinned (no readable marketplace.json at $mp)"
+    return
+  fi
+  ref="$(jq -r '[.plugins[]? | select(.name == "atelier") | .source | select(type == "object") | .ref // empty][0] // empty' "$mp" 2>/dev/null)"
+  case "$ref" in
+    v*) push_plugin "$OK marketplace entry pinned (atelier ref $ref)" ;;
+    *)  push_plugin "$SKIP marketplace entry not pinned to a release tag (atelier tracks the default branch until the next /atelier:release pins it)" ;;
+  esac
+}
+
 # #442 — Claude Code clones `github`-shorthand plugin sources over SSH on
 # `claude plugin update` unless CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 is set. Offline
 # and deterministic: reads the cached marketplace.json + settings.json only.
@@ -1464,6 +1529,8 @@ check_project_registry() {
 # Run checks in deterministic order.
 check_plugin_drift "atelier@akalab-tech"               "AkaLab-Tech/atelier"
 check_plugin_drift "claude-roadmap-tools@akalab-tech"  "AkaLab-Tech/claude-roadmap-tools"
+check_plugin_tag_match
+check_marketplace_pinned
 check_plugin_https_clone
 check_git_wt_drift
 check_legacy_hooks
