@@ -1606,6 +1606,9 @@ phase_c_1_setup_project_helper() {
   # runs on PRs into this base" (auto-merge guardrail 3, the orchestrator's
   # pre-merge CI wait and /atelier:babysit-prs share this one probe).
   _phase_c_1_symlink_helper atelier-ci-coverage
+  # #533: atelier-base-ci classifies the base sha's CI (decision-broker
+  # host-only rule for baseline-conflict). Read-only.
+  _phase_c_1_symlink_helper atelier-base-ci
   # #556: atelier-resolve-base is the one place the task base branch is
   # resolved (GitHub default branch, else origin/HEAD, else fail closed).
   _phase_c_1_symlink_helper atelier-resolve-base
@@ -2025,6 +2028,7 @@ TERMINAL HELPERS (run directly, no `atelier` prefix needed)
   atelier-pr-size-check             Per-PR size budget check (used by
                                     pr-author + reviewer + auto-merge)
   atelier-ci-coverage <root> <base> Do workflows run on PRs into <base>?
+  atelier-base-ci --worktree <wt> --base <b>  Base-sha CI status (green/red/pending/none/unknown)
                                     (auto-merge CI guardrail + babysit)
   atelier-resolve-base <root>       Resolve the base branch (GitHub default,
                                     else origin/HEAD; fails closed)

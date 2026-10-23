@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# atelier-base-ci — what did CI say about the base sha? (#533)
+#
+# Usage: atelier-base-ci --worktree <wt> --base <branch> [--sha <sha>]
+#
+# Prints four lines and exits 0 for every classification (2 on a usage error):
+#   base_sha=<sha>
+#   base_ci=<green|red|pending|none|unknown>
+#   checks=<name:conclusion,...>
+#   reason=<one line>
+#
+#   green    >=1 check run or status, all completed, every conclusion in
+#            {success, neutral, skipped}
+#   red      any failure/cancelled/timed_out/action_required/startup_failure/
+#            stale conclusion, or a legacy status of failure/error
+#   pending  something not completed and nothing red
+#   none     zero check runs and zero statuses
+#   unknown  any git or gh error (callers treat it as "no evidence": fail closed)
+#
+# Read-only apart from a best-effort `git fetch origin <base>`; writes nothing.
+
+set -u
+
+usage() {
+  echo "usage: atelier-base-ci --worktree <wt> --base <branch> [--sha <sha>]" >&2
+  exit 2
+}
+
+wt="" base="" sha=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --worktree) [ "$#" -ge 2 ] || usage; wt=$2; shift 2 ;;
+    --base)     [ "$#" -ge 2 ] || usage; base=$2; shift 2 ;;
+    --sha)      [ "$#" -ge 2 ] || usage; sha=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[ -n "$wt" ] && [ -n "$base" ] || usage
+base=${base#origin/}
+[ -n "$base" ] || usage
+
+emit() {
+  printf 'base_sha=%s\nbase_ci=%s\nchecks=%s\nreason=%s\n' "$sha" "$1" "$2" "$3"
+  exit 0
+}
+
+[ -d "$wt" ] || emit unknown "" "worktree is not a directory: $wt"
+
+git -C "$wt" fetch --quiet origin "$base" >/dev/null 2>&1 || true
+
+if [ -z "$sha" ]; then
+  sha=$(git -C "$wt" merge-base HEAD "origin/$base" 2>/dev/null) && [ -n "$sha" ] \
+    || { sha=""; emit unknown "" "cannot resolve merge-base of HEAD and origin/$base"; }
+fi
+
+url=$(git -C "$wt" remote get-url origin 2>/dev/null) || emit unknown "" "cannot read origin URL"
+case "$url" in
+  https://github.com/*) slug=${url#https://github.com/} ;;
+  *) emit unknown "" "origin is not an HTTPS github.com URL" ;;
+esac
+slug=${slug%/}
+slug=${slug%.git}
+case "$slug" in
+  */*/*|*/|/*|"") emit unknown "" "cannot parse owner/repo from origin URL" ;;
+  */*) ;;
+  *) emit unknown "" "cannot parse owner/repo from origin URL" ;;
+esac
+
+runs=$(gh api --paginate "repos/$slug/commits/$sha/check-runs?per_page=100" \
+  --jq '.check_runs[] | [.name, .status, (.conclusion // "")] | @tsv' 2>/dev/null) \
+  || emit unknown "" "gh api check-runs failed for $sha"
+stats=$(gh api "repos/$slug/commits/$sha/status" \
+  --jq '.statuses[] | [.context, .state] | @tsv' 2>/dev/null) \
+  || emit unknown "" "gh api status failed for $sha"
+
+lines=$(
+  {
+    printf '%s\n' "$runs" | awk -F'\t' 'NF >= 2 { printf "%s\t%s\t%s\n", $1, $2, $3 }'
+    printf '%s\n' "$stats" | awk -F'\t' 'NF >= 2 {
+      s = ($2 == "pending") ? "in_progress" : "completed"
+      c = ($2 == "success") ? "success" : (($2 == "pending") ? "" : $2)
+      printf "%s\t%s\t%s\n", $1, s, c }'
+  }
+)
+
+[ -n "$lines" ] || emit none "" "no check runs or statuses on $sha"
+
+result=$(printf '%s\n' "$lines" | awk -F'\t' '
+  { n = $1 ":" ($2 == "completed" ? $3 : $2)
+    names = names (names == "" ? "" : ",") n
+    if ($2 != "completed") pend = 1
+    else if ($3 == "success" || $3 == "neutral" || $3 == "skipped") ok++
+    else red = 1 }
+  END { print (red ? "red" : (pend ? "pending" : "green")) "\t" names }')
+cls=${result%%$'\t'*}
+checks=${result#*$'\t'}
+
+case "$cls" in
+  green)   emit green "$checks" "all checks on $sha completed successfully" ;;
+  red)     emit red "$checks" "at least one check on $sha failed" ;;
+  pending) emit pending "$checks" "checks on $sha not all completed" ;;
+  *)       emit unknown "$checks" "unclassifiable result" ;;
+esac

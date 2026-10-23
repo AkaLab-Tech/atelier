@@ -107,6 +107,34 @@ Precedence summary, highest to lowest:
 5. `decisionPolicy.default` in `.atelier.json`.
 6. Conservative fallback: `ask`.
 
+The deterministic pre-check (Step 3.5) sits below all of these: it only replaces the broker call on the `auto` path and never overrides a fixed id, `ask`, `ATELIER_ASK_FOR` or panic.
+
+### Step 3.5 — Deterministic pre-check (`baseline-conflict` only)
+
+For `baseline-conflict`, whenever Step 3 did NOT resolve to a fixed option id (i.e. the resolution is `auto`, or `ask`), run the read-only helper once:
+
+```bash
+atelier-base-ci --worktree <worktree> --base <base branch named in the context>
+```
+
+The caller's `context` must name the base branch and the exact failing test/check identifiers. If the base branch is missing, skip the helper and treat the evidence as `unknown`. The helper prints `base_sha`, `base_ci` (`green|red|pending|none|unknown`), `checks` and `reason`, and always exits 0 (2 on usage error; treat 2 as `unknown`).
+
+**Rule `host-only`.** Return, without dispatching a broker agent:
+
+```text
+mode: auto   choice: override   confidence: high   model: null   source: rule:host-only
+rationale: "failures red locally, base sha <sha> CI green (<checks>) → host-only; PR CI remains the merge gate"
+```
+
+only when ALL three hold: (1) the resolved policy is `auto` (byCategory `auto`, or missing and `ATELIER_POLICY_OVERRIDE` / `decisionPolicy.default` is `auto`); (2) `base_ci=green`; (3) the caller supplied a non-empty set of failing identifiers. Green base CI is approximate for projects whose CI skips suites; the PR's CI remains the merge gate.
+
+Otherwise:
+
+- Policy `auto`: continue to Step 4 and append the helper output to the broker's context. `base_ci=red` confirms a real baseline (default `fix-first` holds); `pending`, `none` and `unknown` are not reasons to deviate and the broker decides as before.
+- Policy `ask` (or panic, Step 1, where the helper is not run): include the evidence in the question preamble shown to the operator.
+
+The helper output is logged as `evidence` in Step 5 on every `baseline-conflict` record where the helper ran.
+
 ### Step 4 — Dispatch to the right broker agent
 
 The catalog entry's `riskLevel` selects the agent:
@@ -115,7 +143,7 @@ The catalog entry's `riskLevel` selects the agent:
 - `medium` → `decision-broker-medium-risk` (Sonnet 4.6)
 - `high` → `decision-broker-high-risk` (Opus 4.8)
 
-Hand off the catalog entry and the caller's `context` block via the `Task` tool, with the agent's `subagent_type` set to the chosen broker. The agent returns the JSON shape documented in its own prompt.
+Hand off the catalog entry and the caller's `context` block (plus the Step 3.5 evidence, for `baseline-conflict`) via the `Task` tool, with the agent's `subagent_type` set to the chosen broker. The agent returns the JSON shape documented in its own prompt.
 
 ### Step 5 — Log
 
@@ -130,11 +158,14 @@ After resolution, append to `<worktree>/.task-log/decisions.jsonl` (one JSON obj
   "rationale": "<prose>",
   "confidence": "<high|medium|low or null>",
   "model": "<haiku|sonnet|opus or null>",
-  "source": "<policy:fixed | policy:auto | policy:ask | policy:missing | panic | catalog:missing>",
+  "source": "<policy:fixed | policy:auto | policy:ask | policy:missing | rule:host-only | panic | catalog:missing>",
+  "evidence": { "base_sha": "<sha>", "base_ci": "<green|red|pending|none|unknown>", "checks": "<name:conclusion,...>", "reason": "<prose>", "waived": ["<failing test/check identifier>"] },
   "duration_ms": <int>,
   "cost_usd_estimate": <float>
 }
 ```
+
+`evidence` is optional: write it on every `baseline-conflict` line where `atelier-base-ci` ran, whoever decided (rule, broker or operator). `waived` is the failing-identifier set the caller supplied, meaningful when the choice is `override`.
 
 The `pr-author` agent reads this file when composing the PR body — see the "Autonomous decisions taken" section there.
 
