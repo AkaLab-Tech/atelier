@@ -254,7 +254,7 @@ To check whether auto-mode is currently active, inside any atelier session: `/st
 
 ### `atelier-gh-shim: BLOCKED …` (gh identity shim)
 
-**Symptom:** A `gh` call fails with `atelier-gh-shim: BLOCKED gh: …` and exit 1 (on `gh pr review`, `gh pr comment`, `gh issue comment`, a `gh api` write to a review/comment endpoint, a review/comment GraphQL mutation or one whose body can't be inspected, `gh auth token`, or a gh alias/extension).
+**Symptom:** A `gh` call fails with `atelier-gh-shim: BLOCKED gh: …` and exit 1 (on `gh pr review`, `gh pr comment`, `gh issue comment`, a `gh api` write to a review/comment endpoint, a review/comment GraphQL mutation or one whose body can't be inspected, `gh auth token`, `gh auth git-credential`, `gh auth status --show-token`, or a gh alias/extension).
 
 **Cause:** The atelier `gh` shim (#582) is first on PATH in atelier sessions and enforces the identity when `gh` actually runs. The call's effective identity was not an atelier one: `GH_CONFIG_DIR` unset or pointing at your personal `~/.config/gh`, or a `GH_TOKEN`/`GITHUB_TOKEN`/`GH_ENTERPRISE_TOKEN` in the environment.
 

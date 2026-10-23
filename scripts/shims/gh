@@ -98,6 +98,7 @@ classify() {
         if [ "$w" = comment ]; then REASON="gh issue comment posts as the active identity"; return 0; fi ;;
       auth)
         if [ "$w" = token ]; then REASON="gh auth token reveals a credential"; return 0; fi
+        if [ "$w" = git-credential ]; then REASON="gh auth git-credential reveals a credential"; return 0; fi
         if [ "$w" = status ]; then has_status=1; fi ;;
     esac
   done

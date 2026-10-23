@@ -165,6 +165,9 @@ blocked "pr --body x comment"      personal 'gh pr --body x comment 1'
 blocked "issue -b hi comment"      personal 'gh issue -b hi comment 3'
 blocked "auth -h host token"       personal 'gh auth -h github.com token'
 blocked "auth -h host status -t"   personal 'gh auth -h github.com status -t'
+# git-credential prints the token as password=<token>: refused at any position after `auth`.
+blocked "auth git-credential get"  personal 'gh auth git-credential get'
+blocked "auth -h host git-credential get" personal 'gh auth -h github.com git-credential get'
 
 echo "== shell-level evasions are refused at exec time =="
 blocked "reserved word time"       personal 'time gh pr review 1'
@@ -271,6 +274,13 @@ passes "argv with spaces and empty arg preserved" personal 'gh pr view "a b" ""'
 for sh in "${SHELLS[@]}"; do
   run "$sh" personal 'echo piped-in | gh pr view 1'
   printf '%s' "$OUT" | grep -q '^IN=piped-in$' && pass "stdin preserved [$sh]" || fail "stdin lost [$sh]: $OUT"
+  run "$sh" author "printf 'protocol=https\nhost=github.com\n' | gh auth git-credential get"
+  got="$(printf '%s\n' "$OUT" | grep '^ARG\[')"
+  if printf '%s' "$OUT" | grep -q '^REAL-GH$' && ! printf '%s' "$OUT" | grep -q BLOCKED \
+     && [ "$got" = $'ARG[auth]\nARG[git-credential]\nARG[get]' ] \
+     && printf '%s' "$OUT" | grep -q '^IN=protocol=https$' && printf '%s' "$OUT" | grep -q '^host=github.com$'; then
+    pass "author: auth git-credential get passes, args and stdin forwarded [$sh]"
+  else fail "author git-credential [$sh]: $OUT"; fi
   run "$sh" personal 'gh pr view 1' STUB_EXIT=7
   [ "$RC" = 7 ] && pass "exit code 7 preserved [$sh]" || fail "exit code: rc=$RC [$sh]"
   run "$sh" author 'gh pr review 1' STUB_EXIT=3
