@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 #
-# atelier-size-waiver — read-only resolution of an operator PR-size waiver (#542, 538a).
+# atelier-size-waiver — read-only resolution of an operator PR-size waiver (#542, 538a) and of
+# an operator protected-paths approval (#545, guardrail 4), which share one trust model.
 #
-# Usage: atelier-size-waiver [--kind size] <owner/repo> <NN>
+# Usage: atelier-size-waiver [--kind size|protected-paths] <owner/repo> <NN>
+#        atelier-size-waiver --package-json-version-only <owner/repo> <NN>
 #
 # Output: exactly one line on stdout.
-#   waiver=valid sha=<40-hex> by=<login> at=<iso> review=<url> reason=<text>
+#   waiver=valid kind=<kind> sha=<40-hex> by=<login> at=<iso> review=<url> reason=<text>
 #   waiver=none                      no PR review carries a waiver phrase with a non-empty reason
 #   waiver=stale sha=<40-hex>        newest waiver review covered an older head; sha = that commit
 #   waiver=untrusted by=<login> (<why>)  newest waiver review is from an agent/PR author/bot,
 #                                    or from someone without admin/maintain on the repo
-# Exit: 0 valid · 1 none/stale/untrusted · 2 error/usage (fail closed, never a pass).
+#   waiver=ambiguous                 newest review carries phrases of more than one kind; it
+#                                    grants nothing for any kind
+# Exit: 0 valid · 1 none/stale/untrusted/ambiguous · 2 error/usage (fail closed, never a pass).
 #
 # A waiver is a PR *review* (state COMMENTED or APPROVED; DISMISSED and CHANGES_REQUESTED do not
 # count, nor do issue comments) whose body contains a waiver phrase, matched case-insensitively
-# (kind "size": `waive size`, `size waiver`, `exención de tamaño`). The text after the phrase is
-# the reason; an empty reason means the review is not a waiver at all.
+# (kind "size": `waive size`, `size waiver`, `exención de tamaño`; kind "protected-paths":
+# `approve protected paths`, `apruebo archivos protegidos`). The text after the phrase is the
+# reason; an empty reason means the review is not a waiver at all. Kinds never cross-match.
 #
 # Decision order (deterministic):
 #   1. Keep reviews with state COMMENTED/APPROVED, a phrase, and a non-empty reason.
@@ -26,24 +31,35 @@
 #   5. Author lacks admin/maintain, read live from collaborators/<login>/permission
 #      (HTTP 404 = not a collaborator) -> untrusted. Any other API failure -> exit 2.
 #   6. Otherwise valid.
+# A review carrying phrases of more than one kind is ambiguous: it counts as the newest review
+# for each of those kinds and yields waiver=ambiguous (exit 1), never valid.
 # No local file or config value can grant a waiver. gh reads only; no state is modified.
 #
-# --kind selects the phrase set (internal; only `size` ships). A future guardrail-4 approval
-# kind adds its own distinct set in kind_phrases(); sets must never overlap.
+# --kind selects the phrase set; sets in kind_phrases() must never overlap. An unknown kind
+# exits 2.
+#
+# --package-json-version-only (guardrail 4 exemption): prints `package-json=version-only` (exit 0)
+# when the PR's root package.json differs from its merge-base copy ONLY in the top-level
+# "version" value (jq 'del(.version)' equality), else `package-json=changed` (exit 1). Any
+# fetch or parse failure exits 2 (fail closed: the caller keeps package.json forbidden).
 
 set -u
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 fi
 
+usage="usage: atelier-size-waiver [--kind size|protected-paths] <owner/repo> <NN>"
+mode="waiver"
 kind="size"
-if [ "${1:-}" = "--kind" ]; then
-  [ $# -ge 2 ] || { echo "usage: atelier-size-waiver [--kind size] <owner/repo> <NN>" >&2; exit 2; }
+if [ "${1:-}" = "--package-json-version-only" ]; then
+  mode="pkgver"; shift
+elif [ "${1:-}" = "--kind" ]; then
+  [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
   kind="$2"; shift 2
 fi
-[ $# -eq 2 ] || { echo "usage: atelier-size-waiver [--kind size] <owner/repo> <NN>" >&2; exit 2; }
+[ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }
 repo="$1"; pr="$2"
 case "$pr" in ''|*[!0-9]*) echo "atelier-size-waiver: <NN> must be a PR number" >&2; exit 2 ;; esac
 case "$repo" in */*) ;; *) echo "atelier-size-waiver: <owner/repo> expected" >&2; exit 2 ;; esac
@@ -56,8 +72,20 @@ fail() { echo "atelier-size-waiver: $1" >&2; exit 2; }
 kind_phrases() {
   case "$1" in
     size) printf '%s' 'waive size|size waiver|exención de tamaño' ;;
+    protected-paths) printf '%s' 'approve protected paths|apruebo archivos protegidos' ;;
     *) return 1 ;;
   esac
+}
+
+# Phrases of every kind except $1, joined; used to detect ambiguous reviews.
+other_phrases() {
+  local k out="" p
+  for k in size protected-paths; do
+    [ "$k" = "$1" ] && continue
+    p="$(kind_phrases "$k")"
+    out="${out:+$out|}$p"
+  done
+  printf '%s' "$out"
 }
 
 agent_login() {
@@ -65,7 +93,30 @@ agent_login() {
 }
 
 command -v jq >/dev/null 2>&1 || fail "jq not found"
+
+if [ "$mode" = "pkgver" ]; then
+  pr_refs="$(gh api "repos/$repo/pulls/$pr" --jq '[.base.sha, .head.sha] | @tsv' 2>/dev/null)" \
+    || fail "cannot read PR $repo#$pr"
+  base_ref="${pr_refs%%$'\t'*}"; head_ref="${pr_refs#*$'\t'}"
+  [ -n "$base_ref" ] && [ -n "$head_ref" ] || fail "PR has no base/head sha"
+  merge_base="$(gh api "repos/$repo/compare/$base_ref...$head_ref" --jq .merge_base_commit.sha 2>/dev/null)" \
+    || fail "cannot resolve merge base"
+  [ -n "$merge_base" ] || fail "empty merge base"
+  base_pkg="$(gh api "repos/$repo/contents/package.json?ref=$merge_base" -H 'Accept: application/vnd.github.raw' 2>/dev/null)" \
+    || fail "cannot read package.json at base"
+  head_pkg="$(gh api "repos/$repo/contents/package.json?ref=$head_ref" -H 'Accept: application/vnd.github.raw' 2>/dev/null)" \
+    || fail "cannot read package.json at head"
+  base_norm="$(printf '%s' "$base_pkg" | jq -S -c 'del(.version)' 2>/dev/null)" || fail "cannot parse base package.json"
+  head_norm="$(printf '%s' "$head_pkg" | jq -S -c 'del(.version)' 2>/dev/null)" || fail "cannot parse head package.json"
+  [ -n "$base_norm" ] && [ -n "$head_norm" ] || fail "empty package.json parse"
+  if [ "$base_norm" = "$head_norm" ]; then
+    echo "package-json=version-only"; exit 0
+  fi
+  echo "package-json=changed"; exit 1
+fi
+
 phrases="$(kind_phrases "$kind")" || fail "unknown kind: $kind"
+others="$(other_phrases "$kind")"
 author_agent="$(agent_login author 2>/dev/null)" || fail "cannot resolve author agent login"
 reviewer_agent="$(agent_login reviewer 2>/dev/null)" || fail "cannot resolve reviewer agent login"
 [ -n "$author_agent" ] && [ -n "$reviewer_agent" ] || fail "empty agent login"
@@ -73,15 +124,16 @@ pr_json="$(gh pr view "$pr" --repo "$repo" --json author,headRefOid,reviews,url 
   || fail "cannot read PR $repo#$pr"
 
 # Newest phrase-bearing review, as one JSON object (or "null"); reason is whitespace-collapsed.
-cand="$(printf '%s' "$pr_json" | jq -c --arg re "($phrases)" '
+cand="$(printf '%s' "$pr_json" | jq -c --arg re "($phrases)" --arg other "($others)" '
   [ .reviews[]?
     | select(.state == "COMMENTED" or .state == "APPROVED")
     | . as $r
     | ((.body // "") | capture("(?:" + $re + ")[\\s:—–-]*(?<reason>.*)"; "is")?) as $m
     | select($m != null)
+    | ((.body // "") | test($other; "i")) as $amb
     | ($m.reason | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "")) as $reason
-    | select($reason != "")
-    | { by: ($r.author.login // ""), at: ($r.submittedAt // ""), sha: ($r.commit.oid // ""),
+    | select($amb or $reason != "")
+    | { amb: $amb, by: ($r.author.login // ""), at: ($r.submittedAt // ""), sha: ($r.commit.oid // ""),
         url: ($r.url // ""), reason: $reason }
   ] | sort_by(.at) | last' 2>/dev/null)" || fail "cannot parse PR JSON"
 [ -n "$cand" ] || fail "empty parse result"
@@ -92,6 +144,10 @@ if [ "$cand" = "null" ]; then
 fi
 
 f() { printf '%s' "$cand" | jq -r ".$1"; }
+if [ "$(f amb)" = "true" ]; then
+  echo "waiver=ambiguous"
+  exit 1
+fi
 by="$(f by)"; at="$(f at)"; sha="$(f sha)"; url="$(f url)"; reason="$(f reason)"
 head_sha="$(printf '%s' "$pr_json" | jq -r '.headRefOid // ""')"
 pr_author="$(printf '%s' "$pr_json" | jq -r '.author.login // ""')"
@@ -132,5 +188,5 @@ else
   fail "cannot read permission for $by"
 fi
 
-printf 'waiver=valid sha=%s by=%s at=%s review=%s reason=%s\n' "$sha" "$by" "$at" "$url" "$reason"
+printf 'waiver=valid kind=%s sha=%s by=%s at=%s review=%s reason=%s\n' "$kind" "$sha" "$by" "$at" "$url" "$reason"
 exit 0

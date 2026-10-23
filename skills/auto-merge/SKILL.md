@@ -93,7 +93,25 @@ Reject if any path matches:
 - `^docker-compose\..*\.yml$`, `^docker-compose\.yml$`, `^docker-compose\.yaml$`
 - Any path under `\.github/workflows/`
 
-→ `held: forbidden path(s) in diff: <comma-separated list>`.
+**Version-only exemption.** A root `package.json` whose diff changes only the top-level `"version"` value is not a forbidden path. Check it with:
+
+```bash
+atelier-size-waiver --package-json-version-only <owner/repo> <NN>
+```
+
+`package-json=version-only` (exit 0) removes `package.json` from the list (base and merge-base JSON are equal after `jq 'del(.version)'`). `package-json=changed` (exit 1) or any error (exit 2, including a JSON parse error) keeps it in the list — fail closed. Any other key changed in `package.json`, and any lockfile, Dockerfile, compose or workflow change, still needs approval.
+
+**Operator protected-paths approval.** When the (remaining) forbidden-path list is non-empty, run:
+
+```bash
+atelier-size-waiver --kind protected-paths <owner/repo> <NN>
+```
+
+Guardrail 4 passes **only** when the result is `waiver=valid` with `kind=protected-paths` **and** its `sha` equals the sha recorded in guardrail #2 — the same sha the merge is pinned to with `--match-head-commit`. Any other result (`none`, `stale`, `untrusted`, `ambiguous`, a different kind, a sha mismatch, a non-0/1 exit) keeps today's hold:
+
+→ `held: forbidden path(s) in diff: <comma-separated list>` and, for `none`/`stale`/`untrusted`/`ambiguous`, how to approve: *a repository admin or maintainer (not the account atelier authors or reviews with) submits a PR **review** (Comment or Approve, not a plain conversation comment) starting with `approve protected paths` or `apruebo archivos protegidos` followed by a reason; it covers only the current head, so any later push needs a new approval* (docs/operator-guide.md). Post **no** PR comment before merging — it would trip guardrail #6. The approval affects only this guardrail.
+
+When an approval is applied: put it in the report's forbidden line, add the `Protected-paths-approval:` audit line to the squash body (see Merge), and, when a worktree exists, append an entry to `<worktree>/.task-log/decisions.jsonl` (`{"ts":"<iso>","kind":"protected-paths-approval","pr":<NN>,"sha":"<sha>","by":"<login>","at":"<time>","review":"<url>","reason":"<reason>","paths":["<path>",...]}`).
 
 Note: this catches the **path**, not the diff intent. A PR that only adds a docs/README change to a package's metadata but accidentally also touches `package.json` falls into this guardrail and goes to human review. That's the intended behaviour.
 
@@ -166,6 +184,7 @@ gh pr merge <NN> --squash --delete-branch --match-head-commit <sha> --body-file 
 - `--match-head-commit <sha>` is the `sha` recorded in guardrail #2 (the reviewed head): a push racing the gate makes the merge fail instead of landing unreviewed code. On that failure report `held: head moved after review` and do not retry.
 - `--body-file <(echo "")` clears the squash-commit body to just the title — the original PR body lives on the closed PR for history; the merge commit on `main` should be terse.
 - When guardrail #5 passed via an operator size waiver, replace the empty body with a file holding one audit line: `Size-waiver: @<login> at <time> on <sha> — <review-url> — <reason>`.
+- When guardrail #4 passed via an operator protected-paths approval, add a second audit line: `Protected-paths-approval: @<login> at <time> on <sha> — <review-url> — <reason> — paths: <approved paths>`. The merge stays pinned to the approved sha by `--match-head-commit`.
 
 - If the auto-mode classifier denies the `gh pr merge` itself (e.g. `[Self-Approval]`), this is a terminal held state: report `held: merge blocked by auto-mode classifier — human merge required` with the denial tag verbatim. Do not retry, reword, or merge another way (no API call, no alternative command). The PR and worktree stay open for the operator.
 
@@ -269,7 +288,7 @@ Guardrails:
   draft:          ✓ | ✗ — <reason>
   review:         ✓ APPROVED | ✗ <state>
   CI:             ✓ <N>/<N> checks SUCCESS | ✗ <state>
-  forbidden:      ✓ none | ✗ <comma-separated paths>
+  forbidden:      ✓ none | ⚠ <paths> APPROVED by @<login> at <time> (sha <7>) — <reason> | ✗ <comma-separated paths>
   size:           ✓ <helper's Counted: figures> (within budget) | ⚠ OVERSIZE <N>/<M> WAIVED by @<login> at <time> (sha <7>) — <reason> | ✗ OVERSIZE <N>/<M> (limits <maxLines>/<maxFiles>)
   comments:       ✓ no pending | ✗ <N> pending (latest @<user>)
 
@@ -300,6 +319,7 @@ Next step:     human review required. Operator can:
 - **Never** push `chore(roadmap): mark X done` directly to `main`. The static permissions matrix denies it. Surface the change as a follow-up.
 - **Never** mark a roadmap item `[x]` for a PR that was held. The auto-merge skill only modifies state on success.
 - **Never** override `reviewDecision`. If GitHub says `CHANGES_REQUESTED`, that is final until a new review supersedes it.
+- **Never** let a size waiver satisfy guardrail #4, or a protected-paths approval satisfy guardrail #5. The two operator approvals never cross: guardrail 4 accepts only `waiver=valid kind=protected-paths`, guardrail 5 only `kind=size`; an `ambiguous` result (a review carrying both kinds of phrase) grants nothing for either. The agent chain never creates an approval, and never edits `package.json`, lockfiles, Docker files or workflows to get around the hold.
 - **Never** silently widen the size budget at runtime. The only exception is a `valid` operator size waiver (`atelier-size-waiver`) whose `sha` equals the pinned head sha; a size-check error (exit 2) is never waivable. The threshold is the AND-gate from `atelier-pr-size-check`, configurable per-project via `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`. If a project legitimately needs a higher ceiling, the operator updates that file (version-controlled, reviewable) — the skill never raises the gate at runtime.
 - **Never** force-update, `reset --hard`, or stash the operator's working tree during the base fast-forward (step 4). A dirty main worktree, a diverged base, or a non-zero exit from `merge --ff-only` must skip and surface — never mutate the operator's checked-out state.
 - **Never** hand-roll the orphan sweep (step 5). The only permitted deletion path is `atelier-housekeeping --project <root> --yes --no-stamp`. Do not call `git branch -d`, `git push --delete`, or `git wt rm` for branches other than the just-merged task branch — those are the binary's responsibility, not the skill's.

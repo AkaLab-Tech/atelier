@@ -124,7 +124,9 @@ gh pr view <NN> --repo <owner/repo> --json files \
   )] | join(", ")'
 ```
 
-Non-empty output → disposition: `held — forbidden path(s) in diff: <list>`. Terminal. Never dispatch.
+If `package.json` is in the list, run `atelier-size-waiver --package-json-version-only <owner/repo> <NN>`: `package-json=version-only` (exit 0) removes it from the list (only the top-level `"version"` changed); `package-json=changed` or any error (including a parse error) keeps it. Lockfile, Dockerfile, compose and workflow changes are never exempt.
+
+Non-empty list → run `atelier-size-waiver --kind protected-paths <owner/repo> <NN>`. `waiver=valid kind=protected-paths` with its `sha` equal to the PR's current head sha passes the guardrail; note `forbidden <list> APPROVED by @<login> (sha <7>)` in the per-PR row and continue to guardrail 5. Anything else (`none`, `stale`, `untrusted`, `ambiguous`, another kind, a sha mismatch, an error) → disposition: `held — forbidden path(s) in diff: <list>`, and the held line says how to approve: a repo admin/maintainer submits a PR review starting with `approve protected paths` (or `apruebo archivos protegidos`) and a reason (covers only the current head). Terminal. Never dispatch. A size waiver never satisfies this guardrail, and this approval never satisfies guardrail 5.
 
 **Guardrail 5 — size.**
 
@@ -152,7 +154,7 @@ Count > 0 → disposition: `held — <N> pending human comment(s)`. Terminal.
 
 **Final disposition after all guardrails pass:**
 
-- `reviewDecision == "APPROVED"` + CI green + not conflicting + no forbidden + not oversize (or validly waived) + no pending comments → **mergeable-now**. Actionable.
+- `reviewDecision == "APPROVED"` + CI green + not conflicting + no forbidden files (or validly approved) + not oversize (or validly waived) + no pending comments → **mergeable-now**. Actionable.
 - `reviewDecision` null/`REVIEW_REQUIRED` + count of approved reviews == 0 → **unreviewed**. Actionable.
 - `reviewDecision == "CHANGES_REQUESTED"` + `reviewFix.enabled: true` → **needs-fix-dispatchable**. Actionable.
 
@@ -227,12 +229,12 @@ Pass verdict: terminal | re-poll suggested (<N> PR(s) waiting on CI)
 
 ## Hard refusals
 
-- **Never** dispatch the orchestrator for a PR whose triage disposition is terminal (CI-failed, conflicting, forbidden files, OVERSIZE without a valid operator waiver, pending human comments). The triage front-end exists to prevent fruitless re-dispatch cycles.
+- **Never** dispatch the orchestrator for a PR whose triage disposition is terminal (CI-failed, conflicting, forbidden files without a valid operator approval, OVERSIZE without a valid operator waiver, pending human comments). The triage front-end exists to prevent fruitless re-dispatch cycles.
 - **Never** touch non-`task/*` PRs. They are listed once as `skipped (out-of-band)` and then ignored.
 - **Never** re-review or re-dispatch a PR that another lane or session was denied on (a `held` PR with a classifier denial tag). A review lane is an up-front topology choice, never a way around a denial — see `operator-rules.md` § "Multi-session setups (plan + worker sessions)".
 - **Never** merge directly. All state-changing writes go through the orchestrator's `reviewer → auto-merge` path. babysit-prs is a fan-out + convergence layer, not an independent merge actor.
 - **Never** implement an internal sleep/poll loop. One pass, one return. `/loop` is the recurring mechanism.
 - **Never** dispatch orchestrators in parallel. Drive one PR at a time — sequential dispatch prevents concurrent merges from racing on shared GitHub state.
 - **Never** weaken or skip a guardrail. All six are applied faithfully in triage; the orchestrator's `auto-merge` skill remains authoritative and short-circuits on the first failure regardless.
-- **Never** merge the never-auto-merge set: draft, non-`task/*`, forbidden files, oversize without a valid operator waiver, pending human comments, `CHANGES_REQUESTED` with `reviewFix.enabled: false`, CI-failed, conflicting.
+- **Never** merge the never-auto-merge set: draft, non-`task/*`, forbidden files without a valid operator approval, oversize without a valid operator waiver, pending human comments, `CHANGES_REQUESTED` with `reviewFix.enabled: false`, CI-failed, conflicting.
 - **Never** honour a `decisionPolicy: ask` override by prompting in non-interactive mode. In non-interactive mode, stop with a clear error when no safe default exists — never guess, never prompt.
