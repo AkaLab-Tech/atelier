@@ -37,7 +37,7 @@
   "reviewFix": {
     "_comment": "Bounded automated review-fix loop (#24). When `enabled: true`, a `reviewer` → `request-changes` verdict automatically re-dispatches `implementer` (and `tester` when coverage is implicated) on the same worktree/branch, re-pushes, and re-runs `reviewer` — up to `maxCycles` times — before escalating to the operator. Set `enabled: false` to revert to today's surface-and-stop terminal: findings are surfaced immediately and the PR is left open for manual follow-up. Only code-addressable findings (correctness / test coverage / code quality / security) drive the loop; structural findings (scope alignment, oversize, missing dependency justification, pending human comments) route to their existing handlers or escalate directly without consuming a cycle. Absent block → built-in defaults (`enabled: true`, `maxCycles: 2`).",
     "enabled": true,
-    "maxCycles": 2
+    "maxCycles": 4
   },
   "babysitPrs": {
     "_comment": "Per-pass bounds for /atelier:babysit-prs (#25). `maxPrsPerPass` caps how many task/* PRs are dispatched to the orchestrator in a single pass — PRs beyond the cap are deferred to the next pass. This is about per-pass scope, not a poll interval or loop count; the recurring cadence is delegated to the Claude Code built-in /loop command. Absent block → built-in defaults.",
