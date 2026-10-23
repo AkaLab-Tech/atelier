@@ -419,11 +419,30 @@ claim_gate() {
 declare -a DEL_WORKTREES=()   # safe-to-remove worktrees
 declare -a DEL_LBRANCHES=()   # safe-to-remove local branches
 declare -a DEL_RBRANCHES=()   # safe-to-remove remote branches
+declare -a PRUNE_REFS=()      # stale origin/task/* tracking refs (head already gone on origin)
 declare -a REVIEW=()          # unmerged / unknown — needs operator review
 declare -a SKIPPED=()         # protected, for transparency (only shown in report)
 
 add_review()  { REVIEW+=("$1"$'\t'"$2"$'\t'"$3"$'\t'"$4"); }
 add_skip()    { SKIPPED+=("$1"$'\t'"$2"$'\t'"$3"$'\t'"$4"); }
+
+# Push URL of origin (what `push --delete` talks to); falls back to the remote name.
+push_url() { git -C "$1" remote get-url --push origin 2>/dev/null || echo origin; }
+
+# delete_remote_branch <proj> <branch>: a branch already gone from origin counts as success.
+delete_remote_branch() {
+  local p="$1" b="$2" err rc=0
+  if err="$(git -C "$p" push origin --delete "$b" 2>&1 >/dev/null)"; then
+    sublog "deleted remote branch origin/$b"; return 0
+  fi
+  GIT_TERMINAL_PROMPT=0 git -C "$p" ls-remote --exit-code --heads "$(push_url "$p")" "refs/heads/$b" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    2) git -C "$p" update-ref -d "refs/remotes/origin/$b" 2>/dev/null || true
+       sublog "origin/$b already deleted" ;;
+    0) warn "could not delete remote branch origin/$b: $(printf '%s' "$err" | grep -m1 .)" ;;
+    *) warn "could not delete remote branch origin/$b: $(printf '%s' "$err" | grep -m1 .) (could not confirm with ls-remote)" ;;
+  esac
+}
 
 enumerate_project() {
   local proj="$1"
@@ -545,11 +564,22 @@ enumerate_project() {
   done < <(git -C "$proj" for-each-ref --format='%(refname)' refs/heads/task 2>/dev/null)
 
   # ----- remote origin/task/* branches -----
+  local live="" live_ok=false
+  if live="$(GIT_TERMINAL_PROMPT=0 git -C "$proj" ls-remote --heads "$(push_url "$proj")" 'refs/heads/task/*' 2>/dev/null)"; then
+    live_ok=true
+  else
+    warn "$proj: could not list origin heads; stale tracking refs not detected"
+  fi
   while IFS= read -r b; do
     b="${b#refs/remotes/origin/}"
     [ -n "$b" ] || continue
     case "$b" in task/*) ;; *) continue ;; esac
     is_protected_branch "$b" && continue
+    if $live_ok && ! printf '%s\n' "$live" | grep -qE "[[:space:]]refs/heads/${b}\$"; then
+      add_skip "$proj" "remote-branch" "origin/$b" "already gone on origin (stale local tracking ref)"
+      PRUNE_REFS+=("$proj"$'\t'"$b")
+      continue
+    fi
     local id; id="$(branch_task_id "$b")"
     claim_gate "$proj" "remote-branch" "origin/$b" "$id" "$b" && continue
     local st; st="$(pr_state "$slug" "$b")"
@@ -643,6 +673,13 @@ fi
 # Always stamp a completed enumeration so the daily nudge does not re-fire.
 $STAMP && [ -n "$TODAY" ] && printf '%s\n' "$TODAY" > "$STAMP_FILE" 2>/dev/null || true
 
+if [ "$MODE" != "report" ]; then
+  for row in ${PRUNE_REFS[@]+"${PRUNE_REFS[@]}"}; do
+    IFS=$'\t' read -r p b <<<"$row"
+    git -C "$p" update-ref -d "refs/remotes/origin/$b" 2>/dev/null && sublog "origin/$b already deleted (pruned stale tracking ref)"
+  done
+fi
+
 if [ "$DEL_COUNT" -eq 0 ]; then
   ok "nothing to clean up"
   exit 0
@@ -691,11 +728,7 @@ done
 
 for row in ${DEL_RBRANCHES[@]+"${DEL_RBRANCHES[@]}"}; do
   IFS=$'\t' read -r p k branch r ref <<<"$row"
-  if git -C "$p" push origin --delete "$branch" >/dev/null 2>&1; then
-    sublog "deleted remote branch origin/$branch"
-  else
-    warn "could not delete remote branch origin/$branch (skipped)"
-  fi
+  delete_remote_branch "$p" "$branch"
 done
 
 # Prune stale administrative worktree entries.

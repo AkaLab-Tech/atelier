@@ -105,7 +105,7 @@ following applies:
 - Changes to `package.json` or `pnpm-lock.yaml`.
 - Changes to `Dockerfile` or `docker-compose*`.
 - Changes to `.github/workflows/**`.
-- PR exceeds the per-project size budget: by default both `>200 lines` **and** `>10 files` after exempting tests / lockfiles / migrations (run `atelier-pr-size-check` to see the exact count and any slicing hints). Either dimension alone is fine; only PRs that breach both axes fall back. Per-project override via `<project>/.atelier.json`.
+- PR exceeds the per-project size budget: by default both `>200 lines` **and** `>10 files` after exempting tests / lockfiles / migrations (run `atelier-pr-size-check` to see the exact count and any slicing hints). Either dimension alone is fine; only PRs that breach both axes fall back to human review, unless the operator posted a size waiver (a review from a non-agent repo admin/maintainer, containing a waiver phrase and a reason, on the current head sha). The waiver affects only this guardrail; CI, review, forbidden paths, pending comments and request-changes are unchanged, and a size-check error is never waivable. Per-project override via `<project>/.atelier.json`.
 - Human comments are pending on the PR.
 - Reviewer marks `request-changes`.
 
@@ -245,8 +245,9 @@ Two sanctioned carve-outs (R1 and R2 are the only ones):
   `origin v*` (tags only; the bump PR itself still goes through `task-orchestrator`).
 
 **Known gap (pre-enforcement).** `/atelier:release` step 6 still dispatches
-`implementer` from the top level for the version bump, which conflicts with this
-rule. It is a documented, unsanctioned gap, not a carve-out: it must be rerouted
+`implementer` from the top level for the version bump, and step 8b (#575) does the
+same for the catalog pin (`pin-marketplace` in the claude-plugins worktree); both
+conflict with this rule. It is a documented, unsanctioned gap, not a carve-out: it must be rerouted
 through `task-orchestrator` (non-task PR coordination mode) before the #405b
 (#440) hook enforces the rule.
 

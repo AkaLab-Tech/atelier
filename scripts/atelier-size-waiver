@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+#
+# atelier-size-waiver — read-only resolution of an operator PR-size waiver (#542, 538a).
+#
+# Usage: atelier-size-waiver [--kind size] <owner/repo> <NN>
+#
+# Output: exactly one line on stdout.
+#   waiver=valid sha=<40-hex> by=<login> at=<iso> review=<url> reason=<text>
+#   waiver=none                      no PR review carries a waiver phrase with a non-empty reason
+#   waiver=stale sha=<40-hex>        newest waiver review covered an older head; sha = that commit
+#   waiver=untrusted by=<login> (<why>)  newest waiver review is from an agent/PR author/bot,
+#                                    or from someone without admin/maintain on the repo
+# Exit: 0 valid · 1 none/stale/untrusted · 2 error/usage (fail closed, never a pass).
+#
+# A waiver is a PR *review* (state COMMENTED or APPROVED; DISMISSED and CHANGES_REQUESTED do not
+# count, nor do issue comments) whose body contains a waiver phrase, matched case-insensitively
+# (kind "size": `waive size`, `size waiver`, `exención de tamaño`). The text after the phrase is
+# the reason; an empty reason means the review is not a waiver at all.
+#
+# Decision order (deterministic):
+#   1. Keep reviews with state COMMENTED/APPROVED, a phrase, and a non-empty reason.
+#   2. Take the NEWEST by submittedAt; none -> waiver=none. Older ones are never consulted.
+#   3. Author is an atelier agent login (gh/author, gh/reviewer, both resolved live), the PR
+#      author, or a bot ([bot] suffix / app/ prefix) -> untrusted.
+#   4. commit.oid != current headRefOid -> stale.
+#   5. Author lacks admin/maintain, read live from collaborators/<login>/permission
+#      (HTTP 404 = not a collaborator) -> untrusted. Any other API failure -> exit 2.
+#   6. Otherwise valid.
+# No local file or config value can grant a waiver. gh reads only; no state is modified.
+#
+# --kind selects the phrase set (internal; only `size` ships). A future guardrail-4 approval
+# kind adds its own distinct set in kind_phrases(); sets must never overlap.
+
+set -u
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+kind="size"
+if [ "${1:-}" = "--kind" ]; then
+  [ $# -ge 2 ] || { echo "usage: atelier-size-waiver [--kind size] <owner/repo> <NN>" >&2; exit 2; }
+  kind="$2"; shift 2
+fi
+[ $# -eq 2 ] || { echo "usage: atelier-size-waiver [--kind size] <owner/repo> <NN>" >&2; exit 2; }
+repo="$1"; pr="$2"
+case "$pr" in ''|*[!0-9]*) echo "atelier-size-waiver: <NN> must be a PR number" >&2; exit 2 ;; esac
+case "$repo" in */*) ;; *) echo "atelier-size-waiver: <owner/repo> expected" >&2; exit 2 ;; esac
+
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+
+fail() { echo "atelier-size-waiver: $1" >&2; exit 2; }
+
+# Regex alternation (Oniguruma, matched case-insensitively) per kind.
+kind_phrases() {
+  case "$1" in
+    size) printf '%s' 'waive size|size waiver|exención de tamaño' ;;
+    *) return 1 ;;
+  esac
+}
+
+agent_login() {
+  GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/$1" gh api user --jq .login
+}
+
+command -v jq >/dev/null 2>&1 || fail "jq not found"
+phrases="$(kind_phrases "$kind")" || fail "unknown kind: $kind"
+author_agent="$(agent_login author 2>/dev/null)" || fail "cannot resolve author agent login"
+reviewer_agent="$(agent_login reviewer 2>/dev/null)" || fail "cannot resolve reviewer agent login"
+[ -n "$author_agent" ] && [ -n "$reviewer_agent" ] || fail "empty agent login"
+pr_json="$(gh pr view "$pr" --repo "$repo" --json author,headRefOid,reviews,url 2>/dev/null)" \
+  || fail "cannot read PR $repo#$pr"
+
+# Newest phrase-bearing review, as one JSON object (or "null"); reason is whitespace-collapsed.
+cand="$(printf '%s' "$pr_json" | jq -c --arg re "($phrases)" '
+  [ .reviews[]?
+    | select(.state == "COMMENTED" or .state == "APPROVED")
+    | . as $r
+    | ((.body // "") | capture("(?:" + $re + ")[\\s:—–-]*(?<reason>.*)"; "is")?) as $m
+    | select($m != null)
+    | ($m.reason | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "")) as $reason
+    | select($reason != "")
+    | { by: ($r.author.login // ""), at: ($r.submittedAt // ""), sha: ($r.commit.oid // ""),
+        url: ($r.url // ""), reason: $reason }
+  ] | sort_by(.at) | last' 2>/dev/null)" || fail "cannot parse PR JSON"
+[ -n "$cand" ] || fail "empty parse result"
+
+if [ "$cand" = "null" ]; then
+  echo "waiver=none"
+  exit 1
+fi
+
+f() { printf '%s' "$cand" | jq -r ".$1"; }
+by="$(f by)"; at="$(f at)"; sha="$(f sha)"; url="$(f url)"; reason="$(f reason)"
+head_sha="$(printf '%s' "$pr_json" | jq -r '.headRefOid // ""')"
+pr_author="$(printf '%s' "$pr_json" | jq -r '.author.login // ""')"
+pr_url="$(printf '%s' "$pr_json" | jq -r '.url // ""')"
+[ -n "$head_sha" ] || fail "PR has no head sha"
+[ -n "$url" ] || url="$pr_url"
+
+lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+by_lc="$(lc "$by")"
+
+untrusted() { echo "waiver=untrusted by=$by ($1)"; exit 1; }
+
+[ -n "$by" ] || untrusted "unknown author"
+case "$by_lc" in
+  *"[bot]"|app/*) untrusted "bot account" ;;
+esac
+[ "$by_lc" != "$(lc "$author_agent")" ] || untrusted "atelier author agent"
+[ "$by_lc" != "$(lc "$reviewer_agent")" ] || untrusted "atelier reviewer agent"
+[ "$by_lc" != "$(lc "$pr_author")" ] || untrusted "PR author"
+
+if [ "$sha" != "$head_sha" ]; then
+  echo "waiver=stale sha=$sha"
+  exit 1
+fi
+
+perm_err="$(mktemp)" || fail "mktemp failed"
+trap 'rm -f "$perm_err"' EXIT
+if perm_json="$(gh api "repos/$repo/collaborators/$by/permission" 2>"$perm_err")"; then
+  role="$(printf '%s' "$perm_json" | jq -r '[.role_name // "", .permission // ""] | @tsv' 2>/dev/null)" \
+    || fail "cannot parse permission for $by"
+  role_name="${role%%$'\t'*}"; perm="${role#*$'\t'}"
+  case "$role_name" in admin|maintain) ;; *)
+    [ "$perm" = "admin" ] || untrusted "lacks admin/maintain permission" ;;
+  esac
+elif grep -q 'HTTP 404' "$perm_err"; then
+  untrusted "not a collaborator"
+else
+  fail "cannot read permission for $by"
+fi
+
+printf 'waiver=valid sha=%s by=%s at=%s review=%s reason=%s\n' "$sha" "$by" "$at" "$url" "$reason"
+exit 0

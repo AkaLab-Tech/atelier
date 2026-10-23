@@ -22,6 +22,9 @@ first, shows it, and only deletes after the operator says yes.
    atelier-housekeeping --report $ARGUMENTS
    ```
 
+   Remote-tracking refs whose branch is already gone on origin are listed as
+   "already gone", pruned on a sweep, and never counted as failures.
+
    Relay its output to the operator verbatim — it already produces a
    categorized summary (worktrees, local branches, remote branches, and a
    "needs review" group for unmerged work).

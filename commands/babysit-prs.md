@@ -1,7 +1,7 @@
 ---
 description: One idempotent pass — enumerate every open `task/*` PR, triage each against the `auto-merge` six guardrails (read-only), drive eligible PRs to merge via `task-orchestrator` `pr-open` dispatch, and report per-PR status. Run unattended via `/loop <interval> /atelier:babysit-prs`.
 argument-hint: "[--workspace] [--yes|-y]"
-allowed-tools: Read, Glob, Bash(env:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(git worktree list:*), Bash(git remote:*), Bash(atelier-pr-size-check:*), Bash(atelier-ci-coverage:*), Bash(atelier-setup-workspace:*), Task
+allowed-tools: Read, Glob, Bash(env:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(git worktree list:*), Bash(git remote:*), Bash(atelier-pr-size-check:*), Bash(atelier-size-waiver:*), Bash(atelier-ci-coverage:*), Bash(atelier-setup-workspace:*), Task
 ---
 
 You are running the `/atelier:babysit-prs` slash command. Your job is one **idempotent, convergent pass**: enumerate every open `task/*` PR in scope, triage each against the `auto-merge` six guardrails (read-only first), dispatch eligible PRs to `task-orchestrator` in `pr-open` resume mode, and report the outcome.
@@ -133,8 +133,8 @@ atelier-pr-size-check --pr <NN> --project <project-root>
 ```
 
 - Exit 0 → guardrail passes; continue to guardrail 6.
-- Exit 1 → disposition: `held — OVERSIZE (<lines> lines / <files> files, limits <maxLines>/<maxFiles>)` (include the tool's stdout for slice hints). Terminal.
-- Exit 2 → treat conservatively: `held — size check error`. Terminal.
+- Exit 1 → run `atelier-size-waiver <owner/repo> <NN>`. `waiver=valid` (with its `sha` equal to the PR's current head sha) passes the guardrail; note `OVERSIZE <lines>/<files> WAIVED by @<login> (sha <7>)` in the per-PR row and continue to guardrail 6. Anything else → disposition: `held — OVERSIZE (<lines> lines / <files> files, limits <maxLines>/<maxFiles>)` (include the tool's stdout for slice hints), and the held line says how to waive: a repo admin/maintainer submits a PR review starting with `waive size` and a reason (covers only the current head). Terminal.
+- Exit 2 → treat conservatively: `held — size check error`. Terminal; never waivable.
 
 **Guardrail 6 — pending human comments.**
 
@@ -152,7 +152,7 @@ Count > 0 → disposition: `held — <N> pending human comment(s)`. Terminal.
 
 **Final disposition after all guardrails pass:**
 
-- `reviewDecision == "APPROVED"` + CI green + not conflicting + no forbidden + not oversize + no pending comments → **mergeable-now**. Actionable.
+- `reviewDecision == "APPROVED"` + CI green + not conflicting + no forbidden + not oversize (or validly waived) + no pending comments → **mergeable-now**. Actionable.
 - `reviewDecision` null/`REVIEW_REQUIRED` + count of approved reviews == 0 → **unreviewed**. Actionable.
 - `reviewDecision == "CHANGES_REQUESTED"` + `reviewFix.enabled: true` → **needs-fix-dispatchable**. Actionable.
 
@@ -227,12 +227,12 @@ Pass verdict: terminal | re-poll suggested (<N> PR(s) waiting on CI)
 
 ## Hard refusals
 
-- **Never** dispatch the orchestrator for a PR whose triage disposition is terminal (CI-failed, conflicting, forbidden files, OVERSIZE, pending human comments). The triage front-end exists to prevent fruitless re-dispatch cycles.
+- **Never** dispatch the orchestrator for a PR whose triage disposition is terminal (CI-failed, conflicting, forbidden files, OVERSIZE without a valid operator waiver, pending human comments). The triage front-end exists to prevent fruitless re-dispatch cycles.
 - **Never** touch non-`task/*` PRs. They are listed once as `skipped (out-of-band)` and then ignored.
 - **Never** re-review or re-dispatch a PR that another lane or session was denied on (a `held` PR with a classifier denial tag). A review lane is an up-front topology choice, never a way around a denial — see `operator-rules.md` § "Multi-session setups (plan + worker sessions)".
 - **Never** merge directly. All state-changing writes go through the orchestrator's `reviewer → auto-merge` path. babysit-prs is a fan-out + convergence layer, not an independent merge actor.
 - **Never** implement an internal sleep/poll loop. One pass, one return. `/loop` is the recurring mechanism.
 - **Never** dispatch orchestrators in parallel. Drive one PR at a time — sequential dispatch prevents concurrent merges from racing on shared GitHub state.
 - **Never** weaken or skip a guardrail. All six are applied faithfully in triage; the orchestrator's `auto-merge` skill remains authoritative and short-circuits on the first failure regardless.
-- **Never** merge the never-auto-merge set: draft, non-`task/*`, forbidden files, oversize, pending human comments, `CHANGES_REQUESTED` with `reviewFix.enabled: false`, CI-failed, conflicting.
+- **Never** merge the never-auto-merge set: draft, non-`task/*`, forbidden files, oversize without a valid operator waiver, pending human comments, `CHANGES_REQUESTED` with `reviewFix.enabled: false`, CI-failed, conflicting.
 - **Never** honour a `decisionPolicy: ask` override by prompting in non-interactive mode. In non-interactive mode, stop with a clear error when no safe default exists — never guess, never prompt.

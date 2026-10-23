@@ -546,6 +546,28 @@ Want to look without being asked to delete? Run `atelier-housekeeping --report` 
 
 ---
 
+## Waiving the PR size limit
+
+atelier never merges an oversize pull request on its own (by default: more than 200 changed lines and more than 10 files). If you have looked at a big PR and are happy for it to merge automatically anyway, you can say so on the PR itself, with no command line:
+
+1. Open the PR on GitHub and go to **Files changed**.
+2. Click **Review changes**, choose **Comment** (or **Approve**), and write a line that starts with the waiver phrase and gives a reason, for example: `waive size — mechanical rename, reviewed the diff`.
+3. Click **Submit review**.
+
+Accepted phrases (any capitalisation): `waive size`, `size waiver`, `exención de tamaño`. The reason after the phrase is required.
+
+Things to know:
+
+- It must be a **review**. A plain comment in the PR conversation does **not** count, and it would hold the PR as a pending human comment.
+- The waiver covers the code as it is when you submit it. Any later push to the PR makes it stale and you need to waive again.
+- Only a repository admin or maintainer counts, and never the account atelier uses to author or review PRs (or a bot). Atelier reads this live from GitHub; nothing in a local file can grant a waiver. `atelier-size-waiver <owner/repo> <PR number>` shows how a PR is currently judged (`valid`, `none`, `stale` or `untrusted`).
+
+**Single-developer setups.** If the GitHub account you use is also the one atelier authors or reviews with, every waiver is `untrusted` and the fallback is to merge the PR manually.
+
+**Residual risk.** The guarantee rests on atelier's agents not holding your personal GitHub credentials. An agent that pointed `gh` at your personal config (for example `~/.config/gh`) or drove your logged-in Chrome could forge a waiver in your name. A separate guard task tracks closing this.
+
+---
+
 ## If something goes wrong
 
 First stop: run the health check.
@@ -628,4 +650,4 @@ Each `atelier-*` helper also has a Claude-session equivalent under `/atelier:*` 
 - `~/.claude-work/` — atelier's own configuration, separate from your personal Claude config. (This path is `$ATELIER_CONFIG_DIR`; helpers and slash commands always read/write here, never your personal `~/.claude/`.)
 - `~/.claude-work/projects.json` — the registry of your atelier projects. `~/.claude-work/workspaces.json` — your multi-repo workspaces (only present once you create one).
 - `~/.claude-work/atelier-help.txt` — the cheatsheet shown by `atelier --help` (written at install time, refreshed by `atelier-update`).
-- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, `atelier-list-projects`, `atelier-remove-project`, `atelier-import-conversations`, `atelier-setup-workspace`, `atelier-resolve-dep`, `atelier-workspace-status`, `atelier-list-workspaces`, `atelier-remove-workspace`, `atelier-update`, `atelier-permission-diff`, `atelier-pr-size-check`, `atelier-measure-merge-rate`, `atelier-branch-protection`, `atelier-housekeeping`, and `atelier-review-verdict` commands.
+- `~/.local/bin/atelier-*` — the `atelier-setup-project`, `atelier-uninstall`, `atelier-doctor`, `atelier-task-resolve`, `atelier-list-projects`, `atelier-remove-project`, `atelier-import-conversations`, `atelier-setup-workspace`, `atelier-resolve-dep`, `atelier-workspace-status`, `atelier-list-workspaces`, `atelier-remove-workspace`, `atelier-update`, `atelier-permission-diff`, `atelier-pr-size-check`, `atelier-measure-merge-rate`, `atelier-branch-protection`, `atelier-housekeeping`, `atelier-review-verdict`, and `atelier-size-waiver` commands.
