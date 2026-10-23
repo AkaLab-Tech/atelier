@@ -17,8 +17,11 @@
 #   - A segment naming a protected file is ALLOWED only when its command is
 #     name-only: `ls`, `test`, `[`, `[[`, `find` (no -exec/-execdir/-ok/
 #     -delete/-fprint*), `git status`, `git check-ignore`.
-#   - `git add` / `git commit` segments are skipped: block-env-commit.sh owns
+#   - A name-only step directly followed by `|` is BLOCKED (`ls .env | xargs cat`).
+#   - `git add` / `git commit` segments are allowed: block-env-commit.sh owns
 #     them, and a `.env` mentioned inside a commit message is not a read.
+#     Exception: a commit message/template FILE option (-F/--file/-t/--template)
+#     naming a protected file is blocked.
 #   - Everything else is BLOCKED: cat/head/tail/grep/awk/sed/source/`.`/cp/mv/
 #     rm, `< .env` redirection, interpreter one-liners, even `echo ".env"`.
 #     Blocking rm/mv is deliberate: deleting these files is an operator action.
@@ -65,6 +68,14 @@ protected_tokens() {
     | grep -Eo "(^|[[:space:]/'\"<>=(:])\\.env[^[:space:]/'\"<>;|&)\`]*" \
     | sed -E 's/^[^.]*//' \
     | grep -Ev '\.(example|sample|template|dist)$' || true
+  # Attached short option on a commit (`git commit -F.env`, `-aF.env`).
+  case "$1" in
+    *commit*)
+      printf '%s\n' "$1" \
+        | grep -Eo "(^|[[:space:]])-[A-Za-z]*[Ft]\\.env[^[:space:]'\"<>;|&)\`]*" \
+        | sed -E 's/^[^.]*//' \
+        | grep -Ev '\.(example|sample|template|dist)$' || true ;;
+  esac
 }
 
 # First command word of a segment, skipping leading `VAR=val` assignments,
@@ -103,27 +114,48 @@ segment_is_name_only() {
       # Subcommand after optional `-C <path>` / `-c k=v` options.
       sub="$(printf '%s' "$seg" | sed -E 's/^.*(^|[[:space:]])git[[:space:]]+((-C|-c)[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+)[[:space:]]+)*//' | awk '{print $1}')"
       case "$sub" in
-        status|check-ignore|add|commit) return 0 ;;
+        status|check-ignore|add) return 0 ;;
+        commit)
+          # `-m` text merely mentioning the name is fine; a message/template
+          # FILE that is a protected env file puts its contents in history.
+          printf '%s' "$seg" \
+            | grep -Eo "(^|[[:space:]])(-[A-Za-z]*[Ft]|--file|--template)(=|[[:space:]]+)?['\"]?([^[:space:]'\"]*/)?\.env[^[:space:]'\"<>;|&)\`]*" \
+            | grep -Evq '\.(example|sample|template|dist)$' && return 1
+          return 0 ;;
       esac
       return 1 ;;
   esac
   return 1
 }
 
+PIPE_MARK="@@PIPE@@"
 blocked_token=""
 allowed_token=""
+prev_listing_token=""
 while IFS= read -r seg; do
+  # A name-only listing step whose output feeds a pipe is a read in disguise
+  # (`ls .env | xargs cat`, `find . -name .env -print0 | xargs -0 cat`).
+  piped=0
+  case "$seg" in "$PIPE_MARK"*) piped=1; seg="${seg#"$PIPE_MARK"}" ;; esac
+  if [ "$piped" = 1 ] && [ -n "$prev_listing_token" ]; then
+    blocked_token="$prev_listing_token"
+    break
+  fi
+  prev_listing_token=""
   tokens="$(protected_tokens "$seg")"
   [ -n "$tokens" ] || continue
   if segment_is_name_only "$seg"; then
     allowed_token="$(printf '%s' "$tokens" | head -n1)"
+    prev_listing_token="$allowed_token"
   else
     blocked_token="$(printf '%s' "$tokens" | head -n1)"
     break
   fi
 done < <(printf '%s\n' "$command_str" \
-  | sed -E 's/&&|\|\||\||;|\$\(|`/\
-/g')
+  | sed -E 's/&&|\|\||;|\$\(|`/\
+/g' \
+  | sed -E 's/\|/\
+'"$PIPE_MARK"'/g')
 
 if [ -z "$blocked_token" ]; then
   if [ -n "$allowed_token" ]; then
