@@ -1711,8 +1711,7 @@ phase_c_1_setup_project_helper() {
   # task-orchestrator runs it before /validate and before authoring dispatches.
   _phase_c_1_symlink_helper atelier-diff-scope-check
 
-  # #490: versioned machine-wide CPU turn (port of the loose cpu-slot) with a
-  # bounded --wait; shares /tmp/cpu-slot.lock with the loose script.
+  # pass-through kept for call-shape compatibility (#584); no lock, no wait.
   _phase_c_1_symlink_helper atelier-cpu-slot
 
   # #457: local record of denied task-orchestrator / planner dispatches.
