@@ -374,6 +374,10 @@ Legacy case: in `verdict` mode, a PR that already carries a real `CHANGES_REQUES
 
 ---
 
+### `atelier-doctor` says the cache is "unreleased code under a release number" / `atelier-update` refuses the swap
+
+The plugin cache holds a commit that is not the released `vX.Y.Z` tag (the catalog entry used to track `main` HEAD, #548). `atelier-update` stops before touching the runtime dir or helper symlinks and prints both commits. Fix: `claude plugin marketplace update akalab-tech`, then `claude plugin update atelier@akalab-tech`, then `atelier-update`. If the catalog is not yet pinned to the release, the refusal persists until the next `/atelier:release` pins it; report it. When the tag cannot be looked up (offline, rate limited, no `gitCommitSha`), both tools only warn or SKIP.
+
 ## When all else fails
 
 If the doctor passes but tasks still fail or atelier behaves unexpectedly:
