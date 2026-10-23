@@ -1,7 +1,7 @@
 ---
 description: Cut a version release for a project by delegating the whole author → review → merge coordination to task-orchestrator (non-task PR coordination mode) — the command never authors, reviews, or merges the bump PR from its own turn.
 argument-hint: "[<version>|major|minor|patch] [--project <path>] [--all] [--yes|-y]"
-allowed-tools: Read, Bash(atelier-release:*), Bash(git fetch:*), Bash(git tag:*), Bash(git push origin v*), Bash(git ls-remote:*), Bash(git describe:*), Bash(git log:*), Bash(git rev-parse:*), Skill, Task, AskUserQuestion
+allowed-tools: Read, Bash(atelier-release resolve:*), Bash(git fetch:*), Bash(git tag:*), Bash(git push origin v*), Bash(git ls-remote:*), Bash(git describe:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git status:*), Bash(git diff:*), Skill, Task, AskUserQuestion
 ---
 
 You are running the `/atelier:release` slash command. Cut the **next** SemVer release for one project (per [PLAN.md §14](PLAN.md), design decision recorded in §14.9). **This command never authors, reviews, or merges the bump PR from its own turn.** This command delegates the whole author→review→merge coordination to `task-orchestrator` (non-task PR coordination mode); it never dispatches `pr-author`, `reviewer`, or `auto-merge` from its own turn — exactly the way `/atelier:align` delegates its base PR.
@@ -125,15 +125,17 @@ The tag targets the **merge commit SHA** captured in step 7, not whatever `origi
 Runs only when `<project>`'s `.claude-plugin/plugin.json` `name` is listed in the `akalab-tech` catalog (`AkaLab-Tech/claude-plugins` `.claude-plugin/marketplace.json`); otherwise skip to step 9. The catalog entry has no `ref`/`sha`, so installs would clone default-branch HEAD instead of the release.
 
 1. Resolve the peeled tag commit: `git -C <project> ls-remote origin refs/tags/v<next_version>^{}`. It **must equal** the step 7 merge sha; if it does not, stop and report both (never pin a different sha).
-2. Find the registered `claude-plugins` project in `$ATELIER_CONFIG_DIR/projects.json` (remote `AkaLab-Tech/claude-plugins`); if none is registered, report "tag pushed, but the catalog is not pinned — operators keep receiving the previous pinned release" and stop. Create a worktree on **`chore/pin-<plugin>-v<next_version>`** from its `origin/main` (same `git-wt` skill as step 5) and run there:
+2. Find the registered `claude-plugins` project in `$ATELIER_CONFIG_DIR/projects.json` (remote `AkaLab-Tech/claude-plugins`); if none is registered, report "tag pushed, but the catalog is not pinned — operators keep receiving the previous pinned release" and stop. Create a worktree on **`chore/pin-<plugin>-v<next_version>`** from its `origin/main` (same `git-wt` skill as step 5). **Prepare the pin with an `implementer` dispatch (`Task`, `atelier:implementer`), mirroring step 6 — this command's own turn never runs `pin-marketplace`, edits, or commits in that worktree.** The brief is narrow: the `worktree_path`, `interactive: <bool>`, this exact invocation, and "change only `.claude-plugin/marketplace.json`, only through this helper; do not commit or push":
 
    ```bash
    atelier-release pin-marketplace --marketplace <wt>/.claude-plugin/marketplace.json \
      --plugin <name> --tag v<next_version> --sha <peeled-sha>
    ```
-3. Dispatch `atelier:task-orchestrator` in `mode: non-task-pr` exactly as in step 7 (no `task_id`, `interactive: <bool>`), with `repo` = the claude-plugins repo, `head` = the pin branch, `base` = its default branch, `title` = `chore(release): pin <plugin> to v<next_version>`, and `author_agent: pr-opener` (the branch is `chore/*`).
 
-On `merged` proceed to step 9. On `held`, surface it and say: "tag pushed, but operators keep receiving the previous pinned release until the pin PR merges" — do **not** print the step 9 recipe.
+   Afterwards verify with read-only `git -C <wt> status --porcelain`, `git -C <wt> diff --stat`, and `git -C <wt> log origin/main..HEAD`: only `.claude-plugin/marketplace.json` is modified, and nothing is committed beyond `origin/main`. On any mismatch, stop and report it.
+3. Dispatch `atelier:task-orchestrator` in `mode: non-task-pr` exactly as in step 7 (no `task_id`, `interactive: <bool>`), with `repo` = the claude-plugins repo, `head` = the pin branch, `base` = its default branch, `title` = `chore(release): pin <plugin> to v<next_version>`, and `author_agent: pr-opener` (the branch is `chore/*`). The branch reaches `pr-opener` with the change uncommitted, so `pr-opener` makes the commit under the author identity. Lanes, as in steps 6–7: prepare = `implementer`, author = `pr-opener` (commits), review = `reviewer`, merge = `task-orchestrator` through `auto-merge`.
+
+On `merged` proceed to step 9. On `held` (including `held: merge blocked by auto-mode classifier — human merge required`), print: "tag pushed, but operators keep receiving the previous pinned release until the pin PR merges", the pin PR URL, and the held reason verbatim — do **not** print the step 9 recipe, and do not retry or merge another way.
 
 ### 9. Print the operator update recipe
 
@@ -165,4 +167,5 @@ End the command with the block from step 9, or — for any terminal state reache
 - **Never** print the step 9 update recipe before the step 8b pin PR has merged (for catalog plugins) — operators would pull the previous pinned release.
 - **Never** pin a sha that differs from the peeled tag commit (`vX.Y.Z^{}`) or from the step 7 merge sha.
 - **Never** edit `agents/pr-author.md` to add a formal "no board item" flag for this — carry the "skip the tracking move, no board item applies" instruction in the step 7 briefing prose, exactly as other one-off contextual instructions reach specialists today.
+- **Never** run `atelier-release pin-marketplace`, edit, or commit in the claude-plugins worktree from this command's own turn — the pin is prepared by an `implementer` dispatch (step 8b.2) and committed by `pr-opener`.
 - **Never** silently retry `scripts/atelier-release resolve` with a different override after a refusal — surface the `refuse_reason` to the operator (or, non-interactively, to the log) and stop.

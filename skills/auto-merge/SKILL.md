@@ -167,6 +167,8 @@ gh pr merge <NN> --squash --delete-branch --match-head-commit <sha> --body-file 
 - `--body-file <(echo "")` clears the squash-commit body to just the title — the original PR body lives on the closed PR for history; the merge commit on `main` should be terse.
 - When guardrail #5 passed via an operator size waiver, replace the empty body with a file holding one audit line: `Size-waiver: @<login> at <time> on <sha> — <review-url> — <reason>`.
 
+- If the auto-mode classifier denies the `gh pr merge` itself (e.g. `[Self-Approval]`), this is a terminal held state: report `held: merge blocked by auto-mode classifier — human merge required` with the denial tag verbatim. Do not retry, reword, or merge another way (no API call, no alternative command). The PR and worktree stay open for the operator.
+
 Capture the merge commit SHA from the command output (it prints `Merged pull request #N (commit: <sha>)`).
 
 ## Post-merge cleanup
