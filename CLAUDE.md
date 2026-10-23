@@ -12,7 +12,7 @@ The repo is **implemented and shipping** (currently v0.37.x — see `.claude-plu
 - `bootstrap.sh` — the repo-less one-line entry point (#39): installs Claude Code, registers the marketplace, installs the atelier plugin, then delegates to the cached `install.sh --from-cache`. The only curl|bash artifact; keep it small and auditable.
 - `.claude-plugin/` — plugin + marketplace manifests.
 - `scripts/` — 36 `atelier-*` helper binaries (doctor, setup-project, task backends, etc.).
-- `hooks/` — 11 hook scripts + `hooks.json` manifest + pattern catalogues in `hooks/patterns/`, with a hermetic regression suite (34 `*.test.sh`) in `hooks/tests/`.
+- `hooks/` — 12 hook scripts + `hooks.json` manifest + pattern catalogues in `hooks/patterns/`, with a hermetic regression suite (34 `*.test.sh`) in `hooks/tests/`.
 - `agents/` — 14 agent definitions; `skills/` — 9 skills; `commands/` — 29 slash commands.
 - `docs/` (operator guide, quickstart, troubleshooting, research notes) and `templates/` (settings, project CLAUDE.md, `.atelier.json`).
 - CI: `.github/workflows/structural.yml` runs `bash -n` on all shell, the `hooks/tests/*.test.sh` suite, JSON validation, YAML-frontmatter parsing, and an `atelier-setup-project --help` smoke.
