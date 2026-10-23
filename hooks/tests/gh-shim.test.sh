@@ -225,6 +225,21 @@ blocked "GH_CONFIG_DIR = other dir" none 'gh pr review 1' GH_CONFIG_DIR="$TMP/ot
 blocked "XDG gh dir is personal"   none 'gh pr review 1' GH_CONFIG_DIR="$TMP/xdg/gh" XDG_CONFIG_HOME="$TMP/xdg"
 blocked "auth token with token env under author" author 'gh auth token' GH_TOKEN=tok
 
+
+echo "== atelier config dir symlinked to a personal gh config =="
+SYM="$TMP/acd-sym"; SYMX="$TMP/acd-symx"; REALD="$TMP/acd-real"; XDGH="$TMP/xdg-home"
+mkdir -p "$SYM/gh" "$SYMX/gh" "$REALD/gh/author" "$XDGH/gh"
+ln -s "$PERSONAL" "$SYM/gh/author"
+ln -s "$XDGH/gh" "$SYMX/gh/author"
+blocked "symlinked author -> ~/.config/gh (inherited ATELIER_CONFIG_DIR)" none 'gh pr review 1 --approve' \
+  ATELIER_CONFIG_DIR="$SYM" GH_CONFIG_DIR="$SYM/gh/author"
+blocked "symlinked author -> ~/.config/gh (inline ATELIER_CONFIG_DIR)" none \
+  "ATELIER_CONFIG_DIR='$SYM' GH_CONFIG_DIR='$SYM/gh/author' gh pr review 1 --approve"
+blocked "symlinked author -> \$XDG_CONFIG_HOME/gh" none 'gh pr review 1 --approve' \
+  ATELIER_CONFIG_DIR="$SYMX" GH_CONFIG_DIR="$SYMX/gh/author" XDG_CONFIG_HOME="$XDGH"
+passes "real (non-symlinked) author dir still passes" none 'gh pr review 1 --approve' $'ARG[pr]\nARG[review]\nARG[1]\nARG[--approve]' \
+  ATELIER_CONFIG_DIR="$REALD" GH_CONFIG_DIR="$REALD/gh/author"
+
 echo "== exit code and message of a refusal =="
 for sh in "${SHELLS[@]}"; do
   run "$sh" personal 'gh pr review 1'

@@ -39,6 +39,9 @@ is_atelier_identity() {
   local cur acd c
   cur="$(canon_dir "$GH_CONFIG_DIR")" || return 1
   [ -n "$cur" ] || return 1
+  for c in "$HOME/.config/gh" "${XDG_CONFIG_HOME:+$XDG_CONFIG_HOME/gh}"; do
+    [ -n "$c" ] && [ "$cur" = "$(canon_dir "$c")" ] && return 1
+  done
   acd="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
   for c in "$acd/gh/author" "$acd/gh/reviewer"; do
     [ "$cur" = "$(canon_dir "$c")" ] && return 0
