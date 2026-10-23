@@ -57,14 +57,10 @@ empty log file.
 
 ### What is not an attempt
 
-Some stops are not failures of the task and never reach this skill: a
-CPU-capacity hold (`pr-author` `capacity-held`, or `pr-opener`
-`held: CPU capacity unavailable …`, after the commit was re-issued
-`safeCommit.capacityRequeues` times against a `BLOCKED — CPU ` hook block),
-the CI-wait timeouts, and `needs-operator-permission`. They write no attempt
-log and consume none of the six attempts, because a busy machine is other
-projects' legitimate work; counting it would trigger a worktree reset that
-wipes green work and end in a false `blocked` issue.
+Some stops are not failures of the task and never reach this skill: the
+CI-wait timeouts, and `needs-operator-permission`. They write no attempt
+log and consume none of the six attempts; counting them would trigger a
+worktree reset that wipes green work and end in a false `blocked` issue.
 
 ### Why logs survive a reset
 
