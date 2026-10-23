@@ -211,6 +211,16 @@ session never runs both halves:
   `pr-opener` for non-task branches then the reviewer, in its "non-task PR
   coordination mode" (see `agents/task-orchestrator.md`).
 
+**Agents never act under the operator's GitHub identity (#544).** Every
+review, approval, review comment and PR comment an agent posts goes out under
+`$ATELIER_CONFIG_DIR/gh/author` or `gh/reviewer` — never the operator's personal
+`~/.config/gh`, an inherited or inline `GH_TOKEN` / `GITHUB_TOKEN` /
+`GH_ENTERPRISE_TOKEN`, or the operator's logged-in Chrome (agents do not browse
+github.com in Chrome at all; they use `gh`). The `PreToolUse` hooks
+`hooks/block-operator-gh-identity.sh` (Bash) and
+`hooks/block-operator-browser-github.sh` (Claude in Chrome) enforce this
+categorically (PLAN.md §3); a block has no in-session override.
+
 ### Top-level sessions only orchestrate
 
 A top-level session (the one the operator is talking to, plan session or worker)
