@@ -252,6 +252,14 @@ To check whether auto-mode is currently active, inside any atelier session: `/st
 
 **Fix:** If the message says a token is inherited (`GH_TOKEN`, `GITHUB_TOKEN` or `GH_ENTERPRISE_TOKEN` "inherited from the environment"), that variable is exported in the shell that launched the session: run `unset GH_TOKEN` (or the named variable) in that shell, remove it from your shell rc, and relaunch with `task` — it overrides the atelier identity and would post as the token's owner. Inside a session, `unset <VAR>;` or `env -u <VAR>` before the command clears it for that command only. If the message says `GH_CONFIG_DIR` is unset or personal, launch through `task` (it sets `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author`) and, for reviews, prefix `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer"`. For GitHub work in a session use `gh`, not Chrome. There is no in-session override. As an extra control for the one path no hook can see (link clicks inside Chrome), revoke github.com in the Claude in Chrome extension's site permissions. Decisions are in `<worktree>/.task-log/hook-decisions.jsonl` (`"hook":"block-operator-gh-identity"` / `"block-operator-browser-github"`).
 
+### `atelier-gh-shim: BLOCKED …` (gh identity shim)
+
+**Symptom:** A `gh` call fails with `atelier-gh-shim: BLOCKED gh: …` and exit 1 (on `gh pr review`, `gh pr comment`, `gh issue comment`, a `gh api` write to a review/comment endpoint, a review/comment GraphQL mutation or one whose body can't be inspected, `gh auth token`, `gh auth git-credential`, `gh auth status --show-token`, or a gh alias/extension).
+
+**Cause:** The atelier `gh` shim (#582) is first on PATH in atelier sessions and enforces the identity when `gh` actually runs. The call's effective identity was not an atelier one: `GH_CONFIG_DIR` unset or pointing at your personal `~/.config/gh`, or a `GH_TOKEN`/`GITHUB_TOKEN`/`GH_ENTERPRISE_TOKEN` in the environment.
+
+**Fix:** Launch through `task`/`atelier` (they set `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author`), `unset` any token variable in the shell that launched the session, and for reviews prefix `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer"`. If the shim is not first on PATH (`type -a gh`), run `atelier-update --refresh-shellrc` and restart the session. Known residual, not covered by the shim: a literal absolute path to gh, PATH rewrites (`PATH=… gh`, `env PATH=… gh`), `hash -p`, and on Linux `env -i gh`; `block-operator-gh-identity` covers the text-level shapes.
+
 ### Auto-merge skipped my PR
 
 **Symptom:** The pull request was opened and reviewed, but atelier didn't auto-merge it.

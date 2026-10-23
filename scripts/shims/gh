@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+# atelier-gh-shim
+#
+# atelier `gh` shim (#582). Sits first on PATH in atelier sessions and enforces
+# the GitHub identity at exec time, after the shell finished every expansion,
+# so it sees the real argv and environment. Review-like and credential
+# exfiltration calls run only under an atelier identity; everything else is
+# exec'd unchanged on the real gh. Layer 2 behind hooks/block-operator-gh-identity.sh.
+
+shim_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
+
+find_real_gh() {
+  local dir canon cand rest="$PATH:"
+  while [ -n "$rest" ]; do
+    dir="${rest%%:*}"
+    rest="${rest#*:}"
+    [ -n "$dir" ] || continue
+    canon="$(cd -P "$dir" 2>/dev/null && pwd -P)" || continue
+    [ "$canon" = "$shim_dir" ] && continue
+    cand="$canon/gh"
+    [ -f "$cand" ] && [ -x "$cand" ] || continue
+    if head -c 512 "$cand" 2>/dev/null | grep -aq '^# atelier-gh-shim$'; then
+      continue
+    fi
+    printf '%s' "$cand"
+    return 0
+  done
+  return 1
+}
+
+canon_dir() { [ -d "$1" ] && (cd -P "$1" 2>/dev/null && pwd -P); }
+
+# The account's home from the user database. Unlike $HOME it cannot be changed by
+# an inline `HOME=` on the caller's command line. Prints nothing when unknown.
+passwd_home() {
+  local u h=""
+  u="$(id -un 2>/dev/null)" || return 0
+  [ -n "$u" ] || return 0
+  if command -v dscl >/dev/null 2>&1; then
+    h="$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | awk '/NFSHomeDirectory:/ {print $2; exit}')"
+  fi
+  if [ -z "$h" ] && command -v getent >/dev/null 2>&1; then
+    h="$(getent passwd "$u" 2>/dev/null | cut -d: -f6)"
+  fi
+  if [ -z "$h" ]; then
+    case "$u" in *[!A-Za-z0-9._-]*) ;; *) h="$(eval "cd -P ~$u" 2>/dev/null && pwd -P)" ;; esac
+  fi
+  printf '%s' "$h"
+}
+
+is_atelier_identity() {
+  local v
+  for v in GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; do
+    [ -z "${!v:-}" ] || return 1
+  done
+  [ -n "${GH_CONFIG_DIR:-}" ] || return 1
+  local cur acd c
+  cur="$(canon_dir "$GH_CONFIG_DIR")" || return 1
+  [ -n "$cur" ] || return 1
+  # Lookup failure only drops the passwd-home candidate; the $HOME / XDG ones still apply.
+  local pw
+  pw="$(passwd_home)"
+  for c in "$HOME/.config/gh" "${XDG_CONFIG_HOME:+$XDG_CONFIG_HOME/gh}" "${pw:+$pw/.config/gh}"; do
+    [ -n "$c" ] && [ "$cur" = "$(canon_dir "$c")" ] && return 1
+  done
+  acd="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+  for c in "$acd/gh/author" "$acd/gh/reviewer"; do
+    [ "$cur" = "$(canon_dir "$c")" ] && return 0
+  done
+  return 1
+}
+
+# True when argv carries the token flag: --show-token[=v], or -t anywhere in a
+# short-flag cluster (-at, -ta). A cluster stops at -h, whose rest is a hostname.
+auth_status_shows_token() {
+  local a skip=0 i ch
+  for a in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$a" in
+      -h|--hostname) skip=1 ;;
+      --show-token|--show-token=*) return 0 ;;
+      --*) ;;
+      -?*)
+        i=1
+        while [ "$i" -lt "${#a}" ]; do
+          ch="${a:$i:1}"
+          [ "$ch" = h ] && break
+          [ "$ch" = t ] && return 0
+          i=$((i + 1))
+        done
+        case "$a" in *h) skip=1 ;; esac
+        ;;
+    esac
+  done
+  return 1
+}
+
+# Sets REASON and returns 0 when the call is review-like or exfiltrating.
+classify() {
+  REASON=""
+  # The shim cannot know every flag's arity (gh finds the subcommand after
+  # value-taking flags: `gh pr -b x review 1`), so any word after the group
+  # equal to review/comment/token counts. Trade-off: a flag value literally
+  # equal to one of them is refused under a non-atelier identity (fail
+  # closed); the atelier identities never reach this code.
+  local a skip=0 group="" w has_status=0
+  for a in "$@"; do
+    if [ -z "$group" ]; then
+      if [ "$skip" = 1 ]; then skip=0; continue; fi
+      case "$a" in
+        -R|--repo|--hostname) skip=1 ;;
+        -*) ;;
+        *) group="$a" ;;
+      esac
+      continue
+    fi
+    w="$a"
+    case "$group" in
+      pr)
+        case "$w" in review|comment) REASON="gh pr $w posts as the active identity"; return 0 ;; esac ;;
+      issue)
+        if [ "$w" = comment ]; then REASON="gh issue comment posts as the active identity"; return 0; fi ;;
+      auth)
+        if [ "$w" = token ]; then REASON="gh auth token reveals a credential"; return 0; fi
+        if [ "$w" = git-credential ]; then REASON="gh auth git-credential reveals a credential"; return 0; fi
+        if [ "$w" = status ]; then has_status=1; fi ;;
+    esac
+  done
+
+  case "$group" in
+    auth)
+      if [ "$has_status" = 1 ] && auth_status_shows_token "$@"; then
+        REASON="gh auth status --show-token reveals a credential"; return 0
+      fi
+      ;;
+    api) classify_api "$@" && return 0 ;;
+  esac
+  return 1
+}
+
+# Fail closed: the argv grammar of `gh api` (clusters, =-forms, global flags
+# before `api`) is not worth chasing form by form, so every word after `api` is
+# inspected as text. Trade-off: a non-atelier identity may see a false refusal
+# (e.g. a field value that mentions a review endpoint on a write); atelier
+# identities never reach this code.
+classify_api() {
+  local a skip=0 seen=0 gskip=0 ep_hit="" nonget=0 hasget=0 haswrite=0 opaque=0
+  local isgql=0 text="" lw v i ch n rest m
+  for a in "$@"; do
+    if [ "$seen" = 0 ]; then
+      if [ "$gskip" = 1 ]; then gskip=0; continue; fi
+      case "$a" in
+        -R|--repo|--hostname) gskip=1 ;;
+        -*) ;;
+        *) seen=1 ;;
+      esac
+      continue
+    fi
+    lw="$(printf '%s' "$a" | tr '[:upper:]' '[:lower:]')"
+    text="$text $lw"
+    case "$lw" in *=@*) opaque=1 ;; esac
+
+    # Normalised candidates: the word and any --opt=value value.
+    for v in "$lw" "${lw#*=}"; do
+      v="${v%%#*}"; v="${v%%\?*}"; v="${v%/}"
+      case "$v" in graphql|*/graphql) isgql=1 ;; esac
+    done
+    case "$lw" in
+      *pulls/*/reviews*|*pulls/*/comments*|*pulls/comments/*|*issues/*/comments*|*issues/comments/*)
+        REASON="gh api write to $a posts as the active identity"; ep_hit="$a" ;;
+    esac
+
+    if [ "$skip" != 0 ]; then
+      case "$skip" in
+        method) if [ "$lw" = get ]; then hasget=1; else nonget=1; fi ;;
+        field) haswrite=1 ;;
+      esac
+      skip=0
+      continue
+    fi
+    case "$a" in
+      --method=*) if [ "$lw" = "--method=get" ]; then hasget=1; else nonget=1; fi ;;
+      --method) skip=method ;;
+      --field=*|--raw-field=*) haswrite=1 ;;
+      --field|--raw-field) skip=field ;;
+      --input|--input=*) haswrite=1; opaque=1 ;;
+      --header|--jq|--template|--hostname|--cache|--preview) skip=other ;;
+      --*) ;;
+      -?*)
+        n="${#a}"; i=1
+        while [ "$i" -lt "$n" ]; do
+          ch="${a:$i:1}"
+          case "$ch" in
+            X|f|F|H|q|t|p)
+              rest="${a:$((i + 1))}"
+              case "$ch" in
+                X)
+                  if [ -n "$rest" ]; then
+                    if [ "$(printf '%s' "$rest" | tr '[:lower:]' '[:upper:]')" = GET ]; then hasget=1; else nonget=1; fi
+                  else skip=method; fi ;;
+                f|F)
+                  haswrite=1
+                  [ -n "$rest" ] || skip=field ;;
+                *) [ -n "$rest" ] || skip=other ;;
+              esac
+              break ;;
+          esac
+          i=$((i + 1))
+        done
+        ;;
+    esac
+  done
+
+  if [ "$isgql" = 1 ]; then
+    if [ "$opaque" = 1 ]; then
+      REASON="gh api graphql with a body the shim cannot inspect"; return 0
+    fi
+    for m in addpullrequestreview submitpullrequestreview updatepullrequestreview \
+             addpullrequestreviewcomment addpullrequestreviewthread addcomment \
+             dismisspullrequestreview; do
+      case "$text" in *"$m"*) REASON="gh api graphql mutation $m posts as the active identity"; return 0 ;; esac
+    done
+  fi
+
+  local write=0
+  if [ "$nonget" = 1 ]; then write=1
+  elif [ "$hasget" = 0 ] && [ "$haswrite" = 1 ]; then write=1
+  fi
+  if [ "$write" = 1 ] && [ -n "${ep_hit:-}" ]; then
+    REASON="gh api write to $ep_hit posts as the active identity"; return 0
+  fi
+  REASON=""
+  return 1
+}
+
+real="$(find_real_gh)" || {
+  echo "atelier-gh-shim: real gh not found on PATH" >&2
+  exit 127
+}
+
+if ! is_atelier_identity; then
+  if classify "$@"; then
+    echo "atelier-gh-shim: BLOCKED gh: $REASON. Fix: run under the session's author identity (inherited GH_CONFIG_DIR=\$ATELIER_CONFIG_DIR/gh/author) or, for reviews, GH_CONFIG_DIR=\"\$ATELIER_CONFIG_DIR/gh/reviewer\"; unset any GH_TOKEN/GITHUB_TOKEN." >&2
+    exit 1
+  fi
+  # A gh alias or extension can expand to anything; refuse under a personal identity.
+  first=""; skip=0
+  for a in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$a" in -R|--repo|--hostname) skip=1 ;; -*) ;; *) first="$a"; break ;; esac
+  done
+  case "$first" in
+    ""|agent-task|alias|api|attestation|auth|browse|cache|codespace|completion|config|copilot|extension|gist|gpg-key|help|issue|label|licenses|org|pr|preview|project|release|repo|ruleset|run|search|secret|skill|ssh-key|status|variable|workflow) ;;
+    *)
+      echo "atelier-gh-shim: BLOCKED gh $first: not a built-in gh command (alias or extension) and the identity is not an atelier one. Fix: run under the session's author identity (inherited GH_CONFIG_DIR=\$ATELIER_CONFIG_DIR/gh/author) or, for reviews, GH_CONFIG_DIR=\"\$ATELIER_CONFIG_DIR/gh/reviewer\"; unset any GH_TOKEN/GITHUB_TOKEN." >&2
+      exit 1
+      ;;
+  esac
+fi
+
+exec "$real" "$@"
