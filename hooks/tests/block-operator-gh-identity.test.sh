@@ -238,6 +238,40 @@ assert_allow "env -iS'...' with author config"         "env -iS'GH_CONFIG_DIR=$A
 assert_allow "env unknown option before a read"        'env -x gh pr list' "$EI"
 assert_allow "env -0 -u GH_TOKEN (token only)"         'env -0 -u GH_TOKEN gh pr comment 1 -b x' "$EI"
 
+echo "== reserved words / grouping prefixes (cycle 3) =="
+RP='GH_CONFIG_DIR=~/.config/gh gh pr review 1 --approve'
+assert_block "if/then prefix"      "if true; then $RP; fi" "GH_CONFIG_DIR=$AUTHOR"
+assert_block "for/do prefix"       "for i in 1; do $RP; done" "GH_CONFIG_DIR=$AUTHOR"
+assert_block "brace group"         "{ $RP; }" "GH_CONFIG_DIR=$AUTHOR"
+assert_block "bang negation"       "! GH_CONFIG_DIR=~/.config/gh gh pr review 1 --approve" "GH_CONFIG_DIR=$AUTHOR"
+assert_block "subshell group"      "($RP)" "GH_CONFIG_DIR=$AUTHOR"
+assert_block "else branch"         "if true; then x; else $RP; fi" "GH_CONFIG_DIR=$AUTHOR"
+assert_block "elif branch"         "if false; then x; elif true; then $RP; fi" "GH_CONFIG_DIR=$AUTHOR"
+assert_block "until/do prefix"     "until false; do $RP; done" "GH_CONFIG_DIR=$AUTHOR"
+assert_block "inherited GH_TOKEN in if" 'if true; then gh pr comment 1 --body x; fi' "GH_CONFIG_DIR=$AUTHOR" "GH_TOKEN=abc"
+assert_block "inherited GITHUB_TOKEN in while" 'while true; do gh api repos/o/r/pulls/1/reviews -f event=APPROVE; done' "GH_CONFIG_DIR=$AUTHOR" "GITHUB_TOKEN=abc"
+
+assert_allow "if with echo"        'if true; then echo hi; fi'
+assert_allow "if gh read then author comment" 'if gh pr view 1; then gh pr comment 1 --body x; fi' "GH_CONFIG_DIR=$AUTHOR"
+assert_allow "reviewer identity inside if" 'if true; then GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review 1 --approve --body-file f; fi' "GH_CONFIG_DIR=$AUTHOR"
+
+echo "== fast path (gh only inside words) =="
+assert_allow "gh inside words"     'echo high right github' "GH_CONFIG_DIR=$PERSONAL"
+assert_allow "commit message highlight" 'git commit -m "highlight"' "GH_CONFIG_DIR=$PERSONAL"
+assert_block "word-boundary gh still checked" 'echo high; gh pr review 1 --approve' "GH_CONFIG_DIR=$PERSONAL"
+
+echo "== performance bound on a ~40 KB command =="
+big="$(head -c 40000 /dev/zero | tr '\0' 'x')"
+allowed_n=$((allowed_n + 1))
+t0=$SECONDS
+rc="$(run_hook "git commit -m \"high gh $big\"" "GH_CONFIG_DIR=$PERSONAL")"
+dt=$((SECONDS - t0))
+if [ "$rc" = "0" ] && [ "$dt" -le 10 ]; then
+  pass "40 KB commit message with gh word: exit 0 in ${dt}s"
+else
+  fail "40 KB commit message (exit=$rc, ${dt}s, bound 10s)"
+fi
+
 echo
 echo "blocked cases: $blocked_n, allowed cases: $allowed_n"
 total=$((blocked_n + allowed_n))
