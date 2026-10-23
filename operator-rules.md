@@ -235,8 +235,9 @@ Two sanctioned carve-outs (R1 and R2 are the only ones):
   `origin v*` (tags only; the bump PR itself still goes through `task-orchestrator`).
 
 **Known gap (pre-enforcement).** `/atelier:release` step 6 still dispatches
-`implementer` from the top level for the version bump, which conflicts with this
-rule. It is a documented, unsanctioned gap, not a carve-out: it must be rerouted
+`implementer` from the top level for the version bump, and step 8b (#575) does the
+same for the catalog pin (`pin-marketplace` in the claude-plugins worktree); both
+conflict with this rule. It is a documented, unsanctioned gap, not a carve-out: it must be rerouted
 through `task-orchestrator` (non-task PR coordination mode) before the #405b
 (#440) hook enforces the rule.
 
