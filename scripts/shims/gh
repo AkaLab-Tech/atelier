@@ -46,6 +46,31 @@ is_atelier_identity() {
   return 1
 }
 
+# True when argv carries the token flag: --show-token[=v], or -t anywhere in a
+# short-flag cluster (-at, -ta). A cluster stops at -h, whose rest is a hostname.
+auth_status_shows_token() {
+  local a skip=0 i ch
+  for a in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$a" in
+      -h|--hostname) skip=1 ;;
+      --show-token|--show-token=*) return 0 ;;
+      --*) ;;
+      -?*)
+        i=1
+        while [ "$i" -lt "${#a}" ]; do
+          ch="${a:$i:1}"
+          [ "$ch" = h ] && break
+          [ "$ch" = t ] && return 0
+          i=$((i + 1))
+        done
+        case "$a" in *h) skip=1 ;; esac
+        ;;
+    esac
+  done
+  return 1
+}
+
 # Sets REASON and returns 0 when the call is review-like or exfiltrating.
 classify() {
   REASON=""
@@ -74,9 +99,9 @@ classify() {
     auth)
       if [ "$pos2" = "token" ]; then REASON="gh auth token reveals a credential"; return 0; fi
       if [ "$pos2" = "status" ]; then
-        for a in "$@"; do
-          case "$a" in --show-token|-t) REASON="gh auth status --show-token reveals a credential"; return 0 ;; esac
-        done
+        if auth_status_shows_token "$@"; then
+          REASON="gh auth status --show-token reveals a credential"; return 0
+        fi
       fi
       ;;
     api) classify_api "$@" && return 0 ;;
@@ -115,12 +140,16 @@ classify_api() {
 
   local ep method_uc
   ep="$(printf '%s' "$endpoint" | tr '[:upper:]' '[:lower:]')"
-  ep="${ep#https://api.github.com/}"
-  ep="${ep#/}"
+  ep="${ep%%#*}"
   ep="${ep%%\?*}"
+  case "$ep" in
+    *://*) ep="${ep#*://}"; case "$ep" in */*) ep="${ep#*/}" ;; *) ep="" ;; esac ;;
+  esac
+  ep="${ep#/}"
+  ep="${ep%/}"
   method_uc="$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')"
 
-  if [ "$ep" = "graphql" ]; then
+  if [ "$ep" = "graphql" ] || [ "${ep%/graphql}" != "$ep" ]; then
     if [ "$opaque" = 1 ]; then
       REASON="gh api graphql with a body the shim cannot inspect"; return 0
     fi

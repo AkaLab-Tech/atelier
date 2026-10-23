@@ -58,7 +58,17 @@ chmod +x "$WRAP/timeout" "$WRAP/sudo"
 
 cp "$SHIM_SRC/gh" "$SHIM2/gh"; chmod +x "$SHIM2/gh"
 
-BASEPATH="$SHIM_SRC:$WRAP:$STUB:/usr/bin:/bin"
+# Hermetic tool dir: symlinks to every executable of /usr/bin and /bin EXCEPT any
+# system `gh` (CI runners ship /usr/bin/gh), so no real gh is reachable except $STUB.
+TOOLS="$TMP/tools"; mkdir -p "$TOOLS"
+for d in /usr/bin /bin; do
+  for f in "$d"/*; do
+    b="${f##*/}"
+    [ "$b" = gh ] && continue
+    [ -x "$f" ] && [ ! -d "$f" ] && [ ! -e "$TOOLS/$b" ] && ln -s "$f" "$TOOLS/$b"
+  done
+done
+BASEPATH="$SHIM_SRC:$WRAP:$STUB:$TOOLS"
 
 SHELLS=(bash)
 command -v zsh >/dev/null 2>&1 && SHELLS+=(zsh)
@@ -123,6 +133,14 @@ blocked "issue comment"            personal 'gh issue comment 3 -b hi'
 blocked "auth token"               personal 'gh auth token'
 blocked "auth status --show-token" personal 'gh auth status --show-token'
 blocked "auth status -t"           personal 'gh auth status -t'
+blocked "auth status --show-token=true" personal 'gh auth status --show-token=true'
+blocked "auth status -at"          personal 'gh auth status -at'
+blocked "auth status -ta"          personal 'gh auth status -ta'
+blocked "api graphql URL with # fragment" personal "gh api 'https://api.github.com/graphql#' -f query='mutation{addPullRequestReview(input:{})}'"
+blocked "api graphql URL with port" personal "gh api https://api.github.com:443/graphql -f query='mutation{addComment(input:{})}'"
+blocked "api graphql GHE /api/graphql" personal "gh api https://ghe.example/api/graphql -f query='mutation{addComment(input:{})}'"
+blocked "api reviews path with # fragment" personal "gh api 'repos/o/r/pulls/1/reviews#x' -X POST"
+blocked "api reviews URL with port" personal 'gh api https://api.github.com:443/repos/o/r/pulls/1/reviews -f body=x'
 blocked "api -XPOST pulls/1/reviews" personal 'gh api -XPOST repos/o/r/pulls/1/reviews'
 blocked "api -X POST issues/1/comments" personal 'gh api -X POST repos/o/r/issues/1/comments'
 blocked "api --method=PATCH pulls/comments/9" personal 'gh api --method=PATCH repos/o/r/pulls/comments/9'
@@ -162,7 +180,7 @@ case "$(uname -s)" in
 esac
 # coproc only exists in bash/zsh -c; run it on its own so a missing keyword cannot mask the rest.
 # bash 3.2 (macOS /bin/bash) has no coproc keyword: run it only where the keyword exists.
-if [ "$(env -i PATH=/usr/bin:/bin bash -c 'type coproc 2>&1' </dev/null)" = "coproc is a shell keyword" ]; then
+if [ "$(env -i PATH="$TOOLS" bash -c 'type coproc 2>&1' </dev/null)" = "coproc is a shell keyword" ]; then
   blocked "coproc" personal 'coproc gh pr review 1; wait'
 else
   SHELLS_SAVE=("${SHELLS[@]}"); SHELLS=(zsh)
@@ -221,6 +239,10 @@ passes "personal: explicit GET on reviews" personal 'gh api -X GET repos/o/r/pul
 passes "personal: POST to a non-review endpoint" personal 'gh api -X POST repos/o/r/issues' $'ARG[api]\nARG[-X]\nARG[POST]\nARG[repos/o/r/issues]'
 passes "personal: graphql query without mutation" personal "gh api graphql -f query='{viewer{login}}'" $'ARG[api]\nARG[graphql]\nARG[-f]\nARG[query={viewer{login}}]'
 passes "personal: auth status (no token)" personal 'gh auth status' $'ARG[auth]\nARG[status]'
+passes "personal: auth status -h host" personal 'gh auth status -h github.com' $'ARG[auth]\nARG[status]\nARG[-h]\nARG[github.com]'
+passes "personal: auth status -ah host" personal 'gh auth status -ah github.com' $'ARG[auth]\nARG[status]\nARG[-ah]\nARG[github.com]'
+passes "personal: GET pulls/1" personal 'gh api repos/o/r/pulls/1' $'ARG[api]\nARG[repos/o/r/pulls/1]'
+passes "personal: graphql viewer query" personal "gh api graphql -f query='{viewer{login}}'" $'ARG[api]\nARG[graphql]\nARG[-f]\nARG[query={viewer{login}}]'
 passes "argv with spaces and empty arg preserved" personal 'gh pr view "a b" ""' $'ARG[pr]\nARG[view]\nARG[a b]\nARG[]'
 
 for sh in "${SHELLS[@]}"; do
@@ -243,19 +265,19 @@ done
 echo "== PATH resolution =="
 # Two shim copies on PATH: both skipped (marker / own dir), no recursion, stub reached.
 for sh in "${SHELLS[@]}"; do
-  BP="$BASEPATH"; BASEPATH="$SHIM_SRC:$SHIM2:$STUB:/usr/bin:/bin"
+  BP="$BASEPATH"; BASEPATH="$SHIM_SRC:$SHIM2:$STUB:$TOOLS"
   run "$sh" author 'gh pr view 1'
   BASEPATH="$BP"
   if [ "$RC" = 0 ] && printf '%s' "$OUT" | grep -q '^REAL-GH$'; then pass "two shim copies: no recursion, real gh reached [$sh]"
   else fail "two shims [$sh]: rc=$RC $OUT"; fi
   # Second copy first on PATH: still skips itself and the canonical one.
-  BP="$BASEPATH"; BASEPATH="$SHIM2:$SHIM_SRC:$STUB:/usr/bin:/bin"
+  BP="$BASEPATH"; BASEPATH="$SHIM2:$SHIM_SRC:$STUB:$TOOLS"
   run "$sh" personal 'gh pr review 1'
   BASEPATH="$BP"
   if printf '%s' "$OUT" | grep -q 'BLOCKED' && ! printf '%s' "$OUT" | grep -q REAL-GH; then pass "copy-first PATH still enforces [$sh]"
   else fail "copy-first [$sh]: rc=$RC $OUT"; fi
   # No real gh anywhere.
-  BP="$BASEPATH"; BASEPATH="$SHIM_SRC:$SHIM2:/usr/bin:/bin"
+  BP="$BASEPATH"; BASEPATH="$SHIM_SRC:$SHIM2:$TOOLS"
   run "$sh" author 'gh pr view 1'
   BASEPATH="$BP"
   if [ "$RC" = 127 ] && printf '%s' "$OUT" | grep -q 'atelier-gh-shim: real gh not found on PATH'; then pass "no real gh: exit 127 with message [$sh]"
