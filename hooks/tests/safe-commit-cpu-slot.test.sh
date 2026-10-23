@@ -237,6 +237,21 @@ grep -q 'BLOCKED — CPU slot busy' "$ERR" \
 grep -q 'held by holder-x' "$ERR" && grep -q 'load 7.5/12' "$ERR" \
   && pass "message names the holder label and load 7.5/12" || fail "message lacks holder/load: $(cat "$ERR")"
 log_has "cpu-slot-busy" && pass "logged cpu-slot-busy" || fail "no cpu-slot-busy log"
+# #570: the message reports the MEASURED wait, never the configured one verbatim
+# and never 0 when the hook really waited. slotMaxWait is 1 (the clamp's floor)
+# and CPU_SLOT_POLL=1, so the helper waits at least the full 1 s.
+waited_n="$(sed -nE 's/.*BLOCKED — CPU slot busy after ([0-9]+)s.*/\1/p' "$ERR" | head -n 1)"
+[ -n "$waited_n" ] && [ "$waited_n" -ge 1 ] && [ "$waited_n" -le 10 ] \
+  && pass "stderr reports the measured wait: 'after ${waited_n}s' (>= clamped slotMaxWait 1)" \
+  || fail "stderr lacks 'after <N>s' with N >= 1: $(cat "$ERR")"
+grep -q 'returned early' "$ERR" && fail "full-length wait wrongly flagged 'returned early': $(cat "$ERR")" \
+  || pass "full-length wait carries no early-return reason"
+busy_msg="$(jq -r 'select(.pattern=="cpu-slot-busy") | .reason // .message // .detail // tostring' "$LOG_FILE" 2>/dev/null | head -n 1)"
+case "$busy_msg" in
+  *"CPU slot busy: waited ${waited_n}s of 1s max (held by holder-x, load 7.5/12) worktree="*"p4"*)
+    pass "log entry records the measured wait, the max and the worktree" ;;
+  *) fail "cpu-slot-busy log entry malformed: '$busy_msg' (raw: $(grep cpu-slot-busy "$LOG_FILE" 2>/dev/null | head -n 1))" ;;
+esac
 [ ! -e "$P4/ran.txt" ] && pass "no step ran while blocked" || fail "a step ran despite the busy slot"
 [ "$(lock_pid)" = "$HOLDER" ] && pass "foreign holder's lock left untouched" || fail "foreign lock changed: '$(lock_pid)'"
 kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
@@ -259,7 +274,7 @@ log_has "cpu-slot-busy" && fail "load 50: wrongly logged cpu-slot-busy" || pass 
 PLUGIN_ROOT="$ROOT_SHIM"
 P5="$TMP/p5"; make_project "$P5" "$REC_PKG"; stage_feature "$P5"
 run_hook "$P5" "git commit -m x"
-grep -q "^acquire --owner $HOOK_PID --max-wait 240\$" "$SHIM_CALLS" 2>/dev/null \
+grep -q "^acquire --owner $HOOK_PID --max-wait 240 --seniority-key wt-[0-9][0-9]*\$" "$SHIM_CALLS" 2>/dev/null \
   && grep -q "^release --owner $HOOK_PID\$" "$SHIM_CALLS" 2>/dev/null \
   && pass "control: real gate → helper acquire + release with --owner <hook pid>" \
   || fail "control: helper calls were: $(tr '\n' '|' < "$SHIM_CALLS" 2>/dev/null)"
@@ -369,7 +384,7 @@ wait_for_cfg() { # <label> <expected> <config-json or ''>
   [ -n "$3" ] && printf '%s\n' "$3" > "$d/.atelier.json"
   stage_feature "$d"
   run_hook "$d" "git commit -m x"
-  got="$(sed -nE 's/^acquire --owner [0-9]+ --max-wait ([^ ]*)$/\1/p' "$SHIM_CALLS" 2>/dev/null | head -n 1)"
+  got="$(sed -nE 's/^acquire --owner [0-9]+ --max-wait ([^ ]*)( --seniority-key [^ ]*)?$/\1/p' "$SHIM_CALLS" 2>/dev/null | head -n 1)"
   [ "$got" = "$2" ] && pass "slotMaxWait $1 → --max-wait $2" || fail "slotMaxWait $1: expected $2, got '$got'"
 }
 wait_for_cfg default 240 ''
@@ -380,6 +395,39 @@ wait_for_cfg zero 240 '{ "safeCommit": { "slotMaxWait": 0 } }'
 wait_for_cfg garbage 240 '{ "safeCommit": { "slotMaxWait": "abc" } }'
 wait_for_cfg negative 240 '{ "safeCommit": { "slotMaxWait": -5 } }'
 unset PLUGIN_ROOT
+
+# === 10: --seniority-key is passed, stable per worktree (#570) ================
+PLUGIN_ROOT="$ROOT_SHIM"
+key_of() { sed -nE 's/^acquire .* --seniority-key (wt-[0-9]+)$/\1/p' "$SHIM_CALLS" 2>/dev/null | head -n 1; }
+P10A="$TMP/p10a"; make_project "$P10A" '{ "name": "f", "version": "0.0.0", "scripts": { "test": "true" } }'; stage_feature "$P10A"
+P10B="$TMP/p10b"; make_project "$P10B" '{ "name": "f", "version": "0.0.0", "scripts": { "test": "true" } }'; stage_feature "$P10B"
+run_hook "$P10A" "git commit -m x"; KEY_A1="$(key_of)"
+run_hook "$P10A" "git commit -m x"; KEY_A2="$(key_of)"
+run_hook "$P10B" "git commit -m x"; KEY_B="$(key_of)"
+[ -n "$KEY_A1" ] && pass "hook passes --seniority-key wt-<cksum> ($KEY_A1)" || fail "no --seniority-key in: $(tr '\n' '|' < "$SHIM_CALLS")"
+[ "$KEY_A1" = "$KEY_A2" ] && pass "same worktree → same key across re-runs" || fail "key changed between runs: $KEY_A1 vs $KEY_A2"
+[ -n "$KEY_B" ] && [ "$KEY_A1" != "$KEY_B" ] && pass "different worktree → different key" || fail "keys collide: A=$KEY_A1 B=$KEY_B"
+unset PLUGIN_ROOT
+
+# === 11: early return — helper exits 75 well before the deadline (#570) =======
+ROOT_EARLY="$TMP/root-early"; mkdir -p "$ROOT_EARLY/hooks" "$ROOT_EARLY/scripts"
+ln -s "$REPO_ROOT/hooks/lib" "$ROOT_EARLY/hooks/lib"
+cat > "$ROOT_EARLY/scripts/atelier-cpu-slot" <<'EARLY'
+#!/usr/bin/env bash
+[ "$1" = "acquire" ] && { echo "atelier-cpu-slot: helper bailed out (fixture)" >&2; exit 75; }
+exit 0
+EARLY
+chmod +x "$ROOT_EARLY/scripts/atelier-cpu-slot"
+P11="$TMP/p11"; make_project "$P11" '{ "name": "f", "version": "0.0.0", "scripts": { "test": "echo ran >> ran.txt" } }'
+stage_feature "$P11"
+PLUGIN_ROOT="$ROOT_EARLY" run_hook "$P11" "git commit -m x" CPU_SLOT_POLL=1
+[ "$RC" = "2" ] && pass "early 75 → exit 2" || fail "early 75: expected exit 2, got $RC"
+grep -q 'BLOCKED — CPU slot busy after 0s' "$ERR" && pass "early return reports the measured 0s" || fail "no 'after 0s': $(cat "$ERR")"
+grep -q 'returned early after 0s (helper: atelier-cpu-slot: helper bailed out (fixture));' "$ERR" \
+  && pass "early-return reason line quotes the helper's first stderr line" || fail "no early-return reason: $(cat "$ERR")"
+grep -q 're-run the same commit, it waits again' "$ERR" && pass "early return still tells the agent to re-run" || fail "re-run hint missing"
+log_has "cpu-slot-busy" && pass "early return logged cpu-slot-busy" || fail "no cpu-slot-busy log on early return"
+[ ! -e "$P11/ran.txt" ] && pass "early return: no step ran" || fail "step ran despite the 75"
 
 echo
 if [ "$fails" -eq 0 ]; then

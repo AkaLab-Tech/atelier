@@ -1170,8 +1170,11 @@ if $any_step; then
     log_decision "$HOOK_NAME" "Bash" "cpu-slot-na" "allow" "atelier-cpu-slot helper missing — running the gate unslotted"
   else
     slot_wait="$(resolve_slot_max_wait)"
-    slot_err="$(CPU_SLOT_LABEL="$(basename "$project_root") safe-commit" "$slot_helper" acquire --owner $$ --max-wait "$slot_wait" 2>&1 >/dev/null)"
+    slot_key="$(printf '%s' "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" | cksum | cut -d' ' -f1)"
+    slot_t0="$(date +%s)"
+    slot_err="$(CPU_SLOT_LABEL="$(basename "$project_root") safe-commit" "$slot_helper" acquire --owner $$ --max-wait "$slot_wait" --seniority-key "wt-$slot_key" 2>&1 >/dev/null)"
     slot_rc=$?
+    slot_waited=$(( $(date +%s) - slot_t0 ))
     case "$slot_rc" in
       0)
         slot_held=1
@@ -1181,8 +1184,12 @@ if $any_step; then
       75)
         slot_holder="$(printf '%s' "$slot_err" | sed -nE 's/.*\[([^]]*)\].*/\1/p' | tail -n 1)"
         slot_load="$(printf '%s' "$slot_err" | sed -nE 's/^ *load ([^ ]+) on ([^ ]+) cores.*/\1\/\2/p' | tail -n 1)"
-        echo "BLOCKED — CPU slot busy (held by ${slot_holder:-unknown}, load ${slot_load:-?}); re-run the same commit, it waits again" >&2
-        log_decision "$HOOK_NAME" "Bash" "cpu-slot-busy" "block" "CPU slot busy after ${slot_wait}s (held by ${slot_holder:-unknown}, load ${slot_load:-?})"
+        slot_early=""
+        if [ "$slot_waited" -lt $(( slot_wait - ${CPU_SLOT_POLL:-5} )) ]; then
+          slot_early=" returned early after ${slot_waited}s (helper: $(printf '%s' "$slot_err" | head -n 1));"
+        fi
+        echo "BLOCKED — CPU slot busy after ${slot_waited}s (held by ${slot_holder:-unknown}, load ${slot_load:-?});${slot_early} re-run the same commit, it waits again" >&2
+        log_decision "$HOOK_NAME" "Bash" "cpu-slot-busy" "block" "CPU slot busy: waited ${slot_waited}s of ${slot_wait}s max (held by ${slot_holder:-unknown}, load ${slot_load:-?}) worktree=$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
         exit 2
         ;;
       *)

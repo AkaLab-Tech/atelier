@@ -14,9 +14,11 @@
 #                                             soon as a slot can be acquired
 #                                             (it is NOT held afterwards), or
 #                                             exit 75 after S seconds
-#   atelier-cpu-slot acquire --owner <pid> [--max-wait S]
+#   atelier-cpu-slot acquire --owner <pid> [--max-wait S] [--seniority-key K]
 #                                             take a slot on behalf of a
-#                                             long-lived process <pid>
+#                                             long-lived process <pid>. With a
+#                                             key, a re-issued acquire keeps the
+#                                             queue place of the timed-out one
 #   atelier-cpu-slot release --owner <pid>    give it back
 #   atelier-cpu-slot --help
 #
@@ -25,6 +27,14 @@
 # created with mkdir (atomic on macOS, which has no flock). Waiters are served
 # in ticket order (oldest mtime first): a waiter only tries when its ticket is
 # among the oldest <free slot count> live tickets.
+#
+# --seniority-key K (acquire only): a timed-out acquire deletes its ticket, so a
+# re-issued one would go to the back of the queue. With a key, the first timeout
+# records the ticket's enqueue time in $ROOT/cpu-slot.seniority/K (its mtime;
+# K.last is refreshed on every timeout), and every later acquire with the same
+# key gives its new ticket that mtime. The entry is removed when the slot is
+# acquired, and ignored and pruned once K.last is older than max-wait + 120 s.
+# K is sanitized to [A-Za-z0-9._-]. Without a key nothing changes.
 #
 # Load is shown for information only; it never holds a slot. The only limit is
 # the slot count (max).
@@ -64,6 +74,8 @@ SCRIPT_NAME="atelier-cpu-slot"
 ROOT=${CPU_SLOT_DIR:-/tmp}
 LOCK="$ROOT/cpu-slot.lock"
 QUEUE="$ROOT/cpu-slot.queue"
+SENIORITY="$ROOT/cpu-slot.seniority"
+SENIORITY_KEY=""
 POLL=${CPU_SLOT_POLL:-5}
 LABEL=${CPU_SLOT_LABEL:-$(basename "$PWD")}
 CONFIG_FILE="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}/cpu-slot.json"
@@ -292,6 +304,35 @@ timeout_report() {
   echo "  load $(load_avg) on ${CORES:-?} cores (informational)" >&2
 }
 
+# Seniority helpers (see header). seniority_apply gives the new ticket the
+# recorded enqueue time; seniority_record keeps it across a timeout.
+seniority_prune() {
+  local max=$1 now f
+  now=$(date +%s)
+  for f in "$SENIORITY"/*.last; do
+    [ -f "$f" ] || continue
+    if [ $(( now - $(mtime_of "$f") )) -gt $(( max + 120 )) ]; then
+      rm -f "$f" "${f%.last}"
+    fi
+  done
+}
+
+seniority_apply() {
+  local ticket=$1 max=$2
+  [ -n "$SENIORITY_KEY" ] || return 0
+  seniority_prune "$max"
+  [ -f "$SENIORITY/$SENIORITY_KEY" ] && touch -r "$SENIORITY/$SENIORITY_KEY" "$ticket"
+  return 0
+}
+
+seniority_record() {
+  local ticket=$1
+  [ -n "$SENIORITY_KEY" ] || return 0
+  mkdir -p "$SENIORITY"
+  [ -f "$SENIORITY/$SENIORITY_KEY" ] || touch -r "$ticket" "$SENIORITY/$SENIORITY_KEY"
+  : > "$SENIORITY/$SENIORITY_KEY.last"
+}
+
 # acquire_loop <holder-pid> <label> <cmd-text> <max-wait-seconds; 0 = forever>
 # Returns 0 with a slot held by <holder-pid> (ACQUIRED_DIR), or 75 on timeout.
 acquire_loop() {
@@ -302,6 +343,7 @@ acquire_loop() {
   mkdir -p "$QUEUE"
   local ticket="$QUEUE/$$"
   echo "pid $$ [$label] $cmdtext" > "$ticket"
+  seniority_apply "$ticket" "$max"
 
   while :; do
     prune_queue
@@ -330,6 +372,7 @@ acquire_loop() {
     if [ "$deadline" -gt 0 ]; then
       left=$(( deadline - $(date +%s) ))
       if [ "$left" -le 0 ]; then
+        seniority_record "$ticket"
         rm -f "$ticket"
         return 75
       fi
@@ -338,6 +381,7 @@ acquire_loop() {
     sleep "$nap"
   done
   rm -f "$ticket"
+  [ -n "$SENIORITY_KEY" ] && rm -f "$SENIORITY/$SENIORITY_KEY" "$SENIORITY/$SENIORITY_KEY.last"
 
   echo "$holder" > "$ACQUIRED_DIR/pid"
   echo "$label" > "$ACQUIRED_DIR/label"
@@ -431,6 +475,7 @@ cmd_acquire() {
     case "$1" in
       --owner) [ $# -ge 2 ] || die_usage "--owner needs a pid"; owner=$2; shift 2 ;;
       --max-wait) [ $# -ge 2 ] || die_usage "--max-wait needs a value"; max=$2; shift 2 ;;
+      --seniority-key) [ $# -ge 2 ] || die_usage "--seniority-key needs a value"; SENIORITY_KEY=$(printf '%s' "$2" | tr -c 'A-Za-z0-9._-' '_'); shift 2 ;;
       *) die_usage "unknown arg for acquire: $1" ;;
     esac
   done
@@ -462,7 +507,7 @@ cmd_release() {
   exit 0
 }
 
-[ $# -eq 0 ] && { echo "usage: $SCRIPT_NAME <command> [args...] | --status | --wait [--timeout S] | acquire|release --owner <pid> | --help" >&2; exit 2; }
+[ $# -eq 0 ] && { echo "usage: $SCRIPT_NAME <command> [args...] | --status | --wait [--timeout S] | acquire|release --owner <pid> [--seniority-key K] | --help" >&2; exit 2; }
 
 case "$1" in
   --help|-h) usage; exit 0 ;;

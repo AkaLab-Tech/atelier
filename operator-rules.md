@@ -410,7 +410,7 @@ your reasoning on what went wrong.
 slot stayed busy), the agent re-issues the identical commit as the next
 foreground call, with no sleep, no polling and no pre-commit CPU check, up to
 `safeCommit.capacityRequeues` times (default 8). If the bound runs out, the
-task is `held: CPU capacity unavailable after <n>s — <reason>`: outside the
+task is `held: CPU capacity unavailable after <n>s — <reason>` (`<n>` is the real total wait summed from each block's `after <N>s`; a requeue keeps its queue place): outside the
 six-attempt budget, worktree kept, no reset, no `blocked` issue; resume it with
 `/atelier:resume-task`. Machine load is informational and never blocks a
 commit; the slot count is the only limit.
