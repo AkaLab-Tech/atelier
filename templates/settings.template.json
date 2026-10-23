@@ -112,6 +112,9 @@
       "Read(~/.gnupg/**)",
       "Read(~/.config/gh/**)",
       "Read(<atelier-config-dir>/gh/**)",
+      "Read(./.env*)",
+      "Read(<worktree>/.env*)",
+      "Read(<worktree>-worktrees/**/.env*)",
 
       "Edit(~/.zshrc)",
       "Edit(~/.bashrc)",
