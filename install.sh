@@ -1720,6 +1720,9 @@ phase_c_1_setup_project_helper() {
   # #457: local record of denied task-orchestrator / planner dispatches.
   _phase_c_1_symlink_helper atelier-dispatch-denial
 
+  # #606: worktree creation with --no-env + allowlisted env-file copy.
+  _phase_c_1_symlink_helper atelier-worktree-create
+
   # PATH check. The shellrc hook block below adds ~/.local/bin to PATH for
   # future shells, but the current install.sh run probably doesn't have it
   # yet. Warn rather than fail.
