@@ -416,15 +416,8 @@ your reasoning on what went wrong.
 
 **Do not silently extend the retry budget.** Six is the cap.
 
-**A CPU-capacity block on commit is not a failed attempt.** When the
-`safe-commit` hook blocks a commit with `BLOCKED — CPU ` (the machine-wide
-slot stayed busy), the agent re-issues the identical commit as the next
-foreground call, with no sleep, no polling and no pre-commit CPU check, up to
-`safeCommit.capacityRequeues` times (default 8). If the bound runs out, the
-task is `held: CPU capacity unavailable after <n>s — <reason>`: outside the
-six-attempt budget, worktree kept, no reset, no `blocked` issue; resume it with
-`/atelier:resume-task`. Machine load is informational and never blocks a
-commit; the slot count is the only limit.
+There is no machine-wide CPU limit (#584): commits and suites never wait for a CPU turn; `cpu-slot <cmd>` is a pass-through kept for compatibility.
+
 
 ## Agents you interact with (§7)
 
