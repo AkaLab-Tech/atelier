@@ -168,6 +168,8 @@
       "Read(<worktree>-worktrees/**)",
       "Glob",
       "Grep",
+      "Agent(atelier:task-orchestrator)",
+      "Agent(atelier:planner)",
       "Edit(<worktree>/**)",
       "Edit(<worktree>-worktrees/**)",
       "Edit(<worktree>/*)",

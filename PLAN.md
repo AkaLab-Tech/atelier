@@ -150,6 +150,7 @@ Lives in `settings.template.json`. `/next-task` instantiates a per-task `setting
 - pnpm: `install`, `add`, `remove`, `update`, `run *`, `test`, `exec *`, `audit`, `view`.
 - Tests / lint / types: `vitest`, `jest`, `pytest`, `playwright test`, `eslint`, `prettier`, `tsc`, `biome`.
 - Filesystem in worktree: `ls`, `mkdir -p`, `mv`, `cp`.
+- Subagent dispatch (#590): `Agent(atelier:task-orchestrator)` and `Agent(atelier:planner)` only (namespaced spelling; no wildcard, no other agent). Verified on Claude Code 2.1.309 that in `acceptEdits` the dispatch is neither classified nor prompted. It does **not** hold in auto mode: auto mode drops `Agent` allow rules on entry, so the dispatch is still classified (`docs/research/agent-allow-rule-classifier-2026-10-23.md`).
 - Network: **allowlist-based**, grown organically as needed.
 
 ### 🔴 Deny (absolute)
