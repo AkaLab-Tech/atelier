@@ -13,6 +13,8 @@
 # Run:  hooks/tests/block-env-read.test.sh
 # Exit: 0 = all assertions pass, 1 = at least one failed.
 
+# shellcheck disable=SC2016  # test commands are literal text; no expansion wanted
+
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -142,6 +144,15 @@ expect_block 'find . -name .env | xargs cat'
 expect_block 'find . -name .env -print0 | xargs -0 cat'
 expect_block 'ls .env | xargs cat'
 expect_block 'ls .env.local | xargs -I{} cp {} /tmp/x'
+expect_block 'cat $(ls .env)'
+expect_block 'cat `ls .env`'
+expect_block 'cat $(find . -name .env)'
+expect_block 'cp $(find . -name .env.local) /tmp/x'
+expect_block 'for f in $(ls .env); do cat "$f"; done'
+expect_block 'xargs cat <<< $(ls .env)'
+expect_block 'cat <(ls .env)'
+expect_block 'ls .env $(date) | xargs cat'
+expect_allow 'echo $(date) && ls -a'
 expect_block 'git commit -F .env'
 expect_block 'git commit --file .env'
 expect_block 'git commit --file=.env'

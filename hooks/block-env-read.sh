@@ -17,7 +17,9 @@
 #   - A segment naming a protected file is ALLOWED only when its command is
 #     name-only: `ls`, `test`, `[`, `[[`, `find` (no -exec/-execdir/-ok/
 #     -delete/-fprint*), `git status`, `git check-ignore`.
-#   - A name-only step directly followed by `|` is BLOCKED (`ls .env | xargs cat`).
+#   - A name-only step is allowed only as a plain top-level segment whose output
+#     is not consumed. It is BLOCKED when followed by `|`/`|&` (`ls .env | xargs
+#     cat`) or when nested in `$(`...`)`, backticks or `<(`/`>(` (`cat $(ls .env)`).
 #   - `git add` / `git commit` segments are allowed: block-env-commit.sh owns
 #     them, and a `.env` mentioned inside a commit message is not a read.
 #     Exception: a commit message/template FILE option (-F/--file/-t/--template)
@@ -129,6 +131,7 @@ segment_is_name_only() {
 }
 
 PIPE_MARK="@@PIPE@@"
+SUB_MARK="@@SUB@@"
 blocked_token=""
 allowed_token=""
 prev_listing_token=""
@@ -136,14 +139,22 @@ while IFS= read -r seg; do
   # A name-only listing step whose output feeds a pipe is a read in disguise
   # (`ls .env | xargs cat`, `find . -name .env -print0 | xargs -0 cat`).
   piped=0
+  nested=0
   case "$seg" in "$PIPE_MARK"*) piped=1; seg="${seg#"$PIPE_MARK"}" ;; esac
+  case "$seg" in "$SUB_MARK"*) nested=1; seg="${seg#"$SUB_MARK"}" ;; esac
   if [ "$piped" = 1 ] && [ -n "$prev_listing_token" ]; then
     blocked_token="$prev_listing_token"
     break
   fi
-  prev_listing_token=""
+  [ "$nested" = 1 ] || prev_listing_token=""
   tokens="$(protected_tokens "$seg")"
   [ -n "$tokens" ] || continue
+  # Inside `$(`, backticks or `<(`/`>(`: the output is consumed by something
+  # else, so naming a protected file there is never a plain name-only check.
+  if [ "$nested" = 1 ]; then
+    blocked_token="$(printf '%s' "$tokens" | head -n1)"
+    break
+  fi
   if segment_is_name_only "$seg"; then
     allowed_token="$(printf '%s' "$tokens" | head -n1)"
     prev_listing_token="$allowed_token"
@@ -152,8 +163,10 @@ while IFS= read -r seg; do
     break
   fi
 done < <(printf '%s\n' "$command_str" \
-  | sed -E 's/&&|\|\||;|\$\(|`/\
+  | sed -E -e 's/&&|\|\||;/\
 /g' \
+        -e 's/\$\(|<\(|>\(|`/\
+'"$SUB_MARK"'/g' \
   | sed -E 's/\|/\
 '"$PIPE_MARK"'/g')
 
