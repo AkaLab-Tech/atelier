@@ -255,6 +255,20 @@ assert_allow "if with echo"        'if true; then echo hi; fi'
 assert_allow "if gh read then author comment" 'if gh pr view 1; then gh pr comment 1 --body x; fi' "GH_CONFIG_DIR=$AUTHOR"
 assert_allow "reviewer identity inside if" 'if true; then GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review 1 --approve --body-file f; fi' "GH_CONFIG_DIR=$AUTHOR"
 
+echo "== substitutions kept inside a word; coproc / arch wrappers =="
+assert_block 'GH_CONFIG_DIR=$(echo ~)/.config/gh review'   'GH_CONFIG_DIR=$(echo ~)/.config/gh gh pr review 1 --approve' "GH_CONFIG_DIR=$AUTHOR"
+assert_block 'GH_CONFIG_DIR=$(echo $HOME)/.config/gh comment' 'GH_CONFIG_DIR=$(echo $HOME)/.config/gh gh pr comment 1 -b hi' "GH_CONFIG_DIR=$AUTHOR"
+assert_block 'GH_CONFIG_DIR=`echo $HOME`/.config/gh review' 'GH_CONFIG_DIR=`echo $HOME`/.config/gh gh pr review 1 --approve' "GH_CONFIG_DIR=$AUTHOR"
+assert_block 'GH_CONFIG_DIR=$(echo $HOME)/.config/gh api review' 'GH_CONFIG_DIR=$(echo $HOME)/.config/gh gh api repos/o/r/pulls/1/reviews -f event=APPROVE' "GH_CONFIG_DIR=$AUTHOR"
+assert_block 'GH_CONFIG_DIR=$(pwd)/x review'               'GH_CONFIG_DIR=$(pwd)/x gh pr review 1 --approve' "GH_CONFIG_DIR=$AUTHOR"
+assert_block "coproc wrapper"       'export GH_CONFIG_DIR=~/.config/gh; coproc gh pr review 1 --approve' "GH_CONFIG_DIR=$AUTHOR"
+assert_block "arch -arm64 wrapper"  'export GH_CONFIG_DIR=~/.config/gh; arch -arm64 gh pr review 1 --approve' "GH_CONFIG_DIR=$AUTHOR"
+assert_block "arch -arch arm64 wrapper" 'export GH_CONFIG_DIR=~/.config/gh; arch -arch arm64 gh pr review 1 --approve' "GH_CONFIG_DIR=$AUTHOR"
+
+assert_allow 'echo $(date) && ls'                'echo $(date) && ls' "GH_CONFIG_DIR=$AUTHOR"
+assert_allow 'nested $(echo "$(pwd)") non-gh'    'echo $(echo "$(pwd)")' "GH_CONFIG_DIR=$AUTHOR"
+assert_allow "reviewer identity via ATELIER_CONFIG_DIR" 'GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/reviewer gh pr review 1 --approve' "GH_CONFIG_DIR=$AUTHOR"
+
 echo "== fast path (gh only inside words) =="
 assert_allow "gh inside words"     'echo high right github' "GH_CONFIG_DIR=$PERSONAL"
 assert_allow "commit message highlight" 'git commit -m "highlight"' "GH_CONFIG_DIR=$PERSONAL"

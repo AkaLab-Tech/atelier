@@ -158,12 +158,42 @@ MSG
 # Minimal shell lexer: quote-aware, splits segments on ; & | ( ) newline and
 # backtick, drops comments. Output in LEX_OUT: tokens end with US, segments
 # with RS. Variable text ($HOME, $(...)) is kept verbatim for later expansion.
+# Length of the balanced substitution at the start of $2 ($1 is `$` for
+# `$(...)`, a backtick for `...`), or 0 when it is not closed in $2.
+_subst_len() {
+  local LC_ALL=C kind="$1" r="$2" k m=${#2} ch d=1 sq=0 dq=0
+  if [ "$kind" = '`' ]; then
+    for ((k = 1; k < m; k++)); do
+      ch="${r:k:1}"
+      if [ "$ch" = '\' ]; then k=$((k + 1))
+      elif [ "$ch" = '`' ]; then echo $((k + 1)); return; fi
+    done
+    echo 0; return
+  fi
+  for ((k = 2; k < m; k++)); do
+    ch="${r:k:1}"
+    if [ "$sq" = 1 ]; then [ "$ch" = "'" ] && sq=0
+    elif [ "$dq" = 1 ]; then
+      if [ "$ch" = '\' ]; then k=$((k + 1)); elif [ "$ch" = '"' ]; then dq=0; fi
+    else
+      case "$ch" in
+        '\') k=$((k + 1)) ;;
+        "'") sq=1 ;;
+        '"') dq=1 ;;
+        '(') d=$((d + 1)) ;;
+        ')') d=$((d - 1)); if [ "$d" -eq 0 ]; then echo $((k + 1)); return; fi ;;
+      esac
+    fi
+  done
+  echo 0
+}
+
 LEX_OUT=""
 lex() {
   # bash 3.2 copies the string tail on every ${s:$i:1}, so a per-character walk
   # is quadratic. Index a small sliding window instead and jump quoted runs.
   local LC_ALL=C
-  local s="$1" n i=0 c nx cur="" have=0 q="" rest run win="" b=-1000 o
+  local s="$1" n i=0 c nx sub_end cur="" have=0 q="" rest run win="" b=-1000 o
   n=${#s}
   LEX_OUT=""
   _flush() {
@@ -210,8 +240,24 @@ lex() {
           else
             cur+="$c"
           fi ;;
+        '$'|'`')
+          # A balanced $(...) / `...` stays inside the current word, so
+          # `VAR=$(cmd)/x gh ...` is not cut at the substitution.
+          nx="${win:$((o + 1)):1}"
+          if [ "$c" = '`' ] || [ "$nx" = '(' ]; then
+            rest="${s:$i:2048}"; sub_end=$(_subst_len "$c" "$rest")
+            [ "$sub_end" -eq 0 ] && { rest="${s:$i}"; sub_end=$(_subst_len "$c" "$rest"); }
+            if [ "$sub_end" -gt 0 ]; then
+              cur+="${rest:0:$sub_end}"; have=1; i=$((i + sub_end - 1))
+            else
+              # Unbalanced: keep the rest as one word (still analysed).
+              rest="${s:$i}"; cur+="$rest"; have=1; i=$((n - 1))
+            fi
+          else
+            cur+="$c"; have=1
+          fi ;;
         ' '|$'\t') _flush ;;
-        $'\n'|';'|'&'|'|'|'('|')'|'`') _flush; LEX_OUT+="$RS" ;;
+        $'\n'|';'|'&'|'|'|'('|')') _flush; LEX_OUT+="$RS" ;;
         *) cur+="$c"; have=1 ;;
       esac
     fi
@@ -578,7 +624,18 @@ process_script() { # script depth
             fi
           done
           continue ;;
-        command|exec|nohup|time|builtin|sudo|nice|stdbuf|timeout|setsid|caffeinate|xargs|ionice)
+        arch)
+          i=$((i + 1))
+          while [ "$i" -lt "$nt" ]; do
+            t="${toks[$i]}"
+            case "$t" in
+              -arch) i=$((i + 2)) ;;
+              -*) i=$((i + 1)) ;;
+              *) break ;;
+            esac
+          done
+          continue ;;
+        command|exec|nohup|time|builtin|sudo|nice|stdbuf|timeout|setsid|caffeinate|xargs|ionice|coproc)
           i=$((i + 1))
           while [ "$i" -lt "$nt" ]; do
             t="${toks[$i]}"
