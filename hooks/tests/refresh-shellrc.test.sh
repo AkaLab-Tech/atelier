@@ -27,7 +27,7 @@ refresh() { SHELL=/bin/zsh HOME="$HOME_DIR" bash "$INSTALL" --config-dir "$CFG" 
 refresh && pass "--refresh-shellrc exits 0" || fail "--refresh-shellrc non-zero"
 [ "$(grep -c '>>> atelier hooks' "$RC")" = "1" ] && pass "injects exactly one block" || fail "block count != 1"
 grep -q "export ATELIER_CONFIG_DIR=\"$CFG\"" "$RC" && pass "config dir substituted" || fail "config dir not substituted"
-grep -q '# atelier-hooks-version: 6' "$RC" && pass "block is version 6 (bumped for atelier() orient)" || fail "block version not 6"
+grep -q '# atelier-hooks-version: 7' "$RC" && pass "block is version 7 (bumped for atelier() orient)" || fail "block version not 7"
 grep -q '/atelier:orient' "$RC" && pass "atelier() opens with /atelier:orient" || fail "atelier() missing orient wiring"
 
 # --- idempotent: second run does not duplicate ---

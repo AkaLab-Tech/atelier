@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# atelier-gh-shim
+#
+# atelier `gh` shim (#582). Sits first on PATH in atelier sessions and enforces
+# the GitHub identity at exec time, after the shell finished every expansion,
+# so it sees the real argv and environment. Review-like and credential
+# exfiltration calls run only under an atelier identity; everything else is
+# exec'd unchanged on the real gh. Layer 2 behind hooks/block-operator-gh-identity.sh.
+
+shim_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
+
+find_real_gh() {
+  local dir canon cand rest="$PATH:"
+  while [ -n "$rest" ]; do
+    dir="${rest%%:*}"
+    rest="${rest#*:}"
+    [ -n "$dir" ] || continue
+    canon="$(cd -P "$dir" 2>/dev/null && pwd -P)" || continue
+    [ "$canon" = "$shim_dir" ] && continue
+    cand="$canon/gh"
+    [ -f "$cand" ] && [ -x "$cand" ] || continue
+    if head -c 512 "$cand" 2>/dev/null | grep -aq '^# atelier-gh-shim$'; then
+      continue
+    fi
+    printf '%s' "$cand"
+    return 0
+  done
+  return 1
+}
+
+canon_dir() { [ -d "$1" ] && (cd -P "$1" 2>/dev/null && pwd -P); }
+
+is_atelier_identity() {
+  local v
+  for v in GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; do
+    [ -z "${!v:-}" ] || return 1
+  done
+  [ -n "${GH_CONFIG_DIR:-}" ] || return 1
+  local cur acd c
+  cur="$(canon_dir "$GH_CONFIG_DIR")" || return 1
+  [ -n "$cur" ] || return 1
+  acd="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+  for c in "$acd/gh/author" "$acd/gh/reviewer"; do
+    [ "$cur" = "$(canon_dir "$c")" ] && return 0
+  done
+  return 1
+}
+
+# Sets REASON and returns 0 when the call is review-like or exfiltrating.
+classify() {
+  REASON=""
+  local a skip=0 npos=0 pos1="" pos2=""
+  for a in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$a" in
+      -R|--repo|--hostname) skip=1 ;;
+      -*) ;;
+      *)
+        npos=$((npos + 1))
+        case "$npos" in 1) pos1="$a" ;; 2) pos2="$a" ;; esac
+        ;;
+    esac
+  done
+
+  case "$pos1" in
+    pr)
+      case "$pos2" in
+        review|comment) REASON="gh pr $pos2 posts as the active identity"; return 0 ;;
+      esac
+      ;;
+    issue)
+      if [ "$pos2" = "comment" ]; then REASON="gh issue comment posts as the active identity"; return 0; fi
+      ;;
+    auth)
+      if [ "$pos2" = "token" ]; then REASON="gh auth token reveals a credential"; return 0; fi
+      if [ "$pos2" = "status" ]; then
+        for a in "$@"; do
+          case "$a" in --show-token|-t) REASON="gh auth status --show-token reveals a credential"; return 0 ;; esac
+        done
+      fi
+      ;;
+    api) classify_api "$@" && return 0 ;;
+  esac
+  return 1
+}
+
+classify_api() {
+  local a skip=0 endpoint="" method="" haswrite=0 body="" opaque=0 first=1
+  for a in "$@"; do
+    if [ "$first" = 1 ]; then first=0; continue; fi
+    if [ "$skip" != 0 ]; then
+      case "$skip" in
+        method) method="$a" ;;
+        field) body="$body $a"; case "$a" in *=@*) opaque=1 ;; esac ;;
+        input) opaque=1 ;;
+      esac
+      skip=0
+      continue
+    fi
+    case "$a" in
+      api) ;;
+      -X|--method) skip=method ;;
+      -X?*) method="${a#-X}" ;;
+      --method=*) method="${a#--method=}" ;;
+      -f|-F|--field|--raw-field) haswrite=1; skip=field ;;
+      -f?*|-F?*) haswrite=1; body="$body ${a#-?}"; case "$a" in *=@*) opaque=1 ;; esac ;;
+      --field=*|--raw-field=*) haswrite=1; body="$body ${a#*=}"; case "$a" in *=@*) opaque=1 ;; esac ;;
+      --input) haswrite=1; opaque=1; skip=input ;;
+      --input=*) haswrite=1; opaque=1 ;;
+      -H|--header|-q|--jq|-t|--template|--hostname|--cache|-p|--preview) skip=other ;;
+      -*) ;;
+      *) [ -n "$endpoint" ] || endpoint="$a" ;;
+    esac
+  done
+
+  local ep method_uc
+  ep="$(printf '%s' "$endpoint" | tr '[:upper:]' '[:lower:]')"
+  ep="${ep#https://api.github.com/}"
+  ep="${ep#/}"
+  ep="${ep%%\?*}"
+  method_uc="$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')"
+
+  if [ "$ep" = "graphql" ]; then
+    if [ "$opaque" = 1 ]; then
+      REASON="gh api graphql with a body the shim cannot inspect"; return 0
+    fi
+    local lb
+    lb="$(printf '%s' "$body" | tr '[:upper:]' '[:lower:]')"
+    local m
+    for m in addpullrequestreview submitpullrequestreview updatepullrequestreview \
+             addpullrequestreviewcomment addpullrequestreviewthread addcomment \
+             dismisspullrequestreview; do
+      case "$lb" in *"$m"*) REASON="gh api graphql mutation $m posts as the active identity"; return 0 ;; esac
+    done
+    return 1
+  fi
+
+  local write=0
+  if [ -n "$method_uc" ]; then
+    [ "$method_uc" = "GET" ] || write=1
+  else
+    write="$haswrite"
+  fi
+  [ "$write" = 1 ] || return 1
+  case "$ep" in
+    *pulls/*/reviews*|*pulls/*/comments*|*pulls/comments/*|*issues/*/comments*|*issues/comments/*)
+      REASON="gh api write to $ep posts as the active identity"; return 0 ;;
+  esac
+  return 1
+}
+
+real="$(find_real_gh)" || {
+  echo "atelier-gh-shim: real gh not found on PATH" >&2
+  exit 127
+}
+
+if ! is_atelier_identity; then
+  if classify "$@"; then
+    echo "atelier-gh-shim: BLOCKED gh: $REASON. Fix: run under the session's author identity (inherited GH_CONFIG_DIR=\$ATELIER_CONFIG_DIR/gh/author) or, for reviews, GH_CONFIG_DIR=\"\$ATELIER_CONFIG_DIR/gh/reviewer\"; unset any GH_TOKEN/GITHUB_TOKEN." >&2
+    exit 1
+  fi
+  # A gh alias or extension can expand to anything; refuse under a personal identity.
+  first=""; skip=0
+  for a in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$a" in -R|--repo|--hostname) skip=1 ;; -*) ;; *) first="$a"; break ;; esac
+  done
+  case "$first" in
+    ""|agent-task|alias|api|attestation|auth|browse|cache|codespace|completion|config|copilot|extension|gist|gpg-key|help|issue|label|licenses|org|pr|preview|project|release|repo|ruleset|run|search|secret|skill|ssh-key|status|variable|workflow) ;;
+    *)
+      echo "atelier-gh-shim: BLOCKED gh $first: not a built-in gh command (alias or extension) and the identity is not an atelier one. Fix: run under the session's author identity (inherited GH_CONFIG_DIR=\$ATELIER_CONFIG_DIR/gh/author) or, for reviews, GH_CONFIG_DIR=\"\$ATELIER_CONFIG_DIR/gh/reviewer\"; unset any GH_TOKEN/GITHUB_TOKEN." >&2
+      exit 1
+      ;;
+  esac
+fi
+
+exec "$real" "$@"

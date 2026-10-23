@@ -1743,7 +1743,7 @@ phase_c_1_shellrc_hooks() {
   # below. Existing operators' rc files carry their version inline; on
   # install.sh re-run, an older or missing version triggers a strip +
   # re-inject so the upgrade propagates automatically.
-  local current_version=6
+  local current_version=7
 
   # Heredoc is single-quoted: `$(fnm env --use-on-cd)`, `$*`, and the alias
   # body are written as literal text, expanded later when the shell sources
@@ -1751,7 +1751,7 @@ phase_c_1_shellrc_hooks() {
   local block
   block=$(cat <<'BLOCK'
 # >>> atelier hooks (managed by install.sh) >>>
-# atelier-hooks-version: 6
+# atelier-hooks-version: 7
 # (install.sh reads the version above; bump it when you edit anything between
 #  these sentinels so existing operators get the refreshed block on re-run.)
 # Ensure ~/.local/bin is on PATH so atelier-setup-project (and any future
@@ -1844,6 +1844,7 @@ task() {
     return 1
   fi
   CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" \
+    PATH="${ATELIER_RUNTIME_DIR:-$HOME/.local/share/atelier}/current/scripts/shims:$PATH" \
     GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" \
     GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
     ATELIER_POLICY_OVERRIDE="$policy_override" \
@@ -1891,6 +1892,7 @@ atelier() {
     set -- "/atelier:orient"
   fi
   CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" \
+    PATH="${ATELIER_RUNTIME_DIR:-$HOME/.local/share/atelier}/current/scripts/shims:$PATH" \
     GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" \
     GIT_CONFIG_GLOBAL="$ATELIER_CONFIG_DIR/git-identity.conf" \
     claude "$@"
