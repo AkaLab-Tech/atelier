@@ -1058,13 +1058,7 @@ has_script() {
 # tail to Claude. The caller decides what to do with the exit code.
 run_pm_step() {
   local script="$1"
-  # CPU_SLOT_HELD lets a project script that wraps itself in cpu-slot run
-  # under our turn instead of deadlocking behind it (#492).
-  if [ "${slot_held:-0}" = "1" ]; then
-    ( cd "$project_root" && CPU_SLOT_HELD=$$ "$pm" run "$script" 2>&1 )
-  else
-    ( cd "$project_root" && "$pm" run "$script" 2>&1 )
-  fi
+  ( cd "$project_root" && "$pm" run "$script" 2>&1 )
 }
 
 # #399 — per-project scope for the `test` step (see the header). Reads
@@ -1103,94 +1097,6 @@ resolve_test_scope() {
   esac
 }
 test_scope="$(resolve_test_scope)"
-
-# #492 — machine-wide CPU slot. The suite is the heavy part of a commit, so
-# lint + typecheck + test run under ONE turn of atelier-cpu-slot (acquired
-# only once we know a step will really run; N/A paths above never touch it).
-# `safeCommit.slotMaxWait` (seconds, default 240, clamped to 400) bounds the
-# wait so the 600 s hook timeout (hooks.json) still leaves room for the
-# steps. Non-numeric or 0 (= wait forever in the helper) resolves to the
-# default.
-resolve_slot_max_wait() {
-  local cfg="" top="" raw=""
-  if [ -f "$project_root/.atelier.json" ]; then
-    cfg="$project_root/.atelier.json"
-  else
-    top="$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || true)"
-    [ -n "$top" ] && [ -f "$top/.atelier.json" ] && cfg="$top/.atelier.json"
-  fi
-  [ -n "$cfg" ] && raw="$(jq -r '.safeCommit.slotMaxWait // empty' "$cfg" 2>/dev/null || true)"
-  case "$raw" in
-    ''|*[!0-9]*) raw=240 ;;
-  esac
-  [ "$raw" -eq 0 ] && raw=240
-  [ "$raw" -gt 400 ] && raw=400
-  echo "$raw"
-}
-
-slot_held=0
-# shellcheck disable=SC2329 # invoked via trap EXIT
-slot_release() {
-  if [ "$slot_held" = "1" ]; then
-    "$slot_helper" release --owner $$ >/dev/null 2>&1 || true
-    slot_held=0
-  fi
-}
-
-any_step=false
-for s in lint typecheck test; do
-  has_script "$s" && any_step=true
-done
-if [ "$test_scope" = "changed" ] && has_script "test:changed"; then
-  any_step=true
-fi
-
-# True when the pid recorded in the slot lock is one of this hook's own
-# ancestors (e.g. the suite run is itself wrapped in cpu-slot): the turn is
-# already ours, so acquiring would wait on our own parent. Both cpu-slot
-# implementations record their own pid and run the command as a child.
-slot_held_by_ancestor() {
-  local holder p
-  holder="$(cat "${CPU_SLOT_DIR:-/tmp}/cpu-slot.lock/pid" 2>/dev/null || true)"
-  case "$holder" in ''|*[!0-9]*) return 1 ;; esac
-  p=$$
-  for _ in $(seq 1 64); do
-    [ "$p" = "$holder" ] && return 0
-    p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d '[:space:]')"
-    case "$p" in ''|*[!0-9]*|0|1) return 1 ;; esac
-  done
-  return 1
-}
-
-if $any_step; then
-  slot_helper="$CLAUDE_PLUGIN_ROOT/scripts/atelier-cpu-slot"
-  if slot_held_by_ancestor; then
-    log_decision "$HOOK_NAME" "Bash" "cpu-slot-nested" "allow" "CPU slot already held by an ancestor process — running the gate under that turn"
-  elif [ ! -x "$slot_helper" ]; then
-    log_decision "$HOOK_NAME" "Bash" "cpu-slot-na" "allow" "atelier-cpu-slot helper missing — running the gate unslotted"
-  else
-    slot_wait="$(resolve_slot_max_wait)"
-    slot_err="$(CPU_SLOT_LABEL="$(basename "$project_root") safe-commit" "$slot_helper" acquire --owner $$ --max-wait "$slot_wait" 2>&1 >/dev/null)"
-    slot_rc=$?
-    case "$slot_rc" in
-      0)
-        slot_held=1
-        trap slot_release EXIT
-        trap 'exit 130' INT TERM
-        ;;
-      75)
-        slot_holder="$(printf '%s' "$slot_err" | sed -nE 's/.*\[([^]]*)\].*/\1/p' | tail -n 1)"
-        slot_load="$(printf '%s' "$slot_err" | sed -nE 's/^ *load ([^ ]+) on ([^ ]+) cores.*/\1\/\2/p' | tail -n 1)"
-        echo "BLOCKED — CPU slot busy (held by ${slot_holder:-unknown}, load ${slot_load:-?}); re-run the same commit, it waits again" >&2
-        log_decision "$HOOK_NAME" "Bash" "cpu-slot-busy" "block" "CPU slot busy after ${slot_wait}s (held by ${slot_holder:-unknown}, load ${slot_load:-?})"
-        exit 2
-        ;;
-      *)
-        log_decision "$HOOK_NAME" "Bash" "cpu-slot-na" "allow" "atelier-cpu-slot acquire failed (exit $slot_rc) — running the gate unslotted"
-        ;;
-    esac
-  fi
-fi
 
 # Walk the three steps in order, stopping (blocking) on the first red.
 # A step is N/A if `scripts.<name>` doesn't exist in package.json — we

@@ -11,8 +11,8 @@
 # task-orchestrator carry the re-issue rule and the `capacity-held` terminal
 # state; (b) no agent, skill or operator rule instructs a pre-commit CPU check;
 # (c) the cap `safeCommit.capacityRequeues` ships in the template (default 8);
-# (d) every rc-75 block message in hooks/safe-commit.sh starts with
-# `BLOCKED — CPU `, the token the agents match on.
+# (d) the safe-commit skill states there is no machine-wide CPU limit (the
+# hook's rc-75 slot branch was removed in #586; #588 retires the rest).
 #
 # Hermetic: greps committed prose and jq-parses the committed template; no
 # network, no temp dirs.
@@ -31,7 +31,6 @@ RETRY="$REPO_ROOT/skills/retry-with-logs/SKILL.md"
 SC_SKILL="$REPO_ROOT/skills/safe-commit/SKILL.md"
 RULES="$REPO_ROOT/operator-rules.md"
 TEMPLATE="$REPO_ROOT/templates/atelier.template.json"
-HOOK="$REPO_ROOT/hooks/safe-commit.sh"
 
 fails=0
 pass() { printf '  PASS: %s\n' "$1"; }
@@ -46,7 +45,7 @@ chk_prose() {
   fi
 }
 
-for f in "$AUTHOR" "$OPENER" "$ORCH" "$RETRY" "$SC_SKILL" "$RULES" "$TEMPLATE" "$HOOK"; do
+for f in "$AUTHOR" "$OPENER" "$ORCH" "$RETRY" "$SC_SKILL" "$RULES" "$TEMPLATE"; do
   [ -f "$f" ] || { echo "  FAIL: $f not found"; exit 1; }
 done
 
@@ -84,39 +83,13 @@ chk_prose "$RULES" "A CPU-capacity block on commit is not a failed attempt" "ope
 chk_prose "$RETRY" 'consume none of the six attempts' "retry-with-logs: consumes none of the six attempts"
 
 # ---------------------------------------------------------------------------
-echo "Group 4 — nobody is told to run a pre-commit CPU check"
-# Instruction lines: any mention of pgrep / uptime / a load read / the helper's
-# --status or --wait. A line is acceptable only when it carries a negation
-# (never / no / not / don't / without): the new text names these in negated
-# form. Everything else would be an instruction to run them.
-CPU_CHECK_RE='pgrep|uptime|loadavg|load average|load read|cpu-slot[^|]*--(status|wait)'
-NEG_RE="(^|[^a-z])(never|no|not|don't|without|nor)([^a-z]|$)"
-scan_files=("$RULES")
-while IFS= read -r f; do scan_files+=("$f"); done < <(find "$REPO_ROOT/agents" "$REPO_ROOT/skills" -type f -name '*.md' | sort)
-
-mentions=0 offenders=""
-for f in "${scan_files[@]}"; do
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    mentions=$((mentions + 1))
-    if ! printf '%s' "$line" | grep -qiE "$NEG_RE"; then
-      offenders="$offenders
-$f: ${line:0:160}"
-    fi
-  done < <(grep -iE "$CPU_CHECK_RE" "$f" 2>/dev/null)
-done
-if [ -z "$offenders" ]; then
-  pass "no un-negated pgrep / uptime / load read / cpu-slot --status|--wait line in agents/, skills/, operator-rules.md"
-else
-  fail "instruction to run a pre-commit CPU check found:$offenders"
-fi
-[ "$mentions" -ge 4 ] \
-  && pass "scan is live: $mentions negated mentions seen (pr-author, pr-opener, safe-commit skill)" \
-  || fail "scan saw only $mentions mentions; expected the negated prose in pr-author/pr-opener/safe-commit"
-chk_prose "$SC_SKILL" 'no pre-commit CPU check' "safe-commit skill: states there is no pre-commit CPU check"
-chk_prose "$SC_SKILL" 'machine load is informational and never blocks a commit' "safe-commit skill: load never blocks a commit"
-chk_prose "$AUTHOR" 'Never run a pre-commit CPU check' "pr-author: never run a pre-commit CPU check"
-chk_prose "$OPENER" 'Never** run a pre-commit CPU check' "pr-opener: never run a pre-commit CPU check"
+echo "Group 4 — safe-commit skill: no CPU limit, no slot, no pre-commit check"
+chk_prose "$SC_SKILL" 'There is no machine-wide CPU limit' "safe-commit skill: states there is no machine-wide CPU limit"
+chk_prose "$SC_SKILL" 'queues for, waits on or wraps anything in a CPU slot' "safe-commit skill: no CPU slot queueing or wrapping"
+offenders="$(grep -iE 'pgrep|uptime|loadavg|load average|cpu-slot' "$SC_SKILL" | grep -viE "(^|[^a-z])(no|never|not|neither|nor|without)([^a-z]|$)" || true)"
+[ -z "$offenders" ] \
+  && pass "safe-commit skill: no un-negated pgrep / uptime / load read / cpu-slot instruction" \
+  || fail "safe-commit skill instructs a CPU check: $offenders"
 
 # ---------------------------------------------------------------------------
 echo "Group 5 — template: safeCommit.capacityRequeues"
@@ -130,18 +103,6 @@ if command -v jq >/dev/null 2>&1; then
 else
   echo "  SKIP: jq not installed, template not checked"
 fi
-
-# ---------------------------------------------------------------------------
-echo "Group 6 — drift guard: every rc-75 block message starts with 'BLOCKED — CPU '"
-# The 75) branch of the acquire case in hooks/safe-commit.sh, up to its `;;`.
-branch="$(awk '/^ *75\)/{f=1} f{print} f && /;;/{exit}' "$HOOK")"
-[ -n "$branch" ] && pass "found the rc-75 branch of the slot acquire case" || fail "rc-75 branch not found in hooks/safe-commit.sh"
-echos="$(printf '%s\n' "$branch" | grep -E '^ *echo ' || true)"
-n_echo="$(printf '%s' "$echos" | grep -c . || true)"
-[ "$n_echo" -ge 1 ] && pass "rc-75 branch emits $n_echo block message(s)" || fail "rc-75 branch emits no echo message"
-bad="$(printf '%s\n' "$echos" | grep -vE '^ *echo "BLOCKED — CPU ' || true)"
-[ -z "$bad" ] && pass "every rc-75 block message starts with 'BLOCKED — CPU '" || fail "rc-75 message not starting with 'BLOCKED — CPU ': $bad"
-printf '%s\n' "$branch" | grep -q 'exit 2' && pass "rc-75 branch blocks with exit 2" || fail "rc-75 branch does not exit 2"
 
 # ---------------------------------------------------------------------------
 echo ""
