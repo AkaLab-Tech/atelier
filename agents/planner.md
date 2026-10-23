@@ -123,7 +123,7 @@ Your briefing carries:
      ```
 
    - The acceptance criteria must **cover** the task's original acceptance bullets — refine wording for precision, but drop nothing.
-   - Keep `Status: draft` — the command (or, under `resident`, the `setPlan` call it makes) flips it to `ready (approved <date>)` on approval. You never write `ready`.
+   - Keep `Status: draft` — the command (or, under `resident`, the `setPlan` call it makes) flips it to `ready (approved <ISO-8601 UTC> — product lead)` on approval (the full UTC timestamp, e.g. `2026-10-22T14:03:00Z`, so a later part can be told apart from an earlier merge). You never write `ready`.
    - **Where the content goes depends on the plan-storage mode resolved up front:**
      - **`planStorage: committed` or `local`** (this covers every `files`-backend task, since `resident` is invalid there): `Write` the content to `.plan/<id>.md` exactly as before.
      - **`planStorage: resident`** (non-`files` backend only): do **not** write any `.plan/<id>.md` file anywhere — not committed, not local, not gitignored. Instead carry the full markdown forward as the `content` of this unit in your own return (see Output below). `/atelier:plan-task` is the one that calls `setPlan(id, <markdown>)` on the backend, and only after product-lead approval — never call `setPlan` yourself, for the same reason you never flip `[ready]` yourself.

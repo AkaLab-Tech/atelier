@@ -80,8 +80,18 @@ printf '{ "name": "atelier", "version": "0.2.0" }\n' > "$CACHE/.claude-plugin/pl
 printf '{ "permissions": ["<atelier-config-dir>/new-rule"] }\n' > "$CACHE/templates/settings.template.json"
 printf 'project claude v2\n' > "$CACHE/templates/project-claude.md.template"
 printf '{ "v": 2 }\n' > "$CACHE/templates/atelier.template.json"
-printf '{"plugins":{"atelier@akalab-tech":[{"scope":"user","installPath":"%s","version":"0.2.0","gitCommitSha":"deadbeef"}]}}\n' \
-  "$CACHE" > "$CFG/plugins/installed_plugins.json"
+# #548: the managed update verifies gitCommitSha against the peeled v0.2.0 tag.
+# Hermetic remote: a local bare repo with an annotated v0.2.0 tag; the fixture
+# records that tag's commit, so the check passes without touching GitHub.
+REL_SRC="$TMP/rel-src"; REL_REMOTE="$TMP/rel-remote.git"
+git init -q "$REL_SRC"
+git -C "$REL_SRC" -c user.name=t -c user.email=t@t commit -q --allow-empty -m release
+git -C "$REL_SRC" -c user.name=t -c user.email=t@t tag -a v0.2.0 -m "v0.2.0"
+git clone -q --bare "$REL_SRC" "$REL_REMOTE"
+TAG_SHA="$(git -C "$REL_REMOTE" rev-parse 'v0.2.0^{commit}')"
+export ATELIER_RELEASE_REPO_URL="$REL_REMOTE"
+printf '{"plugins":{"atelier@akalab-tech":[{"scope":"user","installPath":"%s","version":"0.2.0","gitCommitSha":"%s"}]}}\n' \
+  "$CACHE" "$TAG_SHA" > "$CFG/plugins/installed_plugins.json"
 
 # Stale instantiated templates in the config dir (what setup-project reads).
 printf '{ "permissions": ["old-rule"] }\n' > "$CFG/templates/settings.template.json"

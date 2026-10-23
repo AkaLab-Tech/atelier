@@ -7,7 +7,7 @@
 #   - non-`files` backend routes backlog read through listTasks("roadmap")
 #   - chosen task enrichment goes through getTask(id)
 #   - claim move uses moveTask(id, "roadmap", "in_progress")
-#   - close move uses appendHistoryEntry(id, prMetadata)
+#   - close move (after the merge) uses appendHistoryEntry(id, prMetadata)
 #   - the `files` git-backed path (git show origin/<base>:ROADMAP.md) is preserved
 #   - the claim registry = open task/* PRs language is present for both backends
 #   - skills/task-discovery/SKILL.md has the "Backend-aware backlog source" section
@@ -52,7 +52,7 @@ chk_prose "$NEXT_TASK" 'moveTask' \
   "next-task: claim move drives moveTask"
 
 chk_prose "$NEXT_TASK" 'appendHistoryEntry' \
-  "next-task: close move references appendHistoryEntry"
+  "next-task: close move (after the merge) references appendHistoryEntry"
 
 chk_prose "$NEXT_TASK" 'atelier-task-backend' \
   "next-task: backend resolved via atelier-task-backend"

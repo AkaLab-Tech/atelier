@@ -707,17 +707,15 @@ For docs-only / chore PRs that still warrant a release (per §14.1), a one-line 
 
 ### 14.6 `marketplace.json` and versions ✅
 
-**No version pinning. Resolves to `main` HEAD (status quo).** `marketplace.json` at `AkaLab-Tech/claude-plugins` continues to list each plugin by name + source-repo, with no `version` field. When the operator runs `/plugin install <name>@akalab-tech`, Claude Code clones the source repo's `main` HEAD.
+**Pinned per release (`ref: vX.Y.Z` + `sha`), written by `/atelier:release` step 8b.** The `marketplace.json` entry at `AkaLab-Tech/claude-plugins` for `atelier` is a `source` object carrying `ref` (the `v`-prefixed tag) and `sha` (the peeled tag commit); `atelier-release pin-marketplace` rewrites only that plugin's `source`, and the pin lands through a `chore/pin-<plugin>-v<ver>` PR on the non-task-pr chain after the tag push. `atelier-update` (managed mode) refuses to swap the runtime when the cache's `gitCommitSha` is not the peeled `v<ver>` tag (warns and continues only when the tag cannot be verified: offline, rate limit, no `gitCommitSha`); `/doctor` reports a mismatch as FAIL ("unreleased code under a release number") and whether the catalog entry is tag-pinned.
 
-**Tradeoff accepted**: operators always get the latest `main` HEAD on install, regardless of which tag is "current". The version compared against by `/doctor` is whatever the locally-installed `plugin.json:version` says — which matches `main`'s current `plugin.json:version` because plugin installs are `main`-anchored.
-
-**When to revisit**: if/when operators start pinning to specific atelier versions (e.g. enterprise environments wanting reproducible installs), introduce `marketplace.json:plugins[].version` per plugin (Option C in M5.0.4: pin only major version, resolve to latest minor/patch within). Until then, the simplicity of "always main" wins.
+**Decision log (2026-10-22, #548):** reverses the earlier "no pinning, resolves to `main` HEAD" decision — it let a cache stamped `0.52.0` hold unreleased code (`abe8136`). Reversal signed off by the operator. Pinning other plugins and a stop-gap pin for the current release are separate tasks.
 
 ### 14.7 `git-wt` versioning ✅
 
 **Same rules as atelier**: SemVer per §14.2, `v`-prefixed tags per §14.3, per-PR releases per §14.1, PR-body-driven notes per §14.4. Cadence is whatever PR activity `git-wt` sees — currently low (the binary is small and stable), so most months will see no `git-wt` release at all, and `/doctor` reports `up to date` against the existing `v0.1.0` tag indefinitely.
 
-**`install.sh` continues to clone `main` HEAD shallow** (per §14.6 — no pinning). The recorded SHA at `~/.local/state/atelier/git-wt.sha` is whatever `main` HEAD was at install time; `/doctor` drift detection works against this.
+**`install.sh` continues to clone `main` HEAD shallow** (§14.6 pins atelier per release; pinning `git-wt` is a follow-up, out of scope of #548). The recorded SHA at `~/.local/state/atelier/git-wt.sha` is whatever `main` HEAD was at install time; `/doctor` drift detection works against this.
 
 ### 14.8 Out of scope (future milestones)
 
@@ -736,6 +734,7 @@ Captured 2026-07-03 (#43). Ships a first-class `/atelier:release [<version>|majo
 - **Branch shape.** The bump commit rides `task/release-<version>` — not `release/*` or `hotfix/*` — because `pr-flow` and the permission matrix (§3) only allow pushes to `task/*`. This is the release command's own convention, distinct from the ordinary `task/<id>-<slug>` shape (a release has no roadmap/board item).
 - **No tracking move.** `pr-author` runs in `follow_up: true` / no-tracking mode for a release PR: there is no board item, so there is no `IN_PROGRESS → HISTORY` (or backend `moveTask`/`appendHistoryEntry`) move to make. `pr-author` itself is unchanged — the command's briefing simply omits a task record.
 - **Tag push happens only after merge**, never before: `git fetch origin main` → `git tag -a v<version> <merge-sha> -m "atelier v<version>"` → `git push origin v<version>`, authorized by two new tightly-scoped `templates/settings.template.json` allow entries (`Bash(git tag -a v*)`, `Bash(git push origin v*)`) alongside the existing `Bash(git push origin task/*)` rules. Neither pattern can match a branch push — atelier's task branches are always `task/*`, never `v*` — and neither is shadowed by the `Bash(git push * main|master|develop|staging)` deny rules, which require a literal branch-name suffix. After the tag lands, the command prints the operator update recipe (`claude plugin marketplace update akalab-tech` → `claude plugin update atelier@akalab-tech` → `atelier-update`).
+- **Pin after tag (#548).** For plugins in the `akalab-tech` catalog, step 8b resolves the peeled tag sha (`git ls-remote`, must equal the merge sha), runs `atelier-release pin-marketplace` in a `claude-plugins` worktree and delegates the `chore/pin-*` PR to `task-orchestrator` (`mode: non-task-pr`); the update recipe is printed only after that PR merges.
 - **Scope**: single project per invocation. `--all` (fan out across every registered project/workspace member with unreleased commits) is a documented, reserved follow-up — tracked as #44 — not implemented by this command; `scripts/atelier-release enumerate` exists only as a stub that reports "not yet implemented (#44)".
 
 This does not change §14.1's trigger (still per-PR merge to `main`) or §14.2's SemVer mapping — it only replaces the *manual* `gh release create` / manual tag steps with a driven, auditable command while keeping the actual merge on the same reviewed, guarded path as any other PR.

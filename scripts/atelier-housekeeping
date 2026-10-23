@@ -5,7 +5,7 @@
 #
 #   - Orphan WORKTREES under <project>-worktrees/ whose task is no longer
 #     claimed (see below) and whose PR is MERGED.
-#   - Local task/* BRANCHES that are merged into main (or whose PR is
+#   - Local task/* BRANCHES that are merged into the project's base branch (or whose PR is
 #     merged/closed) and are not checked out.
 #   - Remote origin/task/* BRANCHES whose PR is merged/closed.
 #
@@ -20,6 +20,13 @@
 #     IN_PROGRESS.md reference (main checkout or the task's worktree; also
 #     [BLOCKED]/[OVERSIZE]) on files. A claim that cannot be read (gh failing,
 #     non-numeric id, no board item, linear) is "unknown" and also skipped.
+#     The board is read from .githubProject.owner/projectNumber, with an
+#     owner-side fallback when issue.projectItems cannot see the item
+#     (cross-owner or user-owned aggregated boards).
+#     On github-project `task/<N>-<slug>` carries the GitHub ISSUE number; the
+#     board's Atelier ID is only a cross-check. An item whose Atelier ID differs
+#     from N, or whose N is the Atelier ID of another issue, is a "mismatch":
+#     kept and reported, never removed (not even with --yes/--include-unmerged).
 #   - A worktree is removed only when its PR is MERGED; ancestry of base alone
 #     never qualifies (a freshly cut task branch is an ancestor of base).
 #   - Never a DIRTY worktree (uncommitted changes).
@@ -52,6 +59,7 @@ SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 log()    { printf '==> %s\n' "$*"; }
 sublog() { printf '    %s\n' "$*"; }
 warn()   { printf '!!  %s\n' "$*" >&2; }
+sublog_base() { printf '    %s\n' "$*" >&2; }
 die()    { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
 ok()     { printf '    OK: %s\n' "$*"; }
 
@@ -182,6 +190,30 @@ pr_state() {
   esac
 }
 
+# resolve_base <proj> — sets BASE, BASE_SRC, BASE_REASON via atelier-resolve-base
+# (GitHub defaultBranchRef, then origin/HEAD; never a `main` fallback).
+BASE=""; BASE_SRC=""; BASE_REASON=""; BASE_REF=""
+resolve_base() {
+  local proj="$1" rb out k v
+  BASE=""; BASE_SRC=""; BASE_REASON=""; BASE_REF=""
+  rb="$(command -v atelier-resolve-base || true)"
+  [ -n "$rb" ] || rb="$(dirname "${BASH_SOURCE[0]}")/atelier-resolve-base"
+  if [ -x "$rb" ]; then
+    out="$(env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" "$rb" "$proj" 2>/dev/null || true)"
+    while IFS='=' read -r k v; do
+      case "$k" in base) BASE="$v" ;; source) BASE_SRC="$v" ;; reason) BASE_REASON="$v" ;; esac
+    done <<<"$out"
+  else
+    BASE_REASON="atelier-resolve-base not found"
+  fi
+  [ -n "$BASE" ] || { BASE=""; return 0; }
+  if git -C "$proj" show-ref --verify --quiet "refs/heads/$BASE"; then
+    BASE_REF="$BASE"
+  elif git -C "$proj" show-ref --verify --quiet "refs/remotes/origin/$BASE"; then
+    BASE_REF="origin/$BASE"
+  fi
+}
+
 # Task id embedded in a task/<id>-<slug> branch (portion before the first dash).
 branch_task_id() {
   local b="${1#task/}"
@@ -189,16 +221,92 @@ branch_task_id() {
 }
 
 # Claim context for the project being enumerated (set by load_claims).
-CLAIM_BACKEND=""; BOARD_CLAIMS=""; CLAIM_SRC=""
+CLAIM_BACKEND=""; BOARD_CLAIMS=""; CLAIM_SRC=""; CLAIM_PROJ_REASON=""
+
+# Owner-side fallback for ids the issue side left at "no item on project #PN"
+# (issue.projectItems cannot see items of a board owned by another account, or
+# of a user-owned aggregated board). One cursor-paged scan of the configured
+# board filtered to the repo; only those ids' BOARD_CLAIMS lines are rewritten.
+# Every failure keeps the ids unknown (fail closed) with a clear reason.
+load_claims_owner_scan() {
+  local slug="$1" owner="$2" pn="$3" ip="$4" aidf="$5"
+  local ids line id q out cursor="" page=0 more=1 err="" found="" pg res rep
+  ids="$(printf '%s\n' "$BOARD_CLAIMS" | awk -F'\t' -v r="no item on project #$pn" '$2 == "unknown" && $3 == r { print $1 }')"
+  [ -n "$ids" ] || return 0
+  q="query(\$c:String){o:repositoryOwner(login:\"$owner\"){...on ProjectV2Owner{p:projectV2(number:$pn){items(first:100,after:\$c,query:\"repo:$slug\"){pageInfo{hasNextPage endCursor} nodes{content{...on Issue{number repository{nameWithOwner}}} st:fieldValueByName(name:\"Status\"){...on ProjectV2ItemFieldSingleSelectValue{name}} $aidf}}}}}}"
+  while [ "$more" = 1 ] && [ "$page" -lt 10 ]; do
+    page=$((page + 1))
+    local rc=0
+    if [ -n "$cursor" ]; then
+      out="$(env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api graphql -f query="$q" -f c="$cursor" 2>/dev/null)" || rc=$?
+    else
+      out="$(env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api graphql -f query="$q" 2>/dev/null)" || rc=$?
+    fi
+    if ! printf '%s' "$out" | jq -e '.data.o.p.items | type == "object"' >/dev/null 2>&1; then
+      err="$(printf '%s' "$out" | jq -r '.errors[0].message // empty' 2>/dev/null || true)"
+      err="${err:-gh api graphql exit $rc}"
+      break
+    fi
+    pg="$(printf '%s' "$out" | jq -r --argjson ip "$ip" --arg slug "$slug" '
+      def norm: (if . == null then "" else tostring end) | gsub("^\\s+|\\s+$"; "") | sub("^#"; "") | sub("\\.0+$"; "");
+      .data.o.p.items.nodes[]?
+      | select((.content.number? // null) != null
+               and ((.content.repository.nameWithOwner // "") | ascii_downcase) == ($slug | ascii_downcase))
+      | (.aid // {} | (.text // .number // "") | norm) as $a
+      | (.st.name // "") as $s
+      | "\(.content.number)\t\(if any($ip[]; . == $s) then "claimed" else "free" end)\t\($a)"')"
+    [ -z "$pg" ] || found="$found$pg"$'\n'
+    more=0; cursor=""
+    if [ "$(printf '%s' "$out" | jq -r '.data.o.p.items.pageInfo.hasNextPage')" = true ]; then
+      cursor="$(printf '%s' "$out" | jq -r '.data.o.p.items.pageInfo.endCursor')"
+      more=1
+    fi
+    # stop early once every id has been seen
+    local all=1
+    for id in $ids; do
+      printf '%s' "$found" | awk -F'\t' -v i="$id" '$1 == i { f = 1 } END { exit !f }' || all=0
+    done
+    [ "$all" = 1 ] && { more=0; break; }
+  done
+  [ -z "$err" ] || warn "board: cannot read project $owner/#$pn with the author identity: $err"
+  res=""
+  for id in $ids; do
+    line="$(printf '%s' "$found" | awk -F'\t' -v i="$id" '$1 == i { print; exit }')"
+    if [ -n "$line" ]; then
+      local st aid
+      st="$(printf '%s' "$line" | cut -f2)"; aid="$(printf '%s' "$line" | cut -f3)"
+      if [ -n "$aid" ] && [ "$aid" != "$id" ]; then
+        rep="$id"$'\t'"mismatch"$'\t'"board Atelier ID is $aid"
+      else
+        rep="$id"$'\t'"$st"$'\t'
+      fi
+    elif [ -n "$err" ]; then
+      rep="$id"$'\t'"unknown"$'\t'"cannot read project $owner/#$pn with the author identity: $err"
+    elif [ "$more" = 1 ]; then
+      rep="$id"$'\t'"unknown"$'\t'"board scan truncated at 1000 items — claim unknown"
+    else
+      rep="$id"$'\t'"unknown"$'\t'"no item for $slug#$id on project $owner/#$pn"
+    fi
+    res="$res$rep"$'\n'
+  done
+  BOARD_CLAIMS="$(awk -F'\t' 'NR == FNR { m[$1] = $0; next } ($1 in m) { print m[$1]; next } { print }' \
+    <(printf '%s' "$res") <(printf '%s\n' "$BOARD_CLAIMS"))"
+}
 
 # Resolve the backend once and, on github-project, read every candidate task's
 # board Status with ONE batched, aliased `gh api graphql` (never item-list,
 # never the cache: a deletion gate must not read stale data). BOARD_CLAIMS gets
-# "<id>\tclaimed|free" lines; ids with no matching project item stay absent.
+# "<id>\t<claimed|free|mismatch|unknown>\t<detail>" lines, read per item from
+# the (possibly partial) GraphQL data: one unresolvable issue makes only that
+# id unknown. Ids absent from BOARD_CLAIMS fall back to CLAIM_PROJ_REASON.
+# The same call also carries the Atelier ID cross-check: shape A (the item's
+# own Atelier ID is set and != N) and shape B (an owner-level lookup finds
+# another same-repo issue whose Atelier ID == N). Mismatch overrides claimed
+# and free; an unreadable cross-check makes the id unknown.
 load_claims() {
   local proj="$1" slug="$2"; shift 2
-  local cfg="$proj/.roadmap.json" tb pn ip q id out
-  BOARD_CLAIMS=""
+  local cfg="$proj/.roadmap.json" tb pn ip q id out rc=0 msg owner
+  BOARD_CLAIMS=""; CLAIM_PROJ_REASON=""
   tb="$(command -v atelier-task-backend || true)"
   [ -n "$tb" ] || tb="$(dirname "${BASH_SOURCE[0]}")/atelier-task-backend"
   CLAIM_BACKEND="$("$tb" "$proj" 2>/dev/null || true)"
@@ -207,25 +315,64 @@ load_claims() {
   pn="$(jq -r '.githubProject.projectNumber // empty' "$cfg" 2>/dev/null || true)"
   case "$pn" in ''|*[!0-9]*) return 0 ;; esac
   ip="$(jq -c '(.githubProject.stateMap.inProgress // ["In Progress"]) | if type=="array" then . else [.] end' "$cfg" 2>/dev/null)" || return 0
+  owner="$(jq -r '.githubProject.owner // empty' "$cfg" 2>/dev/null || true)"
+  case "$owner" in ''|*[!A-Za-z0-9._-]*) owner="${slug%%/*}" ;; esac
+  local aidf='aid:fieldValueByName(name:"Atelier ID"){...on ProjectV2ItemFieldTextValue{text} ...on ProjectV2ItemFieldNumberValue{number}}'
+  local ob=""
   q="query{r:repository(owner:\"${slug%%/*}\",name:\"${slug#*/}\"){"
   for id in "$@"; do
-    q="$q i$id:issue(number:$id){projectItems(first:10){nodes{project{number} fieldValueByName(name:\"Status\"){...on ProjectV2ItemFieldSingleSelectValue{name}}}}}"
+    q="$q i$id:issue(number:$id){projectItems(first:10){nodes{project{number owner{...on User{login} ...on Organization{login}}} fieldValueByName(name:\"Status\"){...on ProjectV2ItemFieldSingleSelectValue{name}} $aidf}}}"
+    ob="$ob a$id:items(first:5,query:\"\\\"Atelier ID\\\":$id\"){nodes{content{...on Issue{number repository{nameWithOwner}}} $aidf}}"
   done
-  out="$(env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api graphql -f query="$q}}" 2>/dev/null)" || return 0
-  BOARD_CLAIMS="$(printf '%s' "$out" | jq -r --argjson pn "$pn" --argjson ip "$ip" '
-    .data.r | to_entries[] | .key[1:] as $id
-    | [.value.projectItems.nodes[]? | select(.project.number == $pn)] as $m
-    | select($m | length > 0)
-    | "\($id)\t\(if any($m[]; (.fieldValueByName.name // "") as $s | any($ip[]; . == $s)) then "claimed" else "free" end)"' 2>/dev/null)" || BOARD_CLAIMS=""
+  q="$q},o:repositoryOwner(login:\"$owner\"){...on ProjectV2Owner{p:projectV2(number:$pn){$ob}}}"
+  # gh exits 1 on a partial result (one alias null) but still prints the body.
+  out="$(env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api graphql -f query="$q}" 2>/dev/null)" || rc=$?
+  if ! printf '%s' "$out" | jq -e '.data.r | type == "object"' >/dev/null 2>&1; then
+    msg="$(printf '%s' "$out" | jq -r '.errors[0].message // empty' 2>/dev/null || true)"
+    CLAIM_PROJ_REASON="${msg:-board query failed (gh api graphql exit $rc)}"
+    return 0
+  fi
+  BOARD_CLAIMS="$(printf '%s' "$out" | jq -r --argjson pn "$pn" --argjson ip "$ip" --arg slug "$slug" --arg owner "$owner" '
+    def pm: .project.number == $pn and ((.project.owner.login // "") | ascii_downcase) == ($owner | ascii_downcase);
+    def norm: (if . == null then "" else tostring end) | gsub("^\\s+|\\s+$"; "") | sub("^#"; "") | sub("\\.0+$"; "");
+    def aidv: (.aid // {}) | (.text // .number // "") | norm;
+    (.errors // []) as $errs
+    | (.data.o.p) as $p
+    | .data.r | to_entries[] | .key[1:] as $id
+    | (if .value == null then []
+       else [.value.projectItems.nodes[]? | select(pm) | aidv | select(. != "" and . != $id)] end) as $ma
+    | (if ($p | type) == "object" and ($p["a\($id)"] == null or (($p["a\($id)"].nodes?) | type) == "array")
+       then [($p["a\($id)"].nodes // [])[]
+             | select(aidv == $id and ((.content.number? // null) != null)
+                      and ((.content.repository.nameWithOwner // "") | ascii_downcase) == ($slug | ascii_downcase)
+                      and .content.number != ($id | tonumber))
+             | .content.number]
+       else null end) as $mb
+    | (if .value == null then ["unknown", ([$errs[] | select(.path == ["r", "i\($id)"]) | .message][0]) // "could not resolve issue #\($id)"]
+       else [.value.projectItems.nodes[]? | select(pm)] as $m
+         | if ($m | length) == 0 then ["unknown", "no item on project #\($pn)"]
+           else [(if any($m[]; (.fieldValueByName.name // "") as $s | any($ip[]; . == $s)) then "claimed" else "free" end), ""]
+           end
+       end) as $b
+    | if ($ma | length) > 0 then "\($id)\tmismatch\tboard Atelier ID is \($ma[0])"
+      elif $mb != null and ($mb | length) > 0 then "\($id)\tmismatch\tAtelier ID #\($id) is issue #\($mb[0])"
+      elif $mb == null and $b[0] != "unknown" then "\($id)\tunknown\tAtelier ID cross-check unreadable"
+      else "\($id)\t\($b[0])\t\($b[1])" end' 2>/dev/null)" || BOARD_CLAIMS=""
+  [ -n "$BOARD_CLAIMS" ] || CLAIM_PROJ_REASON="board query returned no readable items"
+  [ -z "$BOARD_CLAIMS" ] || load_claims_owner_scan "$slug" "$owner" "$pn" "$ip" "$aidf"
+  local bad
+  bad="$(printf '%s\n' "$BOARD_CLAIMS" | awk -F'\t' '$2 == "unknown" { print "task/" $1 }' | paste -sd, - | sed 's/,/, /g')"
+  [ -z "$bad" ] || warn "board: some task branches unresolvable ($bad)"
 }
 
-# Claim state of a task: 0 claimed, 1 not claimed, 2 unknown (fail closed).
+# Claim state of a task: 0 claimed, 1 not claimed, 2 unknown (fail closed),
+# 3 Atelier ID mismatch (github-project; kept and reported).
 # files: the id/branch appears in IN_PROGRESS.md of the main checkout (where
 # [BLOCKED]/[OVERSIZE] land) or of the task's own worktree (where /next-task
 # records the claim). github-project: board Status in stateMap.inProgress.
 # Anything else (linear, unresolvable, unreadable board) is unknown.
 task_claimed() {
-  local proj="$1" id="$2" branch="$3" wt="${4:-}" f s
+  local proj="$1" id="$2" branch="$3" wt="${4:-}" f s line
   CLAIM_SRC=""
   case "$CLAIM_BACKEND" in
     files)
@@ -238,11 +385,15 @@ task_claimed() {
       done
       return 1 ;;
     github-project)
-      s="$(printf '%s\n' "$BOARD_CLAIMS" | awk -F'\t' -v i="$id" '$1 == i { print $2 }')"
+      line="$(printf '%s\n' "$BOARD_CLAIMS" | awk -F'\t' -v i="$id" '$1 == i { print; exit }')"
+      s="$(printf '%s' "$line" | cut -f2)"
       case "$s" in
         claimed) CLAIM_SRC="board Status In Progress"; return 0 ;;
         free)    return 1 ;;
+        mismatch) CLAIM_SRC="$(printf '%s' "$line" | cut -f3)"; return 3 ;;
       esac
+      CLAIM_SRC="$(printf '%s' "$line" | cut -f3)"
+      [ -n "$CLAIM_SRC" ] || CLAIM_SRC="${CLAIM_PROJ_REASON:-no board item found}"
       return 2 ;;
   esac
   return 2
@@ -255,7 +406,8 @@ claim_gate() {
   task_claimed "$1" "$4" "$5" "${6:-}" || rc=$?
   case "$rc" in
     0) add_skip "$1" "$2" "$3" "claimed task #$4 ($CLAIM_SRC)"; return 0 ;;
-    2) add_skip "$1" "$2" "$3" "claim state unknown for #$4 — left untouched"; return 0 ;;
+    3) add_skip "$1" "$2" "$3" "issue/Atelier ID mismatch for #$4 ($CLAIM_SRC) — left untouched"; return 0 ;;
+    2) add_skip "$1" "$2" "$3" "claim state unknown for #$4 ($5): ${CLAIM_SRC:-no readable claim source} — left untouched"; return 0 ;;
   esac
   return 1
 }
@@ -290,6 +442,15 @@ enumerate_project() {
                | sed -nE 's#^refs/(heads|remotes/origin)/task/([0-9]+)-.*#\2#p'; } | sort -u)
   load_claims "$proj" "$slug" ${cand_ids[@]+"${cand_ids[@]}"}
 
+  resolve_base "$proj"
+  local base="$BASE" base_ref="$BASE_REF"
+  if [ -z "$base" ]; then
+    add_skip "$proj" "project" "$proj" "base branch unresolved — merged-branch deletion skipped (${BASE_REASON:-unknown})"
+  else
+    sublog_base "$(basename "$proj"): base $base (source: $BASE_SRC)"
+    [ -n "$base_ref" ] || add_skip "$proj" "project" "$proj" "base branch $base has no local or origin ref — merged-branch deletion skipped"
+  fi
+
   # ----- worktrees -----
   # Parse `git worktree list --porcelain`: blocks separated by blank lines,
   # each with `worktree <path>` and (optionally) `branch refs/heads/<name>`.
@@ -313,7 +474,7 @@ enumerate_project() {
     fi
     local st; st="$(pr_state "$slug" "$branch")"
     local merged=false
-    git -C "$proj" branch --merged main 2>/dev/null | sed 's/^[+* ]*//' | grep -qxF "$branch" && merged=true
+    [ -n "$base_ref" ] && git -C "$proj" branch --merged "$base_ref" 2>/dev/null | sed 's/^[+* ]*//' | grep -qxF "$branch" && merged=true
     if [ "$st" = "MERGED" ]; then
       DEL_WORKTREES+=("$proj"$'\t'"worktree"$'\t'"$path"$'\t'"branch $branch (PR:$st)"$'\t'"$branch")
     elif [ "$st" = "OPEN" ]; then
@@ -368,10 +529,10 @@ enumerate_project() {
     local id; id="$(branch_task_id "$b")"
     claim_gate "$proj" "local-branch" "$b" "$id" "$b" && continue
     local merged=false
-    git -C "$proj" branch --merged main 2>/dev/null | sed 's/^[+* ]*//' | grep -qxF "$b" && merged=true
+    [ -n "$base_ref" ] && git -C "$proj" branch --merged "$base_ref" 2>/dev/null | sed 's/^[+* ]*//' | grep -qxF "$b" && merged=true
     local st; st="$(pr_state "$slug" "$b")"
     if $merged; then
-      DEL_LBRANCHES+=("$proj"$'\t'"local-branch"$'\t'"$b"$'\t'"merged into main"$'\t'"-d")
+      DEL_LBRANCHES+=("$proj"$'\t'"local-branch"$'\t'"$b"$'\t'"merged into $base"$'\t'"-D")  # -D is safe: ancestry against $base_ref is proven; -d would check HEAD/upstream and refuse when base != HEAD
     elif [ "$st" = "MERGED" ]; then
       DEL_LBRANCHES+=("$proj"$'\t'"local-branch"$'\t'"$b"$'\t'"PR merged (squash)"$'\t'"-D")
     elif [ "$st" = "OPEN" ]; then
@@ -379,7 +540,7 @@ enumerate_project() {
     elif [ "$st" = "CLOSED" ]; then
       add_review "$proj" "local-branch" "$b" "PR closed without merging (unmerged)"
     else
-      add_review "$proj" "local-branch" "$b" "no PR, not merged into main"
+      add_review "$proj" "local-branch" "$b" "not merged into ${base:-the base branch}"
     fi
   done < <(git -C "$proj" for-each-ref --format='%(refname)' refs/heads/task 2>/dev/null)
 
@@ -438,7 +599,7 @@ fi
 # ---------- human report ----------
 log "atelier-housekeeping ${VERSION}"
 sublog "projects scanned: ${#PROJECTS[@]}"
-$HAVE_GH || sublog "note: gh not found — PR state unknown; merged-into-main detection only"
+$HAVE_GH || sublog "note: gh not found — PR state unknown; merged-into-base detection only"
 echo ""
 
 print_group() {

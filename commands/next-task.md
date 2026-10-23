@@ -167,6 +167,17 @@ The `blocked_by` validation covers both forms:
   ```
   Use the verdict word from the helper's stdout to fill the message. Do **not** claim the task.
 
+**Claim kind — first claim or next part (non-`files` backend, explicitly named id only).** Before any worktree exists, classify the claim and record `CLAIM_KIND=first|next-part` (a variable of this command; it is never an orchestrator brief field). Auto-pick never reaches this classifier and never selects an In Progress item: it reads the `roadmap` bucket only. The `files` backend has no next-part path and is always `first`.
+
+1. Read the item fresh with `getTask(id)` (not from the cache). If its Status is **not** in `stateMap.inProgress`, `CLAIM_KIND=first` and nothing in this block applies — step 6 claims it with `moveTask` exactly as before.
+2. Status is in `stateMap.inProgress` (signal a). Check, all read fresh and none inferred from absence:
+   - (b) no open `task/<id>-*` PR. An open one keeps today's verdict: **genuine race**, stop as in step 6 case 3 and do not suggest `/atelier:resume-task`.
+   - (c) the `getTask(id)` record has `Ready` set.
+   - (d) at least one merged `task/<id>-*` PR: `gh pr list --state merged --json number,headRefName,mergedAt --jq '[.[] | select(.headRefName | startswith("task/<id>-"))]'`. Take the newest `mergedAt`; the count is the number of merged parts.
+   - (e) the approval timestamp in the plan's `Status: ready (approved <ISO-8601 UTC> — product lead)` line (read from the `PLAN_SOURCE` found above) is later than that newest `mergedAt`. A plan with no timestamp never qualifies.
+   - (f) no local `task/<id>-*` worktree (`git wt list`). If one exists the operator should resume it.
+3. (a), (b), (c), (d), (e) and (f) all hold → `CLAIM_KIND=next-part`, merged parts = N-1 (N = count from (d) + 1). If (a) and (b) hold but any of (c)–(f) fails, stop with the interrupted-claim message from step 6 case 2 (including its `/atelier:resume-task` hint) plus one line naming the missing signal, e.g. `missing signal: Ready is not set`, `missing signal: no merged task/<id>-* PR`, `missing signal: the plan's approval is not newer than the last merged part (re-approve it with /atelier:plan-task)`, `missing signal: a local worktree task/<id>-* already exists`. A missing signal is never treated as permission. Because the claim consumes `Ready`, an In Progress item whose `Ready` is clear gets this interrupted-claim message (with `missing signal: Ready is not set`) instead of the planning-gate "not planned" refusal.
+
 ### 3.5. No claimable task — surface plan candidates
 
 If step 3's `task-discovery` invocation returns no eligible task, this command does **not** fall through to a generic abort — it returns a structured `state` (`candidates` | `foreign` | `empty`) and `plan_candidates` list (see `skills/task-discovery/SKILL.md` § "No-eligible-task return"). Branch on `state`; this step is a **terminal state** for the command, not a failure:
@@ -190,13 +201,15 @@ This step ends the command — do not proceed to step 4.
 
 Display the chosen task in a short summary (`id`, `title`, `priority`, `estimate`).
 
-- **Interactive mode, id explicitly named in `$ARGUMENTS` (step 3):** skip the confirmation — naming the id **is** the consent, exactly like the non-interactive branch's reasoning. Log a single line `claiming task <id> (explicitly named)` and proceed to step 5.
+- **Interactive mode, id explicitly named in `$ARGUMENTS` (step 3):** skip the confirmation — naming the id **is** the consent, exactly like the non-interactive branch's reasoning. Log a single line `claiming task <id> (explicitly named)` — or `claiming task <id> (next part <N>)` when `CLAIM_KIND=next-part` — and proceed to step 5.
 - **Interactive mode, auto-picked (no id in `$ARGUMENTS`):** ask explicitly: *"Claim this task?"*. Wait for a yes/no. If no, stop — do not move tracking or create a worktree. The operator has not yet seen which task `task-discovery` chose, so this confirmation is still meaningful.
-- **Non-interactive mode:** log a single line `auto-claiming task <id> (non-interactive)` and proceed to step 5. No prompt. The operator's `--yes` / `-y` flag (or `ATELIER_AUTO=1`) **is** the consent.
+- **Non-interactive mode:** log a single line `auto-claiming task <id> (non-interactive)` (`claiming task <id> (next part <N>)` for a next part, which is only reachable with a named id) and proceed to step 5. No prompt. The operator's `--yes` / `-y` flag (or `ATELIER_AUTO=1`) **is** the consent.
 
 ### 5. Create the per-task worktree — `git-wt` skill
 
 Invoke the `git-wt` skill (or `git wt switch <branch> --from origin/<base>` directly) to create the worktree for branch `task/<id-without-#>-<kebab-slug>` **cut from `origin/<base>`** — the ref fetched in step 1. The operator's local branches are left untouched. Capture the **absolute path** the skill prints on stdout — every subsequent step runs scoped to that path.
+
+**Next part (`CLAIM_KIND=next-part`).** The earlier part's `task/<id>-<slug>` branch still exists locally or on origin, so the new branch is `task/<id>-<slug>-part<N>`, N = merged parts + 1 (from step 3). The `task/<id>-` prefix is kept so the push hook, the claim registry and housekeeping keep matching it, and the name never collides with an earlier part's branch. For a first claim the branch name is unchanged.
 
 ### 6. Claim the task — tracking move
 
@@ -210,6 +223,13 @@ Now that the worktree exists, record the claim **before** handing off to the orc
 This edit lives on the per-task branch and travels through the task's PR; the roadmap-tracking-flow convention says the same PR later moves it from `IN_PROGRESS.md` to `HISTORY.md` when the task closes.
 
 **Non-`files` backend** — drive the claim through the `RoadmapBackend` contract (see `docs/RoadmapBackend.md`) instead of editing local files:
+
+- **`CLAIM_KIND=next-part` — claim by consuming `Ready`, never `moveTask`** (the item is already In Progress). The open `task/*` PR registry stays the concurrency signal. Take the claim token in this order:
+  1. Re-read the item with a fresh `getTask(id)` and re-check the open `task/<id>-*` PR list.
+  2. Re-check (a) Status is in `stateMap.inProgress`, (b) no open `task/<id>-*` PR, (c) `Ready` is still set.
+  3. Call `setReady(id, false)` (one atomic field update). That consumed `Ready` is the claim token, as strong as `moveTask`'s bucket change.
+  If `Ready` is already cleared or an open `task/<id>-*` PR has appeared at the re-read, that is a **genuine race**: stop, report it as one, do **not** suggest `/atelier:resume-task`, and remove the empty worktree just created in step 5 (`git wt` removal of that path). After the token is consumed, an interrupted next-part claim lands on the resume path (`/atelier:resume-task` step 3b) deterministically, and the product lead can plan part N+1 without clearing `Ready` by hand.
+- **`CLAIM_KIND=first`** — as follows, unchanged:
 
 - Call `moveTask(id, "roadmap", "in_progress")` via the `roadmap-tracking-flow` skill. This is atomic: the task moves out of the backend's roadmap bucket and into its in-progress bucket in a single operation — no local `ROADMAP.md` / `IN_PROGRESS.md` edits are made. For `github-project` specifically, the Status field on the Project item transitions from a value in `githubProject.stateMap.roadmap` (e.g. `"Backlog"` or `"Todo"`) to the first value in `githubProject.stateMap.inProgress` (default `"In Progress"`); the mapping is resolved via the stateMap in `.roadmap.json`.
 - If `moveTask` throws `task-not-in-from-bucket`, do **not** assume a race — diagnose which of two distinct causes holds before reporting anything (#66):
@@ -227,7 +247,7 @@ This edit lives on the per-task branch and travels through the task's PR; the ro
 
 **For both backends** — the claim lives only on the task branch (files) or in the remote backend (non-files), so `origin/<base>`'s `ROADMAP.md` / `IN_PROGRESS.MD` are unchanged until the PR merges — which is exactly why step 2 uses the open `task/*` PRs (not the base `IN_PROGRESS.md`) as the claim registry.
 
-> **Forward reference — closing the task (pr-author).** When the PR is ready to close, `pr-author` must update tracking in the same PR. For the `files` backend that means the `IN_PROGRESS.md` → `HISTORY.md` move already documented in `skills/pr-flow/SKILL.md` §4. For a non-`files` backend, `pr-author` calls `appendHistoryEntry(id, prMetadata)` (per `docs/RoadmapBackend.md`) instead of editing local files directly — `prMetadata` carries `{ number, url, title, deliveredBullets[], testsNote, followUps? }` from the PR that is about to merge.
+> **Forward reference — closing the task (pr-author).** When the PR is ready to close, `pr-author` must update tracking in the same PR. For the `files` backend that means the `IN_PROGRESS.md` → `HISTORY.md` move already documented in `skills/pr-flow/SKILL.md` §4. For a non-`files` backend, `pr-author` does not call `appendHistoryEntry`/`moveTask`, does not close the issue and does not set Done; its only tracking duty is the `Closes #<id>` line in the PR body. The history move happens after merge, in `auto-merge` post-merge step 2, which calls `appendHistoryEntry(id, prMetadata)` (per `docs/RoadmapBackend.md`; `prMetadata` carries `{ number, url, title, deliveredBullets[], testsNote, followUps? }` from the merged PR).
 
 ### 7. Instantiate the per-task `.claude/settings.json`
 
@@ -255,6 +275,7 @@ Exit codes:
 Launch the `atelier:task-orchestrator` agent (Opus) via the `Task` tool. The briefing must include:
 
 - **`worktree_path`** — absolute path to the per-task worktree from step 5.
+- **`base: <base>`** — the base branch resolved in step 1; the orchestrator passes it to `pr-author` (PR base and size check), the reviewer and auto-merge.
 - **task record** — structured fields from step 3 (`id`, `title`, `type`, `priority`, `estimate`, `worktree`, `acceptance`, `context`).
 - **plan source + plan-storage mode (TASK_027 / #31 union gate)** — always pass `plan_source: <committed|local|resident>` (the `PLAN_SOURCE` discovered in step 3 — for the `files` backend this always equals `PLAN_STORAGE`; for a non-`files` backend it is the winner of the per-task union check and may diverge from the project's `PLAN_STORAGE` default) and `plan_storage: <PLAN_STORAGE>` (the preferred write mode captured in step 1, unchanged since — pass both so the orchestrator can tell the discovered source apart from the project default if they differ). For `PLAN_SOURCE` of `committed`/`local`, also pass `main_checkout_root: <MAIN_ROOT>`.
   - Under **`PLAN_SOURCE=committed`** (`files` backend, or a non-`files` backend holding a legacy/explicitly-committed plan file), the plan is on `origin/<base>` and therefore already checked out at `<worktree>/.plan/<id>.md`; the orchestrator Reads it there as today — nothing extra to carry. This behaviour is identical for both backend families.
@@ -288,7 +309,7 @@ End the command with a single status line:
 ```text
 ✓ Task claimed: <id> — <title>
   Worktree:    <absolute-path>
-  Branch:      task/<id>-<slug>
+  Branch:      task/<id>-<slug>   (next part: task/<id>-<slug>-part<N>)
   Next:        task-orchestrator running in the worktree.
 ```
 
@@ -300,6 +321,7 @@ For any other step that fails, report exactly which step and why — the operato
 
 - **Never** claim a task that fails the planning gate — auto-picked or explicitly named. For the `files` backend that means not `[ready]` with a committed `.plan/<id>.md`; for a non-`files` backend it means the `Ready` field not set, or no plan found in any valid `PLAN_SOURCE` location (`getPlan(id)` empty, no committed `.plan/<id>.md` on `origin/<base>`, and — when `PLAN_STORAGE=local` — no local file either). Refuse with a pointer to `/atelier:plan-task <id>`; never improvise or approve a plan from this command.
 - **Never** claim a `github-project` item whose sub-issues show it is an epic in flight (#328) — auto-picked or explicitly named. This holds regardless of the item's own `Status`/`Ready` value, exactly like a `files`-backend `Epic:` line is never claimed directly. See step 3's epic-in-flight filter and `skills/task-discovery/SKILL.md` § "Backend-aware backlog source (M9.1)" step 6.
+- **Never** claim a next part through auto-pick, on the `files` backend, or without consuming `Ready` (`setReady(id, false)` after a fresh re-read); **never** create the worktree before the claim kind is decided; and never treat a missing next-part signal (a)-(f) as permission - it falls back to the interrupted-claim message plus the missing-signal line.
 - **Never** exceed `taskConcurrency.max` open `task/*` PRs, and **never** re-claim an id that already has an open `task/*` PR — see step 2.
 - **Never** inspect, stash, switch, or commit to the operator's main checkout — the task runs entirely in its own worktree cut from `origin/<base>`; the operator's local branches and uncommitted work stay untouched.
 - **Never** read the local working-copy `ROADMAP.md` as the backlog source — the eligible backlog is `origin/<base>:ROADMAP.md` (merged), so locally-edited, unmerged tasks are not claimable until they land.

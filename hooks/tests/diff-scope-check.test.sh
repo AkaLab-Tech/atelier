@@ -323,7 +323,7 @@ has "$ORCH" 'one normal attempt' "orchestrator: one normal attempt"
 has "$ORCH" 'held: unplanned removal needs plan amendment' "orchestrator: second-identical-finding hold"
 has "$ORCH" 'held: diff scope check errored' "orchestrator: exit 2 fails closed"
 
-has "$ORCH" '--base <branch>' "orchestrator: scope check call site uses --base <branch>"
+has "$ORCH" '--base <base>' "orchestrator: scope check call site uses --base <base>"
 
 has "$INSTALL" '_phase_c_1_symlink_helper atelier-diff-scope-check' "install.sh: helper symlink registration"
 

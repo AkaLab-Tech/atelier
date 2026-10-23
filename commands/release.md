@@ -1,7 +1,7 @@
 ---
 description: Cut a version release for a project by delegating the whole author → review → merge coordination to task-orchestrator (non-task PR coordination mode) — the command never authors, reviews, or merges the bump PR from its own turn.
 argument-hint: "[<version>|major|minor|patch] [--project <path>] [--all] [--yes|-y]"
-allowed-tools: Read, Bash(atelier-release:*), Bash(git fetch:*), Bash(git tag:*), Bash(git push origin v*), Bash(git describe:*), Bash(git log:*), Bash(git rev-parse:*), Skill, Task, AskUserQuestion
+allowed-tools: Read, Bash(atelier-release:*), Bash(git fetch:*), Bash(git tag:*), Bash(git push origin v*), Bash(git ls-remote:*), Bash(git describe:*), Bash(git log:*), Bash(git rev-parse:*), Skill, Task, AskUserQuestion
 ---
 
 You are running the `/atelier:release` slash command. Cut the **next** SemVer release for one project (per [PLAN.md §14](PLAN.md), design decision recorded in §14.9). **This command never authors, reviews, or merges the bump PR from its own turn.** This command delegates the whole author→review→merge coordination to `task-orchestrator` (non-task PR coordination mode); it never dispatches `pr-author`, `reviewer`, or `auto-merge` from its own turn — exactly the way `/atelier:align` delegates its base PR.
@@ -120,9 +120,24 @@ git -C <project> push origin v<next_version>
 
 The tag targets the **merge commit SHA** captured in step 7, not whatever `origin/main` resolves to at push time (a race with another concurrent merge could otherwise tag the wrong commit). `Bash(git tag -a v*)` and `Bash(git push origin v*)` are allowlisted in `templates/settings.template.json` specifically for this step — both patterns are anchored on the literal `v` + version and cannot match a branch push (atelier branches are always `task/*`), and neither is shadowed by the `Bash(git push * main|master|develop|staging)` deny rules, which require a literal protected branch name as the final token.
 
+### 8b. Pin the marketplace entry to the tag — only for catalog plugins (#548)
+
+Runs only when `<project>`'s `.claude-plugin/plugin.json` `name` is listed in the `akalab-tech` catalog (`AkaLab-Tech/claude-plugins` `.claude-plugin/marketplace.json`); otherwise skip to step 9. The catalog entry has no `ref`/`sha`, so installs would clone default-branch HEAD instead of the release.
+
+1. Resolve the peeled tag commit: `git -C <project> ls-remote origin refs/tags/v<next_version>^{}`. It **must equal** the step 7 merge sha; if it does not, stop and report both (never pin a different sha).
+2. Find the registered `claude-plugins` project in `$ATELIER_CONFIG_DIR/projects.json` (remote `AkaLab-Tech/claude-plugins`); if none is registered, report "tag pushed, but the catalog is not pinned — operators keep receiving the previous pinned release" and stop. Create a worktree on **`chore/pin-<plugin>-v<next_version>`** from its `origin/main` (same `git-wt` skill as step 5) and run there:
+
+   ```bash
+   atelier-release pin-marketplace --marketplace <wt>/.claude-plugin/marketplace.json \
+     --plugin <name> --tag v<next_version> --sha <peeled-sha>
+   ```
+3. Dispatch `atelier:task-orchestrator` in `mode: non-task-pr` exactly as in step 7 (no `task_id`, `interactive: <bool>`), with `repo` = the claude-plugins repo, `head` = the pin branch, `base` = its default branch, `title` = `chore(release): pin <plugin> to v<next_version>`, and `author_agent: pr-opener` (the branch is `chore/*`).
+
+On `merged` proceed to step 9. On `held`, surface it and say: "tag pushed, but operators keep receiving the previous pinned release until the pin PR merges" — do **not** print the step 9 recipe.
+
 ### 9. Print the operator update recipe
 
-After the tag is pushed, print the standard three-step recipe so the operator can pick up the new version:
+After the tag is pushed (and, for catalog plugins, the step 8b pin PR is merged), print the standard three-step recipe so the operator can pick up the new version:
 
 > Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.
 
@@ -147,5 +162,7 @@ End the command with the block from step 9, or — for any terminal state reache
 - **Never** omit the `author_agent: pr-author` hint from the step 7 briefing — it is the explicit, required signal that non-task-pr mode's branch-shape selection routes this `task/release-<version>` head to `pr-author`, never `pr-opener` (which stays scoped to `chore/*`/`docs/*`/`fix/*`/plan-tracking branches and does not handle `task/*`).
 - **Never** ride the release bump on `release/*` or `hotfix/*` — `pr-flow` and the permission matrix refuse pushes to those names outright. The branch is always `task/release-<version>`.
 - **Never** push the `vX.Y.Z` tag before `task-orchestrator` confirms the PR is merged (step 7's terminal report). Tagging an unmerged commit (or a stale `origin/main` HEAD instead of the actual merge SHA) would point the tag at the wrong commit.
+- **Never** print the step 9 update recipe before the step 8b pin PR has merged (for catalog plugins) — operators would pull the previous pinned release.
+- **Never** pin a sha that differs from the peeled tag commit (`vX.Y.Z^{}`) or from the step 7 merge sha.
 - **Never** edit `agents/pr-author.md` to add a formal "no board item" flag for this — carry the "skip the tracking move, no board item applies" instruction in the step 7 briefing prose, exactly as other one-off contextual instructions reach specialists today.
 - **Never** silently retry `scripts/atelier-release resolve` with a different override after a refusal — surface the `refuse_reason` to the operator (or, non-interactively, to the log) and stop.

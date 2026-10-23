@@ -43,7 +43,9 @@
 #     - §8: 6-attempt ceiling shared with review-fix cycles
 #   Group 8 — behavioral: JSON validity + required field values via jq
 #     - Both config files parse as valid JSON
-#     - reviewFix.enabled == true and reviewFix.maxCycles == 2 in both
+#     - reviewFix.enabled == true in both; reviewFix.maxCycles is a positive
+#       integer in .atelier.json (repo override) and == 2 in the template
+#       (the built-in default)
 #
 # Hermetic: all assertions run against committed files only — no network, no
 # temp dirs persisted after exit.
@@ -211,11 +213,11 @@ else
     fail "behavioral: .atelier.json reviewFix.enabled is not true (or file is invalid JSON)"
   fi
 
-  # .atelier.json — reviewFix.maxCycles == 2
-  if jq -e '.reviewFix.maxCycles == 2' "$ATELIER_JSON" >/dev/null 2>&1; then
-    pass "behavioral: .atelier.json reviewFix.maxCycles == 2"
+  # .atelier.json — reviewFix.maxCycles is a positive integer (repo override of the default 2)
+  if jq -e '.reviewFix.maxCycles | (type == "number" and . >= 1 and . == floor)' "$ATELIER_JSON" >/dev/null 2>&1; then
+    pass "behavioral: .atelier.json reviewFix.maxCycles is a positive integer"
   else
-    fail "behavioral: .atelier.json reviewFix.maxCycles is not 2 (or file is invalid JSON)"
+    fail "behavioral: .atelier.json reviewFix.maxCycles is not a positive integer (or file is invalid JSON)"
   fi
 
   # templates/atelier.template.json — valid JSON with reviewFix.enabled == true

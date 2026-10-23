@@ -80,6 +80,7 @@ If the planner returned `refused-*` / `error`, skip to Phase 5 (nothing to commi
 - `refused-already-done` → "Task is already `[x]`; nothing to plan."
 - `refused-marker-present` → "Task carries `[OVERSIZE]`/`[BLOCKED]`; resolve the marker first."
 - `refused-already-ready` → "Task is already `[ready]` (or `Ready` field is set) with a committed plan. To re-plan, clear the ready state and remove `.plan/<id>.md` first, then re-run."
+  When the item's Status is already in `stateMap.inProgress` and its `Ready` field is clear (a previous part consumed it at claim), this is not a refusal: the item is a multi-part task and the next part can be planned — proceed as for any task. The approval stamp (`ready (approved <ISO-8601 UTC> — product lead)`) is what lets `/atelier:next-task <id>` recognise the new plan as a next part; a plan without the timestamp is never accepted as one.
 - `error: task lacks an explicit id` → "Add an explicit `#<id>` to the task line before planning."
 - Any other `error` → surface verbatim and stop.
 
@@ -91,9 +92,9 @@ Only after explicit approval:
 
 - **`files` backend, `local`:** still flip `[ready]` in `ROADMAP.md` (and, if decomposed, still commit the epic rewrite), and still commit that `ROADMAP.md` change (`git add ROADMAP.md` — **omit `.plan`**), because the `[ready]` marker must still reach `origin/<base>` for `/next-task` to see it. The `.plan/<id>.md` file(s) stay local and uncommitted.
 - **`github-project` / `linear` backend, `local`:** set the Project's `Ready` field (`setReady(id, true)`) exactly as below, and make **no commit at all** — there is no `ROADMAP.md`, and `.plan/<id>.md` stays local.
-- **`github-project` / `linear` backend, `resident`:** set the Project's `Ready` field (`setReady(id, true)`) exactly as below, then call `setPlan(id, <approved plan markdown>)` via the `roadmap-tracking-flow` skill, passing the planner's **returned inline plan content** for that unit (the `content` field from the planner's Phase 2 return, with its `Status:` line flipped to `ready (approved — product lead)`) — not any file, since the planner wrote none. This writes the plan into the backend item's body between the `atelier:plan` delimiters. Make **no commit at all** — under `resident` **no plan file is left behind anywhere, local or committed** — none is ever written; the planner returns the plan markdown inline and `setPlan` stores it in the backend item body, so there is nothing to delete once `setPlan` has confirmed the write.
+- **`github-project` / `linear` backend, `resident`:** set the Project's `Ready` field (`setReady(id, true)`) exactly as below, then call `setPlan(id, <approved plan markdown>)` via the `roadmap-tracking-flow` skill, passing the planner's **returned inline plan content** for that unit (the `content` field from the planner's Phase 2 return, with its `Status:` line flipped to `ready (approved <ISO-8601 UTC> — product lead)`) — not any file, since the planner wrote none. This writes the plan into the backend item's body between the `atelier:plan` delimiters. Make **no commit at all** — under `resident` **no plan file is left behind anywhere, local or committed** — none is ever written; the planner returns the plan markdown inline and `setPlan` stores it in the backend item body, so there is nothing to delete once `setPlan` has confirmed the write.
 
-In the `local` cases, still flip the draft plan's `Status:` line to `ready (approved — product lead)` inside the local `.plan/<id>.md` (a working-tree edit that is simply never staged). Under `resident`, flip the `Status:` line the same way in the planner's returned inline content **before** passing it to `setPlan` — there is no working-tree file to edit, only the in-memory markdown the planner returned in Phase 2. Everything else in Phase 4 below is the `committed`-mode path.
+In the `local` cases, still flip the draft plan's `Status:` line to `ready (approved <ISO-8601 UTC> — product lead)` inside the local `.plan/<id>.md` (a working-tree edit that is simply never staged). Under `resident`, flip the `Status:` line the same way in the planner's returned inline content **before** passing it to `setPlan` — there is no working-tree file to edit, only the in-memory markdown the planner returned in Phase 2. Everything else in Phase 4 below is the `committed`-mode path.
 
 ### `files` backend (unchanged — `planStorage=committed`)
 
@@ -102,7 +103,7 @@ In the `local` cases, still flip the draft plan's `Status:` line to `ready (appr
    - [ ] [ready] `feat` Export reports to CSV `#42` `~4h`
    ```
    Never flip the **epic** line — readiness is a per-claimable-unit property; the orchestrator descends into sub-tasks.
-2. **Flip the draft status** in each `.plan/<id>.md` from `Status: draft (pending product-lead approval)` to `Status: ready (approved — product lead)`.
+2. **Flip the draft status** in each `.plan/<id>.md` from `Status: draft (pending product-lead approval)` to `Status: ready (approved <ISO-8601 UTC> — product lead)`.
 3. **Stage and commit** the plan, the `[ready]` flips, and (if decomposed) the epic rewrite together:
    ```bash
    git add ROADMAP.md .plan
@@ -122,7 +123,7 @@ In the `local` cases, still flip the draft plan's `Status:` line to `ready (appr
 Do **not** edit `ROADMAP.md` — there is none for this backend; the `Ready` flip goes through the backend only (see Hard refusals).
 
 1. **Set the Project's `Ready` field** for each id in `ready_to_mark`: call the backend's `setReady(id, true)` operation via the `roadmap-tracking-flow` skill. This sets the dedicated `Ready` Project field (a boolean/single-select custom field, separate from Status, per §16.5). Drive this exactly the way `next-task` step 6 drives `moveTask` — through the `roadmap-tracking-flow` skill, not a raw `gh` invocation.
-2. **Flip the draft status** in each `.plan/<id>.md` from `Status: draft (pending product-lead approval)` to `Status: ready (approved — product lead)`.
+2. **Flip the draft status** in each `.plan/<id>.md` from `Status: draft (pending product-lead approval)` to `Status: ready (approved <ISO-8601 UTC> — product lead)`.
 3. **Stage and commit** the plan (`.plan` only — `ROADMAP.md` is not part of this backend's repo state):
    ```bash
    git add .plan

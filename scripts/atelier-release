@@ -14,6 +14,11 @@
 #   atelier-release enumerate --all
 #       Reserved seam for workspace-wide release fan-out. NOT implemented
 #       in this task — exits 2 with "not yet implemented (#44)".
+#   atelier-release pin-marketplace --marketplace <file> --plugin <name> --tag vX.Y.Z --sha <40hex>
+#       Rewrites ONLY that plugin's `source` in a marketplace.json to
+#       {source, repo, ref, sha} (#548); every other entry is untouched.
+#       Pure file edit — no git, push, or network. Exit 2 on an unknown
+#       plugin, a malformed sha, a non-`v` tag, or an unreadable file.
 #   atelier-release --help
 #
 # `resolve` reads <path>/.claude-plugin/plugin.json for `.version` (the
@@ -114,7 +119,7 @@ cmd_resolve() {
     case "$1" in
       --project) project="${2:-}"; shift 2 ;;
       --project=*) project="${1#--project=}"; shift ;;
-      --help|-h) sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      --help|-h) sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
       -*) die_usage "unknown flag: $1 (run --help)" ;;
       *) [ -z "$override" ] || die_usage "unexpected extra arg: $1"; override="$1"; shift ;;
     esac
@@ -267,10 +272,41 @@ cmd_enumerate() {
   exit 2
 }
 
+# ---------- pin-marketplace (#548) ----------
+cmd_pin_marketplace() {
+  local file="" plugin="" tag="" sha=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --marketplace) file="${2:-}"; shift 2 ;;
+      --plugin) plugin="${2:-}"; shift 2 ;;
+      --tag) tag="${2:-}"; shift 2 ;;
+      --sha) sha="${2:-}"; shift 2 ;;
+      *) die_usage "pin-marketplace: unknown argument: $1" ;;
+    esac
+  done
+  command -v jq >/dev/null 2>&1 || die_usage "jq is required"
+  [ -n "$file" ] && [ -n "$plugin" ] || die_usage "pin-marketplace: --marketplace and --plugin are required"
+  [ -f "$file" ] && jq empty "$file" >/dev/null 2>&1 || die_usage "pin-marketplace: '$file' is not a readable JSON file"
+  case "$tag" in v[0-9]*) ;; *) die_usage "pin-marketplace: --tag must look like vX.Y.Z (got '$tag')" ;; esac
+  printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || die_usage "pin-marketplace: --sha must be 40 lowercase hex chars"
+  jq -e --arg p "$plugin" '[.plugins[]? | select(.name == $p)] | length > 0' "$file" >/dev/null \
+    || die_usage "pin-marketplace: plugin '$plugin' not found in $file"
+  local tmp; tmp="$(mktemp "$file.XXXXXX")" || die_usage "cannot create temp file next to $file"
+  if jq --arg p "$plugin" --arg tag "$tag" --arg sha "$sha" \
+       '(.plugins[] | select(.name == $p) | .source) |=
+          ((if type == "object" then . else {source: "github", repo: .} end)
+           | .ref = $tag | .sha = $sha)' "$file" > "$tmp"; then
+    mv "$tmp" "$file"
+  else
+    rm -f "$tmp"; die_usage "pin-marketplace: rewrite failed"
+  fi
+}
+
 # ---------- dispatch ----------
 case "${1:-}" in
+  pin-marketplace) shift; cmd_pin_marketplace "$@" ;;
   resolve) shift; cmd_resolve "$@" ;;
   enumerate) shift; cmd_enumerate "$@" ;;
-  --help|-h|'') sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; [ -n "${1:-}" ] && exit 0 || exit 2 ;;
+  --help|-h|'') sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; [ -n "${1:-}" ] && exit 0 || exit 2 ;;
   *) die_usage "unknown subcommand: $1 (run --help)" ;;
 esac
