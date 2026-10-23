@@ -63,10 +63,15 @@ command_str="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/de
 [ -n "$command_str" ] || exit 0
 
 # Fast path: nothing that could touch GitHub identity or credentials.
-case "$command_str" in
-  *gh*|*api.github.com*|*GH_TOKEN*|*GITHUB_TOKEN*|*security*|*osascript*) ;;
-  *) exit 0 ;;
-esac
+# `gh` must be a whole word (not "high", "right", "github") so ordinary commit
+# messages skip the lexer.
+GH_WORD_RE='(^|[^A-Za-z0-9_])gh([^A-Za-z0-9_-]|$)'
+if ! [[ "$command_str" =~ $GH_WORD_RE ]]; then
+  case "$command_str" in
+    *api.github.com*|*.config/gh*|*GH_TOKEN*|*GITHUB_TOKEN*|*GH_ENTERPRISE_TOKEN*|*security*|*osascript*) ;;
+    *) exit 0 ;;
+  esac
+fi
 
 HOME_DIR="${HOME:-}"
 ACD="${ATELIER_CONFIG_DIR:-$HOME_DIR/.claude-work}"
@@ -155,7 +160,10 @@ MSG
 # with RS. Variable text ($HOME, $(...)) is kept verbatim for later expansion.
 LEX_OUT=""
 lex() {
-  local s="$1" n i=0 c nx cur="" have=0 q=""
+  # bash 3.2 copies the string tail on every ${s:$i:1}, so a per-character walk
+  # is quadratic. Index a small sliding window instead and jump quoted runs.
+  local LC_ALL=C
+  local s="$1" n i=0 c nx cur="" have=0 q="" rest run win="" b=-1000 o
   n=${#s}
   LEX_OUT=""
   _flush() {
@@ -163,12 +171,24 @@ lex() {
     cur=""; have=0
   }
   while [ "$i" -lt "$n" ]; do
-    c="${s:$i:1}"
+    if [ $((i - b)) -ge 400 ]; then b=$i; win="${s:$i:512}"; fi
+    o=$((i - b))
+    c="${win:$o:1}"
     if [ "$q" = "'" ]; then
-      if [ "$c" = "'" ]; then q=""; else cur+="$c"; fi
+      if [ "$c" = "'" ]; then q=""
+      else
+        # Jump over the whole literal run in one step.
+        rest="${win:$o}"; run="${rest%%\'*}"
+        [ ${#run} -eq ${#rest} ] && { rest="${s:$i}"; run="${rest%%\'*}"; }
+        cur+="$run"; i=$((i + ${#run} - 1))
+      fi
     elif [ "$q" = '"' ]; then
-      if [ "$c" = '\' ]; then
-        nx="${s:$((i + 1)):1}"
+      if [ "$c" != '\' ] && [ "$c" != '"' ]; then
+        rest="${win:$o}"; run="${rest%%[\"\\]*}"
+        [ ${#run} -eq ${#rest} ] && { rest="${s:$i}"; run="${rest%%[\"\\]*}"; }
+        cur+="$run"; i=$((i + ${#run} - 1))
+      elif [ "$c" = '\' ]; then
+        nx="${win:$((o + 1)):1}"
         case "$nx" in
           '"'|'\'|'$'|'`') cur+="$nx"; i=$((i + 1)) ;;
           $'\n') i=$((i + 1)) ;;
@@ -179,14 +199,14 @@ lex() {
     else
       case "$c" in
         '\')
-          nx="${s:$((i + 1)):1}"
+          nx="${win:$((o + 1)):1}"
           if [ "$nx" != $'\n' ] && [ -n "$nx" ]; then cur+="$nx"; have=1; fi
           i=$((i + 1)) ;;
         "'") q="'"; have=1 ;;
         '"') q='"'; have=1 ;;
         '#')
           if [ -z "$cur" ] && [ "$have" -eq 0 ]; then
-            while [ $((i + 1)) -lt "$n" ] && [ "${s:$((i + 1)):1}" != $'\n' ]; do i=$((i + 1)); done
+            rest="${s:$i}"; run="${rest%%$'\n'*}"; i=$((i + ${#run} - 1))
           else
             cur+="$c"
           fi ;;
@@ -203,16 +223,11 @@ lex() {
 
 TOKS=()
 split_tokens() {
+  # One read call: the other ways to peel tokens off a long string rescan it
+  # per token. The here-string newline lands in a final extra field; drop it.
   TOKS=()
-  local rest="$1" t
-  while [ -n "$rest" ]; do
-    t="${rest%%"$US"*}"
-    TOKS+=("$t")
-    case "$rest" in
-      *"$US"*) rest="${rest#*"$US"}" ;;
-      *) rest="" ;;
-    esac
-  done
+  IFS="$US" read -r -d '' -a TOKS <<< "$1" || true
+  unset "TOKS[$((${#TOKS[@]} - 1))]"
 }
 
 # Drop heredoc bodies (prose that is not code) unless the heredoc feeds a shell.
@@ -459,7 +474,7 @@ process_script() { # script depth
   out="$LEX_OUT"
   while [ -n "$out" ]; do
     seg="${out%%"$RS"*}"
-    out="${out#*"$RS"}"
+    out="${out:$((${#seg} + 1))}"
     [ -z "$seg" ] && continue
     split_tokens "$seg"
     toks=("${TOKS[@]}")
@@ -500,6 +515,9 @@ process_script() { # script depth
         i=$((i + 1)); continue
       fi
       case "$base" in
+        if|then|do|else|elif|while|until|'{'|'!')
+          # Reserved words / grouping tokens: the real command follows.
+          i=$((i + 1)); continue ;;
         env)
           i=$((i + 1))
           while [ "$i" -lt "$nt" ]; do
