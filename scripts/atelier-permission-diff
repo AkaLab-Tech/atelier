@@ -235,6 +235,9 @@ describe_permission() {
     "Read(~/.ssh/**)")                           echo "BLOCKED: SSH keys" ;;
     "Read(~/.aws/**)")                           echo "BLOCKED: AWS credentials" ;;
     "Read(~/.gnupg/**)")                         echo "BLOCKED: GPG keys" ;;
+    "Read(./.env*)")                             echo "BLOCKED: read .env* secrets in the project root" ;;
+    "Read(<worktree>/.env*)")                    echo "BLOCKED: read .env* secrets in the task worktree" ;;
+    "Read(<worktree>-worktrees/**/.env*)")       echo "BLOCKED: read .env* secrets in any sibling task worktree" ;;
     # ---------- mcp ----------
     "mcp__plugin_atelier_playwright__*")         echo "Playwright MCP tools" ;;
     "mcp__plugin_atelier_playwright__browser_run_code_unsafe") echo "BLOCKED: arbitrary JS execution" ;;
