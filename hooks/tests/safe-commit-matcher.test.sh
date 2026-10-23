@@ -6,7 +6,7 @@
 # target tree is not a literal, resolvable path.
 #
 # Hermetic: throwaway git repos under a temp dir, package managers shimmed
-# on PATH, a temp CPU_SLOT_DIR (never the real /tmp/cpu-slot.lock). The
+# on PATH. The
 # fixtures' `typecheck` script writes a marker file in its cwd and fails,
 # so:
 #   none  = exit 0, no marker, no log entry   (hook did not trigger)
@@ -47,7 +47,6 @@ SHIM
   chmod +x "$SHIM_BIN/$pm"
 done
 export PATH="$SHIM_BIN:$PATH"
-CPU_SLOT_DIR="$TMP/cpu-slot"; mkdir -p "$CPU_SLOT_DIR"; export CPU_SLOT_DIR
 
 # A repo whose typecheck drops ./marker and fails, with one staged non-docs
 # file so the docs-only short-circuit does not apply.
