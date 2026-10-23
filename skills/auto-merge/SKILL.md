@@ -108,10 +108,20 @@ atelier-pr-size-check --pr <NN> --project <project-root>
 Exit codes:
 
 - **0** within budget → continue to guardrail #6.
-- **1** OVERSIZE → `held: PR exceeds size budget (<counted-lines> lines AND <counted-files> files, limits <maxLines>/<maxFiles>)`. Quote the helper's `Counted:`/`Exempt:` lines verbatim (never gh's `additions`/`deletions`). Include the tool's stdout — particularly the suggested slice boundaries — in the held-state report so the operator (and the orchestrator on the next pass) see the slicing hints.
-- **2** error → `held: size check failed (<stderr-tail>)`. Do not silently widen the gate.
+- **1** OVERSIZE → first check for an operator size waiver (see *Operator size waiver* below). Without a valid one: `held: PR exceeds size budget (<counted-lines> lines AND <counted-files> files, limits <maxLines>/<maxFiles>)`. Quote the helper's `Counted:`/`Exempt:` lines verbatim (never gh's `additions`/`deletions`). Include the tool's stdout — particularly the suggested slice boundaries — in the held-state report so the operator (and the orchestrator on the next pass) see the slicing hints.
+- **2** error → `held: size check failed (<stderr-tail>)`. Do not silently widen the gate. A size-check error is **never waivable**: do not call `atelier-size-waiver` on exit 2.
 
-The AND-gate is deliberate: a tightly-scoped diff that grows long, or a broad refactor that stays small, both pass — only PRs that breach **both** axes after exemptions auto-block. Per-project overrides live in `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`. The skill never widens the gate at runtime; if a project legitimately needs a higher ceiling, that decision is made in `.atelier.json` and version-controlled.
+**Operator size waiver.** On exit 1 only, run:
+
+```bash
+atelier-size-waiver <owner/repo> <NN>
+```
+
+It prints `waiver=valid|none|stale|untrusted` plus `sha=`/`by=`/`at=`/`review=`/`reason=` fields (valid form: `waiver=valid sha=<sha> by=<login> at=<time> review=<url> reason=<text>`). Guardrail 5 passes **only** when the result is `valid` **and** its `sha` equals the sha recorded in guardrail #2 — the same sha the merge is pinned to with `--match-head-commit`. Any other result (`none`, `stale`, `untrusted`, a sha mismatch, a non-0/1 exit) leaves the PR `held: PR exceeds size budget …`; for `none`/`stale`/`untrusted` add how to waive: *a repository admin or maintainer (not the account atelier authors or reviews with) submits a PR **review** (Comment or Approve, not a plain conversation comment) starting with `waive size`, `size waiver` or `exención de tamaño` followed by a reason; it covers only the current head, so any later push needs a new waiver* (docs/operator-guide.md). Post **no** PR comment before merging — it would trip guardrail #6. The waiver affects only this guardrail; guardrails 1–4 and 6 are evaluated unchanged.
+
+When a waiver is applied: put it in the report's size line, add the `Size-waiver:` audit line to the squash body (see Merge), and, when a worktree exists, append an entry to `<worktree>/.task-log/decisions.jsonl` (`{"ts":"<iso>","kind":"size-waiver","pr":<NN>,"sha":"<sha>","by":"<login>","at":"<time>","review":"<url>","reason":"<reason>"}`).
+
+The AND-gate is deliberate: a tightly-scoped diff that grows long, or a broad refactor that stays small, both pass — only PRs that breach **both** axes after exemptions auto-block. Per-project overrides live in `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`. The skill never widens the gate at runtime (the only exception is a valid operator waiver bound to the head sha, above); if a project legitimately needs a higher ceiling, that decision is made in `.atelier.json` and version-controlled.
 
 ### 6. No unresolved human comments
 
@@ -155,6 +165,7 @@ gh pr merge <NN> --squash --delete-branch --match-head-commit <sha> --body-file 
 - `--delete-branch` removes the remote branch in the same call. If the merge succeeded but the branch delete failed, run `git ls-remote --heads origin <branch>`: empty output means the branch is already deleted (success, log it quietly); anything else is reported verbatim. Never retry the merge.
 - `--match-head-commit <sha>` is the `sha` recorded in guardrail #2 (the reviewed head): a push racing the gate makes the merge fail instead of landing unreviewed code. On that failure report `held: head moved after review` and do not retry.
 - `--body-file <(echo "")` clears the squash-commit body to just the title — the original PR body lives on the closed PR for history; the merge commit on `main` should be terse.
+- When guardrail #5 passed via an operator size waiver, replace the empty body with a file holding one audit line: `Size-waiver: @<login> at <time> on <sha> — <review-url> — <reason>`.
 
 Capture the merge commit SHA from the command output (it prints `Merged pull request #N (commit: <sha>)`).
 
@@ -257,7 +268,7 @@ Guardrails:
   review:         ✓ APPROVED | ✗ <state>
   CI:             ✓ <N>/<N> checks SUCCESS | ✗ <state>
   forbidden:      ✓ none | ✗ <comma-separated paths>
-  size:           ✓ <helper's Counted: figures> (within budget) | ✗ OVERSIZE <N>/<M> (limits <maxLines>/<maxFiles>)
+  size:           ✓ <helper's Counted: figures> (within budget) | ⚠ OVERSIZE <N>/<M> WAIVED by @<login> at <time> (sha <7>) — <reason> | ✗ OVERSIZE <N>/<M> (limits <maxLines>/<maxFiles>)
   comments:       ✓ no pending | ✗ <N> pending (latest @<user>)
 
 Decision: merged | held — <comma-separated failed guardrails>
@@ -287,7 +298,7 @@ Next step:     human review required. Operator can:
 - **Never** push `chore(roadmap): mark X done` directly to `main`. The static permissions matrix denies it. Surface the change as a follow-up.
 - **Never** mark a roadmap item `[x]` for a PR that was held. The auto-merge skill only modifies state on success.
 - **Never** override `reviewDecision`. If GitHub says `CHANGES_REQUESTED`, that is final until a new review supersedes it.
-- **Never** silently widen the size budget. The threshold is the AND-gate from `atelier-pr-size-check`, configurable per-project via `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`. If a project legitimately needs a higher ceiling, the operator updates that file (version-controlled, reviewable) — the skill never raises the gate at runtime.
+- **Never** silently widen the size budget at runtime. The only exception is a `valid` operator size waiver (`atelier-size-waiver`) whose `sha` equals the pinned head sha; a size-check error (exit 2) is never waivable. The threshold is the AND-gate from `atelier-pr-size-check`, configurable per-project via `<project>/.atelier.json`'s `prSize.{maxLines,maxFiles,exempt}`. If a project legitimately needs a higher ceiling, the operator updates that file (version-controlled, reviewable) — the skill never raises the gate at runtime.
 - **Never** force-update, `reset --hard`, or stash the operator's working tree during the base fast-forward (step 4). A dirty main worktree, a diverged base, or a non-zero exit from `merge --ff-only` must skip and surface — never mutate the operator's checked-out state.
 - **Never** hand-roll the orphan sweep (step 5). The only permitted deletion path is `atelier-housekeeping --project <root> --yes --no-stamp`. Do not call `git branch -d`, `git push --delete`, or `git wt rm` for branches other than the just-merged task branch — those are the binary's responsibility, not the skill's.
 - **Never** let the task-complete notification cue (`atelier-notify-cue task-complete`) gate, slow, or appear in the `Decision:`/structured report. It is a fire-and-forget best-effort convenience — fired only on merge success, never on `held`, and its outcome (success, silent no-op, or failure) is never inspected.
