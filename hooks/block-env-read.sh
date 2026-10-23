@@ -165,6 +165,8 @@ while IFS= read -r seg; do
 done < <(printf '%s\n' "$command_str" \
   | sed -E -e 's/&&|\|\||;/\
 /g' \
+        -e 's/(^|[^|<>&])&($|[^>&])/\1\
+\2/g' \
         -e 's/\$\(|<\(|>\(|`/\
 '"$SUB_MARK"'/g' \
   | sed -E 's/\|/\
