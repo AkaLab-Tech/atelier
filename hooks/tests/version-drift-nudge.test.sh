@@ -101,7 +101,7 @@ NOJQ="$TMP/nojq-bin"; mkdir -p "$NOJQ"
 for t in cat tr mkdir dirname env; do
   p="$(command -v "$t" 2>/dev/null)"; [ -n "$p" ] && ln -s "$p" "$NOJQ/$t"
 done
-out="$(printf '{"session_id":"s9"}' | env PATH="$NOJQ" HOME="$HOME_DIR" ATELIER_CONFIG_DIR="$CFG" CLAUDE_PLUGIN_ROOT="$ROOT" "$BASH_BIN" "$HOOK" 2>/dev/null)"; rc=$?
+out="$(env PATH="$NOJQ" HOME="$HOME_DIR" ATELIER_CONFIG_DIR="$CFG" CLAUDE_PLUGIN_ROOT="$ROOT" "$BASH_BIN" "$HOOK" 2>/dev/null <<<'{"session_id":"s9"}')"; rc=$?
 [ "$rc" = 0 ] && [ -z "$out" ] && pass "jq missing: silent, exit 0" || fail "jq missing: rc=$rc out=[$out]"
 [ ! -e "$CFG/state/version-nudge/s9--1.3.0" ] && pass "jq missing: no stamp written" || fail "jq missing: stamp written"
 
@@ -172,7 +172,7 @@ out="$(printf 'not json' | env HOME="$HOME_DIR" ATELIER_CONFIG_DIR="$CFG" CLAUDE
 [ "$rc" = 0 ] && [ -z "$out" ] && pass "bad JSON stdin: silent, exit 0" || fail "bad JSON stdin: rc=$rc out=[$out]"
 
 # --- jq missing on SessionStart -> silent, no .ctx ---
-out="$(printf '{"session_id":"j1","hook_event_name":"SessionStart"}' | env PATH="$NOJQ" HOME="$HOME_DIR" ATELIER_CONFIG_DIR="$CFG" CLAUDE_PLUGIN_ROOT="$ROOT" "$BASH_BIN" "$HOOK" 2>/dev/null)"; rc=$?
+out="$(env PATH="$NOJQ" HOME="$HOME_DIR" ATELIER_CONFIG_DIR="$CFG" CLAUDE_PLUGIN_ROOT="$ROOT" "$BASH_BIN" "$HOOK" 2>/dev/null <<<'{"session_id":"j1","hook_event_name":"SessionStart"}')"; rc=$?
 [ "$rc" = 0 ] && [ -z "$out" ] && [ ! -e "$CTXDIR/j1.ctx" ] && pass "jq missing on SessionStart: silent, no .ctx" || fail "jq missing SessionStart: rc=$rc out=[$out]"
 
 echo ""
