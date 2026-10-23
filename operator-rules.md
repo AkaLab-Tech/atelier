@@ -102,9 +102,9 @@ Auto-merge **only** when:
 **Never auto-merge** — fall back to the human operator — when any of the
 following applies:
 
-- Changes to `package.json` or `pnpm-lock.yaml`.
-- Changes to `Dockerfile` or `docker-compose*`.
-- Changes to `.github/workflows/**`.
+- Changes to `package.json` or `pnpm-lock.yaml`. A `package.json` diff that changes only the top-level `"version"` value needs no approval; any other key change, and any lockfile change, still does. …unless the operator posted a protected-paths approval (a review from a non-agent repo admin or maintainer, with the approval phrase and a reason, on the current head sha). The approval affects only this guardrail. It never satisfies the size guardrail, and a size waiver never satisfies this one.
+- Changes to `Dockerfile` or `docker-compose*`. …unless the operator posted a protected-paths approval (a review from a non-agent repo admin or maintainer, with the approval phrase and a reason, on the current head sha). The approval affects only this guardrail. It never satisfies the size guardrail, and a size waiver never satisfies this one.
+- Changes to `.github/workflows/**`. …unless the operator posted a protected-paths approval (a review from a non-agent repo admin or maintainer, with the approval phrase and a reason, on the current head sha). The approval affects only this guardrail. It never satisfies the size guardrail, and a size waiver never satisfies this one.
 - PR exceeds the per-project size budget: by default both `>200 lines` **and** `>10 files` after exempting tests / lockfiles / migrations (run `atelier-pr-size-check` to see the exact count and any slicing hints). Either dimension alone is fine; only PRs that breach both axes fall back to human review, unless the operator posted a size waiver (a review from a non-agent repo admin/maintainer, containing a waiver phrase and a reason, on the current head sha). The waiver affects only this guardrail; CI, review, forbidden paths, pending comments and request-changes are unchanged, and a size-check error is never waivable. Per-project override via `<project>/.atelier.json`.
 - Human comments are pending on the PR.
 - Reviewer marks `request-changes`.

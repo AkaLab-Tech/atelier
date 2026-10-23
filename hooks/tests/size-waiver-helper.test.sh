@@ -81,22 +81,22 @@ echo "== valid =="
 setup author "[$(review alice COMMENTED $H $T1 'Size waiver: generated migration, safe')]"
 perm alice admin admin
 expect "COMMENTED waiver by admin -> valid" \
-  "waiver=valid sha=$H by=alice at=$T1 review=$URL reason=generated migration, safe" 0
+  "waiver=valid kind=size sha=$H by=alice at=$T1 review=$URL reason=generated migration, safe" 0
 
 setup author "[$(review alice APPROVED $H $T1 'waive size - vendored lockfile bump')]"
 perm alice maintain maintain
 expect "APPROVED waiver by maintainer -> valid" \
-  "waiver=valid sha=$H by=alice at=$T1 review=$URL reason=vendored lockfile bump" 0
+  "waiver=valid kind=size sha=$H by=alice at=$T1 review=$URL reason=vendored lockfile bump" 0
 
 setup author "[$(review alice COMMENTED $H $T1 'Exención de tamaño: refactor mecánico')]"
 perm alice admin admin
 expect "Spanish phrase -> valid" \
-  "waiver=valid sha=$H by=alice at=$T1 review=$URL reason=refactor mecánico" 0
+  "waiver=valid kind=size sha=$H by=alice at=$T1 review=$URL reason=refactor mecánico" 0
 
 setup author "[$(review alice COMMENTED $H $T1 'SIZE WAIVER: loud')]"
 perm alice admin admin
 expect "phrase is case-insensitive" \
-  "waiver=valid sha=$H by=alice at=$T1 review=$URL reason=loud" 0
+  "waiver=valid kind=size sha=$H by=alice at=$T1 review=$URL reason=loud" 0
 
 echo "== stale =="
 setup author "[$(review alice COMMENTED $OLD $T1 'size waiver: ok')]"
@@ -158,12 +158,76 @@ echo "== ordering =="
 setup author "[$(review alice COMMENTED $H $T1 'size waiver: first reason'),$(review frank APPROVED $H $T2 'size waiver: second reason')]"
 perm alice admin admin; perm frank maintain maintain
 expect "newest qualifying review wins" \
-  "waiver=valid sha=$H by=frank at=$T2 review=$URL reason=second reason" 0
+  "waiver=valid kind=size sha=$H by=frank at=$T2 review=$URL reason=second reason" 0
 
 setup author "[$(review alice COMMENTED $H $T1 'size waiver: ok'),$(review bob COMMENTED $H $T2 'size waiver: ok')]"
 perm alice admin admin; perm bob write write
 expect "newest untrusted is not rescued by older valid one" \
   "waiver=untrusted by=bob (lacks admin/maintain permission)" 1
+
+echo "== protected-paths kind =="
+PP() { run --kind protected-paths o/r 7; }
+ppexpect() { # label out rc
+  PP
+  if [ "$OUT" = "$2" ] && [ "$RC" = "$3" ]; then pass "$1"; else fail "$1 — got '$OUT' rc=$RC, want '$2' rc=$3"; fi
+}
+setup author "[$(review alice COMMENTED $H $T1 'Approve protected paths: release bump reviewed')]"
+perm alice admin admin
+ppexpect "protected-paths COMMENTED approval by admin -> valid" \
+  "waiver=valid kind=protected-paths sha=$H by=alice at=$T1 review=$URL reason=release bump reviewed" 0
+
+setup author "[$(review alice APPROVED $H $T1 'apruebo archivos protegidos: cambio de CI revisado')]"
+perm alice maintain maintain
+ppexpect "protected-paths APPROVED Spanish phrase by maintainer -> valid" \
+  "waiver=valid kind=protected-paths sha=$H by=alice at=$T1 review=$URL reason=cambio de CI revisado" 0
+
+setup author "[$(review alice COMMENTED $H $T1 'size waiver: big refactor')]"
+perm alice admin admin
+ppexpect "size phrase under --kind protected-paths -> none" "waiver=none" 1
+
+setup author "[$(review alice COMMENTED $H $T1 'approve protected paths: workflow edit')]"
+perm alice admin admin
+expect "protected-paths phrase under --kind size -> none" "waiver=none" 1 --kind size o/r 7
+expect "protected-paths phrase under default kind -> none" "waiver=none" 1
+
+setup author "[$(review alice COMMENTED $OLD $T1 'approve protected paths: ok')]"
+perm alice admin admin
+ppexpect "protected-paths on older head -> stale" "waiver=stale sha=$OLD" 1
+
+setup author "[$(review author-bot COMMENTED $H $T1 'approve protected paths: self')]"
+perm author-bot admin admin
+ppexpect "protected-paths: author agent login -> untrusted" "waiver=untrusted by=author-bot (atelier author agent)" 1
+
+setup author "[$(review reviewer-bot COMMENTED $H $T1 'approve protected paths: self')]"
+perm reviewer-bot admin admin
+ppexpect "protected-paths: reviewer agent login -> untrusted" "waiver=untrusted by=reviewer-bot (atelier reviewer agent)" 1
+
+setup carol "[$(review carol COMMENTED $H $T1 'approve protected paths: mine')]"
+perm carol admin admin
+ppexpect "protected-paths: PR author -> untrusted" "waiver=untrusted by=carol (PR author)" 1
+
+setup author "[$(review 'dependabot[bot]' COMMENTED $H $T1 'approve protected paths: bot')]"
+ppexpect "protected-paths: [bot] account -> untrusted" "waiver=untrusted by=dependabot[bot] (bot account)" 1
+
+setup author "[$(review bob COMMENTED $H $T1 'approve protected paths: please')]"
+perm bob write write
+ppexpect "protected-paths: write-only user -> untrusted" "waiver=untrusted by=bob (lacks admin/maintain permission)" 1
+
+setup author "[$(review alice COMMENTED $H $T1 'approve protected paths:   ')]"
+perm alice admin admin
+ppexpect "protected-paths: empty reason -> none" "waiver=none" 1
+
+setup author "[$(review alice COMMENTED $H $T1 'approve protected paths: ok. size waiver: also big')]"
+perm alice admin admin
+ppexpect "review with both phrases -> ambiguous (protected-paths)" "waiver=ambiguous" 1
+expect "review with both phrases -> ambiguous (size)" "waiver=ambiguous" 1 --kind size o/r 7
+
+setup author "[$(review alice COMMENTED $H $T1 'size waiver: ok'),$(review alice COMMENTED $H $T2 'approve protected paths: ok')]"
+perm alice admin admin
+ppexpect "kinds are independent: newer protected-paths review valid" \
+  "waiver=valid kind=protected-paths sha=$H by=alice at=$T2 review=$URL reason=ok" 0
+expect "kinds are independent: older size waiver still valid for size" \
+  "waiver=valid kind=size sha=$H by=alice at=$T1 review=$URL reason=ok" 0 --kind size o/r 7
 
 echo "== errors =="
 setup author "[]"

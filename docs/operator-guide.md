@@ -566,6 +566,25 @@ Things to know:
 
 **Residual risk.** The guarantee rests on atelier's agents not holding your personal GitHub credentials. An agent that pointed `gh` at your personal config (for example `~/.config/gh`) or drove your logged-in Chrome could forge a waiver in your name. A separate guard task tracks closing this.
 
+## Approving protected files
+
+atelier never merges on its own a pull request that touches `package.json`, a lockfile, a `Dockerfile`, `docker-compose*` or `.github/workflows/**`. (A `package.json` change that only bumps the `"version"` number needs no approval; any other `package.json` change and any lockfile change does.) If you have read such a PR and are happy for it to merge automatically, say so on the PR itself, with no command line:
+
+1. Open the PR on GitHub and go to **Files changed**.
+2. Click **Review changes**, choose **Comment** (or **Approve**), and write a line that starts with the approval phrase and gives a reason, for example: `approve protected paths — reviewed the dependency bump`.
+3. Click **Submit review**.
+
+Accepted phrases (any capitalisation): `approve protected paths`, `apruebo archivos protegidos`. The reason after the phrase is required.
+
+Things to know:
+
+- It must be a **review**. A plain comment in the PR conversation does **not** count, and it would hold the PR as a pending human comment.
+- One approval covers one head commit. Any later push to the PR voids it and you need to approve again.
+- Only a repository admin or maintainer counts, never the account atelier uses to author or review PRs (or a bot). Atelier reads this live from GitHub. `atelier-size-waiver --kind protected-paths <owner/repo> <PR number>` shows how a PR is currently judged (`valid`, `none`, `stale`, `untrusted` or `ambiguous`).
+- This approval and the size waiver are separate. Approving protected files never waives the size limit, and a size waiver never approves protected files. A single review that contains both kinds of phrase is rejected as ambiguous and counts for neither.
+
+**Residual risk.** Same as for the size waiver: the guarantee rests on atelier's agents not holding your personal GitHub credentials. An agent that pointed `gh` at your personal config (for example `~/.config/gh`) or drove your logged-in Chrome could forge an approval in your name.
+
 ---
 
 ## If something goes wrong
