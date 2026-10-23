@@ -169,7 +169,7 @@ eq "other tool allows" "$RC" "0"
 run_hook '{"hook_event_name":"SomethingElse"}'; eq "unrelated event allows" "$RC" "0"
 run_hook 'not json'; eq "garbage stdin allows" "$RC" "0"
 EMPTY_BIN="$TMP/emptybin"; mkdir -p "$EMPTY_BIN"
-hb_payload task-orchestrator "$MSG" | PATH="$EMPTY_BIN" "$(command -v bash)" "$HOOK" >/dev/null 2>&1
+PATH="$EMPTY_BIN" "$(command -v bash)" "$HOOK" <<<"$(hb_payload task-orchestrator "$MSG")" >/dev/null 2>&1
 eq "jq missing allows" "$?" "0"
 
 echo "== hook: decisions logged"
