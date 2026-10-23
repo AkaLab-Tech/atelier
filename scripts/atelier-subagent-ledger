@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+#
+# atelier-subagent-ledger — per-worktree record of background sub-agents a
+# task-orchestrator dispatched, so nothing hands back while a child still runs (#577).
+#
+# Usage:
+#   atelier-subagent-ledger start  --worktree W --agent-id ID --type T [--step S]
+#   atelier-subagent-ledger finish --agent-id ID [--worktree W] [--state done|stopped|failed|superseded-by-resume] [--reason TEXT]
+#   atelier-subagent-ledger live   --worktree W
+#
+# Ledger: <W>/.task-log/subagents.jsonl (append-only; .task-log/ is gitignored and is not an
+# attempt log). Reverse index: $ATELIER_CONFIG_DIR/state/subagent-ledger/<agent_id> -> worktree
+# path, so a SubagentStop hook (which only knows the agent id) can close the entry.
+#
+# start   records a running agent. Idempotent per agent id while it is open.
+# finish  closes an open entry; idempotent (unknown or already-closed id is a no-op, exit 0).
+#         Removes the index entry and prunes index entries whose worktree no longer exists.
+# live    prints open entries, one per line:
+#           agent_id<TAB>agent_type<TAB>step<TAB>age_s<TAB>fresh|stale
+#         fresh while age_s < ownerTtlSeconds (from W/.atelier.json, default 43200).
+#         Exit 0 none open, 3 some open, 2 error.
+#
+# No polling, no waiting: every subcommand reads or appends once and returns.
+
+set -u
+
+DEFAULT_TTL_SECONDS=43200
+
+usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
+
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
+[ $# -ge 1 ] || { usage >&2; exit 2; }
+sub="$1"; shift
+
+command -v jq >/dev/null 2>&1 || { echo "atelier-subagent-ledger: jq is required" >&2; exit 2; }
+
+wt=""; agent_id=""; type=""; step=""; state="done"; reason=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --worktree) wt="${2:-}"; shift 2 ;;
+    --agent-id) agent_id="${2:-}"; shift 2 ;;
+    --type)     type="${2:-}"; shift 2 ;;
+    --step)     step="${2:-}"; shift 2 ;;
+    --state)    state="${2:-}"; shift 2 ;;
+    --reason)   reason="${2:-}"; shift 2 ;;
+    *) echo "atelier-subagent-ledger: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+index_dir="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}/state/subagent-ledger"
+
+valid_id() { case "$1" in ''|*[!A-Za-z0-9._-]*) return 1 ;; *) return 0 ;; esac; }
+
+ledger_of() { printf '%s/.task-log/subagents.jsonl' "$1"; }
+
+now_epoch() { date -u +%s; }
+
+# An id is open when it has a start event and no later finish event.
+open_entries() {
+  jq -cs '
+    reduce .[] as $e ({};
+      if $e.event == "start" then .[$e.agent_id] = $e
+      elif $e.event == "finish" then del(.[$e.agent_id])
+      else . end)
+    | to_entries | map(.value) | .[]' "$1" 2>/dev/null
+}
+
+ttl_of() {
+  local t=""
+  [ -f "$1/.atelier.json" ] && t="$(jq -r '.ownerTtlSeconds // empty' "$1/.atelier.json" 2>/dev/null || true)"
+  case "$t" in ''|*[!0-9]*) t="$DEFAULT_TTL_SECONDS" ;; esac
+  printf '%s' "$t"
+}
+
+prune_index() {
+  [ -d "$index_dir" ] || return 0
+  local f w
+  for f in "$index_dir"/*; do
+    [ -f "$f" ] || continue
+    w="$(cat "$f" 2>/dev/null)"
+    [ -d "$w" ] || rm -f "$f" 2>/dev/null
+  done
+  return 0
+}
+
+case "$sub" in
+  start)
+    [ -n "$wt" ] && [ -d "$wt" ] || { echo "atelier-subagent-ledger: --worktree must be an existing directory" >&2; exit 2; }
+    valid_id "$agent_id" || { echo "atelier-subagent-ledger: --agent-id missing or has invalid characters" >&2; exit 2; }
+    [ -n "$type" ] || { echo "atelier-subagent-ledger: --type is required" >&2; exit 2; }
+    wt="$(cd "$wt" && pwd -P)"
+    ledger="$(ledger_of "$wt")"
+    mkdir -p "$wt/.task-log" "$index_dir" || exit 2
+    if [ -f "$ledger" ] && open_entries "$ledger" | jq -e --arg id "$agent_id" 'select(.agent_id == $id)' >/dev/null 2>&1; then
+      exit 0
+    fi
+    jq -cn --arg id "$agent_id" --arg t "$type" --arg s "$step" --argjson ts "$(now_epoch)" \
+      '{event:"start", agent_id:$id, agent_type:$t, step:$s, ts:$ts}' >> "$ledger" || exit 2
+    printf '%s' "$wt" > "$index_dir/$agent_id" || exit 2
+    ;;
+
+  finish)
+    valid_id "$agent_id" || { echo "atelier-subagent-ledger: --agent-id missing or has invalid characters" >&2; exit 2; }
+    case "$state" in done|stopped|failed|superseded-by-resume) ;; *) echo "atelier-subagent-ledger: invalid --state: $state" >&2; exit 2 ;; esac
+    if [ -z "$wt" ] && [ -f "$index_dir/$agent_id" ]; then wt="$(cat "$index_dir/$agent_id" 2>/dev/null)"; fi
+    if [ -n "$wt" ] && [ -f "$(ledger_of "$wt")" ]; then
+      ledger="$(ledger_of "$wt")"
+      if open_entries "$ledger" | jq -e --arg id "$agent_id" 'select(.agent_id == $id)' >/dev/null 2>&1; then
+        jq -cn --arg id "$agent_id" --arg st "$state" --arg r "$reason" --argjson ts "$(now_epoch)" \
+          '{event:"finish", agent_id:$id, state:$st, reason:$r, ts:$ts}' >> "$ledger" || exit 2
+      fi
+    fi
+    rm -f "$index_dir/$agent_id" 2>/dev/null
+    prune_index
+    ;;
+
+  live)
+    [ -n "$wt" ] || { echo "atelier-subagent-ledger: --worktree is required" >&2; exit 2; }
+    ledger="$(ledger_of "$wt")"
+    [ -f "$ledger" ] || exit 0
+    ttl="$(ttl_of "$wt")"
+    out="$(open_entries "$ledger" | jq -r --argjson now "$(now_epoch)" --argjson ttl "$ttl" '
+      ($now - .ts) as $age
+      | [.agent_id, .agent_type, (.step // ""), ($age|tostring), (if $age < $ttl then "fresh" else "stale" end)]
+      | @tsv')" || exit 2
+    [ -n "$out" ] || exit 0
+    printf '%s\n' "$out"
+    exit 3
+    ;;
+
+  *) echo "atelier-subagent-ledger: unknown subcommand: $sub" >&2; usage >&2; exit 2 ;;
+esac
