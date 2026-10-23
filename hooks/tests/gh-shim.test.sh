@@ -237,6 +237,36 @@ blocked "symlinked author -> ~/.config/gh (inline ATELIER_CONFIG_DIR)" none \
   "ATELIER_CONFIG_DIR='$SYM' GH_CONFIG_DIR='$SYM/gh/author' gh pr review 1 --approve"
 blocked "symlinked author -> \$XDG_CONFIG_HOME/gh" none 'gh pr review 1 --approve' \
   ATELIER_CONFIG_DIR="$SYMX" GH_CONFIG_DIR="$SYMX/gh/author" XDG_CONFIG_HOME="$XDGH"
+# Inline HOME= must not hide the personal dir: the shim also asks the user database.
+# Seam: stub id/dscl/getent on PATH (the shim resolves them through PATH) that report
+# the hermetic HOME as the account home; nothing in the shim trusts a test variable.
+PWSTUB="$TMP/pwstub"; mkdir -p "$PWSTUB"
+printf '#!/bin/sh\necho testuser\n' > "$PWSTUB/id"
+printf '#!/bin/sh\necho "NFSHomeDirectory: %s"\n' "$HOME_DIR" > "$PWSTUB/dscl"
+printf '#!/bin/sh\necho "testuser:x:1:1::%s:/bin/sh"\n' "$HOME_DIR" > "$PWSTUB/getent"
+chmod +x "$PWSTUB/id" "$PWSTUB/dscl" "$PWSTUB/getent"
+blocked "symlinked author + inline HOME=<other> (passwd home)" none \
+  "HOME='$TMP/other' gh pr review 1 --approve" \
+  PATH="$PWSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYM" GH_CONFIG_DIR="$SYM/gh/author"
+blocked "symlinked author + inline HOME=/nonexistent (passwd home)" none \
+  "HOME=/nonexistent gh pr review 1 --approve" \
+  PATH="$PWSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYM" GH_CONFIG_DIR="$SYM/gh/author"
+blocked "symlinked author + inline XDG_CONFIG_HOME=<other> (HOME intact)" none \
+  "XDG_CONFIG_HOME='$TMP/other' gh pr review 1 --approve" \
+  ATELIER_CONFIG_DIR="$SYM" GH_CONFIG_DIR="$SYM/gh/author"
+blocked "symlinked author + inline XDG_CONFIG_HOME=/nonexistent + HOME=/nonexistent (passwd home)" none \
+  "HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent gh pr review 1 --approve" \
+  PATH="$PWSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYM" GH_CONFIG_DIR="$SYM/gh/author"
+# Passwd lookup failing entirely drops only that candidate: $HOME/XDG checks still apply.
+FAILSTUB="$TMP/pwfail"; mkdir -p "$FAILSTUB"
+for b in id dscl getent; do printf '#!/bin/sh\nexit 1\n' > "$FAILSTUB/$b"; chmod +x "$FAILSTUB/$b"; done
+blocked "passwd lookup fails: symlinked author still blocked via intact HOME" none 'gh pr review 1 --approve' \
+  PATH="$FAILSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYM" GH_CONFIG_DIR="$SYM/gh/author"
+blocked "passwd lookup fails: symlinked author still blocked via XDG_CONFIG_HOME" none 'gh pr review 1 --approve' \
+  PATH="$FAILSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYMX" GH_CONFIG_DIR="$SYMX/gh/author" XDG_CONFIG_HOME="$XDGH"
+passes "passwd lookup fails + inline HOME=/nonexistent: fail-open for the passwd candidate only (pinned)" none \
+  'HOME=/nonexistent gh pr review 1 --approve' $'ARG[pr]\nARG[review]\nARG[1]\nARG[--approve]' \
+  PATH="$FAILSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYM" GH_CONFIG_DIR="$SYM/gh/author"
 passes "real (non-symlinked) author dir still passes" none 'gh pr review 1 --approve' $'ARG[pr]\nARG[review]\nARG[1]\nARG[--approve]' \
   ATELIER_CONFIG_DIR="$REALD" GH_CONFIG_DIR="$REALD/gh/author"
 
