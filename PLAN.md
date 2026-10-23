@@ -170,6 +170,7 @@ Lives in `settings.template.json`. `/next-task` instantiates a per-task `setting
 - `Bash(pnpm publish*)`, `npm publish*`.
 - `Bash(curl*|*sh*)`, `wget*|*sh*`, plus the process-substitution forms `*<(curl*`, `*<(wget*` (catches `bash <(curl url)`, `source <(curl url)`).
 - `Read(~/.ssh/**)`, `~/.aws/**`, `~/.gnupg/**`, `~/.config/gh/**`.
+- `Read(.env*)` — project root, task worktree and every sibling worktree (`./.env*`, `<worktree>/.env*`, `<worktree>-worktrees/**/.env*`). Finding (#604): before this change no `Read` deny covered `.env*` (only `Edit`/`Write` were in Ask) while the allow list grants `Read(<worktree>/**)` and `Read(<worktree>-worktrees/**)`, so secrets were readable. Deny wins over allow; the broad glob also covers `.env.example` and `.envrc`.
 - `Edit(~/.zshrc)`, `~/.bashrc`, `~/.ssh/**`.
 - `Edit(.github/workflows/**)`.
 - `Edit(package.json)` and `Edit(pnpm-lock.yaml)` — always via `pnpm add/remove/update`.

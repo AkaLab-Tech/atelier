@@ -380,6 +380,17 @@ When a gate run is denied anyway:
   between sessions is itself denied (`[Auto-Mode Bypass]`), so no session
   forwards the authorization or the command.
 
+### Sub-agent lifecycle: no orphaned children (#577)
+
+A `task-orchestrator` hands back only when no sub-agent it dispatched is still running, unless the report names it. What the tooling provides:
+
+- **Documented.** Sub-agents spawned from the main conversation run in the background by default; results arrive as a completion notification that re-invokes the parent, so nothing needs polling. In an interactive terminal a nested spawner waits for its background children; in `claude -p` / the SDK it does not, and an orphan's result lands in the main conversation. `TaskStop` stops a background task by ID. `SubagentStop` and `Stop` hooks receive the stopping agent's ID and type; tool events inside a sub-agent carry `agent_id` / `agent_type`.
+- **Inferred, not verified.** That an orchestrator's own `TaskStop` can stop the children it launched; that a nested dispatch returns the child's agent ID at launch; that `SubagentStop` fires on `TaskStop`; that a denied `SubagentHandback` keeps the agent running. Because hook data is session-scoped, the authority is a per-worktree ledger the orchestrator writes (`atelier-subagent-ledger`, `.task-log/subagents.jsonl`); hooks only close entries and enforce disclosure.
+
+The rule: before a terminal or `held` report the orchestrator checks the ledger and, for each live child, waits (ends its turn and resumes on the completion notification), stops it (`TaskStop`, then records `stopped`), or discloses it in a `Live sub-agents:` line. In auto mode a `PreToolUse` hook on `SubagentHandback` denies an undisclosed live child; disclosure always unblocks, and every missing-data case fails open. Waiting means the completion notification, never a `sleep`, a poll or a wait loop.
+
+`/atelier:resume-task` runs the same check as a preflight: a fresh live entry from a previous run holds the resume (`held: live sub-agent(s) from a previous run in <wt>: <ids>`), in every mode and without a selector. The operator re-runs the command once the child finished, or adds `--ignore-live` for a hung child.
+
 ## Operating against the task worktree (cwd vs paths)
 
 Your subprocess sandbox inherits its current working directory from the parent invocation. When `/atelier:next-task` (or another caller) dispatches you to work on a task, the worktree has been created at `<worktree-path>` (the absolute path arrives in your briefing) — but **your cwd is NOT inside it**. The cwd is whatever the operator started Claude Code from (typically the main repo or the operator's home dir).
