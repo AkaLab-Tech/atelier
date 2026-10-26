@@ -189,15 +189,29 @@ if [ -f "$TARGET" ]; then
     warn "$TARGET is not valid JSON — leaving alone (operator must repair manually)"
     exit 0
   fi
-  if ! printf '%s' "$EXISTING" | jq -e '((.autoMode.allow // []) | type == "array") and ((.autoMode.environment // []) | type == "array")' >/dev/null 2>&1; then
-    warn "$TARGET has a non-array autoMode.allow or autoMode.environment — leaving alone"
+  if ! printf '%s' "$EXISTING" | jq -e '((.autoMode.allow // []) | type == "array") and ((.autoMode.environment // []) | type == "array") and ((.autoMode.soft_deny // []) | type == "array")' >/dev/null 2>&1; then
+    warn "$TARGET has a non-array autoMode.allow, autoMode.environment or autoMode.soft_deny — leaving alone"
     exit 0
   fi
 fi
 
 # {{registered_projects}}: every project in projects.json as "<path> (origin
-# <owner>/<name>)", the remote read with `git -C <path> remote get-url origin`;
+# <owner>/<name>, <public|private|visibility unknown>)"; visibility comes from
+# `gh repo view` and degrades to "visibility unknown" when gh is missing or
+# fails. The remote read with `git -C <path> remote get-url origin`;
 # a path that is gone or has no origin is listed without the remote.
+repo_visibility() {
+  local v=""
+  if command -v gh >/dev/null 2>&1; then
+    v="$(gh repo view "$1" --json visibility --jq '.visibility' 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+  fi
+  case "$v" in
+    public|private) printf '%s' "$v" ;;
+    internal) printf 'private' ;;
+    *) printf 'visibility unknown' ;;
+  esac
+}
+
 render_registered_projects() {
   local pf="$CONFIG_DIR/projects.json" p url slug out="" item
   if [ -f "$pf" ] && jq empty "$pf" >/dev/null 2>&1; then
@@ -209,7 +223,7 @@ render_registered_projects() {
         slug="$(printf '%s' "${url%.git}" | sed -E 's#^.*[:/]([^:/]+/[^/]+)$#\1#')"
       fi
       item="$p"
-      [ -n "$slug" ] && item="$p (origin $slug)"
+      [ -n "$slug" ] && item="$p (origin $slug, $(repo_visibility "$slug"))"
       out="${out:+$out; }$item"
     done < <(jq -r '.projects // {} | keys[]' "$pf")
   fi
@@ -221,14 +235,14 @@ REGISTERED="$(render_registered_projects)"
 # gsub's replacement is literal text (no backreferences), so paths are safe.
 # shellcheck disable=SC2016  # jq program, not shell
 MANAGED="$(jq -c --arg r "$REGISTERED" '
-  .autoMode | {allow: .allow, environment: (.environment // [])}
+  .autoMode | {allow: .allow, environment: (.environment // []), soft_deny: (.soft_deny // [])}
   | map_values(map(gsub("\\{\\{registered_projects\\}\\}"; $r)))' "$TEMPLATE")"
 
 # shellcheck disable=SC2016  # jq program, not shell
 JQ_DEFS='
   def ismanaged: type == "string" and startswith("[atelier-managed:");
   def mid: sub("^\\[atelier-managed:(?<id>[^\\]]*)\\].*"; "\(.id)");
-  def keys2: ["allow", "environment"];
+  def keys2: ["allow", "environment", "soft_deny"];
 '
 
 # shellcheck disable=SC2016
@@ -265,13 +279,13 @@ DIFF_PROG="$JQ_DEFS"'
    + [$w | to_entries[] | select($c[.key] != null and $c[.key] != .value) | "~ [" + .key + "] " + (.value | body)]
    + [$c | to_entries[] | select($w[.key] == null) | "- [" + .key + "]"])
   | .[]'
-printf 'autoMode.allow managed-entry changes for %s:\n' "$TARGET"
-jq -nr --arg k allow --argjson m "$MANAGED" --argjson old "$EXISTING" "$DIFF_PROG" | sed 's/^/  /'
-ENV_DIFF="$(jq -nr --arg k environment --argjson m "$MANAGED" --argjson old "$EXISTING" "$DIFF_PROG")"
-if [ -n "$ENV_DIFF" ]; then
-  printf 'autoMode.environment managed-entry changes for %s:\n' "$TARGET"
-  printf '%s\n' "$ENV_DIFF" | sed 's/^/  /'
-fi
+for k in allow environment soft_deny; do
+  K_DIFF="$(jq -nr --arg k "$k" --argjson m "$MANAGED" --argjson old "$EXISTING" "$DIFF_PROG")"
+  if [ -n "$K_DIFF" ]; then
+    printf 'autoMode.%s managed-entry changes for %s:\n' "$k" "$TARGET"
+    printf '%s\n' "$K_DIFF" | sed 's/^/  /'
+  fi
+done
 
 if ! $APPLY; then
   $QUIET || printf 'Read-only: nothing written. Re-run with --apply (after the operator confirms) to write it.\n'

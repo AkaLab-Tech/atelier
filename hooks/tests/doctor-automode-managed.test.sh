@@ -13,6 +13,8 @@
 #   M9  (#633) allow in sync, environment entries missing -> environment WARN + fix
 #   M10 (#633) environment entry stale -> environment WARN, file byte-identical
 #   M11 (#633) environment in sync, allow stale -> allow WARN only
+#   M12 (#633) only environment stale (allow + soft_deny in sync) -> environment WARN only, no allow WARN
+#   M13 (#633) soft_deny stale / missing -> soft_deny WARN only + fix, file byte-identical
 #   P1  (#633) hand-written trusted-repo entry naming a gone path -> WARN + --replace-path fix
 #   P2  same, no registered candidate -> WARN + edit-the-entry fix
 #   P3  managed / non-trust / absent environment entries -> OK, no warning
@@ -74,7 +76,8 @@ WA="$(jq -c '.autoMode.allow' "$TREE/templates/automode.user.json")"
 # No projects.json in the scratch config dir -> placeholder renders as below.
 # shellcheck disable=SC2016  # jq program, not shell
 WE="$(jq -c '.autoMode.environment | map(gsub("\\{\\{registered_projects\\}\\}"; "(no project registered yet)"))' "$TREE/templates/automode.user.json")"
-IN_SYNC="$(jq -nc --argjson a "$WA" --argjson e "$WE" '{autoMode:{allow:(["$defaults"]+$a),environment:(["$defaults"]+$e)}}')"
+WS="$(jq -c '.autoMode.soft_deny' "$TREE/templates/automode.user.json")"
+IN_SYNC="$(jq -nc --argjson a "$WA" --argjson e "$WE" --argjson s "$WS" '{autoMode:{allow:(["$defaults"]+$a),environment:(["$defaults"]+$e),soft_deny:(["$defaults"]+$s)}}')"
 
 # M1
 scenario m1 "$IN_SYNC"
@@ -129,12 +132,12 @@ grep -q '^SKIPMARK .*atelier-automode-sync failed, rc=2' "$HOST_OUT" && [ ! -s "
 cp "$TMP/tmpl.good" "$TREE/templates/automode.user.json"
 
 # M9: allow in sync, environment array absent
-scenario m9 "$(jq -nc --argjson a "$WA" '{autoMode:{allow:(["$defaults"]+$a)}}')"
+scenario m9 "$(jq -nc --argjson a "$WA" --argjson s "$WS" '{autoMode:{allow:(["$defaults"]+$a),soft_deny:(["$defaults"]+$s)}}')"
 grep -q '^WARNMARK managed autoMode environment entries (trusted repos, flows) missing or stale' "$HOST_OUT" && grep -q '^/atelier:update' "$MANUAL_OUT" \
   && pass "M9: missing environment entries -> environment WARN + /atelier:update fix" || fail "M9: (host: $(cat "$HOST_OUT"))"
 
 # M10: environment stale (old trusted-repos text), allow in sync
-scenario m10 "$(jq -nc --argjson a "$WA" --argjson e "$WE" '{autoMode:{allow:(["$defaults"]+$a),environment:(["$defaults", "[atelier-managed:trusted-repos] OLD stale text", $e[1]])}}')"
+scenario m10 "$(jq -nc --argjson a "$WA" --argjson e "$WE" --argjson s "$WS" '{autoMode:{allow:(["$defaults"]+$a),environment:(["$defaults", "[atelier-managed:trusted-repos] OLD stale text", $e[1]]),soft_deny:(["$defaults"]+$s)}}')"
 before="$(cat "$ATELIER_CONFIG_DIR/settings.json")"
 grep -q '^WARNMARK managed autoMode environment entries' "$HOST_OUT" && grep -q '^/atelier:update' "$MANUAL_OUT" \
   && pass "M10: stale environment entry -> environment WARN + manual fix" || fail "M10: (host: $(cat "$HOST_OUT"))"
@@ -142,9 +145,30 @@ grep -q '^WARNMARK managed autoMode environment entries' "$HOST_OUT" && grep -q 
   && pass "M10: settings.json untouched, no temp files" || fail "M10: file changed"
 
 # M11: environment in sync, allow stale
-scenario m11 "$(jq -nc --argjson e "$WE" '{autoMode:{allow:["$defaults","[atelier-managed:gate-runs] stale old text"],environment:(["$defaults"]+$e)}}')"
-grep -q '^WARNMARK managed autoMode gate-run rule missing or stale' "$HOST_OUT" && ! grep -q 'environment entries' "$HOST_OUT" \
+scenario m11 "$(jq -nc --argjson e "$WE" --argjson s "$WS" '{autoMode:{allow:["$defaults","[atelier-managed:gate-runs] stale old text"],environment:(["$defaults"]+$e),soft_deny:(["$defaults"]+$s)}}')"
+grep -q '^WARNMARK managed autoMode gate-run rule missing or stale' "$HOST_OUT" && ! grep -q 'environment entries' "$HOST_OUT" && ! grep -q 'soft_deny entries' "$HOST_OUT" \
   && pass "M11: only the allow WARN when the environment entries are in sync" || fail "M11: (host: $(cat "$HOST_OUT"))"
+
+# M12: only environment stale -> exactly one WARN (environment), no allow WARN
+scenario m12 "$(jq -nc --argjson a "$WA" --argjson e "$WE" --argjson s "$WS" '{autoMode:{allow:(["$defaults"]+$a),environment:(["$defaults", "[atelier-managed:trusted-repos] OLD stale text", $e[1]]),soft_deny:(["$defaults"]+$s)}}')"
+before="$(cat "$ATELIER_CONFIG_DIR/settings.json")"
+[ "$(grep -c '^WARNMARK' "$HOST_OUT")" -eq 1 ] && grep -q '^WARNMARK managed autoMode environment entries' "$HOST_OUT" \
+  && ! grep -q 'gate-run rule' "$HOST_OUT" && ! grep -q '(allow entries)' "$HOST_OUT" && ! grep -q 'soft_deny' "$HOST_OUT" \
+  && grep -q '^/atelier:update' "$MANUAL_OUT" \
+  && pass "M12: only-stale environment prints only the environment WARN (no allow, no soft_deny WARN)" || fail "M12: (host: $(cat "$HOST_OUT"))"
+[ "$before" = "$(cat "$ATELIER_CONFIG_DIR/settings.json")" ] && pass "M12: file untouched" || fail "M12: file changed"
+
+# M13: soft_deny stale (then missing) with allow + environment in sync -> soft_deny WARN only
+scenario m13 "$(jq -nc --argjson a "$WA" --argjson e "$WE" '{autoMode:{allow:(["$defaults"]+$a),environment:(["$defaults"]+$e),soft_deny:["$defaults","[atelier-managed:dispatch-other] OLD stale text"]}}')"
+before="$(cat "$ATELIER_CONFIG_DIR/settings.json")"
+[ "$(grep -c '^WARNMARK' "$HOST_OUT")" -eq 1 ] && grep -q '^WARNMARK managed autoMode soft_deny entries missing or stale' "$HOST_OUT" \
+  && ! grep -q '(allow entries)' "$HOST_OUT" && ! grep -q 'environment entries' "$HOST_OUT" && grep -q '^/atelier:update' "$MANUAL_OUT" \
+  && pass "M13: stale soft_deny entry -> soft_deny WARN only + /atelier:update fix" || fail "M13: (host: $(cat "$HOST_OUT"))"
+[ "$before" = "$(cat "$ATELIER_CONFIG_DIR/settings.json")" ] && [ -z "$(find "$ATELIER_CONFIG_DIR" -name 'settings.json.atelier.*')" ] \
+  && pass "M13: settings.json untouched, no temp files" || fail "M13: file changed"
+scenario m13b "$(jq -nc --argjson a "$WA" --argjson e "$WE" '{autoMode:{allow:(["$defaults"]+$a),environment:(["$defaults"]+$e)}}')"
+[ "$(grep -c '^WARNMARK' "$HOST_OUT")" -eq 1 ] && grep -q '^WARNMARK managed autoMode soft_deny entries missing or stale' "$HOST_OUT" \
+  && pass "M13: absent soft_deny array -> soft_deny WARN only" || fail "M13b: (host: $(cat "$HOST_OUT"))"
 
 # ---- check_automode_environment_stale_paths (#633) ------------------------
 GONE="/Users/nobody-atelier-test/Work/gone-proj"

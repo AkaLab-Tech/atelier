@@ -1269,10 +1269,17 @@ check_atelier_automode_managed() {
   case "$rc" in
     0) push_host "$OK managed autoMode gate-run rule in sync in $target (allow and environment entries)" ;;
     1)
-      push_host "$WARN managed autoMode gate-run rule missing or stale in $target (allow entries) — auto mode may prompt on atelier's own actions"
+      case "$out" in
+        *"autoMode.allow managed-entry changes"*)
+          push_host "$WARN managed autoMode gate-run rule missing or stale in $target (allow entries) — auto mode may prompt on atelier's own actions" ;;
+      esac
       case "$out" in
         *"autoMode.environment managed-entry changes"*)
           push_host "$WARN managed autoMode environment entries (trusted repos, flows) missing or stale in $target — the classifier lacks atelier's trusted-repo context" ;;
+      esac
+      case "$out" in
+        *"autoMode.soft_deny managed-entry changes"*)
+          push_host "$WARN managed autoMode soft_deny entries missing or stale in $target — non-atelier agent spawns are not flagged for approval" ;;
       esac
       push_fix_manual "/atelier:update   # shows the autoMode diff and applies it only after you confirm"
       ;;

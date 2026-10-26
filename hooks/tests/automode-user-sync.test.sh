@@ -19,6 +19,12 @@
 #   S12 idempotence with a registry; registry change detected as stale
 #   S13 read-only default writes nothing
 #   S14 template guard: no --admin / --auto / force-push grant in managed allow
+#   S15 (#633) managed soft_deny: rendered on an absent file, appended after
+#       operator soft_deny entries (kept byte-identical), stale replaced
+#   S16 (#633) per-project visibility via a stubbed gh: PUBLIC -> public,
+#       PRIVATE / INTERNAL -> private, failing / empty gh -> "visibility
+#       unknown", gh absent from PATH -> "visibility unknown"
+#   S17 (#633) diff prints a category header only for categories with changes
 #
 # Fixtures are synthetic. Hermetic: scratch HOME + ATELIER_CONFIG_DIR.
 #
@@ -36,6 +42,19 @@ command -v jq >/dev/null 2>&1 || { echo "  SKIP: jq not on PATH"; exit 0; }
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"; mkdir -p "$HOME"
 fails=0
+# gh is always stubbed (never the real one, never the network): the stub answers
+# `gh repo view <owner/name> --json visibility ...` from $GH_STUB_DIR/<owner>__<name>
+# (file content = what gh would print) and exits 1 when no such file exists.
+GH_STUB_DIR="$TMP/ghstub"; mkdir -p "$GH_STUB_DIR" "$TMP/stubbin"
+cat > "$TMP/stubbin/gh" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = repo ] && [ "${2:-}" = view ] || exit 2
+f="$GH_STUB_DIR/${3//\//__}"
+[ -f "$f" ] || exit 1
+cat "$f"
+STUB
+chmod +x "$TMP/stubbin/gh"
+export GH_STUB_DIR PATH="$TMP/stubbin:$PATH"
 pass() { printf '  PASS: %s\n' "$1"; }
 fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 
@@ -45,12 +64,18 @@ echo "atelier-automode-sync (#456)"
 # the {{registered_projects}} placeholder renders as NOPROJ.
 NOPROJ="(no project registered yet)"
 WA="$(jq -c '.autoMode.allow' "$TEMPLATE")"
+WS="$(jq -c '.autoMode.soft_deny' "$TEMPLATE")"
 # shellcheck disable=SC2016  # jq program, not shell
 WE="$(jq -c --arg r "$NOPROJ" '.autoMode.environment | map(gsub("\\{\\{registered_projects\\}\\}"; $r))' "$TEMPLATE")"
 MANAGED_TXT="$(jq -r '.autoMode.allow[0]' "$TEMPLATE")"
 case "$MANAGED_TXT" in '[atelier-managed:gate-runs] '*) pass "template allow[0] starts with the gate-runs marker" ;; *) fail "template entry lacks marker" ;; esac
 [ "$(jq -r '.autoMode.allow | length' "$TEMPLATE")" -eq 5 ] && [ "$(jq -r '.autoMode.environment | length' "$TEMPLATE")" -eq 2 ] \
-  && pass "template ships 5 managed allow and 2 managed environment entries" || fail "template entry counts changed"
+  && [ "$(jq -r '.autoMode.soft_deny | length' "$TEMPLATE")" -eq 1 ] \
+  && pass "template ships 5 managed allow, 2 managed environment and 1 managed soft_deny entries" || fail "template entry counts changed"
+[ "$(jq -r '.autoMode.soft_deny[0] | startswith("[atelier-managed:dispatch-other] ")' "$TEMPLATE")" = true ] \
+  && pass "template soft_deny[0] carries the dispatch-other marker" || fail "template soft_deny lacks dispatch-other marker"
+jq -e '.autoMode.allow | map(select(startswith("[atelier-managed:merge]")))[0] | test("AtelierReviewer") and test("--match-head-commit")' "$TEMPLATE" >/dev/null \
+  && pass "template merge entry names AtelierReviewer and requires --match-head-commit" || fail "template merge entry lacks AtelierReviewer / --match-head-commit"
 
 # run <cfg> [args...] — prints combined output, then RC=<n>.
 run() {
@@ -75,14 +100,14 @@ printf '%s' "$out" | grep -q 'Read-only: nothing written' && fail "S1: --quiet s
 CFG="$TMP/s2"
 out="$(run "$CFG" --apply)"
 printf '%s' "$out" | grep -q 'RC=0' && pass "S2: --apply on absent config dir exits 0" || fail "S2: rc (out: $out)"
-want="$(jq -nc --argjson a "$WA" --argjson e "$WE" '{autoMode:{allow:(["$defaults"] + $a),environment:(["$defaults"] + $e)}}')"
+want="$(jq -nc --argjson a "$WA" --argjson e "$WE" --argjson s "$WS" '{autoMode:{allow:(["$defaults"] + $a),environment:(["$defaults"] + $e),soft_deny:(["$defaults"] + $s)}}')"
 [ "$(jq -cS . "$CFG/settings.json" 2>/dev/null)" = "$(printf '%s' "$want" | jq -cS .)" ] \
-  && pass "S2: absent file -> [\"\$defaults\", managed...] in both allow and environment" || fail "S2: got $(cat "$CFG/settings.json" 2>&1)"
+  && pass "S2: absent file -> [\"\$defaults\", managed...] in allow, environment and soft_deny" || fail "S2: got $(cat "$CFG/settings.json" 2>&1)"
 # existing file without autoMode
 CFG="$TMP/s2b"; mkdir -p "$CFG"
 printf '{"env":{"K":"v"}}\n' > "$CFG/settings.json"
 run "$CFG" --apply >/dev/null
-[ "$(jq -cS . "$CFG/settings.json")" = "$(jq -ncS --argjson a "$WA" --argjson e "$WE" '{env:{K:"v"},autoMode:{allow:(["$defaults"]+$a),environment:(["$defaults"]+$e)}}')" ] \
+[ "$(jq -cS . "$CFG/settings.json")" = "$(jq -ncS --argjson a "$WA" --argjson e "$WE" --argjson s "$WS" '{env:{K:"v"},autoMode:{allow:(["$defaults"]+$a),environment:(["$defaults"]+$e),soft_deny:(["$defaults"]+$s)}}')" ] \
   && pass "S2: file without autoMode gets \$defaults + managed, env untouched" || fail "S2b: got $(cat "$CFG/settings.json")"
 
 # S3 --------------------------------------------------------------------
@@ -113,8 +138,11 @@ want="$(jq -c --argjson m "$WA" '.autoMode.allow + $m' "$TMP/s3.orig")"
 got="$(jq -c '.autoMode.environment' "$CFG/settings.json")"
 want="$(jq -c --argjson m "$WE" '.autoMode.environment + $m' "$TMP/s3.orig")"
 [ "$got" = "$want" ] && pass "S3: 2 hand-written environment entries kept first, 2 managed appended, no \$defaults added" || fail "S3: env got $got"
-[ "$(jq -c 'del(.autoMode.allow, .autoMode.environment)' "$CFG/settings.json")" = "$(jq -c 'del(.autoMode.allow, .autoMode.environment)' "$TMP/s3.orig")" ] \
-  && pass "S3: soft_deny, permissions, model unchanged" || fail "S3: other keys changed"
+got="$(jq -c '.autoMode.soft_deny' "$CFG/settings.json")"
+want="$(jq -c --argjson m "$WS" '.autoMode.soft_deny + $m' "$TMP/s3.orig")"
+[ "$got" = "$want" ] && pass "S3: operator soft_deny entry kept first, managed soft_deny appended" || fail "S3: soft_deny got $got"
+[ "$(jq -c 'del(.autoMode.allow, .autoMode.environment, .autoMode.soft_deny)' "$CFG/settings.json")" = "$(jq -c 'del(.autoMode.allow, .autoMode.environment, .autoMode.soft_deny)' "$TMP/s3.orig")" ] \
+  && pass "S3: permissions, model unchanged" || fail "S3: other keys changed"
 
 # S4 --------------------------------------------------------------------
 CFG="$TMP/s4"; mkdir -p "$CFG"
@@ -212,12 +240,14 @@ P="$TMP/proj"; mkdir -p "$P"
 git init -q "$P/alpha" && git -C "$P/alpha" remote add origin https://github.com/acme/widget.git
 git init -q "$P/beta" && git -C "$P/beta" remote add origin git@github.com:acme/gadget.git
 git init -q "$P/plain"
+printf 'PUBLIC\n' > "$GH_STUB_DIR/acme__widget"
+printf 'INTERNAL\n' > "$GH_STUB_DIR/acme__gadget"
 CFG="$TMP/s11"; mkdir -p "$CFG"
 jq -n --arg a "$P/alpha" --arg b "$P/beta" --arg g "$P/gone" --arg p "$P/plain" '{projects:{($a):{},($b):{},($g):{},($p):{}}}' > "$CFG/projects.json"
 run "$CFG" --apply >/dev/null
 tr_entry="$(jq -r '.autoMode.environment[] | select(startswith("[atelier-managed:trusted-repos]"))' "$CFG/settings.json")"
-want_list="$P/alpha (origin acme/widget); $P/beta (origin acme/gadget); $P/gone; $P/plain"
-case "$tr_entry" in *"are $want_list. Each is"*) pass "S11: placeholder expands to path (origin owner/name); https and scp remotes parsed, missing path and no-origin repo listed bare" ;; *) fail "S11: entry: $tr_entry" ;; esac
+want_list="$P/alpha (origin acme/widget, public); $P/beta (origin acme/gadget, private); $P/gone; $P/plain"
+case "$tr_entry" in *"are $want_list. Each is"*) pass "S11: placeholder expands to path (origin owner/name, visibility); https and scp remotes parsed, missing path and no-origin repo listed bare" ;; *) fail "S11: entry: $tr_entry" ;; esac
 case "$tr_entry" in *'{{'*) fail "S11: unexpanded placeholder left" ;; *) pass "S11: no {{ placeholder left in the written entry" ;; esac
 [ "$(jq -r '.autoMode.environment[] | select(startswith("[atelier-managed:flows]"))' "$CFG/settings.json")" = "$(jq -r '.[1]' <<< "$WE")" ] \
   && pass "S11: entries without the placeholder are written verbatim" || fail "S11: flows entry changed"
@@ -237,13 +267,14 @@ printf '%s' "$out" | grep -q 'RC=0' && printf '%s' "$out" | grep -q 'already in 
 run "$CFG" --apply >/dev/null
 cmp -s "$CFG/settings.json" "$TMP/s12.after1" && pass "S12: second --apply is a byte-identical no-op" || fail "S12: file changed on second apply"
 git init -q "$P/delta" && git -C "$P/delta" remote add origin https://github.com/acme/delta.git
+printf 'PRIVATE\n' > "$GH_STUB_DIR/acme__delta"
 jq --arg d "$P/delta" '.projects[$d] = {}' "$CFG/projects.json" > "$CFG/projects.json.new" && mv "$CFG/projects.json.new" "$CFG/projects.json"
 out="$(run "$CFG")"
 printf '%s' "$out" | grep -q 'RC=1' && printf '%s' "$out" | grep -qF '~ [trusted-repos]' \
   && pass "S12: a newly registered project makes trusted-repos stale (exit 1, ~ line)" || fail "S12: (out: $out)"
 cmp -s "$CFG/settings.json" "$TMP/s12.after1" && pass "S12: ...and the read-only run wrote nothing" || fail "S12: read-only run wrote"
 run "$CFG" --apply >/dev/null
-jq -r '.autoMode.environment[] | select(startswith("[atelier-managed:trusted-repos]"))' "$CFG/settings.json" | grep -qF "$P/delta (origin acme/delta)" \
+jq -r '.autoMode.environment[] | select(startswith("[atelier-managed:trusted-repos]"))' "$CFG/settings.json" | grep -qF "$P/delta (origin acme/delta, private)" \
   && pass "S12: --apply refreshes trusted-repos with the new project" || fail "S12: new project missing"
 
 # S13 -------------------------------------------------------------------
@@ -271,6 +302,86 @@ jq -e '.autoMode.allow | map(select(startswith("[atelier-managed:merge]")))[0] |
 # negative control: the guard flags permissive wording
 neg="$(jq -nr '{autoMode:{allow:["[atelier-managed:x] merging with --admin is allowed","[atelier-managed:y] merging with --auto is fine","[atelier-managed:z] a force-push is allowed"]}}' | jq -r "$GUARD" | wc -l | tr -d ' ')"
 [ "$neg" -eq 3 ] && pass "S14: guard self-check flags 3/3 permissive fixtures" || fail "S14: guard flagged $neg/3"
+
+# S15 -------------------------------------------------------------------
+# managed soft_deny: stale replaced in place, retired dropped, operator entries kept.
+CFG="$TMP/s15"; mkdir -p "$CFG"
+cat > "$CFG/settings.json" <<'JSON'
+{"autoMode":{"soft_deny":["Operator deny one","[atelier-managed:dispatch-other] OLD stale text","$defaults","[atelier-managed:retired-deny] gone now","Operator | deny two"]}}
+JSON
+cp "$CFG/settings.json" "$TMP/s15.orig"
+out="$(run "$CFG")"
+printf '%s' "$out" | grep -q 'autoMode.soft_deny managed-entry changes' && printf '%s' "$out" | grep -qF '~ [dispatch-other]' \
+  && printf '%s' "$out" | grep -qF -- '- [retired-deny]' \
+  && pass "S15: soft_deny diff shows ~ stale and - retired" || fail "S15: diff (out: $out)"
+cmp -s "$CFG/settings.json" "$TMP/s15.orig" && pass "S15: read-only run leaves soft_deny fixture untouched" || fail "S15: file changed without --apply"
+run "$CFG" --apply >/dev/null
+[ "$(jq -c '.autoMode.soft_deny' "$CFG/settings.json")" = "$(jq -nc --argjson m "$WS" --slurpfile o "$TMP/s15.orig" '[$o[0].autoMode.soft_deny[0], $m[0], "$defaults", $o[0].autoMode.soft_deny[4]]')" ] \
+  && pass "S15: stale managed soft_deny replaced in place, retired dropped, operator entries and \$defaults kept" || fail "S15: got $(jq -c '.autoMode.soft_deny' "$CFG/settings.json")"
+# non-array soft_deny is left alone
+CFG="$TMP/s15b"; mkdir -p "$CFG"
+printf '{"autoMode":{"soft_deny":"nope"}}\n' > "$CFG/settings.json"
+cp "$CFG/settings.json" "$TMP/s15b.orig"
+out="$(run "$CFG" --apply)"
+cmp -s "$CFG/settings.json" "$TMP/s15b.orig" && printf '%s' "$out" | grep -q 'RC=0' && printf '%s' "$out" | grep -q 'non-array' \
+  && pass "S15: non-array soft_deny left untouched, warned, rc 0" || fail "S15b: (out: $out)"
+
+# S16 -------------------------------------------------------------------
+# visibility rendering via the stubbed gh.
+P16="$TMP/p16"; mkdir -p "$P16"
+for n in pub priv intl bad empty; do
+  git init -q "$P16/$n" && git -C "$P16/$n" remote add origin "https://github.com/vis/$n.git"
+done
+printf 'PUBLIC\n' > "$GH_STUB_DIR/vis__pub"
+printf 'PRIVATE\n' > "$GH_STUB_DIR/vis__priv"
+printf 'INTERNAL\n' > "$GH_STUB_DIR/vis__intl"
+printf 'WEIRD\n' > "$GH_STUB_DIR/vis__bad"
+: > "$GH_STUB_DIR/vis__empty"
+CFG="$TMP/s16"; mkdir -p "$CFG"
+jq -n --arg d "$P16" '{projects:{($d+"/pub"):{},($d+"/priv"):{},($d+"/intl"):{},($d+"/bad"):{},($d+"/empty"):{}}}' > "$CFG/projects.json"
+run "$CFG" --apply >/dev/null
+tr_entry="$(jq -r '.autoMode.environment[] | select(startswith("[atelier-managed:trusted-repos]"))' "$CFG/settings.json")"
+# projects render in sorted-path order
+want_list="$P16/bad (origin vis/bad, visibility unknown); $P16/empty (origin vis/empty, visibility unknown); $P16/intl (origin vis/intl, private); $P16/priv (origin vis/priv, private); $P16/pub (origin vis/pub, public)"
+case "$tr_entry" in *"are $want_list. Each is"*) pass "S16: PUBLIC -> public, PRIVATE -> private, INTERNAL -> private, unrecognised/empty -> visibility unknown" ;; *) fail "S16: entry: $tr_entry" ;; esac
+# gh exits non-zero for every repo (stub files removed)
+rm -f "$GH_STUB_DIR"/vis__*
+CFG="$TMP/s16b"; mkdir -p "$CFG"; cp "$TMP/s16/projects.json" "$CFG/projects.json"
+run "$CFG" --apply >/dev/null
+tr_entry="$(jq -r '.autoMode.environment[] | select(startswith("[atelier-managed:trusted-repos]"))' "$CFG/settings.json")"
+want_list="$P16/bad (origin vis/bad, visibility unknown); $P16/empty (origin vis/empty, visibility unknown); $P16/intl (origin vis/intl, visibility unknown); $P16/priv (origin vis/priv, visibility unknown); $P16/pub (origin vis/pub, visibility unknown)"
+case "$tr_entry" in *"are $want_list. Each is"*) pass "S16: failing gh -> every project 'visibility unknown'" ;; *) fail "S16b: entry: $tr_entry" ;; esac
+# gh absent from PATH: minimal PATH of symlinks to the tools the helper needs, no gh
+NOGH="$TMP/nogh"; mkdir -p "$NOGH"
+for t in bash env jq git sed tr cat mktemp mv rm mkdir dirname basename date head sort cmp diff awk grep printf find ls; do
+  src="$(PATH="${PATH#"$TMP/stubbin:"}" command -v "$t" 2>/dev/null || true)"
+  [ -n "$src" ] && ln -sf "$src" "$NOGH/$t"
+done
+CFG="$TMP/s16c"; mkdir -p "$CFG"; cp "$TMP/s16/projects.json" "$CFG/projects.json"
+printf 'PUBLIC\n' > "$GH_STUB_DIR/vis__pub"   # would render public if the stub were reachable
+ATELIER_CONFIG_DIR="$CFG" PATH="$NOGH" NO_COLOR=1 "$NOGH/bash" "$SYNC" --apply >/dev/null 2>&1
+tr_entry="$(jq -r '.autoMode.environment[] | select(startswith("[atelier-managed:trusted-repos]"))' "$CFG/settings.json" 2>/dev/null)"
+case "$tr_entry" in *"$P16/pub (origin vis/pub, visibility unknown)"*) pass "S16: gh absent from PATH -> 'visibility unknown'" ;; *) fail "S16c: entry: $tr_entry" ;; esac
+rm -f "$GH_STUB_DIR"/vis__*
+# a project with no origin gets no visibility call at all
+case "$(jq -r '.autoMode.environment[] | select(startswith("[atelier-managed:trusted-repos]"))' "$TMP/s11/settings.json")" in
+  *"$P/plain."*) pass "S16: project without origin listed bare (no visibility)" ;; *) fail "S16: plain project rendering" ;; esac
+
+# S17 -------------------------------------------------------------------
+# a category header is printed only for categories with changes.
+CFG="$TMP/s17"; mkdir -p "$CFG"
+jq -nc --argjson a "$WA" --argjson e "$WE" --argjson s "$WS" '{autoMode:{allow:(["$defaults"]+$a),environment:(["$defaults"]+$e),soft_deny:(["$defaults","[atelier-managed:dispatch-other] OLD"])}}' > "$CFG/settings.json"
+out="$(run "$CFG")"
+printf '%s' "$out" | grep -q 'autoMode.soft_deny managed-entry changes' \
+  && ! printf '%s' "$out" | grep -q 'autoMode.allow managed-entry changes' \
+  && ! printf '%s' "$out" | grep -q 'autoMode.environment managed-entry changes' \
+  && pass "S17: only soft_deny stale -> only the soft_deny header" || fail "S17: (out: $out)"
+jq -nc --argjson a "$WA" --argjson s "$WS" '{autoMode:{allow:(["$defaults"]+$a),environment:["$defaults","[atelier-managed:flows] OLD"],soft_deny:(["$defaults"]+$s)}}' > "$CFG/settings.json"
+out="$(run "$CFG")"
+printf '%s' "$out" | grep -q 'autoMode.environment managed-entry changes' \
+  && ! printf '%s' "$out" | grep -q 'autoMode.allow managed-entry changes' \
+  && ! printf '%s' "$out" | grep -q 'autoMode.soft_deny managed-entry changes' \
+  && pass "S17: only environment stale -> only the environment header" || fail "S17b: (out: $out)"
 
 echo ""
 if [ "$fails" -eq 0 ]; then echo "automode-user-sync: all assertions passed."; exit 0
