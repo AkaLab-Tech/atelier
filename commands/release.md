@@ -80,7 +80,7 @@ A release has **no** roadmap/board item, so there is no tracking-file move to ma
 This command carries no `Edit` / `Write` tool — it cannot touch `.claude-plugin/plugin.json` (or the equivalent version file) itself, and would not even if it could: the bump is a specialist's deliverable like any other code change. Dispatch the `atelier:implementer` agent via `Task` with a narrow briefing:
 
 - `worktree_path`: the absolute path from step 5.
-- The **only** change to make: set `.claude-plugin/plugin.json`'s `.version` field (or the project's equivalent version manifest) to `<next_version>`. No other files.
+- The change this task makes: `.claude-plugin/plugin.json`'s `.version` field (or the project's equivalent version manifest) becomes `<next_version>`; that manifest is the only file in scope. Committing is the author agent's step.
 - `interactive: <bool>` from this command's interaction mode.
 
 Wait for the dispatch to report the edit is done before proceeding — do not assume it landed.
@@ -125,7 +125,7 @@ The tag targets the **merge commit SHA** captured in step 7, not whatever `origi
 Runs only when `<project>`'s `.claude-plugin/plugin.json` `name` is listed in the `akalab-tech` catalog (`AkaLab-Tech/claude-plugins` `.claude-plugin/marketplace.json`); otherwise skip to step 9. The catalog entry has no `ref`/`sha`, so installs would clone default-branch HEAD instead of the release.
 
 1. Resolve the peeled tag commit: `git -C <project> ls-remote origin refs/tags/v<next_version>^{}`. It **must equal** the step 7 merge sha; if it does not, stop and report both (never pin a different sha).
-2. Find the registered `claude-plugins` project in `$ATELIER_CONFIG_DIR/projects.json` (remote `AkaLab-Tech/claude-plugins`); if none is registered, report "tag pushed, but the catalog is not pinned — operators keep receiving the previous pinned release" and stop. Create a worktree on **`chore/pin-<plugin>-v<next_version>`** from its `origin/main` (same `git-wt` skill as step 5). **Prepare the pin with an `implementer` dispatch (`Task`, `atelier:implementer`), mirroring step 6 — this command's own turn never runs `pin-marketplace`, edits, or commits in that worktree.** The brief is narrow: the `worktree_path`, `interactive: <bool>`, this exact invocation, and "change only `.claude-plugin/marketplace.json`, only through this helper; do not commit or push":
+2. Find the registered `claude-plugins` project in `$ATELIER_CONFIG_DIR/projects.json` (remote `AkaLab-Tech/claude-plugins`); if none is registered, report "tag pushed, but the catalog is not pinned — operators keep receiving the previous pinned release" and stop. Create a worktree on **`chore/pin-<plugin>-v<next_version>`** from its `origin/main` (same `git-wt` skill as step 5). **Prepare the pin with an `implementer` dispatch (`Task`, `atelier:implementer`), mirroring step 6 — this command's own turn never runs `pin-marketplace`, edits, or commits in that worktree.** The brief states facts: the `worktree_path`, `interactive: <bool>`, and the change this task makes — this helper invocation. `.claude-plugin/marketplace.json` is the only file in scope; committing is `pr-opener`'s step:
 
    ```bash
    atelier-release pin-marketplace --marketplace <wt>/.claude-plugin/marketplace.json \

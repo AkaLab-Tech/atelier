@@ -60,7 +60,7 @@ Invoke the `planner` agent via the `Task` tool. The briefing must include:
 - `task_id`: the parsed id (with `#` prefix).
 - `project_root`: the absolute path resolved in Phase 1.
 - `entry_point`: `plan-task`.
-- **Dispatch prompt form and scope wording (#457)** — the planner brief follows the "Dispatch prompt form" and Scope wording rules of `/atelier:next-task` §8: the whole brief inline (files as data only), facts only, domain named plainly, no discussion of the permission system, no "you may" grants, no restated enforcement lists, no contract overrides, no task or session history.
+- **Dispatch prompt form and scope wording (#457)** — the planner brief follows the "Dispatch prompt form" and Scope wording rules of `/atelier:next-task` §8.
 
 **Denied dispatch (#457).** If the `Task` dispatch of the planner is denied by the auto-mode classifier, stop with `held: planner dispatch denied (<tag verbatim>) — <id>`. The brief is never reworded, split, or handed to another session. Interactive: the operator is asked once via `AskUserQuestion`, in this same session: re-dispatch the unchanged brief (recommended) / leave held. Only on the operator's own answer re-issue the identical brief, once; if it is denied again, stay held. Non-interactive: print the held line and stop. The session never compacts, restarts or clears itself to re-send a held dispatch. Record it as in `/atelier:next-task` §8 (`atelier-dispatch-denial record --command plan-task --agent planner --session-role plan …`, then `outcome`); a helper failure only warns.
 
