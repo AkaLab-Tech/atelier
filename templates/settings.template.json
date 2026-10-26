@@ -141,6 +141,9 @@
       "Write(<worktree>/pnpm-lock.yaml)",
       "Write(<worktree>-worktrees/**/pnpm-lock.yaml)",
 
+      "Edit(**/state/consent/**)",
+      "Write(**/state/consent/**)",
+
       "mcp__plugin_atelier_playwright__browser_run_code_unsafe"
     ],
 

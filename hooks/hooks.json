@@ -63,6 +63,14 @@
         "hooks": [
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/operator-consent.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/version-drift-nudge.sh"
           }
         ]
@@ -87,6 +95,15 @@
       }
     ],
     "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/block-consent-tamper.sh"
+          }
+        ]
+      },
       {
         "matcher": "Bash",
         "hooks": [
