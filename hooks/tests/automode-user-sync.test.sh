@@ -351,6 +351,14 @@ run "$CFG" --apply >/dev/null
 tr_entry="$(jq -r '.autoMode.environment[] | select(startswith("[atelier-managed:trusted-repos]"))' "$CFG/settings.json")"
 want_list="$P16/bad (origin vis/bad, visibility unknown); $P16/empty (origin vis/empty, visibility unknown); $P16/intl (origin vis/intl, visibility unknown); $P16/priv (origin vis/priv, visibility unknown); $P16/pub (origin vis/pub, visibility unknown)"
 case "$tr_entry" in *"are $want_list. Each is"*) pass "S16: failing gh -> every project 'visibility unknown'" ;; *) fail "S16b: entry: $tr_entry" ;; esac
+# offline/unauthenticated lookup against a previously known visibility: no downgrade
+CFG="$TMP/s16d"; mkdir -p "$CFG"; cp "$TMP/s16/projects.json" "$CFG/projects.json"
+printf 'PUBLIC\n' > "$GH_STUB_DIR/vis__pub"; printf 'PRIVATE\n' > "$GH_STUB_DIR/vis__priv"
+run "$CFG" --apply >/dev/null
+rm -f "$GH_STUB_DIR"/vis__*
+run "$CFG" --apply >/dev/null
+tr_entry="$(jq -r '.autoMode.environment[] | select(startswith("[atelier-managed:trusted-repos]"))' "$CFG/settings.json")"
+case "$tr_entry" in *"$P16/priv (origin vis/priv, private)"*"$P16/pub (origin vis/pub, public)"*) pass "S16: failing gh after a known visibility -> no downgrade to 'visibility unknown'" ;; *) fail "S16d: entry: $tr_entry" ;; esac
 # gh absent from PATH: minimal PATH of symlinks to the tools the helper needs, no gh
 NOGH="$TMP/nogh"; mkdir -p "$NOGH"
 for t in bash env jq git sed tr cat mktemp mv rm mkdir dirname basename date head sort cmp diff awk grep printf find ls; do

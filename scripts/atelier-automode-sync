@@ -198,17 +198,26 @@ fi
 # {{registered_projects}}: every project in projects.json as "<path> (origin
 # <owner>/<name>, <public|private|visibility unknown>)"; visibility comes from
 # `gh repo view` and degrades to "visibility unknown" when gh is missing or
-# fails. The remote read with `git -C <path> remote get-url origin`;
+# fails; a failed lookup never downgrades a visibility the previously written
+# entry already records (offline or unauthenticated runs keep the known value).
+# The remote read with `git -C <path> remote get-url origin`;
 # a path that is gone or has no origin is listed without the remote.
+PRIOR_TRUSTED="$(printf '%s' "$EXISTING" | jq -r '(.autoMode.environment // [])[] | select(type == "string" and startswith("[atelier-managed:trusted-repos]"))' 2>/dev/null || true)"
+
 repo_visibility() {
-  local v=""
+  local v="" prior=""
   if command -v gh >/dev/null 2>&1; then
     v="$(gh repo view "$1" --json visibility --jq '.visibility' 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
   fi
   case "$v" in
     public|private) printf '%s' "$v" ;;
     internal) printf 'private' ;;
-    *) printf 'visibility unknown' ;;
+    *)
+      prior="$(printf '%s' "$PRIOR_TRUSTED" | grep -oF "origin $1, public)" 2>/dev/null || true)"
+      [ -n "$prior" ] && { printf 'public'; return; }
+      prior="$(printf '%s' "$PRIOR_TRUSTED" | grep -oF "origin $1, private)" 2>/dev/null || true)"
+      [ -n "$prior" ] && { printf 'private'; return; }
+      printf 'visibility unknown' ;;
   esac
 }
 
