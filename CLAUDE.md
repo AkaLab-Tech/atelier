@@ -55,7 +55,7 @@ These are binding rules an implementer must respect:
 ## Permissions model (PLAN.md §3)
 
 The full allow/deny/ask matrix lives in PLAN.md §3 and is materialized as [templates/settings.template.json](templates/settings.template.json) (instantiated per project by `/atelier:setup-project`). When extending permissions:
-- Default mode is `acceptEdits`.
+- Default mode is `auto` (set user-level in `$ATELIER_CONFIG_DIR/settings.json`; the template carries no `defaultMode`). `acceptEdits` is not a supported mode for chains (decision 2026-10-26, #635).
 - Network access is **allowlist-based, grown organically** — do not add broad network grants speculatively.
 - Add new entries to the template, not directly to per-task `settings.json` (that file is regenerated each task).
 

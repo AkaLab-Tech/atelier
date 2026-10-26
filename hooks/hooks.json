@@ -64,6 +64,10 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/version-drift-nudge.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/mode-drift-nudge.sh"
           }
         ]
       }

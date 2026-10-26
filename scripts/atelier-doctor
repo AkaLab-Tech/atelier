@@ -1241,6 +1241,28 @@ check_atelier_auto_mode() {
   push_fix_auto "tmp=\"\$(mktemp \"$target.atelier.XXXXXX\")\" && jq '.permissions = (.permissions // {}) | .permissions.defaultMode = \"auto\"' \"$target\" > \"\$tmp\" && mv \"\$tmp\" \"$target\""
 }
 
+check_project_defaultmode_override() {
+  # #635 / #402 — report-only. A project or local `permissions.defaultMode`
+  # overrides the user-level "auto" by normal merge precedence and silently
+  # drops the session out of auto mode. Editing project files needs the
+  # operator's OK, so no runnable fix is queued.
+  local dir="${CLAUDE_PROJECT_DIR:-$PWD}" f mode found=0
+  for f in "$dir/.claude/settings.json" "$dir/.claude/settings.local.json"; do
+    [ -f "$f" ] || continue
+    jq empty "$f" >/dev/null 2>&1 || continue
+    mode="$(jq -r '.permissions.defaultMode // ""' "$f" 2>/dev/null)"
+    [ -n "$mode" ] || continue
+    found=1
+    if [ "$mode" = "auto" ]; then
+      push_host "$OK $f sets permissions.defaultMode = \"auto\" (matches user level)"
+    else
+      push_host "$WARN $f sets permissions.defaultMode = \"$mode\", overriding the user-level \"auto\""
+      push_fix_manual "# remove .permissions.defaultMode from $f (auto mode is the supported default; PLAN.md §3)"
+    fi
+  done
+  [ "$found" -eq 1 ] || push_host "$OK no project/local defaultMode override"
+}
+
 check_atelier_automode_managed() {
   # #456 — report-only. The gate-run autoMode rule must live in the user-level
   # $ATELIER_CONFIG_DIR/settings.json (Claude Code ignores autoMode in project
@@ -1556,6 +1578,7 @@ check_git_identity
 check_reviewer_repo_access
 check_branch_protection
 check_atelier_auto_mode
+check_project_defaultmode_override
 check_atelier_automode_managed
 
 # ---------- emit the report ----------
