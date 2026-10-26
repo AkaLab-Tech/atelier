@@ -74,6 +74,11 @@ pd '{}' '{"autoMode":{"hard_deny":["Never delete the repo"]}}'
 has '[autoMode.hard_deny]' && has 'the agent can do less' && pass "D3: hard_deny added -> 'can do less'" || fail "D3c: (out: $PD_OUT)"
 pd '{}' '{"autoMode":{"environment":["Repos live under ~/Work"]}}'
 has '[autoMode.environment]' && has 'the agent can do more' && pass "D3: environment added -> 'can do more'" || fail "D3d: (out: $PD_OUT)"
+# #633: the shipped managed environment entries show in the diff
+pd '{"autoMode":{"environment":["$defaults"]}}' "$(jq -c '{autoMode:{environment:(["$defaults"] + .autoMode.environment)}}' "$REPO_ROOT/templates/automode.user.json")"
+[ "$PD_RC" -eq 1 ] && has '[autoMode.environment]' && has '+ [atelier-managed:trusted-repos]' && has '+ [atelier-managed:flows]' \
+  && has 'auto-mode classifier rule: trusted-repos — the agent can do more' && has 'auto-mode classifier rule: flows — the agent can do more' \
+  && pass "D3: managed environment entries (trusted-repos, flows) listed with their ids" || fail "D3f: (rc=$PD_RC out: $PD_OUT)"
 pd '{}' '{"autoMode":{"allow":["$defaults"]}}'
 has 'built-in defaults ($defaults)' && pass "D3: \$defaults gets a readable label" || fail "D3e: (out: $PD_OUT)"
 
