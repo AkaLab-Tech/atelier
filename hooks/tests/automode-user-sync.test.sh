@@ -24,6 +24,8 @@
 #   S16 (#633) per-project visibility via a stubbed gh: PUBLIC -> public,
 #       PRIVATE / INTERNAL -> private, failing / empty gh -> "visibility
 #       unknown", gh absent from PATH -> "visibility unknown"
+#   S18 (#633) template wording guard: merge/board tied to an operator turn
+#       and raw gh evidence; dispatch does not waive delegation review
 #   S17 (#633) diff prints a category header only for categories with changes
 #
 # Fixtures are synthetic. Hermetic: scratch HOME + ATELIER_CONFIG_DIR.
@@ -390,6 +392,22 @@ printf '%s' "$out" | grep -q 'autoMode.environment managed-entry changes' \
   && ! printf '%s' "$out" | grep -q 'autoMode.allow managed-entry changes' \
   && ! printf '%s' "$out" | grep -q 'autoMode.soft_deny managed-entry changes' \
   && pass "S17: only environment stale -> only the environment header" || fail "S17b: (out: $out)"
+
+# S18 -------------------------------------------------------------------
+echo "S18: template wording guard (merge / board / dispatch)"
+tmpl_entry() { jq -r --arg id "$1" '.autoMode.allow[] | select(startswith("[atelier-managed:" + $id + "]"))' "$TEMPLATE"; }
+m="$(tmpl_entry merge)"; b="$(tmpl_entry board)"; d="$(tmpl_entry dispatch)"
+ok=1
+for ph in 'earlier operator user turn' '/atelier:finish-task' 'auto-merge skill' 'raw tool output' 'AtelierReviewer login' 'commit_id equals <sha>' 'is not evidence'; do
+  case "$m" in *"$ph"*) ;; *) ok=0; echo "    merge missing: $ph" ;; esac
+done
+[ "$ok" -eq 1 ] && pass "S18: merge entry requires operator turn, skill load and raw gh evidence" || fail "S18a: merge wording regressed"
+ok=1
+for ph in 'earlier operator user turn' '/atelier:finish-task' 'agent'"'"'s own statements cannot satisfy'; do
+  case "$b" in *"$ph"*) ;; *) ok=0; echo "    board missing: $ph" ;; esac
+done
+[ "$ok" -eq 1 ] && pass "S18: board entry tied to an operator turn" || fail "S18b: board wording regressed"
+case "$d" in *"does not waive sub-agent delegation review"*) pass "S18: dispatch entry keeps delegation review" ;; *) fail "S18c: dispatch wording regressed" ;; esac
 
 echo ""
 if [ "$fails" -eq 0 ]; then echo "automode-user-sync: all assertions passed."; exit 0
