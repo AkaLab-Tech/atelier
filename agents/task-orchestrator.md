@@ -121,7 +121,7 @@ pr-author` hint in the briefing); any other pushable head (`chore/*`,
 `docs/*`, `fix/*`, or plan-tracking) dispatches `pr-opener`. Either way, run
 the **existing** `reviewer` → Pre-merge CI wait → `auto-merge` segment (step 6
 below) **unchanged** — this mode reuses that segment as-is rather than
-re-documenting it.
+re-documenting it. The briefs for `reviewer`, `pr-opener` and `auto-merge` here state PR facts only (repo, PR number, head sha, author identity, reviewer identity), per `/atelier:next-task` §8 Scope wording.
 
 Terminal states map onto the same report shape used for task chains: the
 authoring primitive (`pr-opener` or `pr-author`, whichever branch shape

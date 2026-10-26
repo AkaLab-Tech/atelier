@@ -296,6 +296,7 @@ Launch the `atelier:task-orchestrator` agent (Opus) via the `Task` tool. The bri
   - No restated enforcement lists: rules already enforced by hooks and agent definitions (no-verify flags, the safe-commit skip variable, force or protected pushes, safe-commit gate bypasses) are not enumerated; they live in `hooks/`, `skills/pr-flow`, `agents/pr-author.md` and the `task-orchestrator` decision rules.
   - No contract overrides: a departure from an atelier contract (a different PR body shape, a different board state after the merge, a waived gate) belongs in the approved plan (`/atelier:plan-task`, the product lead's approval). The brief points to the plan section and does not restate the override as an instruction.
   - No task or session history: no recounting of earlier denials, incidents or re-dispatch decisions.
+  - No setup or hold state: briefs never describe merge holds, shared-stack turns or housekeeping state; that state lives in the plan or the board and is referenced by id.
   - A brief carries exactly the id, the worktree, the plan inline, the cwd reminder, the scope facts and the interaction mode; each added paragraph must be a fact the plan does not already state.
 
 From this point the chain (`implementer` → `tester` → `pr-author`) is the orchestrator's responsibility — `/next-task`'s job ends here.
