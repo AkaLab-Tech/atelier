@@ -1264,16 +1264,65 @@ check_atelier_automode_managed() {
     push_host "$SKIP managed autoMode rule ($target is not valid JSON)"
     return
   fi
-  local rc=0
-  "$sync" --quiet --template "$tmpl" --config-dir "$ATELIER_CONFIG_DIR" >/dev/null 2>&1 || rc=$?
+  local rc=0 out
+  out="$("$sync" --quiet --template "$tmpl" --config-dir "$ATELIER_CONFIG_DIR" 2>/dev/null)" || rc=$?
   case "$rc" in
-    0) push_host "$OK managed autoMode gate-run rule in sync in $target" ;;
+    0) push_host "$OK managed autoMode gate-run rule in sync in $target (allow and environment entries)" ;;
     1)
-      push_host "$WARN managed autoMode gate-run rule missing or stale in $target — auto mode may prompt on project test scripts"
+      case "$out" in
+        *"autoMode.allow managed-entry changes"*)
+          push_host "$WARN managed autoMode gate-run rule missing or stale in $target (allow entries) — auto mode may prompt on atelier's own actions" ;;
+      esac
+      case "$out" in
+        *"autoMode.environment managed-entry changes"*)
+          push_host "$WARN managed autoMode environment entries (trusted repos, flows) missing or stale in $target — the classifier lacks atelier's trusted-repo context" ;;
+      esac
+      case "$out" in
+        *"autoMode.soft_deny managed-entry changes"*)
+          push_host "$WARN managed autoMode soft_deny entries missing or stale in $target — non-atelier agent spawns are not flagged for approval" ;;
+      esac
       push_fix_manual "/atelier:update   # shows the autoMode diff and applies it only after you confirm"
       ;;
     *) push_host "$SKIP managed autoMode rule (atelier-automode-sync failed, rc=$rc)" ;;
   esac
+}
+
+# #633: read-only. A hand-written (unmarked) trusted-repo entry in
+# autoMode.environment that names a home-directory path which no longer exists
+# is stale context for the classifier. Never writes settings.json; the fix
+# offered is the existing --replace-path (preview first, --apply after consent).
+check_automode_environment_stale_paths() {
+  local target="$ATELIER_CONFIG_DIR/settings.json"
+  local pf="$ATELIER_CONFIG_DIR/projects.json"
+  command -v jq >/dev/null 2>&1 || return 0
+  [ -f "$target" ] && jq empty "$target" >/dev/null 2>&1 || return 0
+  local envk=environment toks tok found=0 base cand p
+  # shellcheck disable=SC2016  # jq program, not shell
+  toks="$(jq -r --arg k "$envk" '
+    (.autoMode[$k] // []) | if type == "array" then .[] else empty end
+    | select(type == "string" and (startswith("[atelier-managed:") | not) and test("repo|trust"; "i"))
+    | scan("(?<![A-Za-z0-9_.~/-])/(?:Users|home)/[A-Za-z0-9_.@+-]+(?:/[A-Za-z0-9_.@+-]+)*")' "$target" 2>/dev/null | sort -u || true)"
+  while IFS= read -r tok; do
+    [ -n "$tok" ] || continue
+    tok="${tok%.}"
+    [ -e "$tok" ] && continue
+    found=$((found + 1))
+    push_host "$WARN user settings trusted-repo entry names $tok, which no longer exists"
+    base="$(basename "$tok")"; cand=""
+    if [ -f "$pf" ] && jq empty "$pf" >/dev/null 2>&1; then
+      while IFS= read -r p; do
+        [ "$(basename "$p")" = "$base" ] && [ "$p" != "$tok" ] && { cand="$p"; break; }
+      done < <(jq -r '.projects // {} | keys[]' "$pf")
+    fi
+    if [ -n "$cand" ]; then
+      push_fix_manual "atelier-automode-sync --replace-path $tok=$cand   # preview the diff; then re-run with --apply after you confirm"
+    else
+      push_fix_manual "edit the trusted-repo entry in $target (or remove it) — $tok no longer exists"
+    fi
+  done <<< "$toks"
+  if [ "$found" -eq 0 ]; then
+    push_host "$OK no hand-written trusted-repo entry names a missing path"
+  fi
 }
 
 # #488: read-only. A user-level settings entry that names an absolute path which
@@ -1557,6 +1606,7 @@ check_reviewer_repo_access
 check_branch_protection
 check_atelier_auto_mode
 check_atelier_automode_managed
+check_automode_environment_stale_paths
 
 # ---------- emit the report ----------
 

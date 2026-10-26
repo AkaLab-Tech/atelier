@@ -232,6 +232,9 @@ printf '%s' "$out3" | grep -q 'resynced' \
 # /dev/null, no flag) and must not have written it.
 # ---------------------------------------------------------------------------
 MANAGED_MARK='[atelier-managed:gate-runs]'
+# #633: the template now ships several managed allow entries and environment entries.
+N_ALLOW="$(jq '.autoMode.allow | length' "$REPO_ROOT/templates/automode.user.json")"
+N_ENV="$(jq '.autoMode.environment | length' "$REPO_ROOT/templates/automode.user.json")"
 if [ -f "$CFG/settings.json" ] && jq -e '.autoMode' "$CFG/settings.json" >/dev/null 2>&1; then
   fail "autoMode written by a non-interactive update (settings: $(cat "$CFG/settings.json"))"
 else
@@ -277,8 +280,9 @@ jq '. + {model: "opus"}' "$CFG/settings.json" > "$CFG/settings.json.tmp" && mv "
 out5y2="$(run_update_tty y)"
 [ "$(jq -r '.autoMode.allow[0]' "$CFG/settings.json")" = '$defaults' ] \
   && [ "$(jq -r '.autoMode.allow[1]' "$CFG/settings.json" | cut -c1-27)" = "$MANAGED_MARK" ] \
-  && [ "$(jq '.autoMode.allow | length' "$CFG/settings.json")" -eq 2 ] \
-  && pass "accepted (y) confirmation applies: [\"\$defaults\", managed]" || fail "y did not apply (settings: $(cat "$CFG/settings.json"), out: $out5y2)"
+  && [ "$(jq '.autoMode.allow | length' "$CFG/settings.json")" -eq "$((1 + N_ALLOW))" ] \
+  && [ "$(jq '.autoMode.environment | length' "$CFG/settings.json")" -eq "$((1 + N_ENV))" ] \
+  && pass "accepted (y) confirmation applies: [\"\$defaults\", managed...] in allow and environment" || fail "y did not apply (settings: $(cat "$CFG/settings.json"), out: $out5y2)"
 [ "$(jq -r '.model' "$CFG/settings.json")" = "opus" ] \
   && pass "other settings keys preserved when applying" || fail "model key lost"
 printf '%s' "$out5y2" | grep -q 'autoMode rule applied' \
@@ -292,7 +296,7 @@ printf '%s' "$out5s" | grep -q 'autoMode' \
 # --apply-automode applies without any prompt (slash-command path).
 jq 'del(.autoMode)' "$CFG/settings.json" > "$CFG/settings.json.tmp" && mv "$CFG/settings.json.tmp" "$CFG/settings.json"
 out5f="$(run_update --apply-automode)"
-[ "$(jq '.autoMode.allow | length' "$CFG/settings.json" 2>/dev/null)" = "2" ] \
+[ "$(jq '.autoMode.allow | length' "$CFG/settings.json" 2>/dev/null)" = "$((1 + N_ALLOW))" ] \
   && pass "--apply-automode applies without a TTY" || fail "--apply-automode did not apply (out: $out5f)"
 if ls "$CFG"/settings.json.atelier.* >/dev/null 2>&1; then
   fail "temp files left next to settings.json"

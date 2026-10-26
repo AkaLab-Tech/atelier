@@ -25,6 +25,10 @@
 #                                keeps its text and position. No "$defaults"
 #                                is added to an array that lacks one.
 #   - no other autoMode.* key and no other top-level key is touched.
+# The same contract covers the managed entries of the template's environment
+# array (an absent array becomes ["$defaults", <managed...>]). The placeholder
+# {{registered_projects}} in a managed entry expands to every project in
+# $CONFIG_DIR/projects.json with its origin owner/name.
 # To take ownership of an entry, delete its `[atelier-managed:...]` marker.
 #
 # --replace-path OLD=NEW (repeatable, #488): a separate mode for a project that
@@ -174,8 +178,8 @@ fi
 
 [ -n "$TEMPLATE" ] || TEMPLATE="$SCRIPT_DIR/../templates/automode.user.json"
 [ -f "$TEMPLATE" ] || die "template not found: $TEMPLATE"
-jq -e '(.autoMode.allow | type) == "array"' "$TEMPLATE" >/dev/null 2>&1 \
-  || die "template has no .autoMode.allow array: $TEMPLATE"
+jq -e '(.autoMode.allow | type) == "array" and ((.autoMode.environment // []) | type) == "array"' "$TEMPLATE" >/dev/null 2>&1 \
+  || die "template has no .autoMode.allow array (or a non-array environment): $TEMPLATE"
 
 TARGET="$CONFIG_DIR/settings.json"
 EXISTING="{}"
@@ -185,33 +189,87 @@ if [ -f "$TARGET" ]; then
     warn "$TARGET is not valid JSON — leaving alone (operator must repair manually)"
     exit 0
   fi
-  if ! printf '%s' "$EXISTING" | jq -e '(.autoMode.allow // []) | type == "array"' >/dev/null 2>&1; then
-    warn "$TARGET has a non-array autoMode.allow — leaving alone"
+  if ! printf '%s' "$EXISTING" | jq -e '((.autoMode.allow // []) | type == "array") and ((.autoMode.environment // []) | type == "array") and ((.autoMode.soft_deny // []) | type == "array")' >/dev/null 2>&1; then
+    warn "$TARGET has a non-array autoMode.allow, autoMode.environment or autoMode.soft_deny — leaving alone"
     exit 0
   fi
 fi
 
-MANAGED="$(jq -c '.autoMode.allow' "$TEMPLATE")"
+# {{registered_projects}}: every project in projects.json as "<path> (origin
+# <owner>/<name>, <public|private|visibility unknown>)"; visibility comes from
+# `gh repo view` and degrades to "visibility unknown" when gh is missing or
+# fails; a failed lookup never downgrades a visibility the previously written
+# entry already records (offline or unauthenticated runs keep the known value).
+# The remote read with `git -C <path> remote get-url origin`;
+# a path that is gone or has no origin is listed without the remote.
+PRIOR_TRUSTED="$(printf '%s' "$EXISTING" | jq -r '(.autoMode.environment // [])[] | select(type == "string" and startswith("[atelier-managed:trusted-repos]"))' 2>/dev/null || true)"
+
+repo_visibility() {
+  local v="" prior=""
+  if command -v gh >/dev/null 2>&1; then
+    v="$(gh repo view "$1" --json visibility --jq '.visibility' 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+  fi
+  case "$v" in
+    public|private) printf '%s' "$v" ;;
+    internal) printf 'private' ;;
+    *)
+      prior="$(printf '%s' "$PRIOR_TRUSTED" | grep -oF "origin $1, public)" 2>/dev/null || true)"
+      [ -n "$prior" ] && { printf 'public'; return; }
+      prior="$(printf '%s' "$PRIOR_TRUSTED" | grep -oF "origin $1, private)" 2>/dev/null || true)"
+      [ -n "$prior" ] && { printf 'private'; return; }
+      printf 'visibility unknown' ;;
+  esac
+}
+
+render_registered_projects() {
+  local pf="$CONFIG_DIR/projects.json" p url slug out="" item
+  if [ -f "$pf" ] && jq empty "$pf" >/dev/null 2>&1; then
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      url=""; slug=""
+      [ -d "$p" ] && url="$(git -C "$p" remote get-url origin 2>/dev/null || true)"
+      if [ -n "$url" ]; then
+        slug="$(printf '%s' "${url%.git}" | sed -E 's#^.*[:/]([^:/]+/[^/]+)$#\1#')"
+      fi
+      item="$p"
+      [ -n "$slug" ] && item="$p (origin $slug, $(repo_visibility "$slug"))"
+      out="${out:+$out; }$item"
+    done < <(jq -r '.projects // {} | keys[]' "$pf")
+  fi
+  [ -n "$out" ] || out="(no project registered yet)"
+  printf '%s' "$out"
+}
+
+REGISTERED="$(render_registered_projects)"
+# gsub's replacement is literal text (no backreferences), so paths are safe.
+# shellcheck disable=SC2016  # jq program, not shell
+MANAGED="$(jq -c --arg r "$REGISTERED" '
+  .autoMode | {allow: .allow, environment: (.environment // []), soft_deny: (.soft_deny // [])}
+  | map_values(map(gsub("\\{\\{registered_projects\\}\\}"; $r)))' "$TEMPLATE")"
 
 # shellcheck disable=SC2016  # jq program, not shell
 JQ_DEFS='
   def ismanaged: type == "string" and startswith("[atelier-managed:");
   def mid: sub("^\\[atelier-managed:(?<id>[^\\]]*)\\].*"; "\(.id)");
+  def keys2: ["allow", "environment", "soft_deny"];
 '
 
 # shellcheck disable=SC2016
 JQ_MERGE="$JQ_DEFS"'
-  ($m | map(select(ismanaged)) | map({key: mid, value: .}) | from_entries) as $mm
-  | (.autoMode.allow // null) as $cur
-  | if $cur == null then
-      .autoMode = ((.autoMode // {}) | .allow = (["$defaults"] + $m))
-    else
-      ($cur | map(select(ismanaged) | mid)) as $have
-      | .autoMode.allow = (
-          ($cur | map(if ismanaged then ($mm[mid] // empty) else . end))
-          + ($m | map(select(ismanaged and ((mid as $i | $have | index($i)) == null))))
-        )
-    end'
+  def mergekey($k):
+    ($m[$k] // []) as $mk
+    | ($mk | map(select(ismanaged)) | map({key: mid, value: .}) | from_entries) as $mm
+    | (.autoMode[$k] // null) as $cur
+    | if $cur == null then
+        (if ($mk | length) == 0 then . else .autoMode = ((.autoMode // {}) | .[$k] = (["$defaults"] + $mk)) end)
+      else
+        ($cur | map(select(ismanaged) | mid)) as $have
+        | .autoMode[$k] = (
+            ($cur | map(if ismanaged then ($mm[mid] // empty) else . end))
+            + ($mk | map(select(ismanaged and ((mid as $i | $have | index($i)) == null))))
+          )
+      end;
+  reduce keys2[] as $k (.; mergekey($k))'
 
 MERGED="$(printf '%s' "$EXISTING" | jq --argjson m "$MANAGED" "$JQ_MERGE")"
 
@@ -225,13 +283,18 @@ fi
 DIFF_PROG="$JQ_DEFS"'
   def entries: map(select(ismanaged)) | map({key: mid, value: .}) | from_entries;
   def body: sub("^\\[atelier-managed:[^\\]]*\\] *"; "");
-  ($old.autoMode.allow // [] | entries) as $c | ($m | entries) as $w
+  ($old.autoMode[$k] // [] | entries) as $c | ($m[$k] // [] | entries) as $w
   | ([$w | to_entries[] | select($c[.key] == null) | "+ [" + .key + "] " + (.value | body)]
    + [$w | to_entries[] | select($c[.key] != null and $c[.key] != .value) | "~ [" + .key + "] " + (.value | body)]
    + [$c | to_entries[] | select($w[.key] == null) | "- [" + .key + "]"])
   | .[]'
-printf 'autoMode.allow managed-entry changes for %s:\n' "$TARGET"
-jq -nr --argjson m "$MANAGED" --argjson old "$EXISTING" "$DIFF_PROG" | sed 's/^/  /'
+for k in allow environment soft_deny; do
+  K_DIFF="$(jq -nr --arg k "$k" --argjson m "$MANAGED" --argjson old "$EXISTING" "$DIFF_PROG")"
+  if [ -n "$K_DIFF" ]; then
+    printf 'autoMode.%s managed-entry changes for %s:\n' "$k" "$TARGET"
+    printf '%s\n' "$K_DIFF" | sed 's/^/  /'
+  fi
+done
 
 if ! $APPLY; then
   $QUIET || printf 'Read-only: nothing written. Re-run with --apply (after the operator confirms) to write it.\n'
@@ -241,7 +304,7 @@ fi
 mkdir -p "$CONFIG_DIR"
 TMP="$(mktemp "${TARGET}.atelier.XXXXXX")" || die "could not create temp file next to $TARGET"
 if printf '%s\n' "$MERGED" > "$TMP" && mv "$TMP" "$TARGET"; then
-  printf 'Applied: managed autoMode.allow entries written to %s\n' "$TARGET"
+  printf 'Applied: managed autoMode entries written to %s\n' "$TARGET"
 else
   rm -f "$TMP"
   die "failed to write $TARGET"

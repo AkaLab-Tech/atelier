@@ -33,7 +33,11 @@ mkdir -p "$TMP/home"
 
 echo "install.sh phase_c_1_atelier_automode_allow (#456)"
 
-MANAGED="$(jq -c '.autoMode.allow[0]' "$REPO_ROOT/templates/automode.user.json")"
+# Expected managed arrays as written with no registered project (#633): the
+# {{registered_projects}} placeholder renders as "(no project registered yet)".
+WA="$(jq -c '.autoMode.allow' "$REPO_ROOT/templates/automode.user.json")"
+# shellcheck disable=SC2016  # jq program, not shell
+WE="$(jq -c '.autoMode.environment | map(gsub("\\{\\{registered_projects\\}\\}"; "(no project registered yet)"))' "$REPO_ROOT/templates/automode.user.json")"
 
 # run_phase <cfg> <noninteractive true|false> <force_tty 0|1> <stdin-text>
 run_phase() {
@@ -77,8 +81,9 @@ out="$(run_phase "$CFG" true 0 "y")"
 # I3
 CFG="$TMP/i3"; mkdir -p "$CFG"
 out="$(run_phase "$CFG" false 1 "y")"
-[ "$(jq -c '.autoMode.allow' "$CFG/settings.json" 2>/dev/null)" = "$(jq -nc --argjson m "$MANAGED" '["$defaults",$m]')" ] \
-  && pass "I3: y -> [\"\$defaults\", managed] written" || fail "I3: got $(cat "$CFG/settings.json" 2>&1) (out: $out)"
+[ "$(jq -c '.autoMode.allow' "$CFG/settings.json" 2>/dev/null)" = "$(jq -nc --argjson m "$WA" '["$defaults"] + $m')" ] \
+  && [ "$(jq -c '.autoMode.environment' "$CFG/settings.json" 2>/dev/null)" = "$(jq -nc --argjson m "$WE" '["$defaults"] + $m')" ] \
+  && pass "I3: y -> [\"\$defaults\", managed...] written to allow and environment" || fail "I3: got $(cat "$CFG/settings.json" 2>&1) (out: $out)"
 printf '%s' "$out" | grep -q '\[y/N\]' && printf '%s' "$out" | grep -qF '+ [gate-runs]' \
   && pass "I3: showed the diff and the y/N prompt before writing" || fail "I3: (out: $out)"
 
@@ -97,7 +102,8 @@ printf '%s' "$out" | grep -q 'already in sync' && ! printf '%s' "$out" | grep -q
 CFG="$TMP/i5"; mkdir -p "$CFG"
 printf '{"autoMode":{"allow":["Mine 1","$defaults","Mine 2"]},"model":"opus"}\n' > "$CFG/settings.json"
 run_phase "$CFG" false 1 "y" >/dev/null
-[ "$(jq -c '.autoMode.allow' "$CFG/settings.json")" = "$(jq -nc --argjson m "$MANAGED" '["Mine 1","$defaults","Mine 2",$m]')" ] \
+[ "$(jq -c '.autoMode.allow' "$CFG/settings.json")" = "$(jq -nc --argjson m "$WA" '["Mine 1","$defaults","Mine 2"] + $m')" ] \
+  && [ "$(jq -c '.autoMode.environment' "$CFG/settings.json")" = "$(jq -nc --argjson m "$WE" '["$defaults"] + $m')" ] \
   && [ "$(jq -r .model "$CFG/settings.json")" = opus ] \
   && pass "I5: operator entries and other keys preserved on apply" || fail "I5: got $(cat "$CFG/settings.json")"
 
