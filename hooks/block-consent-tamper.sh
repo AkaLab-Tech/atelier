@@ -223,8 +223,10 @@ scan_git() {
     if [ -z "$sub" ]; then
       case "$t" in
         -C) [ "$j" -lt "$n" ] && check_tok "${a[$j]}"; j=$((j + 1)); continue ;;
-        -c) j=$((j + 1)); continue ;;
-        -*) continue ;;
+        -c) [ "$j" -lt "$n" ] && check_tok "x=${a[$j]#*=}"; j=$((j + 1)); continue ;;
+        --work-tree|--git-dir|--namespace|--super-prefix|--config-env|--exec-path)
+          [ "$j" -lt "$n" ] && check_tok "${a[$j]}"; j=$((j + 1)); continue ;;
+        -*) check_tok "$t"; continue ;;
       esac
       sub="$t"
       if [ "$sub" = grep ]; then scan_grep "${a[@]:$j}"; return 0; fi
@@ -242,14 +244,23 @@ scan_git() {
   done
 }
 
+gh_field() { # key=@path makes gh read the file and send its contents
+  case "$1" in *=@*) check_tok "${1#*=@}" ;; esac
+  return 0
+}
+
 scan_gh() {
   local -a a=("$@"); local n=${#a[@]} j=0 t
   while [ "$j" -lt "$n" ]; do
     t="${a[$j]}"; j=$((j + 1))
     case "$t" in
-      --title|-t|--body|-b|-f|-F|--field|--raw-field|-H|--header) j=$((j + 1)) ;;
-      --title=*|--body=*|--field=*|--raw-field=*|--header=*) ;;
+      --title|-t|--body|-b|-f|--raw-field|-H|--header) j=$((j + 1)) ;;
+      --title=*|--body=*|--raw-field=*|--header=*) ;;
+      -F|--field) [ "$j" -lt "$n" ] && gh_field "${a[$j]}"; j=$((j + 1)) ;;
+      --field=*) gh_field "${t#*=}" ;;
+      -F?*) gh_field "${t#-F}" ;;
       --body-file|--input) [ "$j" -lt "$n" ] && [ "${a[$j]}" != "-" ] && check_tok "${a[$j]}"; j=$((j + 1)) ;;
+      --body-file=*|--input=*) check_tok "${t#*=}" ;;
       *) check_tok "$t" ;;
     esac
   done

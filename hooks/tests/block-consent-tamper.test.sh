@@ -108,6 +108,18 @@ blocks "git add" Bash "$(bash_in "git add $C/x")"
 blocks "git commit -F" Bash "$(bash_in "git commit -F $C/x")"
 blocks "gh --body-file" Bash "$(bash_in "gh pr create --body-file $C/x")"
 blocks "gh api --input" Bash "$(bash_in "gh api x --input $C/x")"
+blocks "gh api -F key=@file" Bash "$(bash_in "gh api repos/o/r/issues -F body=@state/consent/ledger.jsonl")"
+blocks "gh api -F attached" Bash "$(bash_in "gh api repos/o/r/issues -Fbody=@$C/ledger.jsonl")"
+blocks "gh api --field key=@file" Bash "$(bash_in "gh api x --field body=@$C/ledger.jsonl")"
+blocks "gh api --field=key=@file" Bash "$(bash_in "gh api x --field=body=@$RESOLVED/ledger.jsonl")"
+blocks "gh api graphql query=@" Bash "$(bash_in "gh api graphql -F query=@\$HOME/.claude-work/state/consent/ledger.jsonl")"
+blocks "gh --input=" Bash "$(bash_in "gh api x --input=$C/x")"
+blocks "git --work-tree=" Bash "$(bash_in "git --work-tree=state/consent checkout -- .")"
+blocks "git --work-tree sep" Bash "$(bash_in "git --work-tree state/consent clean -fdx")"
+blocks "git --git-dir=" Bash "$(bash_in "git --git-dir=$C/.git status")"
+blocks "git --git-dir sep" Bash "$(bash_in "git --git-dir $C/.git log")"
+blocks "git --namespace sep" Bash "$(bash_in "git --namespace $C status")"
+blocks "git -c value path" Bash "$(bash_in "git -c core.worktree=$C checkout -- .")"
 blocks "bash -c" Bash "$(bash_in "bash -c \"rm $C/ledger.jsonl\"")"
 blocks "python -c" Bash "$(bash_in "python3 -c \"open('state/consent/x','w')\"")"
 blocks "resolved absolute" Bash "$(bash_in "cat $RESOLVED/ledger.jsonl")"
@@ -139,6 +151,8 @@ allows "git commit -m" Bash '{"command":"git commit -m \"fix: narrow guard for s
 allows "git commit -am" Bash '{"command":"git commit -am \"docs: state/consent\""}'
 allows "git log --grep" Bash '{"command":"git log --grep=state/consent"}'
 allows "gh pr create --body" Bash '{"command":"gh pr create --title \"x state/consent\" --body \"touches state/consent docs\""}'
+allows "gh api -f raw field" Bash '{"command":"gh api x -f body=@state/consent/x -F title=\"state/consent\""}'
+allows "git -c free text" Bash '{"command":"git -c user.name=consent commit -m \"state/consent\""}'
 allows "gh pr create --body-file -" Bash '{"command":"gh pr create --body-file - < /tmp/body.md"}'
 allows "heredoc body to file" Bash "$(bash_in "cat <<'EOF' > docs/x.md
 the guard protects state/consent
