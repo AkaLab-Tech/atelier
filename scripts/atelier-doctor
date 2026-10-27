@@ -1347,6 +1347,52 @@ check_automode_environment_stale_paths() {
   fi
 }
 
+# #646: read-only. A hand-written (unmarked) autoMode entry that duplicates a
+# managed entry's text, or covers the same action as a managed entry present in
+# the same array (fixed per-id signatures), can let the classifier follow the
+# looser rule. Never writes settings.json and never queues an auto fix.
+check_automode_handwritten_overlap() {
+  local target="$ATELIER_CONFIG_DIR/settings.json"
+  command -v jq >/dev/null 2>&1 || return 0
+  [ -f "$target" ] && jq empty "$target" >/dev/null 2>&1 || return 0
+  local rows kind arr i id sig found=0
+  # shellcheck disable=SC2016  # jq program, not shell
+  rows="$(jq -r '
+    def norm: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
+    def mid: capture("^\\[atelier-managed:(?<id>[^\\]]*)\\]").id;
+    {board: [["gh project item-edit"]], merge: [["gh pr merge"]],
+     dispatch: [["subagent_type atelier:"], ["atelier:task-orchestrator", "agent"], ["atelier:planner", "agent"]],
+     "gate-runs": [["pnpm test"], ["vitest"], ["playwright test"]],
+     "catalog-pin": [["claude-plugins", "pin"]],
+     "trusted-repos": [["trusted repo"]]} as $sigs
+    | ["allow", "soft_deny", "environment"][] as $k
+    | (.autoMode[$k] // []) as $a
+    | select($a | type == "array")
+    | ([range(0; $a | length) | select($a[.] | type == "string" and startswith("[atelier-managed:"))
+        | {id: ($a[.] | mid), body: ($a[.] | sub("^\\[atelier-managed:[^\\]]*\\]\\s*"; "") | norm)}]) as $m
+    | range(0; $a | length) as $i
+    | select($a[$i] | type == "string" and (startswith("[atelier-managed:") | not)
+        and . != "$defaults" and (startswith("### ") | not))
+    | ($a[$i] | norm) as $t
+    | (first($m[] | select(.body == $t) | .id) // null) as $dup
+    | if $dup != null then "dup\t\($k)\t\($i)\t\($dup)\t"
+      else first($m[] | .id as $id | ($sigs[$id] // [])[] | select(. as $s | all($s[]; . as $p | $t | contains($p)))
+             | "overlap\t\($k)\t\($i)\t\($id)\t\(join(" + "))") // empty end' "$target" 2>/dev/null || true)"
+  while IFS=$'\t' read -r kind arr i id sig; do
+    [ -n "$kind" ] || continue
+    found=$((found + 1))
+    if [ "$kind" = dup ]; then
+      push_host "$WARN user settings autoMode.${arr}[${i}] duplicates the managed entry $id — delete the hand-written copy (the managed one is kept in sync by /atelier:update)"
+    else
+      push_host "$WARN user settings autoMode.${arr}[${i}] overlaps the managed entry $id (both cover \"$sig\") — the classifier may follow the looser rule; delete it or narrow it so it no longer covers that action"
+    fi
+    push_fix_manual "edit autoMode.${arr}[${i}] in $target — delete it or remove the overlap (preview with the operator first)"
+  done <<< "$rows"
+  if [ "$found" -eq 0 ]; then
+    push_host "$OK no hand-written autoMode entry duplicates or overlaps a managed one"
+  fi
+}
+
 # #488: read-only. A user-level settings entry that names an absolute path which
 # is not a registered project but is a checkout of a registered project's remote
 # is a leftover from a moved project. Relative mentions cannot be detected.
@@ -1630,6 +1676,7 @@ check_atelier_auto_mode
 check_project_defaultmode_override
 check_atelier_automode_managed
 check_automode_environment_stale_paths
+check_automode_handwritten_overlap
 
 # ---------- emit the report ----------
 
