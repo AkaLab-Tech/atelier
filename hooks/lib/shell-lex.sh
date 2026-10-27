@@ -132,7 +132,7 @@ split_tokens() {
 
 # Drop heredoc bodies (prose that is not code) unless the heredoc feeds a shell.
 strip_heredocs() {
-  local line delim="" dash=0 out="" t pre
+  local line delim="" dash=0 out="" t pre hd_dash hd_delim
   local re='(^|[^<])<<(-?)[[:space:]]*\\?["'"'"']?([A-Za-z_][A-Za-z0-9_]*)'
   local shre='(^|[[:space:];&|(])(bash|sh|zsh|dash|ksh|source|eval)([[:space:]]|$)'
   while IFS= read -r line || [ -n "$line" ]; do
@@ -144,10 +144,12 @@ strip_heredocs() {
     fi
     out+="$line"$'\n'
     if [[ "$line" =~ $re ]]; then
+      # The $shre test below clobbers BASH_REMATCH; copy what we need first.
+      hd_dash="${BASH_REMATCH[2]:-}"; hd_delim="${BASH_REMATCH[3]:-}"
       pre="${line%%<<*}"
       if ! [[ "$pre" =~ $shre ]]; then
-        delim="${BASH_REMATCH[3]}"
-        if [ -n "${BASH_REMATCH[2]}" ]; then dash=1; else dash=0; fi
+        delim="$hd_delim"
+        if [ -n "$hd_dash" ]; then dash=1; else dash=0; fi
       fi
     fi
   done <<< "$1"

@@ -155,14 +155,19 @@ check_tok() { # token — path-shaped check, including the value of --opt=value
 }
 
 scan_script() { # script depth
-  local script="$1" depth="$2" seg t lc
+  local script="$1" depth="$2" seg t lc stripped
   local -a segs
   if [ "$depth" -gt 4 ]; then
     lc="$(lower "$script")"
     case "$lc" in *state/consent*) deny "nested substitution too deep, mentions state/consent" ;; esac
     return 0
   fi
-  script="$(strip_heredocs "$script")"
+  stripped="$(strip_heredocs "$script")" || stripped=""
+  if [ -z "$stripped" ] && [ -n "$script" ]; then
+    lc="$(lower "$script")"
+    case "$lc" in *state/consent*|*consent*) deny "heredoc stripping failed on a command mentioning consent" ;; esac
+  fi
+  script="$stripped"
   lex "$script"
   IFS="$RS" read -r -d '' -a segs <<< "$LEX_OUT" || true
   for seg in ${segs[@]+"${segs[@]}"}; do

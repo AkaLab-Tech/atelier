@@ -180,6 +180,23 @@ allows "gh pr create --body-file -" Bash '{"command":"gh pr create --body-file -
 allows "heredoc body to file" Bash "$(bash_in "cat <<'EOF' > docs/x.md
 the guard protects state/consent
 EOF")"
+blocks "heredoc + redirect into consent (~)" Bash "$(bash_in "cat > ~/.claude-work/state/consent/g <<EOF
+x
+EOF")"
+blocks "heredoc quoted + redirect into consent (ATELIER_CONFIG_DIR)" Bash "$(bash_in "cat <<'EOF' >\"\$ATELIER_CONFIG_DIR/state/consent/grant.json\"
+{}
+EOF")"
+blocks "heredoc piped to tee into consent" Bash "$(bash_in "cat <<EOF | tee $RESOLVED/g
+x
+EOF")"
+blocks "heredoc then delete of consent" Bash "$(bash_in "cat <<EOF >/dev/null
+x
+EOF
+rm -r ~/.claude-work/state/consent")"
+allows "heredoc body stripped, benign follow-up" Bash "$(bash_in "cat <<'EOF' > docs/x.md
+the guard protects state/consent
+EOF
+ls docs")"
 allows "grep -rn pattern" Bash '{"command":"grep -rn '"'"'state/consent'"'"' hooks/"}'
 allows "grep -e pattern" Bash '{"command":"grep -e state/consent hooks/lib/consent.sh"}'
 allows "rg pattern" Bash '{"command":"rg state/consent"}'
