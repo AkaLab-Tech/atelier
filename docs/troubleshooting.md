@@ -196,7 +196,7 @@ CLAUDE_CONFIG_DIR="$ATELIER_CONFIG_DIR" claude plugin marketplace add AkaLab-Tec
 
 **Fix (per-project):** If the command is genuinely safe and you want it pre-allowed for every task on this project, add it to the project's `.claude/settings.json` allow list (under your control). Don't add it to atelier's `templates/settings.template.json` unless it's safe for every atelier project — that file is the cross-project default.
 
-**Fix (per-machine, last resort):** Disable auto-mode by editing `$ATELIER_CONFIG_DIR/settings.json` and changing `.permissions.defaultMode` from `"auto"` to `"acceptEdits"`. You go back to pre-M2.8 behavior — more prompts, but predictable.
+**Not a fix:** switching away from auto mode. Auto is the supported mode for atelier sessions and `acceptEdits` is not supported for chains (#635). If a prompt keeps recurring, report the denial so the managed `autoMode` entries (#633) can cover it.
 
 To check whether auto-mode is currently active, inside any atelier session: `/status` → Config tab → `Default permission mode`. Should show `Auto mode`.
 
@@ -329,7 +329,7 @@ Legacy case: in `verdict` mode, a PR that already carries a real `CHANGES_REQUES
 
 **Fix:** the dispatch is held, not retried. The command asks you once, in the same session, whether to re-dispatch the unchanged brief, leave it held, or abandon the task. An already-denied brief is never reworded. For new briefs, follow `commands/next-task.md` §8: the whole brief inline in the dispatch prompt (files as data only), facts only, domain named plainly, no discussion of the permission system, no restated enforcement lists, no contract overrides (they belong in the approved plan), no task or session history. The held session never clears, compacts or restarts itself to re-send the dispatch, and atelier never suggests `/clear` plus re-dispatch after a denial; the standing practice is a fresh context per task (`/clear` between tasks, before `/atelier:next-task`). Every denial is recorded locally: run `atelier-dispatch-denial report [--since <date>] [--project <name>]` and file `/feedback` with its output (tag, attempt, prompt hash, prior denials in the session, your choice, re-issue result); the exact prompts are kept 0600 under `~/.local/state/atelier/dispatch-denials/`. See `operator-rules.md` § "Multi-session setups (plan + worker sessions)".
 
-**Note (#590):** the settings template now allows `Agent(atelier:task-orchestrator)` and `Agent(atelier:planner)`. On Claude Code 2.1.309 this keeps those dispatches unclassified and unprompted in `acceptEdits`, but auto mode drops `Agent` allow rules on entry, so in auto mode the dispatch is still classified and this denial can still occur. The rule does not change the hold-and-ask flow above. Evidence: `docs/research/agent-allow-rule-classifier-2026-10-23.md`.
+**Note (#590):** the settings template now allows `Agent(atelier:task-orchestrator)` and `Agent(atelier:planner)`. Auto mode (the supported mode) drops `Agent` allow rules on entry on Claude Code 2.1.309, so the dispatch is still classified and this denial can still occur. The rule does not change the hold-and-ask flow above. Evidence: `docs/research/agent-allow-rule-classifier-2026-10-23.md`.
 
 ### Worker session asks you to paste a phrase
 

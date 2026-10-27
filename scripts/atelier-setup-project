@@ -70,7 +70,7 @@ OPTIONS:
                          (legacy / hand-edited) settings.json with the current
                          template (M7.1.F63). Without it, --yes / non-TTY runs
                          PRESERVE such a file (the safe default), which leaves
-                         atelier's acceptEdits + allowlist off disk. --override
+                         atelier's allowlist + deny guardrails off disk. --override
                          is the explicit "yes, replace it" signal and works
                          without a TTY, including on a not-yet-registered
                          project. The existing file is ALWAYS backed up with a
@@ -248,7 +248,7 @@ while [ $# -gt 0 ]; do
       # non-atelier-managed settings.json (legacy pre-atelier file or a
       # hand-rolled one) with the current template. Without this flag a
       # non-interactive / non-TTY run PRESERVES such a file (the F26-safe
-      # default), which silently leaves atelier's acceptEdits + allowlist off
+      # default), which silently leaves atelier's allowlist + deny guardrails off
       # disk. The existing file is always backed up first. Applies during
       # first-time setup, unlike --reconfigure (already-registered projects).
       OVERRIDE_FLAG=true; shift ;;
@@ -711,7 +711,7 @@ detect_ci_status() {
 # That marker is stale — the per-project template intentionally omits
 # defaultMode (auto-mode is a SESSION-level setting written by install.sh into
 # $ATELIER_CONFIG_DIR/settings.json as defaultMode="auto", verified by
-# atelier-doctor, NOT a per-project key). The acceptEdits condition therefore
+# atelier-doctor, NOT a per-project key). That condition therefore
 # always failed, so every atelier-managed project was misclassified as legacy:
 # F38 drift-resync never fired and the F26 "not atelier-managed" warning fired
 # on every project. Detecting on the deny guardrails fixes both.
@@ -818,7 +818,7 @@ step_settings_json() {
       # Prompt before silently keeping the file, because preserving silently
       # was the M7.1.F26 bug — operators ran /atelier:setup-project, the
       # script reported success, and then Claude Code still asked for
-      # permission for every command because the template's acceptEdits +
+      # permission for every command because the template's
       # allowlist never made it onto disk.
       warn "$target exists but is not atelier-managed"
       warn "(missing atelier's distinctive deny guardrails — e.g. Bash(git push --force*))."
