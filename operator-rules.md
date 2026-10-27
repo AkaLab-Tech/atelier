@@ -219,7 +219,18 @@ review, approval, review comment and PR comment an agent posts goes out under
 github.com in Chrome at all; they use `gh`). The `PreToolUse` hooks
 `hooks/block-operator-gh-identity.sh` (Bash) and
 `hooks/block-operator-browser-github.sh` (Claude in Chrome) enforce this
-categorically (PLAN.md §3); a block has no in-session override.
+categorically (PLAN.md §3). **Amended by #638 (flagged change to the #544
+"no in-session override" rule, same protective intent):** for an explicit
+allowlist of guards only, the operator can unlock one exact action. The guard
+shows the *operator* (not you) a one-time code in a message; the operator types
+`atelier permitir <CODE>` (or `atelier allow <CODE>`) in their own prompt, which
+authorizes that exact action once, for 10 minutes. Never grantable: secrets,
+force or protected pushes, review-like writes and credential exfiltration under
+the operator's gh identity, `safe-commit`, `safe-package-change`, cross-worktree
+edits, and edits to the consent state itself (`state/consent`, which is
+tamper-guarded). Agents never ask the operator to paste a code they produced
+themselves and never look for or try to read, forge or guess a code; if a guard
+blocks, report it and wait.
 
 ### Top-level sessions only orchestrate
 
