@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 #
-# Regression test for #638/#639 — hooks/block-consent-tamper.sh must block any
-# Bash/Edit/Write/MultiEdit/NotebookEdit/Read call whose input references the
-# consent state (literal `state/consent` or the resolved
-# $ATELIER_CONFIG_DIR/state/consent), allow unrelated inputs and other tools,
-# and log every block to hook-decisions.jsonl.
+# Regression test for #638/#639/#651 — hooks/block-consent-tamper.sh blocks tool calls that
+# address the consent state as a PATH (file-tool path fields, Bash path arguments and
+# redirections, incl. symlinks and substitutions), allows free-text mentions (content,
+# messages, bodies, heredocs, search patterns) and other tools, and logs every block
+# to hook-decisions.jsonl.
 #
 # Hermetic: temp ATELIER_CONFIG_DIR / CLAUDE_PROJECT_DIR. Requires jq.
 #
 # Run:  hooks/tests/block-consent-tamper.test.sh
 # Exit: 0 = all assertions pass, 1 = at least one failed.
 
+# shellcheck disable=SC2016,SC2088
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -52,32 +53,108 @@ allows() {
   if [ "$rc" = 0 ]; then pass "allow: $1"; else fail "allow: $1 (exit=$rc)"; fi
 }
 
-echo "== blocked: literal state/consent =="
-blocks "Bash cat literal" Bash '{"command":"cat ~/.claude-work/state/consent/pending/x.json"}'
-blocks "Bash ls literal" Bash '{"command":"ls state/consent"}'
-blocks "Bash uppercase" Bash '{"command":"ls STATE/Consent"}'
+bash_in() { jq -cn --arg c "$1" '{command:$c}'; }
+C='~/.claude-work/state/consent'
+
+echo "== blocked: file tools, path fields only =="
 blocks "Edit literal" Edit '{"file_path":"/x/state/consent/ledger.jsonl","old_string":"a","new_string":"b"}'
 blocks "Write literal" Write '{"file_path":"/x/state/consent/grants/f.json","content":"{}"}'
 blocks "MultiEdit literal" MultiEdit '{"file_path":"/x/state/consent/ledger.jsonl","edits":[{"old_string":"a","new_string":"b"}]}'
 blocks "NotebookEdit literal" NotebookEdit '{"notebook_path":"/x/state/consent/n.ipynb","new_source":"x"}'
 blocks "Read literal" Read '{"file_path":"/x/state/consent/ledger.jsonl"}'
-blocks "nested string (edits array)" MultiEdit '{"file_path":"/ok.txt","edits":[{"old_string":"a","new_string":"cp x state/consent/grants/y"}]}'
-
-echo "== blocked: resolved absolute path =="
-blocks "Bash resolved" Bash "$(jq -cn --arg c "cat $RESOLVED/ledger.jsonl" '{command:$c}')"
+blocks "Read path field" Read '{"path":"/x/state/consent"}'
+blocks "Write uppercase" Write '{"file_path":"/x/STATE/Consent/f","content":"x"}'
+blocks "Write // variant" Write '{"file_path":"/x//state//consent/f","content":"x"}'
+blocks "Write /./ variant" Write '{"file_path":"/x/state/./consent/f","content":"x"}'
+blocks "Write tilde" Write '{"file_path":"~/.claude-work/state/consent/f","content":"x"}'
 blocks "Write resolved" Write "$(jq -cn --arg p "$RESOLVED/grants/f.json" '{file_path:$p,content:"{}"}')"
 blocks "Read resolved" Read "$(jq -cn --arg p "$RESOLVED/ledger.jsonl" '{file_path:$p}')"
-blocks "Edit resolved" Edit "$(jq -cn --arg p "$RESOLVED/ledger.jsonl" '{file_path:$p,old_string:"a",new_string:"b"}')"
+mkdir -p "$RESOLVED" "$TMP/inno"
+ln -s "$RESOLVED" "$TMP/inno/link"
+blocks "Write via symlink into root" Write "$(jq -cn --arg p "$TMP/inno/link/new.json" '{file_path:$p,content:"{}"}')"
 
-echo "== allowed =="
-allows "Bash unrelated" Bash '{"command":"ls -la && git status"}'
-allows "Bash mentions consent without state path" Bash '{"command":"echo consent state"}'
+echo "== allowed: content is not a path =="
+allows "Write content mentions path" Write '{"file_path":"/x/notes.md","content":"see state/consent/ledger.jsonl"}'
+allows "Edit new_string mentions path" Edit '{"file_path":"/x/a.md","old_string":"a","new_string":"cp x state/consent/grants/y"}'
+allows "MultiEdit edits[] mentions path" MultiEdit '{"file_path":"/ok.txt","edits":[{"old_string":"a","new_string":"cp x state/consent/grants/y"}]}'
+allows "NotebookEdit new_source mentions path" NotebookEdit '{"notebook_path":"/x/n.ipynb","new_source":"state/consent"}'
 allows "Edit unrelated" Edit '{"file_path":"/x/src/a.ts","old_string":"a","new_string":"b"}'
-allows "Write unrelated" Write '{"file_path":"/x/notes.md","content":"hello"}'
 allows "Read unrelated" Read '{"file_path":"/x/README.md"}'
-allows "empty tool_input" Bash '{}'
-allows "non-covered tool referencing the path (Grep)" Grep '{"pattern":"state/consent"}'
+allows "non-covered tool (Grep)" Grep '{"pattern":"state/consent"}'
 allows "non-covered tool (WebFetch)" WebFetch '{"url":"https://example.com/state/consent"}'
+allows "non-covered tool (Glob)" Glob '{"pattern":"*.json","path":"/x/notes"}'
+allows "MultiEdit multiple edits mention path" MultiEdit '{"file_path":"/ok.txt","edits":[{"old_string":"state/consent","new_string":"a"},{"old_string":"b","new_string":"rm state/consent/x"}]}'
+allows "empty tool_input" Bash '{}'
+
+echo "== blocked: Bash path arguments and redirections =="
+blocks "cat" Bash "$(bash_in "cat $C/pending/x.json")"
+blocks "ls relative" Bash "$(bash_in "ls state/consent")"
+blocks "ls uppercase" Bash "$(bash_in "ls STATE/Consent")"
+blocks "rm" Bash "$(bash_in "rm -rf $C")"
+blocks "mv" Bash "$(bash_in "mv $C/ledger.jsonl /tmp/x")"
+blocks "cp" Bash "$(bash_in "cp /tmp/x $C/grants/y")"
+blocks "tee" Bash "$(bash_in "echo x | tee $C/ledger.jsonl")"
+blocks "ln" Bash "$(bash_in "ln -s /tmp/x $C/grants/y")"
+blocks "sed -i" Bash "$(bash_in "sed -i s/a/b/ $C/ledger.jsonl")"
+blocks "jq" Bash "$(bash_in "jq . $C/ledger.jsonl")"
+blocks "redirect >" Bash "$(bash_in "echo '{}' > $C/grants/x")"
+blocks "redirect attached" Bash "$(bash_in "echo '{}' >$C/grants/x")"
+blocks "redirect >>" Bash "$(bash_in "echo x >> $C/ledger.jsonl")"
+blocks "redirect 2>" Bash "$(bash_in "ls 2> $C/err")"
+blocks "redirect <" Bash "$(bash_in "cat < $C/ledger.jsonl")"
+blocks "grep on consent file" Bash "$(bash_in "grep x $C/ledger.jsonl")"
+blocks "grep -f consent file" Bash "$(bash_in "grep -f $C/ledger.jsonl hooks/x")"
+blocks "git add" Bash "$(bash_in "git add $C/x")"
+blocks "git commit -F" Bash "$(bash_in "git commit -F $C/x")"
+blocks "gh --body-file" Bash "$(bash_in "gh pr create --body-file $C/x")"
+blocks "gh api --input" Bash "$(bash_in "gh api x --input $C/x")"
+blocks "bash -c" Bash "$(bash_in "bash -c \"rm $C/ledger.jsonl\"")"
+blocks "python -c" Bash "$(bash_in "python3 -c \"open('state/consent/x','w')\"")"
+blocks "resolved absolute" Bash "$(bash_in "cat $RESOLVED/ledger.jsonl")"
+blocks "env wrapper + assignment" Bash "$(bash_in "FOO=1 env X=2 cat $C/x")"
+blocks "\$HOME form" Bash "$(bash_in 'cat $HOME/.claude-work/state/consent/x')"
+blocks "ATELIER_CONFIG_DIR form" Bash "$(bash_in 'cat ${ATELIER_CONFIG_DIR}/state/consent/x')"
+blocks "quote-split literal" Bash "$(bash_in "cat state/cons''ent/x")"
+blocks "second segment" Bash "$(bash_in "echo hi; rm $C/x")"
+blocks "subst in git commit -m" Bash "$(bash_in "git commit -m \"\$(cat $C/x)\"")"
+blocks "subst in echo" Bash "$(bash_in "echo \"\$(cat $C/x)\"")"
+blocks "backtick in gh body" Bash "$(bash_in "gh pr create --body \"\`cat $C/x\`\"")"
+blocks "nested subst" Bash "$(bash_in "echo \$(echo \$(cat $C/x))")"
+blocks "heredoc into shell" Bash "$(bash_in "bash <<EOF
+rm $C/x
+EOF")"
+
+blocks "unquoted subst in echo" Bash "$(bash_in "echo \$(cat $C/x)")"
+blocks "Bash // variant" Bash "$(bash_in "cat /x//state//consent/f")"
+blocks "Bash /./ variant" Bash "$(bash_in "cat /x/state/./consent/f")"
+blocks "subst in gh body" Bash "$(bash_in "gh pr create --body \"\$(cat $C/x)\"")"
+blocks "bash -c with substitution" Bash "$(bash_in "bash -c \"echo \$(cat $C/x)\"")"
+
+echo "== allowed: free-text mentions =="
+allows "Bash unrelated" Bash '{"command":"ls -la && git status"}'
+allows "echo consent state" Bash '{"command":"echo consent state"}'
+allows "echo state/consent" Bash '{"command":"echo state/consent"}'
+allows "printf mention" Bash '{"command":"printf \"%s\\n\" \"state/consent is guarded\""}'
+allows "git commit -m" Bash '{"command":"git commit -m \"fix: narrow guard for state/consent mentions\""}'
+allows "git commit -am" Bash '{"command":"git commit -am \"docs: state/consent\""}'
+allows "git log --grep" Bash '{"command":"git log --grep=state/consent"}'
+allows "gh pr create --body" Bash '{"command":"gh pr create --title \"x state/consent\" --body \"touches state/consent docs\""}'
+allows "gh pr create --body-file -" Bash '{"command":"gh pr create --body-file - < /tmp/body.md"}'
+allows "heredoc body to file" Bash "$(bash_in "cat <<'EOF' > docs/x.md
+the guard protects state/consent
+EOF")"
+allows "grep -rn pattern" Bash '{"command":"grep -rn '"'"'state/consent'"'"' hooks/"}'
+allows "grep -e pattern" Bash '{"command":"grep -e state/consent hooks/lib/consent.sh"}'
+allows "rg pattern" Bash '{"command":"rg state/consent"}'
+allows "git grep pattern" Bash '{"command":"git grep state/consent -- hooks"}'
+allows "echo with quoted mention" Bash '{"command":"echo \"see state/consent for details\""}'
+allows "heredoc body with command-looking text" Bash "$(bash_in "cat <<'EOF' > docs/y.md
+rm -rf state/consent/grants
+EOF")"
+allows "git commit -m multi-line" Bash "$(bash_in "git commit -m \"fix: x
+
+touches state/consent\"")"
+allows "echo into doc" Bash '{"command":"echo state/consent >> notes.md"}'
 
 echo
 if [ "$fails" -eq 0 ]; then echo "block-consent-tamper: all assertions passed"; exit 0; fi
