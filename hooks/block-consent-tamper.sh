@@ -203,12 +203,15 @@ scan_grep() {
         --) endo=1; continue ;;
         --regexp|-e) pat=1; j=$((j + 1)); continue ;;
         --regexp=*) pat=1; continue ;;
-        --file|-f) [ "$j" -lt "$n" ] && check_tok "${a[$j]}"; j=$((j + 1)); continue ;;
-        --file=*) check_tok "${t#*=}"; continue ;;
+        --file|-f) pat=1; [ "$j" -lt "$n" ] && check_tok "${a[$j]}"; j=$((j + 1)); continue ;;
+        --file=*) pat=1; check_tok "${t#*=}"; continue ;;
+        --exclude-from|--ignore-file|--pre|--hostname-bin)
+          [ "$j" -lt "$n" ] && check_tok "${a[$j]}"; j=$((j + 1)); continue ;;
         --*) check_tok "$t"; continue ;;
-        -*[ef]) if [ "${t: -1}" = e ]; then pat=1; else [ "$j" -lt "$n" ] && check_tok "${a[$j]}"; fi
+        -*[ef]) pat=1; if [ "${t: -1}" = f ]; then [ "$j" -lt "$n" ] && check_tok "${a[$j]}"; fi
                 j=$((j + 1)); continue ;;
         -e?*) pat=1; continue ;;
+        -f?*) pat=1; check_tok "${t#-f}"; check_tok "$t"; continue ;;
         -*) check_tok "$t"; continue ;;
       esac
     fi
@@ -244,8 +247,9 @@ scan_git() {
   done
 }
 
-gh_field() { # key=@path makes gh read the file and send its contents
+gh_field() { # key=@path makes gh read the file; -F is also --body-file/--notes-file
   case "$1" in *=@*) check_tok "${1#*=@}" ;; esac
+  [ "$1" = "-" ] || check_tok "$1"
   return 0
 }
 
