@@ -311,6 +311,7 @@
       "Bash(atelier-resolve-dep:*)",
       "Bash(atelier-workspace-status:*)",
       "Bash(atelier-list-workspaces:*)",
+      "Bash(atelier-memory:*)",
       "Bash(atelier-remove-workspace:*)",
 
       "Bash(claude plugin list --json)",

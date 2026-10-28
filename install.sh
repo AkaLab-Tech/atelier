@@ -1705,6 +1705,8 @@ phase_c_1_setup_project_helper() {
   _phase_c_1_symlink_helper atelier-review-verdict
   _phase_c_1_symlink_helper atelier-size-waiver
   _phase_c_1_symlink_helper atelier-subagent-ledger
+  # #618: persistent project memory (SQLite); read by the memory-brief SessionStart hook.
+  _phase_c_1_symlink_helper atelier-memory
 
   # #459: read-only resolver for autoMerge.reviewerApprovalMode from the base
   # ref (never the reviewed head); fails closed on an unknown value. The
