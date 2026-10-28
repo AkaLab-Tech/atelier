@@ -316,13 +316,13 @@ jq -e '[
   && pass "G2: refresh-mirror.sh is registered under hooks.SessionStart" \
   || fail "G2: refresh-mirror.sh is NOT under hooks.SessionStart in hooks.json"
 
-# G3: 7 entries in total (#582 added gh-shim-path.sh); originally a sixth entry (three pre-existing hooks + refresh-mirror.sh +
-# sync-notification-hook.sh, added by #41, + version-drift-nudge.sh, added by #505)
+# G3: 8 entries in total (#582 added gh-shim-path.sh, #618 added memory-brief.sh); originally three pre-existing hooks +
+# refresh-mirror.sh + sync-notification-hook.sh (#41) + version-drift-nudge.sh (#505)
 count="$(jq '[.hooks.SessionStart[]?.hooks[]?.command | select(. != null)] | length' \
   "$HOOKS_JSON" 2>/dev/null || true)"
-[ "$count" = "7" ] \
-  && pass "G3: hooks.SessionStart has exactly 7 entries (3 existing + refresh-mirror + sync-notification-hook + version-drift-nudge + gh-shim-path)" \
-  || fail "G3: hooks.SessionStart has $count entries, expected 7"
+[ "$count" = "8" ] \
+  && pass "G3: hooks.SessionStart has exactly 8 entries (3 existing + refresh-mirror + sync-notification-hook + version-drift-nudge + gh-shim-path + memory-brief)" \
+  || fail "G3: hooks.SessionStart has $count entries, expected 8"
 
 # ===========================================================================
 # Result

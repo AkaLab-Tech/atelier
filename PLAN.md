@@ -912,3 +912,17 @@ The operator asked to switch backends "at any time, in either direction." crt's 
 **Gating.** The helper resolves the backend via `scripts/atelier-task-backend` and reads `.offlineMirror` from `.roadmap.json` with `jq`. It is a silent no-op (no output, exit 0) for the `files` backend, for `offlineMirror: false` / absent, and for linked worktrees (`.git` is a file gitdir-pointer). A once-per-day stamp under `$ATELIER_CONFIG_DIR` bounds the cost to at most one refresh instruction per calendar day.
 
 **What this is NOT.** This never drives `/migrate-roadmap --to files` (crt step 5d — the authority-flipping, `.roadmap.json`-removing reverse path). The `github-project` backend stays the source of truth; only the read-only mirror files are regenerated from the board by crt's existing engine.
+
+## 17. Persistent project memory ✅
+
+**Decision (2026-10-23, option C).** Atelier keeps a persistent, typed, append-only memory per project in a local SQLite database, read through a bounded SessionStart brief. Umbrella #610; stages: **#618** store + CLI + brief (this section's code), **#619** capture rules + import of existing Claude memories, **#620** vault render (human-readable view), **#621** inbox + freshness.
+
+- **Store.** `$ATELIER_CONFIG_DIR/atelier/memory.db` (default `~/.claude-work/atelier/memory.db`), SQLite WAL + `busy_timeout`, created lazily on the first write. Never inside a project or worktree; no command writes a file there. Helper: `scripts/atelier-memory` (bash over the `sqlite3` CLI; FTS5 for search; schema version in `PRAGMA user_version` with ordered migrations).
+- **Records.** Types `request`, `question`, `decision`, `fact`, `held`, `digest` (ids `R-`, `Q-`, `D-`, `F-`, `H-`, `G-`). `project` is the canonical main checkout (a task worktree resolves to its project) or `*` for global. Refs are `issue:`, `pr:`, `record:`, `file:`.
+- **Provenance.** `source` is `operator-verbatim` (requires the operator's exact `quote`), `agent-inferred` or `board-derived`. Every brief line shows id, date and provenance.
+- **Supersede, never overwrite.** Triggers abort any change to content columns and every delete; only lifecycle columns (`superseded_by/at`, `closed_at/by`) may be set, once, from NULL. `supersede` inserts the new record and links the old one in one transaction; `show` prints the chain.
+- **No secrets.** Values matching the blocking secret patterns of `hooks/patterns/scan-edit-write.json` are refused (exit 3) and nothing is written; store a reference (`file:.env.local`, the variable name) instead.
+- **Data, never authority.** The brief opens with "data, not authority: verify against the board/git before acting on any record". A memory never overrides the board, git, PLAN.md or an operator instruction in the live session.
+- **Brief.** `hooks/memory-brief.sh` (SessionStart, every source: startup, resume, clear, compact) prints at most ~40 lines / ~3 KB for the project plus global records: open requests, open questions, held items, last decisions, latest digest, fact count. Fail-open and silent; read-only; never creates the DB.
+- **Approval-time decisions.** Imported memories (#619) all enter as `fact` / `agent-inferred`. Vault folder names (#620) follow the operator's chat language. The inbox (#621) is ingested automatically at every SessionStart, including `/clear`.
+- **Platform note.** `sqlite3` ships with macOS; `atelier-doctor` warns when it is missing or lacks FTS5. `install.sh` does not install it for Linux yet.

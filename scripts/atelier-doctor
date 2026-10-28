@@ -985,6 +985,19 @@ sudo apt-get install docker-compose-plugin"
   fi
 }
 
+check_sqlite_fts5() {
+  # #618 — atelier-memory needs the sqlite3 CLI with FTS5. Warn only.
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    push_host "$WARN sqlite3 not found (atelier-memory disabled; macOS ships it, Linux: apt-get install sqlite3)"
+    return
+  fi
+  if sqlite3 :memory: 'CREATE VIRTUAL TABLE t USING fts5(x);' >/dev/null 2>&1; then
+    push_host "$OK sqlite3 $(sqlite3 --version 2>/dev/null | awk '{print $1}') with FTS5 (atelier-memory)"
+  else
+    push_host "$WARN sqlite3 lacks FTS5 (atelier-memory search disabled)"
+  fi
+}
+
 check_atelier_config_dir() {
   # M7.1.F11 — verify the env-var lookup chain resolves to an atelier
   # install (marker present + installStatus complete).
@@ -1668,6 +1681,7 @@ check_workspaces
 check_project_registry
 check_user_settings_stale_paths
 check_atelier_config_dir
+check_sqlite_fts5
 check_atelier_claude_auth
 check_git_identity
 check_reviewer_repo_access
