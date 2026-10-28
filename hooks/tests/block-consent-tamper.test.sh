@@ -104,6 +104,15 @@ blocks "redirect 2>" Bash "$(bash_in "ls 2> $C/err")"
 blocks "redirect <" Bash "$(bash_in "cat < $C/ledger.jsonl")"
 blocks "grep on consent file" Bash "$(bash_in "grep x $C/ledger.jsonl")"
 blocks "grep -f consent file" Bash "$(bash_in "grep -f $C/ledger.jsonl hooks/x")"
+blocks "grep -A value then consent file" Bash "$(bash_in "grep -A 3 x $C/ledger.jsonl")"
+blocks "grep --include value then consent dir" Bash "$(bash_in "grep --include '*.json' -r x $C")"
+blocks "rg -g value then consent dir" Bash "$(bash_in "rg -g '*.json' x $C")"
+blocks "rg -t value then consent dir" Bash "$(bash_in "rg -t json x $C")"
+blocks "grep -m value then consent file" Bash "$(bash_in "grep -m 1 x $C/ledger.jsonl")"
+blocks "grep -C 3 pattern (accepted over-block, -C is no-value in grep)" Bash "$(bash_in "grep -C 3 'state/consent' f")"
+blocks "grep -T wrong arity" Bash "$(bash_in "grep -T x $C/ledger.jsonl")"
+blocks "grep -A3 attached then consent file" Bash "$(bash_in "grep -A3 x $C/ledger.jsonl")"
+blocks "grep --include consent-path value" Bash "$(bash_in "grep --include $C/x pat .")"
 blocks "git add" Bash "$(bash_in "git add $C/x")"
 blocks "git commit -F" Bash "$(bash_in "git commit -F $C/x")"
 blocks "gh --body-file" Bash "$(bash_in "gh pr create --body-file $C/x")"
@@ -201,6 +210,18 @@ allows "grep -rn pattern" Bash '{"command":"grep -rn '"'"'state/consent'"'"' hoo
 allows "grep -e pattern" Bash '{"command":"grep -e state/consent hooks/lib/consent.sh"}'
 allows "rg pattern" Bash '{"command":"rg state/consent"}'
 allows "git grep pattern" Bash '{"command":"git grep state/consent -- hooks"}'
+allows "grep -A value, pattern names consent" Bash "$(bash_in "grep -A 3 'state/consent' hooks/")"
+allows "grep -nA cluster" Bash "$(bash_in "grep -nA 3 'state/consent' hooks/")"
+allows "grep --include value" Bash "$(bash_in "grep --include '*.sh' 'state/consent' hooks/")"
+allows "grep --exclude-dir value" Bash "$(bash_in "grep --exclude-dir node_modules -r 'state/consent' .")"
+allows "grep -m value" Bash "$(bash_in "grep -m 1 'state/consent' f")"
+allows "rg -g value" Bash "$(bash_in "rg -g '*.md' state/consent")"
+allows "rg -t value" Bash "$(bash_in "rg -t sh state/consent")"
+allows "rg -T value" Bash "$(bash_in "rg -T md state/consent")"
+allows "rg -C value" Bash "$(bash_in "rg -C 2 state/consent hooks")"
+allows "git grep -A value" Bash "$(bash_in "git grep -A 2 state/consent -- hooks")"
+allows "grep -C3 attached" Bash "$(bash_in "grep -C3 'state/consent' f")"
+allows "ag -C value" Bash "$(bash_in "ag -C 2 state/consent hooks")"
 allows "echo with quoted mention" Bash '{"command":"echo \"see state/consent for details\""}'
 allows "heredoc body with command-looking text" Bash "$(bash_in "cat <<'EOF' > docs/y.md
 rm -rf state/consent/grants
