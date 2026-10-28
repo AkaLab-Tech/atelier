@@ -205,7 +205,7 @@ ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*=(.*)$'
 # Options that take a separate value, per tool: the same letter means different
 # things across tools (-T is --type-not in rg, a plain flag in grep), and a wrong
 # guess would swallow the real pattern and leave the next path operand unchecked.
-# When in doubt a letter stays out. -C/--context are left out of the grep family.
+# When in doubt a letter stays out. -C/--context are left out of the grep family; ag --after/--before/--context are optional_argument (value only attached), so they stay out.
 grep_short_val() { # family letter
   case "$1:$2" in grep:[ABmgt]|rg:[ABCmgtT]|ag:[ABCmG]) return 0 ;; esac
   return 1
@@ -225,7 +225,7 @@ grep_long_val() { # family name
   case "$1:$2" in
     grep:--after-context|grep:--before-context|grep:--max-count|grep:--include|grep:--exclude|grep:--exclude-dir|grep:--glob|grep:--file-type) return 0 ;;
     rg:--after-context|rg:--before-context|rg:--context|rg:--max-count|rg:--glob|rg:--iglob|rg:--type|rg:--type-not) return 0 ;;
-    ag:--after|ag:--before|ag:--context|ag:--max-count|ag:--file-search-regex|ag:--ignore|ag:--ignore-dir) return 0 ;;
+    ag:--max-count|ag:--file-search-regex|ag:--ignore|ag:--ignore-dir) return 0 ;;
   esac
   return 1
 }
