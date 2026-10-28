@@ -119,6 +119,10 @@ blocks "ag -pA (unknown letter before value letter) consent file" Bash "$(bash_i
 blocks "ag --context x (optional-arg long, consent file stays a path)" Bash "$(bash_in "ag --context x $C/ledger.jsonl")"
 blocks "ag --after x (optional-arg long, consent file stays a path)" Bash "$(bash_in "ag --after x $C/ledger.jsonl")"
 blocks "ag --before x (optional-arg long, consent file stays a path)" Bash "$(bash_in "ag --before x $C/ledger.jsonl")"
+blocks "ag -A x consent file (flat handling, no value table)" Bash "$(bash_in "ag -A x $C/ledger.jsonl")"
+blocks "ag -B x consent file (flat handling, no value table)" Bash "$(bash_in "ag -B x $C/ledger.jsonl")"
+blocks "ag -C x consent file (flat handling, no value table)" Bash "$(bash_in "ag -C x $C/ledger.jsonl")"
+blocks "ag -C 2 state/consent (accepted over-block, as on main)" Bash "$(bash_in "ag -C 2 state/consent hooks")"
 blocks "grep -uf (unknown letter before pattern-file letter) consent file" Bash "$(bash_in "grep -uf $C/ledger.jsonl hooks/x")"
 blocks "grep -Sf (unknown letter before pattern-file letter) consent file" Bash "$(bash_in "grep -Sf $C/ledger.jsonl hooks/x")"
 blocks "grep -Of (unknown letter before pattern-file letter) consent file" Bash "$(bash_in "grep -Of $C/ledger.jsonl hooks/x")"
@@ -244,7 +248,6 @@ allows "rg -T value" Bash "$(bash_in "rg -T md state/consent")"
 allows "rg -C value" Bash "$(bash_in "rg -C 2 state/consent hooks")"
 allows "git grep -A value" Bash "$(bash_in "git grep -A 2 state/consent -- hooks")"
 allows "grep -C3 attached" Bash "$(bash_in "grep -C3 'state/consent' f")"
-allows "ag -C value" Bash "$(bash_in "ag -C 2 state/consent hooks")"
 allows "echo with quoted mention" Bash '{"command":"echo \"see state/consent for details\""}'
 allows "heredoc body with command-looking text" Bash "$(bash_in "cat <<'EOF' > docs/y.md
 rm -rf state/consent/grants

@@ -205,9 +205,9 @@ ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*=(.*)$'
 # Options that take a separate value, per tool: the same letter means different
 # things across tools (-T is --type-not in rg, a plain flag in grep), and a wrong
 # guess would swallow the real pattern and leave the next path operand unchecked.
-# When in doubt a letter stays out. -C/--context are left out of the grep family; ag --after/--before/--context are optional_argument (value only attached), so they stay out.
+# When in doubt a letter stays out. -C/--context are left out of the grep family. ag deliberately has no rows in any table: its -A/-B/-C take the next token only when numeric (else it is the pattern), so ag keeps the flat handling of the original grep-family scan (over-blocks, never lets a consent path through).
 grep_short_val() { # family letter
-  case "$1:$2" in grep:[ABmgt]|git-grep:[ABm]|rg:[ABCmgtT]|ag:[ABCmG]) return 0 ;; esac
+  case "$1:$2" in grep:[ABmgt]|git-grep:[ABm]|rg:[ABCmgtT]) return 0 ;; esac
   return 1
 }
 
@@ -216,7 +216,7 @@ grep_short_val() { # family letter
 # parser falls back to checking the whole token and consuming nothing.
 grep_short_flag() { # family letter
   case "$1:$2" in
-    grep:[EFGPivwxclLoqsbHhnTZzaIUrRVy]|rg:[ivwxclLoqsbHhnNuUSIpazFP]|ag:[ivwQclLsSuUaHhnzo]|git-grep:[ivwaIrEGFPnhHlLzocpWq]) return 0 ;;
+    grep:[EFGPivwxclLoqsbHhnTZzaIUrRVy]|rg:[ivwxclLoqsbHhnNuUSIpazFP]|git-grep:[ivwaIrEGFPnhHlLzocpWq]) return 0 ;;
   esac
   return 1
 }
@@ -226,7 +226,6 @@ grep_long_val() { # family name
     grep:--after-context|grep:--before-context|grep:--max-count|grep:--include|grep:--exclude|grep:--exclude-dir|grep:--glob|grep:--file-type) return 0 ;;
     git-grep:--after-context|git-grep:--before-context|git-grep:--max-count) return 0 ;;
     rg:--after-context|rg:--before-context|rg:--context|rg:--max-count|rg:--glob|rg:--iglob|rg:--type|rg:--type-not) return 0 ;;
-    ag:--max-count|ag:--file-search-regex|ag:--ignore|ag:--ignore-dir) return 0 ;;
   esac
   return 1
 }
@@ -255,7 +254,7 @@ scan_grep() { # tool args...
              continue ;;
         -?*)
           hit=0; k=1
-          while [ "$k" -lt "${#t}" ]; do
+          while [ "$fam" != ag ] && [ "$k" -lt "${#t}" ]; do
             c="${t:$k:1}"; rest="${t:$((k + 1))}"
             if [ "$c" = e ] || [ "$c" = f ] || grep_short_val "$fam" "$c"; then
               hit=1
