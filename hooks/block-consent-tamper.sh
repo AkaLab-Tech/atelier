@@ -13,7 +13,10 @@
 #     tokens. Redirection targets are always checked. Per command word:
 #       echo/printf/:/true   operands are prose, only redirections are checked;
 #       grep family          the search pattern is dropped, `-f FILE` and the
-#                            remaining operands are checked as paths;
+#                            remaining operands are checked as paths; values of
+#                            options taking a separate value (-A/-B/-m/-g/-t,
+#                            --include/--glob/..., per tool) are skipped from
+#                            pattern detection and still checked as paths;
 #       git                  values of -m/-S/-G/--grep/--format/--pretty are
 #                            dropped; -F/--file/-t/--template values are paths;
 #       gh                   --title/--body/-f/-F/--field values are dropped;
@@ -199,8 +202,39 @@ scan_subst() { # token depth — re-scan every $(...) / `...` inside the token
 REDIR_RE='^[0-9]*(>>|>\||&>|>|<)(.*)$'
 ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*=(.*)$'
 
-scan_grep() {
-  local -a a=("$@"); local n=${#a[@]} j=0 t pat=0 endo=0
+# Options that take a separate value, per tool: the same letter means different
+# things across tools (-T is --type-not in rg, a plain flag in grep), and a wrong
+# guess would swallow the real pattern and leave the next path operand unchecked.
+# When in doubt a letter stays out. -C/--context are left out of the grep family. ag deliberately has no rows in any table: its -A/-B/-C take the next token only when numeric (else it is the pattern), so ag keeps the flat handling of the original grep-family scan (over-blocks, never lets a consent path through).
+grep_short_val() { # family letter
+  case "$1:$2" in grep:[ABmgt]|git-grep:[ABm]|rg:[ABCmgtT]) return 0 ;; esac
+  return 1
+}
+
+# Known no-value short flags per tool. In a cluster, only these may precede a
+# value letter; any other letter may take a value (rg -rA = --replace A), so the
+# parser falls back to checking the whole token and consuming nothing.
+grep_short_flag() { # family letter
+  case "$1:$2" in
+    grep:[EFGPivwxclLoqsbHhnTZzaIUrRVy]|rg:[ivwxclLoqsbHhnNuUSIpazFP]|git-grep:[ivwaIrEGFPnhHlLzocpWq]) return 0 ;;
+  esac
+  return 1
+}
+
+grep_long_val() { # family name
+  case "$1:$2" in
+    grep:--after-context|grep:--before-context|grep:--max-count|grep:--include|grep:--exclude|grep:--exclude-dir|grep:--glob|grep:--file-type) return 0 ;;
+    git-grep:--after-context|git-grep:--before-context|git-grep:--max-count) return 0 ;;
+    rg:--after-context|rg:--before-context|rg:--context|rg:--max-count|rg:--glob|rg:--iglob|rg:--type|rg:--type-not) return 0 ;;
+  esac
+  return 1
+}
+
+scan_grep() { # tool args...
+  local tool="$1"; shift
+  local fam=grep
+  case "$tool" in rg) fam=rg ;; ag) fam=ag ;; git-grep) fam=git-grep ;; esac
+  local -a a=("$@"); local n=${#a[@]} j=0 t pat=0 endo=0 k c rest hit
   while [ "$j" -lt "$n" ]; do
     t="${a[$j]}"; j=$((j + 1))
     if [ "$endo" = 0 ]; then
@@ -212,12 +246,42 @@ scan_grep() {
         --file=*) pat=1; check_tok "${t#*=}"; continue ;;
         --exclude-from|--ignore-file|--pre|--hostname-bin)
           [ "$j" -lt "$n" ] && check_tok "${a[$j]}"; j=$((j + 1)); continue ;;
-        --*) check_tok "$t"; continue ;;
-        -*[ef]) pat=1; if [ "${t: -1}" = f ]; then [ "$j" -lt "$n" ] && check_tok "${a[$j]}"; fi
-                j=$((j + 1)); continue ;;
-        -e?*) pat=1; continue ;;
-        -f?*) pat=1; check_tok "${t#-f}"; check_tok "$t"; continue ;;
-        -*) check_tok "$t"; continue ;;
+        --*=*) check_tok "$t"; continue ;;
+        --*) check_tok "$t"
+             if grep_long_val "$fam" "$t"; then
+               [ "$j" -lt "$n" ] && check_tok "${a[$j]}"; j=$((j + 1))
+             fi
+             continue ;;
+        -?*)
+          hit=0; k=1
+          while [ "$fam" != ag ] && [ "$k" -lt "${#t}" ]; do
+            c="${t:$k:1}"; rest="${t:$((k + 1))}"
+            if [ "$c" = e ] || [ "$c" = f ] || grep_short_val "$fam" "$c"; then
+              hit=1
+              if [ "$c" = e ]; then pat=1
+              elif [ "$c" = f ]; then pat=1; if [ -n "$rest" ]; then check_tok "$rest"; check_tok "$t"; fi
+              elif [ -n "$rest" ]; then check_tok "$rest"; fi
+              if [ -z "$rest" ]; then
+                if [ "$c" != e ] && [ "$j" -lt "$n" ]; then check_tok "${a[$j]}"; fi
+                j=$((j + 1))
+              fi
+              break
+            fi
+            grep_short_flag "$fam" "$c" || break
+            k=$((k + 1))
+          done
+          if [ "$hit" = 0 ]; then
+            # Unparsed cluster: the flat handling (a trailing f still path-checks and
+            # consumes the next token), so never weaker than before cluster parsing.
+            case "$t" in
+              *[ef]) pat=1; check_tok "$t"
+                     if [ "${t: -1}" = f ] && [ "$j" -lt "$n" ]; then check_tok "${a[$j]}"; fi
+                     j=$((j + 1)) ;;
+              *) check_tok "$t" ;;
+            esac
+          fi
+          continue ;;
+        -) check_tok "$t"; continue ;;
       esac
     fi
     if [ "$pat" = 0 ]; then pat=1; else check_tok "$t"; fi
@@ -237,7 +301,7 @@ scan_git() {
         -*) check_tok "$t"; continue ;;
       esac
       sub="$t"
-      if [ "$sub" = grep ]; then scan_grep "${a[@]:$j}"; return 0; fi
+      if [ "$sub" = grep ]; then scan_grep git-grep "${a[@]:$j}"; return 0; fi
       continue
     fi
     case "$t" in
@@ -318,7 +382,7 @@ scan_segment() { # depth tokens...
   [ $((i + 1)) -lt "$n" ] && ops=("${words[@]:$((i + 1))}")
   case "$base" in
     echo|printf|:|true) ;;
-    grep|egrep|fgrep|rg|ag) scan_grep ${ops[@]+"${ops[@]}"} ;;
+    grep|egrep|fgrep|rg|ag) scan_grep "$base" ${ops[@]+"${ops[@]}"} ;;
     git) scan_git ${ops[@]+"${ops[@]}"} ;;
     gh) scan_gh ${ops[@]+"${ops[@]}"} ;;
     *)
