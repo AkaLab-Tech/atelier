@@ -207,7 +207,7 @@ ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*=(.*)$'
 # guess would swallow the real pattern and leave the next path operand unchecked.
 # When in doubt a letter stays out. -C/--context are left out of the grep family; ag --after/--before/--context are optional_argument (value only attached), so they stay out.
 grep_short_val() { # family letter
-  case "$1:$2" in grep:[ABmgt]|rg:[ABCmgtT]|ag:[ABCmG]) return 0 ;; esac
+  case "$1:$2" in grep:[ABmgt]|git-grep:[ABm]|rg:[ABCmgtT]|ag:[ABCmG]) return 0 ;; esac
   return 1
 }
 
@@ -216,7 +216,7 @@ grep_short_val() { # family letter
 # parser falls back to checking the whole token and consuming nothing.
 grep_short_flag() { # family letter
   case "$1:$2" in
-    grep:[EFGPivwxclLoqsbHhnTZzaIUrRVy]|rg:[ivwxclLoqsbHhnNuUSIpazFP]|ag:[ivwQclLsSuUaHhnzo]) return 0 ;;
+    grep:[EFGPivwxclLoqsbHhnTZzaIUrRVy]|rg:[ivwxclLoqsbHhnNuUSIpazFP]|ag:[ivwQclLsSuUaHhnzo]|git-grep:[ivwaIrEGFPnhHlLzocpWq]) return 0 ;;
   esac
   return 1
 }
@@ -224,6 +224,7 @@ grep_short_flag() { # family letter
 grep_long_val() { # family name
   case "$1:$2" in
     grep:--after-context|grep:--before-context|grep:--max-count|grep:--include|grep:--exclude|grep:--exclude-dir|grep:--glob|grep:--file-type) return 0 ;;
+    git-grep:--after-context|git-grep:--before-context|git-grep:--max-count) return 0 ;;
     rg:--after-context|rg:--before-context|rg:--context|rg:--max-count|rg:--glob|rg:--iglob|rg:--type|rg:--type-not) return 0 ;;
     ag:--max-count|ag:--file-search-regex|ag:--ignore|ag:--ignore-dir) return 0 ;;
   esac
@@ -233,7 +234,7 @@ grep_long_val() { # family name
 scan_grep() { # tool args...
   local tool="$1"; shift
   local fam=grep
-  case "$tool" in rg) fam=rg ;; ag) fam=ag ;; esac
+  case "$tool" in rg) fam=rg ;; ag) fam=ag ;; git-grep) fam=git-grep ;; esac
   local -a a=("$@"); local n=${#a[@]} j=0 t pat=0 endo=0 k c rest hit
   while [ "$j" -lt "$n" ]; do
     t="${a[$j]}"; j=$((j + 1))
