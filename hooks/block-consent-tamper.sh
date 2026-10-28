@@ -211,6 +211,16 @@ grep_short_val() { # family letter
   return 1
 }
 
+# Known no-value short flags per tool. In a cluster, only these may precede a
+# value letter; any other letter may take a value (rg -rA = --replace A), so the
+# parser falls back to checking the whole token and consuming nothing.
+grep_short_flag() { # family letter
+  case "$1:$2" in
+    grep:[EFGPivwxclLoqsbHhnTZzaIUrRVy]|rg:[ivwxclLoqsbHhnNuUSIpazFP]|ag:[ivwQclLsSuUaHhnzo]) return 0 ;;
+  esac
+  return 1
+}
+
 grep_long_val() { # family name
   case "$1:$2" in
     grep:--after-context|grep:--before-context|grep:--max-count|grep:--include|grep:--exclude|grep:--exclude-dir|grep:--glob|grep:--file-type) return 0 ;;
@@ -257,6 +267,7 @@ scan_grep() { # tool args...
               fi
               break
             fi
+            grep_short_flag "$fam" "$c" || break
             k=$((k + 1))
           done
           [ "$hit" = 0 ] && check_tok "$t"
