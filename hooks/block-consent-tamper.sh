@@ -213,10 +213,12 @@ grep_short_val() { # family letter
 
 # Known no-value short flags per tool. In a cluster, only these may precede a
 # value letter; any other letter may take a value (rg -rA = --replace A), so the
-# parser falls back to checking the whole token and consuming nothing.
+# parser falls back to a conservative scan (see the unparsed-cluster branch in
+# scan_grep). grep takes digits (-NUM context shorthand) and rg -0 (--null) as
+# no-value flags so -5eXYZ / -0eXYZ parse precisely.
 grep_short_flag() { # family letter
   case "$1:$2" in
-    grep:[EFGPivwxclLoqsbHhnTZzaIUrRVy]|rg:[ivwxclLoqsbHhnNuUSIpazFP]|git-grep:[ivwaIrEGFPnhHlLzocpWq]) return 0 ;;
+    grep:[0-9EFGPivwxclLoqsbHhnTZzaIUrRVy]|rg:[0ivwxclLoqsbHhnNuUSIpazFP]|git-grep:[ivwaIrEGFPnhHlLzocpWq]) return 0 ;;
   esac
   return 1
 }
@@ -271,12 +273,17 @@ scan_grep() { # tool args...
             k=$((k + 1))
           done
           if [ "$hit" = 0 ]; then
-            # Unparsed cluster: the flat handling (a trailing f still path-checks and
-            # consumes the next token), so never weaker than before cluster parsing.
-            case "$t" in
-              *[ef]) pat=1; check_tok "$t"
-                     if [ "${t: -1}" = f ] && [ "$j" -lt "$n" ]; then check_tok "${a[$j]}"; fi
-                     j=$((j + 1)) ;;
+            # Unparsed cluster: if an e or f appears anywhere it may be a pattern/file
+            # option, so treat the next operand as a path (pat=1) and also check
+            # whatever follows the first f (an attached -f file).
+            case "${t:1}" in
+              *[ef]*) pat=1; check_tok "$t"
+                      case "${t:1}" in *f*) rest="${t#*f}"; [ -n "$rest" ] && check_tok "$rest" ;; esac
+                      case "$t" in
+                        *[ef])
+                          if [ "${t: -1}" = f ] && [ "$j" -lt "$n" ]; then check_tok "${a[$j]}"; fi
+                          j=$((j + 1)) ;;
+                      esac ;;
               *) check_tok "$t" ;;
             esac
           fi
