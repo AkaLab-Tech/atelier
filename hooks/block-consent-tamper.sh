@@ -270,7 +270,16 @@ scan_grep() { # tool args...
             grep_short_flag "$fam" "$c" || break
             k=$((k + 1))
           done
-          [ "$hit" = 0 ] && check_tok "$t"
+          if [ "$hit" = 0 ]; then
+            # Unparsed cluster: the flat handling (a trailing f still path-checks and
+            # consumes the next token), so never weaker than before cluster parsing.
+            case "$t" in
+              *[ef]) pat=1; check_tok "$t"
+                     if [ "${t: -1}" = f ] && [ "$j" -lt "$n" ]; then check_tok "${a[$j]}"; fi
+                     j=$((j + 1)) ;;
+              *) check_tok "$t" ;;
+            esac
+          fi
           continue ;;
         -) check_tok "$t"; continue ;;
       esac
