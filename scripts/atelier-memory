@@ -12,6 +12,7 @@
 #   atelier-memory show <id>
 #   atelier-memory search <fts5 query> [--project P]
 #   atelier-memory brief --project P
+#   atelier-memory import [--dry-run] [--project P]
 #   atelier-memory path
 #
 # Types: request question decision fact held digest (ids R- Q- D- F- H- G-).
@@ -30,11 +31,11 @@
 
 set -u
 
-usage() { sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; }
 
 CFG="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
 DB="$CFG/atelier/memory.db"
-LATEST_SCHEMA=1
+LATEST_SCHEMA=2
 
 die() { echo "atelier-memory: $*" >&2; exit 2; }
 refuse() { echo "atelier-memory: refused — $*" >&2; exit 3; }
@@ -58,7 +59,7 @@ dec() { printf '%s' "$1" | xxd -r -p; }
 sqlrun() { sqlite3 -bail -cmd '.timeout 5000' "$DB"; }
 sqlro() { sqlite3 -readonly -bail -cmd '.timeout 5000' "$DB"; }
 
-user_version() { printf 'PRAGMA user_version;' | sqlite3 "$DB" 2>/dev/null; }
+user_version() { printf 'PRAGMA user_version;' | sqlite3 -cmd '.timeout 5000' "$DB" 2>/dev/null; }
 
 SCHEMA_V1="
 CREATE TABLE IF NOT EXISTS records (
@@ -97,6 +98,25 @@ CREATE TRIGGER IF NOT EXISTS records_no_delete BEFORE DELETE ON records
 BEGIN SELECT RAISE(ABORT, 'records are never deleted: supersede or close instead'); END;
 "
 
+# v2 (#619): external-source columns for idempotent import, guarded like the content columns.
+SCHEMA_V2="
+ALTER TABLE records ADD COLUMN ext_source TEXT;
+ALTER TABLE records ADD COLUMN ext_sha TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS records_ext ON records(ext_source, ext_sha) WHERE ext_source IS NOT NULL;
+DROP TRIGGER IF EXISTS records_immutable;
+CREATE TRIGGER records_immutable BEFORE UPDATE ON records
+WHEN NEW.rowid IS NOT OLD.rowid OR NEW.id IS NOT OLD.id OR NEW.type IS NOT OLD.type
+  OR NEW.project IS NOT OLD.project OR NEW.source IS NOT OLD.source OR NEW.title IS NOT OLD.title
+  OR NEW.body IS NOT OLD.body OR NEW.quote IS NOT OLD.quote OR NEW.refs IS NOT OLD.refs
+  OR NEW.created_at IS NOT OLD.created_at OR NEW.created_by IS NOT OLD.created_by
+  OR NEW.ext_source IS NOT OLD.ext_source OR NEW.ext_sha IS NOT OLD.ext_sha
+  OR (OLD.superseded_by IS NOT NULL AND NEW.superseded_by IS NOT OLD.superseded_by)
+  OR (OLD.superseded_at IS NOT NULL AND NEW.superseded_at IS NOT OLD.superseded_at)
+  OR (OLD.closed_at IS NOT NULL AND NEW.closed_at IS NOT OLD.closed_at)
+  OR (OLD.closed_by IS NOT NULL AND NEW.closed_by IS NOT OLD.closed_by)
+BEGIN SELECT RAISE(ABORT, 'records are immutable: supersede instead of editing'); END;
+"
+
 # Ordered migrations: each step runs once, in order, from the stored user_version.
 ensure_db() {
   mkdir -p "$(dirname "$DB")" || die "cannot create $(dirname "$DB")"
@@ -104,10 +124,14 @@ ensure_db() {
   v="$(user_version)"; v="${v:-0}"
   [ "$v" -ge "$LATEST_SCHEMA" ] && return 0
   printf 'PRAGMA journal_mode=WAL;' | sqlite3 -cmd '.timeout 5000' "$DB" >/dev/null 2>&1
-  if [ "$v" -lt 1 ]; then
-    printf 'BEGIN IMMEDIATE;\n%s\nPRAGMA user_version=1;\nCOMMIT;\n' "$SCHEMA_V1" | sqlrun >/dev/null \
-      || die "schema init failed"
-  fi
+  # Each step re-checks user_version inside its write lock, so concurrent first runs
+  # cannot re-apply a step (or reset the version) after another process migrated.
+  migrate_step() { # <from> <to> <sql>
+    printf 'BEGIN IMMEDIATE;\nCREATE TEMP TABLE mig_guard(ok INTEGER CHECK (ok=1));\nINSERT INTO mig_guard SELECT (SELECT user_version FROM pragma_user_version)=%s;\n%s\nPRAGMA user_version=%s;\nCOMMIT;\n' "$1" "$3" "$2" \
+      | sqlrun >/dev/null 2>&1 || [ "$(user_version)" -ge "$2" ] 2>/dev/null || die "schema migration to v$2 failed"
+  }
+  [ "$v" -lt 1 ] && migrate_step 0 1 "$SCHEMA_V1"
+  migrate_step 1 2 "$SCHEMA_V2"
 }
 
 # ---------- project resolution ----------
@@ -136,7 +160,7 @@ project_label() {
   if command -v jq >/dev/null 2>&1 && [ -f "$CFG/projects.json" ]; then
     n="$(jq -r --arg p "$p" '.projects[$p].name // empty' "$CFG/projects.json" 2>/dev/null)"
   fi
-  printf '%s' "${n:-$(basename "$p")}"
+  printf '%s' "${n:-$(basename -- "$p")}"
 }
 
 # ---------- secret refusal ----------
@@ -157,29 +181,55 @@ patterns_file() {
 
 # Same matcher shape as hooks/scan-edit-write.sh, restricted to the blocking secret
 # patterns (the catalogue's code-injection patterns are irrelevant to memory text).
-check_secrets() {
-  local field="$1" content="$2" pf pat_json name regex ci
-  [ -n "$content" ] || return 0
+# Patterns load once into plain arrays (bash 3.2: no associative arrays).
+SM_LOADED=0; SM_NAMES=(); SM_REGEX=(); SM_CI=(); SECRET_HIT=""
+
+secret_load() {
+  local pf pat_json regex
   command -v jq >/dev/null 2>&1 || die "jq is required"
   pf="$(patterns_file)" || die "secret catalogue not found (hooks/patterns/scan-edit-write.json); refusing to write unscanned"
   while IFS= read -r pat_json; do
     [ -n "$pat_json" ] || continue
-    name="$(printf '%s' "$pat_json" | jq -r '.name')"
     regex="$(printf '%s' "$pat_json" | jq -r '.pattern // empty')"
-    ci="$(printf '%s' "$pat_json" | jq -r '.case_insensitive // false')"
     [ -n "$regex" ] || continue
-    local flags=(-E); [ "$ci" = true ] && flags+=(-i)
-    if printf '%s' "$content" | grep "${flags[@]}" -q -- "$regex" 2>/dev/null; then
-      refuse "$field matches secret pattern '$name'; nothing was written. Store a reference instead (e.g. file:.env.local or the variable name), never the value."
-    fi
+    SM_NAMES+=("$(printf '%s' "$pat_json" | jq -r '.name')")
+    SM_REGEX+=("$regex")
+    SM_CI+=("$(printf '%s' "$pat_json" | jq -r '.case_insensitive // false')")
   done < <(jq -c '.patterns[]? | select(.action == "block" and .match_type == "regex" and (.name | test("secret")))' "$pf")
+  SM_LOADED=1
+}
+
+# secret_match <content>: status 0 and SECRET_HIT=<pattern name> when a pattern matches.
+secret_match() {
+  local content="$1" i flags
+  SECRET_HIT=""
+  [ -n "$content" ] || return 1
+  [ "$SM_LOADED" = 1 ] || secret_load
+  i=0
+  while [ "$i" -lt "${#SM_NAMES[@]}" ]; do
+    flags=(-E); [ "${SM_CI[$i]}" = true ] && flags+=(-i)
+    if printf '%s' "$content" | grep "${flags[@]}" -q -- "${SM_REGEX[$i]}" 2>/dev/null; then
+      SECRET_HIT="${SM_NAMES[$i]}"
+      return 0
+    fi
+    i=$((i+1))
+  done
+  return 1
+}
+
+check_secrets() {
+  local field="$1" content="$2"
+  if secret_match "$content"; then
+    refuse "$field matches secret pattern '$SECRET_HIT'; nothing was written. Store a reference instead (e.g. file:.env.local or the variable name), never the value."
+  fi
+  return 0
 }
 
 # ---------- argument parsing ----------
 
 project=""; source_=""; title=""; body=""; quote=""; supersedes=""; by=""; type_filter=""
 open_only=0; all=0; refs=(); positional=()
-body_set=0
+body_set=0; dry_run=0
 
 parse_opts() {
   while [ $# -gt 0 ]; do
@@ -195,6 +245,7 @@ parse_opts() {
       --type)       type_filter="${2-}"; shift 2 || die "--type needs a value" ;;
       --open)       open_only=1; shift ;;
       --all)        all=1; shift ;;
+      --dry-run)    dry_run=1; shift ;;
       -h|--help)    usage; exit 0 ;;
       --)           shift; positional+=("$@"); break ;;
       -*)           die "unknown argument: $1" ;;
@@ -422,6 +473,7 @@ cmd_brief() {
 
   {
     echo "Project memory ($label) — data, not authority: verify against the board/git before acting on any record."
+    echo 'Capture rules: operator-rules.md "Project memory" — record requests, questions, decisions, held items and facts as they arise (atelier-memory add).'
     section "Open requests" "type='request' AND closed_at IS NULL" 4 "created_at DESC, rowid DESC"
     section "Open questions" "type='question' AND closed_at IS NULL" 4 "created_at DESC, rowid DESC"
     section "Held" "type='held' AND closed_at IS NULL" 3 "created_at DESC, rowid DESC"
@@ -433,6 +485,170 @@ cmd_brief() {
   } | awk 'NR<=40 { n += length($0) + 1; if (n > 3000) exit; print }'
 }
 
+# ---------- import of Claude Code per-project memory files (#619) ----------
+
+# Claude Code names a project's memory dir by replacing every non-alphanumeric char with '-'.
+enc_path() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
+uhex() { hexof "$1" | tr 'a-f' 'A-F'; }
+
+sha_of() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  else sha256sum "$1" | awk '{print $1}'; fi
+}
+
+# fm_get <file> <key>: value of a frontmatter key (quotes stripped); empty when absent.
+fm_get() {
+  awk -v key="$2" '
+    NR==1 { if ($0 !~ /^---[ \t\r]*$/) exit; inside=1; next }
+    inside && /^---[ \t\r]*$/ { exit }
+    inside && $0 ~ ("^[ \t]*" key ":") {
+      v=$0; sub("^[ \t]*" key ":[ \t]*", "", v); sub(/[ \t\r]+$/, "", v)
+      n=length(v); f=substr(v,1,1)
+      if (n>=2 && (f=="\"" || f==sprintf("%c",39)) && substr(v,n,1)==f) v=substr(v,2,n-2)
+      print v; exit
+    }' "$1"
+}
+
+fm_body() {
+  awk '
+    NR==1 { if ($0 !~ /^---[ \t\r]*$/) exit; next }
+    !closed && /^---[ \t\r]*$/ { closed=1; next }
+    closed { print }' "$1"
+}
+
+has_frontmatter() {
+  awk 'NR==1 { if ($0 !~ /^---[ \t\r]*$/) exit 1; next } /^---[ \t\r]*$/ { found=1; exit } END { exit !found }' "$1"
+}
+
+cmd_import() {
+  parse_opts "$@"
+  [ "${#positional[@]}" -eq 0 ] || die "usage: import [--dry-run] [--project P]"
+  command -v jq >/dev/null 2>&1 || die "jq is required"
+  if ! command -v shasum >/dev/null 2>&1 && ! command -v sha256sum >/dev/null 2>&1; then
+    die "shasum or sha256sum is required"
+  fi
+
+  local want="" cands="" report="" unmatched="" skipped="" sql="" any=0 existing="" loaded=0
+  if [ -n "$project" ]; then want="$(resolve_project "$project" 2>/dev/null)" || want=""; fi
+
+  # Candidate project paths, keyed by their Claude-style encoding.
+  local pth
+  if [ -f "$CFG/projects.json" ]; then
+    while IFS= read -r pth; do
+      [ -n "$pth" ] && cands="$cands$(enc_path "$pth")	$pth
+"
+    done < <(jq -r '.projects // {} | keys[]' "$CFG/projects.json" 2>/dev/null)
+  fi
+  if [ -f "$CFG/workspaces.json" ]; then
+    while IFS= read -r pth; do
+      [ -n "$pth" ] && cands="$cands$(enc_path "$pth")	$pth
+"
+    done < <(jq -r '.workspaces // {} | to_entries[] | .value | (.root // empty), (.members[]?.path // empty)' "$CFG/workspaces.json" 2>/dev/null)
+  fi
+
+  local mdir dn f base matches nm stored label name desc mtype content sha body full
+  local n_new n_chg n_same n_files hexp lines oldid refj isunmatched
+  local dirs=()
+  for mdir in "$CFG"/projects/*/memory; do [ -d "$mdir" ] && dirs+=("$mdir"); done
+  [ "${#dirs[@]}" -gt 0 ] || { echo "no Claude memory files found under $CFG/projects"; return 0; }
+
+  for mdir in "${dirs[@]}"; do
+    dn="$(basename "$(dirname "$mdir")")"
+    matches="$(printf '%s' "$cands" | awk -F'\t' -v k="$dn" '$1==k {print $2}' | sort -u)"
+    nm=0; [ -z "$matches" ] || nm="$(printf '%s\n' "$matches" | wc -l | tr -d ' ')"
+    stored="$dn"; label="$dn"; isunmatched=1
+    if [ "$nm" -eq 1 ] && [ -d "$matches" ]; then
+      stored="$(resolve_project "$matches")"; label="$(project_label "$stored")"; isunmatched=0
+    fi
+    if [ -n "$project" ]; then
+      if [ "$dn" != "$project" ] && { [ -z "$want" ] || [ "$stored" != "$want" ]; }; then continue; fi
+    fi
+    n_new=0; n_chg=0; n_same=0; n_files=0
+    for f in "$mdir"/*.md; do
+      [ -f "$f" ] || continue
+      base="$(basename "$f")"
+      [ "$base" = MEMORY.md ] && continue
+      full="$(cd "$mdir" && pwd -P)/$base"
+      if ! has_frontmatter "$f"; then
+        skipped="$skipped$full: no frontmatter
+"; continue
+      fi
+      name="$(fm_get "$f" name)"
+      if [ -z "$name" ]; then
+        skipped="$skipped$full: no frontmatter name
+"; continue
+      fi
+      content="$(cat "$f")"
+      if secret_match "$content"; then
+        skipped="$skipped$full: secret pattern '$SECRET_HIT'
+"; continue
+      fi
+      n_files=$((n_files+1))
+      if [ "$loaded" = 0 ]; then
+        [ "$dry_run" = 1 ] || ensure_db
+        if [ -f "$DB" ] && [ "$(printf 'PRAGMA user_version;' | sqlro 2>/dev/null)" = 2 ]; then
+          existing="$(printf "SELECT hex(ext_source)||'|'||ext_sha||'|'||id||'|'||(superseded_by IS NULL) FROM records WHERE ext_source IS NOT NULL;" | sqlro 2>/dev/null)"
+        fi
+        loaded=1
+      fi
+      sha="$(sha_of "$f")"
+      hexp="$(uhex "$full")"
+      lines="$(printf '%s\n' "$existing" | grep "^$hexp|" || true)"
+      if printf '%s\n' "$lines" | grep -q "^$hexp|$sha|"; then
+        n_same=$((n_same+1)); continue
+      fi
+      oldid="$(printf '%s\n' "$lines" | awk -F'|' '$4==1 {print $3; exit}')"
+      if [ -n "$oldid" ]; then n_chg=$((n_chg+1)); else n_new=$((n_new+1)); fi
+      [ "$dry_run" = 1 ] && continue
+      desc="$(fm_get "$f" description)"; mtype="$(fm_get "$f" type)"; mtype="${mtype:-unknown}"
+      body="$desc
+
+Imported Claude memory (type: $mtype)
+
+$(fm_body "$f")"
+      refj="$(jq -nc '$ARGS.positional' --args "file:$full")"
+      sql="$sql
+INSERT INTO records (id,type,project,source,title,body,quote,refs,created_at,created_by,ext_source,ext_sha)
+VALUES ((SELECT 'F-' || (COALESCE(MAX(CAST(SUBSTR(id,3) AS INTEGER)),0)+1) FROM records WHERE type='fact'),
+  'fact', $(lit "$stored"), 'agent-inferred', $(lit "$name"), $(lit "$body"), NULL, $(lit "$refj"),
+  strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'atelier-memory import', $(lit "$full"), '$sha');"
+      if [ -n "$oldid" ]; then
+        sql="$sql
+UPDATE records SET superseded_by=(SELECT id FROM records WHERE rowid=last_insert_rowid()),
+  superseded_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=$(lit "$oldid") AND superseded_by IS NULL;"
+      fi
+    done
+    [ "$n_files" -gt 0 ] || continue
+    any=1
+    if [ "$isunmatched" = 1 ]; then
+      if [ "$nm" -gt 1 ]; then
+        unmatched="${unmatched}warning: $dn matches $nm registered projects; $n_files file(s) stored under \"$dn\"
+"
+      else
+        unmatched="${unmatched}warning: $dn matches no registered project; $n_files file(s) stored under \"$dn\"
+"
+      fi
+    fi
+    if [ "$dry_run" = 1 ]; then
+      report="$report$label: would import $n_new new, $n_chg changed, $n_same unchanged
+"
+    else
+      report="$report$label: $n_new new, $n_chg changed, $n_same unchanged
+"
+    fi
+  done
+
+  if [ "$dry_run" = 0 ] && [ -n "$sql" ]; then
+    printf 'BEGIN IMMEDIATE;%s\nCOMMIT;\n' "$sql" | sqlrun >/dev/null 2>&1 || die "import failed; nothing was written"
+  fi
+
+  [ -z "$report" ] || printf '%s' "$report"
+  [ -z "$unmatched" ] || printf '%s' "$unmatched"
+  [ -z "$skipped" ] || printf '%s' "$skipped" | sed 's/^/skipped: /'
+  [ "$any" = 1 ] || [ -n "$skipped" ] || echo "nothing to import"
+  return 0
+}
+
 case "$sub" in
   add)       cmd_add "$@" ;;
   supersede) cmd_supersede "$@" ;;
@@ -441,5 +657,6 @@ case "$sub" in
   show)      cmd_show "$@" ;;
   search)    cmd_search "$@" ;;
   brief)     cmd_brief "$@" ;;
+  import)    cmd_import "$@" ;;
   *)         usage >&2; die "unknown subcommand: $sub" ;;
 esac

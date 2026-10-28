@@ -1,0 +1,2 @@
+- [Terse replies](feedback_style.md) - short answers
+- [Release cadence](project_notes.md) - Fridays

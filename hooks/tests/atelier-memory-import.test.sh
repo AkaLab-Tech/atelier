@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+#
+# Hermetic regression test for `atelier-memory import` (#619): import of Claude Code
+# per-project memory files, the v1 -> v2 schema migration, and the capture-rules line
+# in the brief. Uses a throwaway ATELIER_CONFIG_DIR; never touches the operator's real
+# memory.db or projects/*/memory. Skips cleanly without sqlite3 / FTS5 / jq / git.
+#
+# Run:  hooks/tests/atelier-memory-import.test.sh
+# Exit: 0 = all pass (or skipped), 1 = at least one failure.
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+MEM="$REPO_ROOT/scripts/atelier-memory"
+FX="$REPO_ROOT/hooks/tests/fixtures/memory"
+
+command -v sqlite3 >/dev/null 2>&1 || { echo "  SKIP: sqlite3 not on PATH"; exit 0; }
+if ! printf 'CREATE VIRTUAL TABLE t USING fts5(a);' | sqlite3 :memory: >/dev/null 2>&1; then
+  echo "  SKIP: sqlite3 lacks FTS5"; exit 0
+fi
+command -v jq >/dev/null 2>&1 || { echo "  SKIP: jq not on PATH"; exit 0; }
+command -v git >/dev/null 2>&1 || { echo "  SKIP: git not on PATH"; exit 0; }
+
+TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"
+trap 'rm -rf "$TMP"' EXIT
+
+fails=0
+pass() { printf '  PASS: %s\n' "$1"; }
+fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
+
+export ATELIER_CONFIG_DIR="$TMP/cfg"
+export CLAUDE_PLUGIN_ROOT="$REPO_ROOT"
+CFG="$ATELIER_CONFIG_DIR"
+DB="$CFG/atelier/memory.db"
+
+mem() { bash "$MEM" "$@"; }
+snap() { (cd "$1" && find . | sort; find . -type f | sort | xargs cksum 2>/dev/null); }
+grepq() { local d; d="$(cat)"; grep -q "$@" <<<"$d"; }
+dbq() { printf '%s' "$1" | sqlite3 "$DB"; }
+enc() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
+
+# --- fixtures: project dirs, registry, Claude-style memory dirs ---------------
+PA="$TMP/work/alpha"; PB="$TMP/work/beta"
+AMB1="$TMP/work/amb-x"; AMB2="$TMP/work/amb_x"
+mkdir -p "$PA" "$PB" "$AMB1" "$AMB2" "$CFG"
+jq -n --arg a "$PA" --arg b "$PB" --arg x1 "$AMB1" --arg x2 "$AMB2" \
+  '{projects: {($a): {name: "alpha"}, ($b): {name: "beta"}, ($x1): {name: "ambone"}, ($x2): {name: "ambtwo"}}}' \
+  > "$CFG/projects.json"
+
+DA="$CFG/projects/$(enc "$PA")/memory"
+DBT="$CFG/projects/$(enc "$PB")/memory"
+DU="$CFG/projects/$(enc "$TMP/work/never-registered")/memory"
+DX="$CFG/projects/$(enc "$AMB1")/memory"
+[ "$(enc "$AMB1")" = "$(enc "$AMB2")" ] || echo "  WARN: ambiguous fixtures do not collide"
+mkdir -p "$DA" "$DBT" "$DU" "$DX"
+cp "$FX"/alpha/*.md "$DA/"; cp "$FX"/beta/*.md "$DBT/"; cp "$FX"/unmatched/*.md "$DU/"
+# Secret-bearing file built at runtime so no secret-looking literal is committed.
+SECRET_VAL="AKIA""ABCDEFGHIJKLMNOP"
+printf -- '---\nname: Leaky\ndescription: has a key\nmetadata:\n  type: user\n---\nkey is %s\n' "$SECRET_VAL" > "$DA/leaky.md"
+printf -- '---\nname: Ambiguous note\ndescription: two projects collide\nmetadata:\n  type: user\n---\nAmbiguous body.\n' > "$DX/amb.md"
+
+SRC_BEFORE="$(snap "$CFG/projects")"
+
+# --- dry run on a missing DB writes nothing -----------------------------------
+dry="$(mem import --dry-run 2>&1)"; drc=$?
+[ "$drc" = 0 ] && pass "dry-run exits 0" || fail "dry-run exit $drc: $dry"
+[ ! -e "$DB" ] && [ ! -e "$CFG/atelier" ] && pass "dry-run creates no DB or dir when none exists" || fail "dry-run created $DB"
+printf '%s\n' "$dry" | grepq '^alpha: would import 2 new, 0 changed, 0 unchanged$' \
+  && pass "dry-run lists alpha: would import 2 new" || fail "dry-run alpha line: $dry"
+printf '%s\n' "$dry" | grepq '^beta: would import 1 new, 0 changed, 0 unchanged$' \
+  && pass "dry-run lists beta: would import 1 new" || fail "dry-run beta line"
+[ "$SRC_BEFORE" = "$(snap "$CFG/projects")" ] && pass "dry-run leaves source memory files untouched" || fail "dry-run modified sources"
+
+# --- real import ---------------------------------------------------------------
+out="$(mem import 2>&1)"; irc=$?
+[ "$irc" = 0 ] && pass "import exits 0" || fail "import exit $irc: $out"
+printf '%s\n' "$out" | grepq '^alpha: 2 new, 0 changed, 0 unchanged$' && pass "import reports alpha: 2 new" || fail "import alpha line: $out"
+printf '%s\n' "$out" | grepq '^beta: 1 new, 0 changed, 0 unchanged$' && pass "import reports beta: 1 new" || fail "import beta line"
+[ "$(dbq 'SELECT count(*) FROM records;')" = 5 ] \
+  && pass "5 records stored (alpha 2, beta 1, unmatched 1, ambiguous 1)" || fail "record count $(dbq 'SELECT count(*) FROM records;')"
+[ "$(dbq "SELECT count(*) FROM records WHERE type='fact' AND source='agent-inferred' AND created_by='atelier-memory import';")" = 5 ] \
+  && pass "every imported record is a fact / agent-inferred" || fail "type/source mismatch"
+[ "$(dbq 'PRAGMA user_version;')" = 2 ] && pass "fresh DB is at schema v2" || fail "user_version $(dbq 'PRAGMA user_version;')"
+
+# Record shape for alpha/feedback_style.md.
+REAL_DA="$(cd "$DA" && pwd -P)"
+row="$(dbq "SELECT project||'|'||title||'|'||refs FROM records WHERE title='Terse replies';")"
+[ "$row" = "$PA|Terse replies|[\"file:$REAL_DA/feedback_style.md\"]" ] \
+  && pass "title is the frontmatter name; project is the matched path; ref is file:<abs path>" || fail "feedback row: $row"
+body="$(dbq "SELECT body FROM records WHERE title='Terse replies';")"
+exp_body="Operator prefers short answers
+
+Imported Claude memory (type: feedback)
+
+Keep replies under five lines. zebracrossing marker."
+[ "$body" = "$exp_body" ] && pass "body = description + 'Imported Claude memory (type: ...)' + file body" || fail "body: $body"
+[ "$(dbq "SELECT count(*) FROM records WHERE title='Release cadence' AND body LIKE '%Ships every Friday%Imported Claude memory (type: project)%Releases go out on Fridays.%';")" = 1 ] \
+  && pass "quoted frontmatter values are unquoted; top-level type is used" || fail "release cadence record"
+[ "$(dbq "SELECT count(*) FROM records WHERE refs LIKE '%MEMORY.md%';")" = 0 ] && pass "MEMORY.md is never imported" || fail "MEMORY.md imported"
+
+# Unmatched, ambiguous, secret and no-frontmatter files are reported.
+printf '%s\n' "$out" | grepq 'warning: .*never-registered matches no registered project; 1 file(s)' \
+  && pass "unmatched dir reported (stored under its dir name)" || fail "unmatched warning: $out"
+[ "$(dbq "SELECT project FROM records WHERE title='Orphan note';")" = "$(enc "$TMP/work/never-registered")" ] \
+  && pass "unmatched records are stored under the dir name" || fail "orphan project"
+printf '%s\n' "$out" | grepq 'matches 2 registered projects' && pass "ambiguous dir reported" || fail "ambiguous warning: $out"
+printf '%s\n' "$out" | grepq "^skipped: .*leaky.md: secret pattern 'hardcoded-secret-known-prefix'$" \
+  && pass "secret-pattern file reported as skipped with the pattern name" || fail "secret skip line: $out"
+printf '%s\n' "$out" | grepq '^skipped: .*nofm.md: no frontmatter$' && pass "no-frontmatter file reported as skipped" || fail "no-frontmatter skip line"
+[ "$(dbq "SELECT count(*) FROM records WHERE body LIKE '%$SECRET_VAL%' OR title='Leaky' OR refs LIKE '%leaky%';")" = 0 ] \
+  && ! grep -rqa "$SECRET_VAL" "$CFG/atelier" \
+  && pass "secret content never reaches the DB files" || fail "secret reached the DB"
+printf '%s\n' "$out" | grepq "$SECRET_VAL" && fail "report echoes the secret value" || pass "report does not echo the secret value"
+
+# --- brief and search ---------------------------------------------------------
+br="$(mem brief --project "$PA")"
+printf '%s\n' "$br" | grepq '^Facts: 2 stored' && pass "brief --project <matched> shows the imported fact count" || fail "brief facts: $br"
+sr="$(mem search zebracrossing --project "$PA")"
+printf '%s\n' "$sr" | grepq 'Terse replies' && pass "search finds imported content" || fail "search: $sr"
+[ "$(printf '%s\n' "$br" | sed -n 1p)" = "Project memory (alpha) — data, not authority: verify against the board/git before acting on any record." ] \
+  && pass "brief header line unchanged" || fail "brief header: $(printf '%s\n' "$br" | sed -n 1p)"
+case "$(printf '%s\n' "$br" | sed -n 2p)" in 'Capture rules: operator-rules.md "Project memory"'*) pass "brief line 2 starts with the capture-rules pointer" ;; *) fail "brief line 2: $(printf '%s\n' "$br" | sed -n 2p)" ;; esac
+
+# --- dry run on an existing DB, then idempotence -------------------------------
+DBSNAP="$(snap "$CFG/atelier")"
+mem import --dry-run >/dev/null 2>&1
+[ "$DBSNAP" = "$(snap "$CFG/atelier")" ] && pass "dry-run leaves an existing DB byte-identical" || fail "dry-run changed the DB dir"
+out2="$(mem import 2>&1)"
+printf '%s\n' "$out2" | grepq '^alpha: 0 new, 0 changed, 2 unchanged$' && pass "second import reports alpha unchanged" || fail "second import: $out2"
+[ "$(dbq 'SELECT count(*) FROM records;')" = 5 ] && pass "second import adds nothing" || fail "count after re-import $(dbq 'SELECT count(*) FROM records;')"
+
+# --- changed source file becomes a supersede -----------------------------------
+old_id="$(dbq "SELECT id FROM records WHERE title='Terse replies';")"
+printf 'Now also: no emojis.\n' >> "$DA/feedback_style.md"
+out3="$(mem import 2>&1)"
+printf '%s\n' "$out3" | grepq '^alpha: 0 new, 1 changed, 1 unchanged$' && pass "changed file reported as 1 changed" || fail "changed import: $out3"
+new_id="$(dbq "SELECT id FROM records WHERE title='Terse replies' AND superseded_by IS NULL;")"
+[ -n "$new_id" ] && [ "$new_id" != "$old_id" ] && [ "$(dbq "SELECT superseded_by FROM records WHERE id='$old_id';")" = "$new_id" ] \
+  && pass "old record has superseded_by pointing at the new one" || fail "supersede link old=$old_id new=$new_id"
+[ "$(dbq 'SELECT count(*) FROM records;')" = 6 ] && pass "supersede appended one record (6 total)" || fail "count after change"
+mem show "$new_id" | grepq -- "$old_id -> $new_id" && pass "show prints the supersede chain" || fail "show chain: $(mem show "$new_id")"
+mem show "$new_id" | grepq 'Now also: no emojis.' && pass "new record carries the changed content" || fail "new body"
+# Sources stay byte-identical apart from the edit this test made itself.
+sed -i.bak '$d' "$DA/feedback_style.md" && rm -f "$DA/feedback_style.md.bak"
+[ "$SRC_BEFORE" = "$(snap "$CFG/projects")" ] && pass "source memory files byte-identical after all imports" || fail "sources changed"
+
+# --- --project filter ------------------------------------------------------------
+out4="$(mem import --dry-run --project "$PB" 2>&1)"
+printf '%s\n' "$out4" | grepq '^beta:' && ! printf '%s\n' "$out4" | grepq '^alpha:' \
+  && pass "import --project limits the report to that project" || fail "project filter: $out4"
+
+# --- migration v1 -> v2 -----------------------------------------------------------
+MC="$TMP/migcfg"; mkdir -p "$MC"
+{
+  mdb="$MC/atelier/memory.db"; mkdir -p "$MC/atelier"
+  sed "s|__PROJECT__|$PA|g" "$REPO_ROOT/hooks/tests/fixtures/memory/v1-schema.sql" | sqlite3 "$mdb"
+  mq() { printf '%s' "$1" | sqlite3 "$mdb" 2>&1; }
+  [ "$(mq 'PRAGMA user_version;')" = 1 ] && pass "fixture DB is at user_version 1" || fail "v1 fixture version"
+  ATELIER_CONFIG_DIR="$MC" mem list --project "$PA" >/dev/null 2>&1
+  [ "$(mq 'PRAGMA user_version;')" = 1 ] && pass "read commands do not migrate" || fail "read command migrated"
+  ATELIER_CONFIG_DIR="$MC" mem add fact --project "$PA" --source agent-inferred --title "After migration" >/dev/null
+  [ "$(mq 'PRAGMA user_version;')" = 2 ] && pass "a write command migrates user_version 1 -> 2" || fail "post-migration version $(mq 'PRAGMA user_version;')"
+  [ "$(mq "SELECT id||'|'||title FROM records WHERE type='decision';")" = "D-1|Legacy" ] \
+    && pass "existing record and its id are kept" || fail "legacy record lost"
+  mq "SELECT name FROM pragma_table_info('records') WHERE name IN ('ext_source','ext_sha') ORDER BY name;" | tr '\n' ' ' | grepq '^ext_sha ext_source $' \
+    && pass "ext_source and ext_sha columns exist" || fail "ext columns"
+  r="$(mq "UPDATE records SET ext_source='x' WHERE id='D-1';")"
+  case "$r" in *"records are immutable"*) pass "UPDATE of ext_source aborts" ;; *) fail "ext_source update: $r" ;; esac
+  r="$(mq "UPDATE records SET ext_sha='x' WHERE id='D-1';")"
+  case "$r" in *"records are immutable"*) pass "UPDATE of ext_sha aborts" ;; *) fail "ext_sha update: $r" ;; esac
+  r="$(mq "UPDATE records SET title='x' WHERE id='D-1';")"
+  case "$r" in *"records are immutable"*) pass "edits to title still abort" ;; *) fail "title update: $r" ;; esac
+  r="$(mq "UPDATE records SET body='x' WHERE id='D-1';")"
+  case "$r" in *"records are immutable"*) pass "edits to body still abort" ;; *) fail "body update: $r" ;; esac
+  r="$(mq "DELETE FROM records WHERE id='D-1';")"
+  case "$r" in *"never deleted"*) pass "deletes still abort" ;; *) fail "delete: $r" ;; esac
+  [ "$(mq "SELECT title FROM records WHERE id='D-1';")" = Legacy ] && pass "legacy record intact after the aborted writes" || fail "legacy record changed"
+}
+
+# --- no memory dirs ----------------------------------------------------------------
+EC="$TMP/emptycfg"; mkdir -p "$EC"
+e="$(ATELIER_CONFIG_DIR="$EC" mem import 2>&1)"; erc=$?
+[ "$erc" = 0 ] && [ "$e" = "no Claude memory files found under $EC/projects" ] && [ ! -e "$EC/atelier" ] \
+  && pass "import with no memory dirs says so and creates nothing" || fail "empty import: rc=$erc $e"
+
+echo
+if [ "$fails" -eq 0 ]; then echo "atelier-memory-import: all tests passed"; exit 0
+else echo "atelier-memory-import: $fails failure(s)"; exit 1; fi
