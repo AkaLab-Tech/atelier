@@ -5,6 +5,8 @@
 # source startup/resume/clear; fail-open + silent when sqlite3 is not on PATH,
 # when the config dir / DB is absent, when there are no records, and when the
 # helper errors; never creates the DB or any file; hooks.json registration.
+# Sources memory-test-isolation.sh (temp HOME + guarded mem; every hook call's
+# ATELIER_CONFIG_DIR is checked to be under $TMP) so nothing hits the real store (#665).
 #
 # Run:  hooks/tests/memory-brief-hook.test.sh
 # Exit: 0 = all pass (or skipped), 1 = at least one failure.
@@ -30,19 +32,34 @@ pass() { printf '  PASS: %s\n' "$1"; }
 fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
+# shellcheck source=hooks/tests/memory-test-isolation.sh
+. "$REPO_ROOT/hooks/tests/memory-test-isolation.sh"
 CFG="$TMP/cfg"
 PROJ="$TMP/proj"; mkdir -p "$PROJ"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT"
 
 # Seed one record with the real CLI (a test-only, throwaway config dir).
-ATELIER_CONFIG_DIR="$CFG" bash "$MEM" add decision --project "$PROJ" --source agent-inferred \
+ATELIER_CONFIG_DIR="$CFG" mem add decision --project "$PROJ" --source agent-inferred \
   --title "Use WAL for the memory store" >/dev/null
+
+# Aborts unless the config dir handed to the hook is under $TMP (and not the real one).
+hook_assert_cfg() {
+  case "$1" in
+    "$TMP"/*) ;;
+    *) memtest_abort "hook ATELIER_CONFIG_DIR '$1' is not under '$TMP'" ;;
+  esac
+  case "$1" in
+    "$MEMTEST_REAL_CFG"|"$MEMTEST_REAL_CFG"/*) memtest_abort "hook config dir is the real one" ;;
+  esac
+}
+# hook_run <cfg> [env assignments...]: guarded `env ATELIER_CONFIG_DIR=<cfg> ... bash $HOOK`
+hook_run() { local c="$1"; shift; hook_assert_cfg "$c"; env ATELIER_CONFIG_DIR="$c" "$@" bash "$HOOK"; }
 
 # run_hook <source> [extra env assignments...] -> stdout; exit code in $RC
 run_hook() {
   local src="$1"; shift
   printf '{"hook_event_name":"SessionStart","source":"%s"}' "$src" \
-    | env ATELIER_CONFIG_DIR="$CFG" CLAUDE_PROJECT_DIR="$PROJ" "$@" bash "$HOOK" 2>/dev/null
+    | hook_run "$CFG" CLAUDE_PROJECT_DIR="$PROJ" "$@" 2>/dev/null
 }
 
 # Seeded DB: injection for each SessionStart source.
@@ -64,28 +81,28 @@ out="$(run_hook startup PATH="$BIN")"; RC=$?
 [ "$RC" = 0 ] && [ -z "$out" ] && pass "no sqlite3 on PATH: exit 0, no output" || fail "no sqlite3: rc=$RC out=$out"
 
 # Config dir absent.
-out="$(printf '{"source":"startup"}' | env ATELIER_CONFIG_DIR="$TMP/nope" CLAUDE_PROJECT_DIR="$PROJ" bash "$HOOK" 2>/dev/null)"; rc=$?
+out="$(printf '{"source":"startup"}' | hook_run "$TMP/nope" CLAUDE_PROJECT_DIR="$PROJ" 2>/dev/null)"; rc=$?
 [ "$rc" = 0 ] && [ -z "$out" ] && [ ! -e "$TMP/nope" ] && pass "config dir absent: exit 0, no output, nothing created" || fail "config absent: rc=$rc out=$out"
 
 # Config dir present, DB absent: no output and DB not created.
 EMPTY="$TMP/emptycfg"; mkdir -p "$EMPTY"
-out="$(printf '{"source":"startup"}' | env ATELIER_CONFIG_DIR="$EMPTY" CLAUDE_PROJECT_DIR="$PROJ" bash "$HOOK" 2>/dev/null)"; rc=$?
+out="$(printf '{"source":"startup"}' | hook_run "$EMPTY" CLAUDE_PROJECT_DIR="$PROJ" 2>/dev/null)"; rc=$?
 [ "$rc" = 0 ] && [ -z "$out" ] && [ -z "$(ls -A "$EMPTY")" ] && pass "DB absent: exit 0, no output, no file created" || fail "DB absent: rc=$rc out=$out listing=$(ls -A "$EMPTY")"
 
 # DB present but no records for this project: silent.
 OTHER="$TMP/other"; mkdir -p "$OTHER"
-out="$(printf '{"source":"startup"}' | env ATELIER_CONFIG_DIR="$CFG" CLAUDE_PROJECT_DIR="$OTHER" bash "$HOOK" 2>/dev/null)"; rc=$?
+out="$(printf '{"source":"startup"}' | hook_run "$CFG" CLAUDE_PROJECT_DIR="$OTHER" 2>/dev/null)"; rc=$?
 [ "$rc" = 0 ] && [ -z "$out" ] && pass "no records for the project: exit 0, no output" || fail "no records: rc=$rc out=$out"
 
 # Helper errors: a failing atelier-memory on PATH and no usable plugin-root copy.
 FAKE="$TMP/fakebin"; mkdir -p "$FAKE"
 printf '#!/bin/sh\necho "boom" >&2\nexit 2\n' > "$FAKE/atelier-memory"; chmod +x "$FAKE/atelier-memory"
-out="$(printf '{"source":"startup"}' | env PATH="$FAKE:$PATH" ATELIER_CONFIG_DIR="$CFG" CLAUDE_PROJECT_DIR="$PROJ" bash "$HOOK" 2>/dev/null)"; rc=$?
+out="$(printf '{"source":"startup"}' | hook_run "$CFG" PATH="$FAKE:$PATH" CLAUDE_PROJECT_DIR="$PROJ" 2>/dev/null)"; rc=$?
 [ "$rc" = 0 ] && [ -z "$out" ] && pass "helper exits non-zero: hook exits 0 silently" || fail "helper error: rc=$rc out=$out"
 
 # Helper missing entirely (no atelier-memory on PATH, plugin root without scripts).
 NOROOT="$TMP/noroot"; mkdir -p "$NOROOT"
-out="$(printf '{"source":"startup"}' | env PATH="$BIN:/usr/bin:/bin" CLAUDE_PLUGIN_ROOT="$NOROOT" ATELIER_CONFIG_DIR="$CFG" CLAUDE_PROJECT_DIR="$PROJ" bash "$HOOK" 2>/dev/null)"; rc=$?
+out="$(printf '{"source":"startup"}' | hook_run "$CFG" PATH="$BIN:/usr/bin:/bin" CLAUDE_PLUGIN_ROOT="$NOROOT" CLAUDE_PROJECT_DIR="$PROJ" 2>/dev/null)"; rc=$?
 if command -v atelier-memory >/dev/null 2>&1; then
   pass "helper-missing case skipped (atelier-memory is on the host PATH)"
 else
@@ -94,11 +111,11 @@ fi
 
 # Corrupt DB (not a SQLite file): fail-open, silent.
 BADCFG="$TMP/badcfg"; mkdir -p "$BADCFG/atelier"; printf 'this is not a sqlite database\n' > "$BADCFG/atelier/memory.db"
-out="$(printf '{"source":"startup"}' | env ATELIER_CONFIG_DIR="$BADCFG" CLAUDE_PROJECT_DIR="$PROJ" bash "$HOOK" 2>/dev/null)"; rc=$?
+out="$(printf '{"source":"startup"}' | hook_run "$BADCFG" CLAUDE_PROJECT_DIR="$PROJ" 2>/dev/null)"; rc=$?
 [ "$rc" = 0 ] && [ -z "$out" ] && pass "corrupt DB: exit 0, no output" || fail "corrupt DB: rc=$rc out=$out"
 
 # Empty stdin / malformed JSON payload still fail-open and inject (source is not required).
-out="$(printf '' | env ATELIER_CONFIG_DIR="$CFG" CLAUDE_PROJECT_DIR="$PROJ" bash "$HOOK" 2>/dev/null)"; rc=$?
+out="$(printf '' | hook_run "$CFG" CLAUDE_PROJECT_DIR="$PROJ" 2>/dev/null)"; rc=$?
 [ "$rc" = 0 ] && has "$out" "data, not authority" && pass "empty stdin: exit 0 and brief still injected" || fail "empty stdin: rc=$rc out=$out"
 
 # Exact header sentence is what the session receives.
@@ -112,8 +129,8 @@ if command -v git >/dev/null 2>&1; then
   GR="$TMP/gitrepo"; mkdir -p "$GR"; git -C "$GR" init -q . 2>/dev/null
   git -C "$GR" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init 2>/dev/null
   git -C "$GR" worktree add -q "$TMP/gitwt" -b wtb 2>/dev/null
-  ATELIER_CONFIG_DIR="$CFG" bash "$MEM" add decision --project "$GR" --source agent-inferred --title "Shared across worktrees" >/dev/null
-  out="$(printf '{"source":"startup"}' | env ATELIER_CONFIG_DIR="$CFG" CLAUDE_PROJECT_DIR="$TMP/gitwt" bash "$HOOK" 2>/dev/null)"; rc=$?
+  ATELIER_CONFIG_DIR="$CFG" mem add decision --project "$GR" --source agent-inferred --title "Shared across worktrees" >/dev/null
+  out="$(printf '{"source":"startup"}' | hook_run "$CFG" CLAUDE_PROJECT_DIR="$TMP/gitwt" 2>/dev/null)"; rc=$?
   [ "$rc" = 0 ] && has "$out" "Shared across worktrees" && pass "hook run from a worktree injects the main checkout's records" || fail "worktree hook: rc=$rc out=$out"
 fi
 

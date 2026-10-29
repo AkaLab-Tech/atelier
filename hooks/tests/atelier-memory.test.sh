@@ -3,6 +3,8 @@
 # Hermetic regression test for scripts/atelier-memory (#618): typed append-only
 # project memory in SQLite. Uses a throwaway ATELIER_CONFIG_DIR; never touches
 # ~/.claude-work/atelier/memory.db. Skips cleanly without sqlite3 / FTS5.
+# Sources memory-test-isolation.sh (temp HOME + guarded mem; aborts if a call
+# would resolve outside $TMP) so a bad override cannot hit the real store (#665).
 #
 # Run:  hooks/tests/atelier-memory.test.sh
 # Exit: 0 = all pass (or skipped), 1 = at least one failure.
@@ -26,13 +28,13 @@ fails=0
 pass() { printf '  PASS: %s\n' "$1"; }
 fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 
-export ATELIER_CONFIG_DIR="$TMP/cfg"
+# shellcheck source=hooks/tests/memory-test-isolation.sh
+. "$REPO_ROOT/hooks/tests/memory-test-isolation.sh"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT"
 DB="$ATELIER_CONFIG_DIR/atelier/memory.db"
 PROJ="$TMP/proj"; mkdir -p "$PROJ"
 echo "hello" > "$PROJ/file.txt"
 
-mem() { bash "$MEM" "$@"; }
 rc() { "$@" >/dev/null 2>&1; echo $?; }
 count() { printf 'SELECT count(*) FROM records;' | sqlite3 "$DB"; }
 # Listing + checksums of every file under a dir (detects any write).
@@ -41,6 +43,7 @@ grepq() { local d; d="$(cat)"; grep -q "$@" <<<"$d"; }  # drains stdin first: no
 dbq() { printf '%s' "$1" | sqlite3 "$DB"; }
 
 # --- help / usage / path ---------------------------------------------------
+memtest_assert_isolated
 [ "$(rc mem --help)" = 0 ] && pass "--help exits 0" || fail "--help exits 0"
 [ "$(rc mem frobnicate)" = 2 ] && pass "unknown subcommand exits 2" || fail "unknown subcommand exits 2"
 [ "$(mem path)" = "$DB" ] && pass "path prints \$ATELIER_CONFIG_DIR/atelier/memory.db" || fail "path value"
@@ -187,7 +190,7 @@ FRESH="$TMP/fresh-cfg"
 # --- concurrency -----------------------------------------------------------
 CONC="$TMP/conc-cfg"; N=8
 for i in $(seq 1 $N); do
-  ATELIER_CONFIG_DIR="$CONC" bash "$MEM" add fact --project "$PROJ" --source agent-inferred --title "parallel $i" >"$TMP/conc.$i.out" 2>&1 &
+  ATELIER_CONFIG_DIR="$CONC" mem add fact --project "$PROJ" --source agent-inferred --title "parallel $i" >"$TMP/conc.$i.out" 2>&1 &
 done
 wait
 c="$(printf 'SELECT count(*) FROM records;' | sqlite3 "$CONC/atelier/memory.db")"
@@ -301,9 +304,9 @@ nsid="$(ATELIER_CONFIG_DIR="$HC" mem supersede "$sid" --source agent-inferred --
 n0="$(hdb "SELECT count(*) FROM records;")"
 printf 'my key %s' "$tok" | ATELIER_CONFIG_DIR="$HC" mem add fact --project "$PROJ" --source agent-inferred --title t --body - >/dev/null 2>&1; r1=$?
 [ "$r1" = 3 ] && [ "$(hdb "SELECT count(*) FROM records;")" = "$n0" ] && pass "secret via --body - stdin exits 3, nothing written" || fail "stdin secret rc=$r1"
-errout="$(ATELIER_CONFIG_DIR="$HC" bash "$MEM" add fact --project "$PROJ" --source agent-inferred --title t --body "$tok" 2>&1 >/dev/null)"
+errout="$(ATELIER_CONFIG_DIR="$HC" mem add fact --project "$PROJ" --source agent-inferred --title t --body "$tok" 2>&1 >/dev/null)"
 case "$errout" in *"secret pattern"*"nothing was written"*) pass "secret refusal message names the pattern and says nothing was written" ;; *) fail "secret refusal message: $errout" ;; esac
-[ "$(rc env ATELIER_CONFIG_DIR="$HC" bash "$MEM" add fact --project "$PROJ" --source agent-inferred --title "gh $(printf 'ghp_%s' "$(printf 'c%.0s' $(seq 1 40))")")" = 3 ] \
+[ "$(ATELIER_CONFIG_DIR="$HC" rc mem add fact --project "$PROJ" --source agent-inferred --title "gh $(printf 'ghp_%s' "$(printf 'c%.0s' $(seq 1 40))")")" = 3 ] \
   && pass "known-prefix token (ghp_) in title exits 3" || fail "ghp_ token exit"
 
 # --- no file created in project or worktree by any command -------------------
@@ -319,6 +322,7 @@ NOSQL="$TMP/nosql-bin"; mkdir -p "$NOSQL"
 for t in bash env cat sed awk tr dirname basename head readlink jq git xxd mkdir; do
   p="$(command -v "$t" 2>/dev/null)" && [ -n "$p" ] && ln -sf "$p" "$NOSQL/$t"
 done
+memtest_assert_isolated   # this call bypasses mem(); guard it explicitly
 [ "$(rc env PATH="$NOSQL" bash "$MEM" list)" = 2 ] && pass "missing sqlite3 exits 2 (environment error)" || fail "no sqlite3 exit"
 [ "$(rc mem add fact --source agent-inferred --title t)" = 2 ] && pass "add without --project exits 2" || fail "add w/o project"
 [ "$(rc mem add fact --project "$PROJ" --source agent-inferred)" = 2 ] && pass "add without --title exits 2" || fail "add w/o title"
