@@ -4,6 +4,8 @@
 # per-project memory files, the v1 -> v2 schema migration, and the capture-rules line
 # in the brief. Uses a throwaway ATELIER_CONFIG_DIR; never touches the operator's real
 # memory.db or projects/*/memory. Skips cleanly without sqlite3 / FTS5 / jq / git.
+# Sources memory-test-isolation.sh (temp HOME + guarded mem; aborts if a call
+# would resolve outside $TMP) so a bad override cannot hit the real store (#665).
 #
 # Run:  hooks/tests/atelier-memory-import.test.sh
 # Exit: 0 = all pass (or skipped), 1 = at least one failure.
@@ -28,12 +30,12 @@ fails=0
 pass() { printf '  PASS: %s\n' "$1"; }
 fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 
-export ATELIER_CONFIG_DIR="$TMP/cfg"
+# shellcheck source=hooks/tests/memory-test-isolation.sh
+. "$REPO_ROOT/hooks/tests/memory-test-isolation.sh"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT"
 CFG="$ATELIER_CONFIG_DIR"
 DB="$CFG/atelier/memory.db"
 
-mem() { bash "$MEM" "$@"; }
 snap() { (cd "$1" && find . | sort; find . -type f | sort | xargs cksum 2>/dev/null); }
 grepq() { local d; d="$(cat)"; grep -q "$@" <<<"$d"; }
 dbq() { printf '%s' "$1" | sqlite3 "$DB"; }
@@ -62,6 +64,7 @@ printf -- '---\nname: Ambiguous note\ndescription: two projects collide\nmetadat
 SRC_BEFORE="$(snap "$CFG/projects")"
 
 # --- dry run on a missing DB writes nothing -----------------------------------
+memtest_assert_isolated
 dry="$(mem import --dry-run 2>&1)"; drc=$?
 [ "$drc" = 0 ] && pass "dry-run exits 0" || fail "dry-run exit $drc: $dry"
 [ ! -e "$DB" ] && [ ! -e "$CFG/atelier" ] && pass "dry-run creates no DB or dir when none exists" || fail "dry-run created $DB"
