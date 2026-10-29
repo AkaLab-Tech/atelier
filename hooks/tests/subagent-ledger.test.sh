@@ -44,9 +44,13 @@ age_entry() {
 run_hook() {
   OUT="$(printf '%s' "$1" | bash "$HOOK" 2>&1 >/dev/null)"; RC=$?
 }
-hb_payload() { # agent_type message
-  jq -cn --arg t "$1" --arg m "$2" \
-    '{hook_event_name:"PreToolUse", tool_name:"SubagentHandback", agent_type:$t, tool_input:{message:$m}}'
+hb_payload() { # agent_type message [agent_id]
+  jq -cn --arg t "$1" --arg m "$2" --arg id "${3:-}" \
+    '{hook_event_name:"PreToolUse", tool_name:"SubagentHandback", agent_type:$t, tool_input:{message:$m}}
+     + (if $id != "" then {agent_id:$id} else {} end)'
+}
+n_events() { # worktree event agent_id
+  jq -s --arg e "$2" --arg id "$3" '[.[]|select(.event==$e and .agent_id==$id)]|length' "$1/.task-log/subagents.jsonl"
 }
 
 echo "== helper: round trip and exit codes"
@@ -107,15 +111,50 @@ WT2="$(new_wt keep)"
 if [ ! -e "$ATELIER_CONFIG_DIR/state/subagent-ledger/ghost" ]; then ok "index entry of a removed worktree is pruned"; else bad "ghost index entry survived"; fi
 "$LEDGER" finish --agent-id ghost >/dev/null 2>&1; eq "finish on an id whose worktree is gone exits 0" "$?" "0"
 
-echo "== hook: SubagentStop closes the entry"
+echo "== hook: SubagentStop keeps the entry open (paused)"
 WT="$(new_wt stop)"
 "$LEDGER" start --worktree "$WT" --agent-id stp1 --type implementer >/dev/null 2>&1
+out="$("$LEDGER" live --worktree "$WT" 2>&1)"
+eq "before any stop the entry is running" "$(printf '%s' "$out" | cut -f6)" "running"
 printf '%s' '{"hook_event_name":"SubagentStop","agent_id":"stp1","agent_type":"implementer"}' | bash "$HOOK" >/dev/null 2>&1
 eq "SubagentStop hook exits 0" "$?" "0"
-"$LEDGER" live --worktree "$WT" >/dev/null 2>&1; eq "entry closed after SubagentStop" "$?" "0"
+out="$("$LEDGER" live --worktree "$WT" 2>&1)"; rc=$?
+eq "entry stays open after SubagentStop (live exits 3)" "$rc" "3"
+case "$(printf '%s' "$out" | cut -f6)" in paused:*) ok "column 6 is paused:<secs>" ;; *) bad "column 6 not paused:* (got '$(printf '%s' "$out" | cut -f6)')" ;; esac
+eq "one stop event recorded" "$(n_events "$WT" stop stp1)" "1"
+eq "no finish event after SubagentStop" "$(n_events "$WT" finish stp1)" "0"
+run_hook "$(hb_payload implementer "child report" stp1)"
+eq "child hand-back (non-orchestrator) exits 0" "$RC" "0"
+"$LEDGER" live --worktree "$WT" >/dev/null 2>&1; eq "child hand-back closes the entry" "$?" "0"
 eq "closed with state done" "$(jq -rs '[.[]|select(.event=="finish")][0].state' "$WT/.task-log/subagents.jsonl")" "done"
 printf '%s' '{"hook_event_name":"SubagentStop","agent_id":"unknown-zz"}' | bash "$HOOK" >/dev/null 2>&1; eq "SubagentStop for unknown id exits 0" "$?" "0"
 printf '%s' '{"hook_event_name":"SubagentStop"}' | bash "$HOOK" >/dev/null 2>&1; eq "SubagentStop without agent_id exits 0" "$?" "0"
+"$LEDGER" stop --agent-id unknown-zz >/dev/null 2>&1; eq "helper stop on unknown id exits 0" "$?" "0"
+"$LEDGER" stop >/dev/null 2>&1; rc=$?
+if [ "$rc" = "0" ] || [ "$rc" = "2" ]; then ok "helper stop without id does not crash (rc=$rc)"; else bad "helper stop without id rc=$rc"; fi
+"$LEDGER" stop --agent-id stp1 --worktree "$WT" >/dev/null 2>&1; eq "helper stop on a closed id exits 0" "$?" "0"
+eq "stop on a closed id appends nothing" "$(n_events "$WT" stop stp1)" "1"
+
+echo "== hook: repeated stops, one final hand-back"
+WT="$(new_wt multistop)"
+"$LEDGER" start --worktree "$WT" --agent-id ms1 --type tester >/dev/null 2>&1
+for _ in 1 2; do
+  printf '%s' '{"hook_event_name":"SubagentStop","agent_id":"ms1","agent_type":"tester"}' | bash "$HOOK" >/dev/null 2>&1
+done
+"$LEDGER" live --worktree "$WT" >/dev/null 2>&1; eq "still open after two stops" "$?" "3"
+run_hook "$(hb_payload tester "final report" ms1)"
+eq "final hand-back exits 0" "$RC" "0"
+eq "entry closed exactly once (one finish event)" "$(n_events "$WT" finish ms1)" "1"
+run_hook "$(hb_payload tester "final report again" ms1)"
+eq "a repeated hand-back adds no second finish" "$(n_events "$WT" finish ms1)" "1"
+
+echo "== hook: hand-back without agent_id"
+WT="$(new_wt noid)"
+"$LEDGER" start --worktree "$WT" --agent-id noid1 --type implementer >/dev/null 2>&1
+run_hook "$(hb_payload implementer "report")"
+eq "hand-back without agent_id is allowed" "$RC" "0"
+"$LEDGER" live --worktree "$WT" >/dev/null 2>&1; eq "hand-back without agent_id closes nothing" "$?" "3"
+eq "no finish event written" "$(n_events "$WT" finish noid1)" "0"
 
 echo "== hook: handback guard"
 WT="$(new_wt guard)"
@@ -130,20 +169,45 @@ has "reason names the first id" "$OUT" "kid1"
 has "reason names the second id" "$OUT" "kid2"
 has "reason lists way 1 (wait)" "$OUT" "1. End your turn WITHOUT handing back"
 has "reason lists way 2 (TaskStop)" "$OUT" "2. If the child's work is moot, TaskStop it"
-has "reason lists way 3 (disclose)" "$OUT" "3. Disclose it"
+has "reason lists way 3 (disclose, last resort)" "$OUT" "3. If TaskStop errors, disclose it as a last resort"
 run_hook "$(hb_payload atelier:task-orchestrator "$MSG")"
 eq "plugin-prefixed agent type is also guarded" "$RC" "2"
 run_hook "$(hb_payload task-orchestrator "$MSG
-Live sub-agents: kid1 (implementer, 2) - still running: build")"
+Live sub-agents: kid1 (implementer, 2) - stopped")"
 eq "partial disclosure (one id missing) is still denied" "$RC" "2"
-has "reason still names the undisclosed id" "$OUT" "Reason:   the dispatch ledger shows sub-agent(s) still running that this report does not name: kid2"
+has "reason still names the undisclosed id" "$OUT" "Reason:   the dispatch ledger shows sub-agent(s) still running that this report does not name with a stop attempt (stopped / TaskStop failed): kid2"
+run_hook "$(hb_payload task-orchestrator "$MSG
+Live sub-agents: kid1 (implementer, 2) - stopped
+kid2 (tester, 4) - still running: TaskStop failed (Task kid2 is owned by x; agent y cannot stop it)")"
+eq "all ids named with a stop attempt: allows" "$RC" "0"
 run_hook "$(hb_payload task-orchestrator "$MSG
 Live sub-agents: kid1 (implementer, 2) - still running: a
 kid2 (tester, 4) - still running: b")"
-eq "all ids named under Live sub-agents: allows" "$RC" "0"
+eq "disclosure without stopped/TaskStop failed is blocked" "$RC" "2"
+has "bare disclosure block names both ids" "$OUT" "kid1 kid2"
 run_hook "$(hb_payload task-orchestrator "$MSG
-Live sub-agents: none")"
-eq "'Live sub-agents: none' does not satisfy the guard" "$RC" "2"
+Live sub-agents: kid1 (implementer, 2) - stopped
+kid2 (tester, 4) - still running: b")"
+eq "one id lacking a stop attempt is blocked" "$RC" "2"
+run_hook "$(hb_payload task-orchestrator "$MSG
+Live sub-agents: kid1 (implementer, 2) - stopped
+kid2 (tester, 4) - stopped")"
+eq "all ids stopped: allows" "$RC" "0"
+
+echo "== hook: orchestrator's own entry"
+# The ledger does not special-case the hand-back caller: an open orchestrator entry is a live
+# entry like any other, so it must be named too. What matters here is close-on-allow only.
+WTO="$(new_wt orch)"
+"$LEDGER" start --worktree "$WTO" --agent-id orch1 --type task-orchestrator >/dev/null 2>&1
+OMSG="Worktree: $WTO"
+run_hook "$(hb_payload task-orchestrator "$OMSG" orch1)"
+eq "denied orchestrator hand-back exits 2" "$RC" "2"
+eq "denied hand-back leaves the orchestrator's own entry open" "$(n_events "$WTO" finish orch1)" "0"
+"$LEDGER" live --worktree "$WTO" >/dev/null 2>&1; eq "entry still live after the denial" "$?" "3"
+run_hook "$(hb_payload task-orchestrator "$OMSG
+Live sub-agents: orch1 - stopped" orch1)"
+eq "allowed orchestrator hand-back exits 0" "$RC" "0"
+eq "allowed hand-back closes the orchestrator's own entry" "$(n_events "$WTO" finish orch1)" "1"
 
 echo "== hook: guard allows"
 "$LEDGER" finish --agent-id kid1 --state "done" >/dev/null 2>&1
@@ -180,8 +244,8 @@ run_hook "$(hb_payload task-orchestrator "$MSG")"
 eq "block decision logged" "$(tail -n1 "$LOG" | jq -r '.hook+"|"+.action+"|"+.pattern')" "subagent-ledger|block|undisclosed-live-child"
 has "block message names the id" "$(tail -n1 "$LOG" | jq -r .message)" "kid3"
 run_hook "$(hb_payload task-orchestrator "$MSG
-Live sub-agents: kid3")"
-eq "allow (disclosed) decision logged" "$(tail -n1 "$LOG" | jq -r '.action+"|"+.message')" "allow|live sub-agents disclosed"
+Live sub-agents: kid3 - stopped")"
+eq "allow (disclosed) decision logged" "$(tail -n1 "$LOG" | jq -r '.action+"|"+.message')" "allow|live sub-agents disclosed with a stop attempt"
 "$LEDGER" finish --agent-id kid3 >/dev/null 2>&1
 run_hook "$(hb_payload task-orchestrator "$MSG")"
 eq "allow (none live) decision logged" "$(tail -n1 "$LOG" | jq -r '.action+"|"+.message')" "allow|no live sub-agents (ledger rc=0)"
