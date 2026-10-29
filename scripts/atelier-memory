@@ -26,6 +26,8 @@
 # Values containing secrets are refused (exit 3): store a reference instead.
 # list hides superseded and closed records unless --all. brief prints a bounded block
 # for SessionStart and nothing when there is no DB or no records.
+# import compares each file with the latest imported sha for its path and supersedes the current
+# chain head (a hand re-typed head keeps its type; a closed head is superseded, so the item reopens).
 #
 # Exit codes: 0 ok, 2 usage or environment error, 3 refused.
 
@@ -35,7 +37,7 @@ usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; }
 
 CFG="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
 DB="$CFG/atelier/memory.db"
-LATEST_SCHEMA=2
+LATEST_SCHEMA=3
 
 die() { echo "atelier-memory: $*" >&2; exit 2; }
 refuse() { echo "atelier-memory: refused — $*" >&2; exit 3; }
@@ -117,6 +119,13 @@ WHEN NEW.rowid IS NOT OLD.rowid OR NEW.id IS NOT OLD.id OR NEW.type IS NOT OLD.t
 BEGIN SELECT RAISE(ABORT, 'records are immutable: supersede instead of editing'); END;
 "
 
+# v3 (#664): import tracks the latest imported sha per path, so an A -> B -> A revert inserts a
+# second (path, shaA) row; the v2 unique index would reject it. Replace it with a plain index.
+SCHEMA_V3="
+DROP INDEX IF EXISTS records_ext;
+CREATE INDEX IF NOT EXISTS records_ext_source ON records(ext_source) WHERE ext_source IS NOT NULL;
+"
+
 # Ordered migrations: each step runs once, in order, from the stored user_version.
 ensure_db() {
   mkdir -p "$(dirname "$DB")" || die "cannot create $(dirname "$DB")"
@@ -132,6 +141,7 @@ ensure_db() {
   }
   [ "$v" -lt 1 ] && migrate_step 0 1 "$SCHEMA_V1"
   migrate_step 1 2 "$SCHEMA_V2"
+  migrate_step 2 3 "$SCHEMA_V3"
 }
 
 # ---------- project resolution ----------
@@ -586,18 +596,34 @@ cmd_import() {
       n_files=$((n_files+1))
       if [ "$loaded" = 0 ]; then
         [ "$dry_run" = 1 ] || ensure_db
-        if [ -f "$DB" ] && [ "$(printf 'PRAGMA user_version;' | sqlro 2>/dev/null)" = 2 ]; then
-          existing="$(printf "SELECT hex(ext_source)||'|'||ext_sha||'|'||id||'|'||(superseded_by IS NULL) FROM records WHERE ext_source IS NOT NULL;" | sqlro 2>/dev/null)"
+        if [ -f "$DB" ] && [ "$(printf 'PRAGMA user_version;' | sqlro 2>/dev/null)" -ge 2 ]; then
+          # One line per imported path: hex(path)|latest imported sha|chain head id|head type.
+          # "Latest" is max(rowid): records are never deleted, so rowid order is insertion order.
+          # The walk follows superseded_by (crossing hand-made records without ext_source) to the head.
+          existing="$(printf "WITH RECURSIVE latest AS (
+  SELECT r.ext_source AS src, r.ext_sha AS sha, r.id AS id FROM records r
+  WHERE r.ext_source IS NOT NULL AND r.rowid=(SELECT max(rowid) FROM records WHERE ext_source=r.ext_source)
+), walk(src,sha,cur,depth) AS (
+  SELECT src,sha,id,0 FROM latest
+  UNION ALL
+  SELECT w.src,w.sha,r.superseded_by,w.depth+1 FROM walk w JOIN records r ON r.id=w.cur
+  WHERE r.superseded_by IS NOT NULL AND w.depth<100
+)
+SELECT hex(w.src)||'|'||w.sha||'|'||h.id||'|'||h.type FROM walk w JOIN records h ON h.id=w.cur WHERE h.superseded_by IS NULL;" | sqlro 2>/dev/null)"
         fi
         loaded=1
       fi
       sha="$(sha_of "$f")"
       hexp="$(uhex "$full")"
       lines="$(printf '%s\n' "$existing" | grep "^$hexp|" || true)"
-      if printf '%s\n' "$lines" | grep -q "^$hexp|$sha|"; then
+      if [ -n "$lines" ] && [ "$(printf '%s\n' "$lines" | awk -F'|' 'NR==1 {print $2}')" = "$sha" ]; then
         n_same=$((n_same+1)); continue
       fi
-      oldid="$(printf '%s\n' "$lines" | awk -F'|' '$4==1 {print $3; exit}')"
+      oldid="$(printf '%s\n' "$lines" | awk -F'|' 'NR==1 {print $3}')"
+      oldtype="$(printf '%s\n' "$lines" | awk -F'|' 'NR==1 {print $4}')"
+      ntype=fact
+      [ -n "$oldtype" ] && ntype="$oldtype"
+      npfx="$(prefix_of "$ntype")"
       if [ -n "$oldid" ]; then n_chg=$((n_chg+1)); else n_new=$((n_new+1)); fi
       [ "$dry_run" = 1 ] && continue
       desc="$(fm_get "$f" description)"; mtype="$(fm_get "$f" type)"; mtype="${mtype:-unknown}"
@@ -609,8 +635,8 @@ $(fm_body "$f")"
       refj="$(jq -nc '$ARGS.positional' --args "file:$full")"
       sql="$sql
 INSERT INTO records (id,type,project,source,title,body,quote,refs,created_at,created_by,ext_source,ext_sha)
-VALUES ((SELECT 'F-' || (COALESCE(MAX(CAST(SUBSTR(id,3) AS INTEGER)),0)+1) FROM records WHERE type='fact'),
-  'fact', $(lit "$stored"), 'agent-inferred', $(lit "$name"), $(lit "$body"), NULL, $(lit "$refj"),
+VALUES ((SELECT '$npfx-' || (COALESCE(MAX(CAST(SUBSTR(id,3) AS INTEGER)),0)+1) FROM records WHERE type='$ntype'),
+  '$ntype', $(lit "$stored"), 'agent-inferred', $(lit "$name"), $(lit "$body"), NULL, $(lit "$refj"),
   strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'atelier-memory import', $(lit "$full"), '$sha');"
       if [ -n "$oldid" ]; then
         sql="$sql
