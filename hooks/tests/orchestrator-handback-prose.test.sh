@@ -42,10 +42,15 @@ contains "drain-before-handback rule" "$AGENT" "**Drain before handback.**"
 contains "drain checks live" "$AGENT" "atelier-subagent-ledger live --worktree <wt>"
 contains "wait option never sleeps" "$AGENT" "Waiting means ending the turn, never \`sleep\`, never polling, never a loop."
 contains "stop option uses TaskStop then records stopped" "$AGENT" "atelier-subagent-ledger finish --agent-id <id> --state stopped"
-contains "disclose option" "$AGENT" "**Disclose.**"
+contains "disclose option" "$AGENT" "**Disclose (last resort).**"
+contains "disclosure quotes the TaskStop error" "$AGENT" 'still running: TaskStop failed (<the TaskStop error, quoted>)'
+contains "disclosure without a stop attempt is rejected" "$AGENT" 'A disclosure without a stop attempt (`stopped` or `TaskStop failed`) is rejected by the hook.'
+contains "preflight-before-dispatch rule" "$AGENT" "- **Preflight before dispatch.**"
+contains "preflight holds with the resume wording" "$AGENT" 'hold with `held: live sub-agent(s) from a previous run in <wt>: <ids>` instead of dispatching'
+contains "interim notification is never a reason to hand back" "$AGENT" "the child is still live, keep waiting, and never treat it as a reason to hand back"
 count_is "Live sub-agents Output line in both report variants" "$AGENT" '- Live sub-agents: `none` | `<agent_id> (<type>, <step>)' 2
 contains "Output line exactness note" "$AGENT" 'the line must be `Live sub-agents:` exactly'
-contains "Decision rule: never hand back with live child" "$AGENT" "Never** hand back while the ledger shows a live child you neither waited for, stopped, nor disclosed."
+contains "Decision rule: never hand back with live child" "$AGENT" "Never** hand back while the ledger shows a live child you neither waited for, stopped, nor disclosed after a failed stop attempt;"
 
 echo "== commands/resume-task.md step 2b"
 contains "step 2b heading" "$RESUME" "### 2b. Live sub-agent preflight"
@@ -66,6 +71,8 @@ contains "lifecycle subsection heading" "$RULES" "### Sub-agent lifecycle: no or
 sub="$(awk '/^### Sub-agent lifecycle: no orphaned children/{f=1;next} f && /^#{1,3} /{f=0} f' "$RULES")"
 [ -n "$sub" ] && ok "subsection body extracted" || bad "subsection body empty"
 case "$sub" in *"Live sub-agents:"*) ok "subsection names the Live sub-agents: line" ;; *) bad "subsection lacks Live sub-agents:" ;; esac
+case "$sub" in *"discloses it in a \`Live sub-agents:\` line. Disclosure requires a stop attempt"*) ok "subsection requires a stop attempt for disclosure" ;; *) bad "subsection lacks the stop-attempt disclosure requirement" ;; esac
+case "$sub" in *"held: live sub-agent(s) from a previous run in <wt>"*) ok "subsection names the preflight hold" ;; *) bad "subsection lacks the preflight hold wording" ;; esac
 case "$sub" in *"never a \`sleep\`, a poll or a wait loop"*) ok "subsection forbids sleep/poll/wait loop" ;; *) bad "subsection lacks the no sleep/poll/wait-loop sentence" ;; esac
 # Outside that one negative sentence, no instruction to sleep/poll/loop.
 stripped="$(printf '%s\n' "$sub" | sed 's/never a `sleep`, a poll or a wait loop//; s/so nothing needs polling//')"
