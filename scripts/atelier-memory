@@ -13,6 +13,8 @@
 #   atelier-memory search <fts5 query> [--project P]
 #   atelier-memory brief --project P
 #   atelier-memory import [--dry-run] [--project P]
+#   atelier-memory ingest [--vault DIR]
+#   atelier-memory verify --project P [--apply]
 #   atelier-memory render [--full] [--vault DIR]
 #   atelier-memory path
 #
@@ -34,7 +36,7 @@
 
 set -u
 
-usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^# Exit codes:/p' "$0" | sed 's/^# \{0,1\}//'; }
 
 die() { echo "atelier-memory: $*" >&2; exit 2; }
 refuse() { echo "atelier-memory: refused — $*" >&2; exit 3; }
@@ -106,6 +108,10 @@ CREATE TABLE IF NOT EXISTS records (
   closed_by     TEXT,
   CHECK (source <> 'operator-verbatim' OR length(trim(coalesce(quote,''))) > 0)
 );
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
 CREATE INDEX IF NOT EXISTS records_project_type ON records(project, type);
 CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(title, body, quote, content='records', content_rowid='rowid');
 CREATE TRIGGER IF NOT EXISTS records_ai AFTER INSERT ON records BEGIN
@@ -156,7 +162,10 @@ ensure_db() {
   mkdir -p "$(dirname "$DB")" || die "cannot create $(dirname "$DB")"
   local v
   v="$(user_version)"; v="${v:-0}"
-  [ "$v" -ge "$LATEST_SCHEMA" ] && return 0
+  if [ "$v" -ge "$LATEST_SCHEMA" ]; then
+    printf 'CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);\n' | sqlrun >/dev/null 2>&1 || true
+    return 0
+  fi
   printf 'PRAGMA journal_mode=WAL;' | sqlite3 -cmd '.timeout 5000' "$DB" >/dev/null 2>&1
   # Each step re-checks user_version inside its write lock, so concurrent first runs
   # cannot re-apply a step (or reset the version) after another process migrated.
@@ -167,6 +176,7 @@ ensure_db() {
   [ "$v" -lt 1 ] && migrate_step 0 1 "$SCHEMA_V1"
   migrate_step 1 2 "$SCHEMA_V2"
   migrate_step 2 3 "$SCHEMA_V3"
+  printf 'CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);\n' | sqlrun >/dev/null 2>&1 || true
 }
 
 # ---------- project resolution ----------
@@ -265,6 +275,7 @@ check_secrets() {
 project=""; source_=""; title=""; body=""; quote=""; supersedes=""; by=""; type_filter=""
 open_only=0; all=0; refs=(); positional=()
 body_set=0; dry_run=0; full_render=0; vault_override=""
+apply=0; ext_source_=""; ext_sha_=""
 
 parse_opts() {
   while [ $# -gt 0 ]; do
@@ -283,6 +294,7 @@ parse_opts() {
       --dry-run)    dry_run=1; shift ;;
       --full)       full_render=1; shift ;;
       --vault)      [ $# -ge 2 ] || die "--vault needs a value"; vault_override="$2"; shift 2 ;;
+      --apply)      apply=1; shift ;;
       -h|--help)    usage; exit 0 ;;
       --)           shift; positional+=("$@"); break ;;
       -*)           die "unknown argument: $1" ;;
@@ -305,8 +317,8 @@ refs_json() {
   local r
   for r in "${refs[@]}"; do
     case "$r" in
-      issue:*|pr:*|record:*|file:*) ;;
-      *) die "bad --ref '$r' (expected issue:o/r#N, pr:o/r#N, record:ID or file:PATH)" ;;
+      issue:*|pr:*|record:*|file:*|branch:*|worktree:*) ;;
+      *) die "bad --ref '$r' (expected issue:o/r#N, pr:o/r#N, record:ID, file:PATH, branch:NAME or worktree:PATH)" ;;
     esac
   done
   jq -nc '$ARGS.positional' --args "${refs[@]}"
@@ -337,11 +349,13 @@ do_add() {
   pfx="$(prefix_of "$type")"
   ensure_db
   sql="BEGIN IMMEDIATE;
-INSERT INTO records (id,type,project,source,title,body,quote,refs,created_at,created_by)
+INSERT INTO records (id,type,project,source,title,body,quote,refs,created_at,created_by,ext_source,ext_sha)
 VALUES ((SELECT '$pfx-' || (COALESCE(MAX(CAST(SUBSTR(id,3) AS INTEGER)),0)+1) FROM records WHERE type='$type'),
   '$type', $(lit "$proj"), '$source_', $(lit "$title"), $(lit "$body"),
   $( [ -n "$quote" ] && lit "$quote" || printf NULL ), $(lit "$refj"),
-  strftime('%Y-%m-%dT%H:%M:%SZ','now'), $(lit "$actor"));
+  strftime('%Y-%m-%dT%H:%M:%SZ','now'), $(lit "$actor"),
+  $( [ -n "$ext_source_" ] && lit "$ext_source_" || printf NULL ),
+  $( [ -n "$ext_sha_" ] && lit "$ext_sha_" || printf NULL ));
 CREATE TEMP TABLE new_id AS SELECT id FROM records WHERE rowid = last_insert_rowid();"
   if [ -n "$supersedes" ]; then
     sql="$sql
@@ -505,13 +519,19 @@ cmd_brief() {
   [ "${total:-0}" -gt 0 ] || exit 0
   label="$(project_label "$proj")"
 
+  local lv="" v_marker="unverified"
+  if [ -f "$DB" ]; then
+    lv="$(printf "SELECT substr(value,1,10) FROM meta WHERE key='last_verified:' || %s;" "$(lit "$proj")" | sqlro 2>/dev/null)"
+    [ -n "$lv" ] && v_marker="verified $lv"
+  fi
+
   section() { # <heading> <where> <limit> <order>
     local rows
     rows="$(printf "SELECT '- ' || id || ' ' || substr(created_at,1,10) || ' [' ||
  CASE source WHEN 'operator-verbatim' THEN 'operator' WHEN 'agent-inferred' THEN 'inferred' ELSE 'board' END || '] ' ||
  substr(%s,1,%d) FROM records WHERE %s AND superseded_by IS NULL AND %s ORDER BY %s LIMIT %d;" \
       "$NL1" "${BRIEF_TITLE_MAX:-80}" "$scope" "$2" "$4" "$3" | sqlro 2>/dev/null)" || return 0
-    [ -z "$rows" ] || { printf '%s:\n%s\n' "$1" "$rows"; }
+    [ -z "$rows" ] || { printf '%s (%s):\n%s\n' "$1" "$v_marker" "$rows"; }
   }
 
   {
@@ -709,6 +729,514 @@ UPDATE records SET superseded_by=(SELECT id FROM records WHERE rowid=last_insert
   return 0
 }
 
+cmd_ingest() {
+  parse_opts "$@"
+  [ "${#positional[@]}" -eq 0 ] || die "usage: ingest [--vault DIR]"
+  command -v jq >/dev/null 2>&1 || die "jq is required"
+
+  local vdir lang inbox_dir dest_dir_name
+  vdir="$(vault_dir_resolve "$vault_override")"
+  lang="$(vault_get_lang)"
+  vault_init_lang_tables "$lang"
+
+  if [ "$lang" = "es" ]; then
+    inbox_dir="$vdir/Entrada"
+    dest_dir_name=".procesado"
+  else
+    inbox_dir="$vdir/Inbox"
+    dest_dir_name=".processed"
+  fi
+
+  [ -d "$inbox_dir" ] || return 0
+
+  local md_files=() f
+  for f in "$inbox_dir"/*.md; do
+    [ -f "$f" ] && md_files+=("$f")
+  done
+  [ "${#md_files[@]}" -gt 0 ] || return 0
+
+  local any_written=0 ingested_count=0 base name sidecar content
+  local fm_present file_body file_type file_title proj_raw resolved_proj
+  local file_supersedes file_refs ref_err ts dest_dir dest sha ext_src new_id
+  local sup_row sup_sby r first_h
+
+  for f in "${md_files[@]}"; do
+    base="$(basename "$f")"
+    name="${base%.md}"
+    sidecar="$inbox_dir/${name}.error.txt"
+    file_refs=()
+
+    content="$(cat "$f")"
+
+    # Secret scanning
+    if secret_match "$content"; then
+      printf 'Secret pattern "%s" matched. Refusing to ingest file containing potential secret. Store a reference instead.\n' "$SECRET_HIT" > "$sidecar"
+      continue
+    fi
+
+    # Check for malformed frontmatter (opening --- without closing ---)
+    if ! awk 'NR==1 { if ($0 !~ /^---[ \t\r]*$/) exit 0; open=1; next } open && /^---[ \t\r]*$/ { close_fm=1; exit 0 } END { if (open && !close_fm) exit 1; exit 0 }' "$f"; then
+      printf 'Invalid frontmatter syntax: opening "---" without closing "---".\n' > "$sidecar"
+      continue
+    fi
+
+    if has_frontmatter "$f"; then
+      fm_present=1
+      file_body="$(fm_body "$f")"
+    else
+      fm_present=0
+      file_body="$content"
+    fi
+
+    # Check for empty body / quote
+    if [ -z "$(printf '%s' "$file_body" | tr -d '[:space:]')" ]; then
+      printf 'Empty body: operator-verbatim record requires non-empty content.\n' > "$sidecar"
+      continue
+    fi
+
+    # Type
+    file_type="request"
+    if [ "$fm_present" = 1 ]; then
+      local t_val
+      t_val="$(fm_get "$f" type)"
+      if [ -n "$t_val" ]; then
+        if valid_type "$t_val"; then
+          file_type="$t_val"
+        else
+          printf 'Invalid type "%s": expected request, question, decision, fact, held, digest.\n' "$t_val" > "$sidecar"
+          continue
+        fi
+      fi
+    fi
+
+    # Project
+    resolved_proj="*"
+    proj_raw=""
+    if [ "$fm_present" = 1 ]; then
+      proj_raw="$(fm_get "$f" project)"
+    fi
+
+    if [ -n "$proj_raw" ]; then
+      if [ "$proj_raw" = "*" ] || [ "$proj_raw" = "global" ]; then
+        resolved_proj="*"
+      else
+        if p="$(resolve_project "$proj_raw" 2>/dev/null)"; then
+          resolved_proj="$p"
+        else
+          printf 'Unknown project "%s": cannot resolve to a registered project or directory.\n' "$proj_raw" > "$sidecar"
+          continue
+        fi
+      fi
+    else
+      # Deducing from filename prefix: e.g. palabrium-something.md -> palabrium
+      local cur="${name}" found_p=0
+      while case "$cur" in *-*) true ;; *) false ;; esac; do
+        cur="${cur%-*}"
+        if p="$(resolve_project "$cur" 2>/dev/null)"; then
+          resolved_proj="$p"
+          found_p=1
+          break
+        fi
+      done
+      if [ "$found_p" = 0 ]; then
+        local first_tok="${name%%-*}"
+        if p="$(resolve_project "$first_tok" 2>/dev/null)"; then
+          resolved_proj="$p"
+        else
+          resolved_proj="*"
+        fi
+      fi
+    fi
+
+    # Supersedes
+    file_supersedes=""
+    if [ "$fm_present" = 1 ]; then
+      local s_val
+      s_val="$(fm_get "$f" supersedes)"
+      if [ -n "$s_val" ]; then
+        if ! valid_id "$s_val"; then
+          printf 'Invalid supersedes "%s": expected record ID (e.g. R-1, D-2).\n' "$s_val" > "$sidecar"
+          continue
+        fi
+        if [ -f "$DB" ]; then
+          sup_row="$(printf "SELECT coalesce(superseded_by,'') || '|' || coalesce(closed_at,'') FROM records WHERE id=%s;" "$(lit "$s_val")" | sqlro 2>/dev/null)"
+          if [ -z "$sup_row" ]; then
+            printf 'Invalid supersedes "%s": record not found in database.\n' "$s_val" > "$sidecar"
+            continue
+          fi
+          sup_sby="${sup_row%%|*}"
+          if [ -n "$sup_sby" ]; then
+            printf 'Invalid supersedes "%s": record is already superseded by %s.\n' "$s_val" "$sup_sby" > "$sidecar"
+            continue
+          fi
+        else
+          printf 'Invalid supersedes "%s": database does not exist.\n' "$s_val" > "$sidecar"
+          continue
+        fi
+        file_supersedes="$s_val"
+      fi
+    fi
+
+    # Refs
+    file_refs=()
+    ref_err=""
+    if [ "$fm_present" = 1 ]; then
+      local r_line
+      while IFS= read -r r_line; do
+        [ -n "$r_line" ] || continue
+        case "$r_line" in
+          json:*)
+            local j_items
+            if j_items="$(printf '%s' "${r_line#json:}" | jq -r '.[]' 2>/dev/null)"; then
+              while IFS= read -r r_item; do
+                [ -n "$r_item" ] && file_refs+=("$r_item")
+              done <<<"$j_items"
+            else
+              ref_err="malformed JSON array in refs"
+            fi
+            ;;
+          item:*)
+            file_refs+=("${r_line#item:}")
+            ;;
+          csv:*)
+            local csv_items
+            IFS=',' read -ra csv_items <<<"${r_line#csv:}"
+            for r_item in "${csv_items[@]}"; do
+              r_item="$(printf '%s' "$r_item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+              [ -n "$r_item" ] && file_refs+=("$r_item")
+            done
+            ;;
+        esac
+      done < <(awk '
+        NR==1 { if ($0 !~ /^---[ \t\r]*$/) exit; inside=1; next }
+        inside && /^---[ \t\r]*$/ { exit }
+        inside && /^[ \t]*refs:[ \t]*\[/ {
+          v=$0; sub(/^[ \t]*refs:[ \t]*/, "", v); sub(/[ \t\r]+$/, "", v)
+          print "json:" v; exit
+        }
+        inside && /^[ \t]*refs:[ \t]*$/ { in_refs=1; next }
+        inside && in_refs && /^[ \t]*-[ \t]*/ {
+          v=$0; sub(/^[ \t]*-[ \t]*/, "", v); sub(/[ \t\r]+$/, "", v)
+          n=length(v); f=substr(v,1,1)
+          if (n>=2 && (f=="\"" || f==sprintf("%c",39)) && substr(v,n,1)==f) v=substr(v,2,n-2)
+          print "item:" v; next
+        }
+        inside && in_refs && /^[ \t]*[A-Za-z0-9_-]+:/ { exit }
+        inside && /^[ \t]*refs:[ \t]*[^ \t\r]/ {
+          v=$0; sub(/^[ \t]*refs:[ \t]*/, "", v); sub(/[ \t\r]+$/, "", v)
+          n=length(v); f=substr(v,1,1)
+          if (n>=2 && (f=="\"" || f==sprintf("%c",39)) && substr(v,n,1)==f) v=substr(v,2,n-2)
+          print "csv:" v; exit
+        }
+      ' "$f")
+
+      if [ -n "$ref_err" ]; then
+        printf 'Invalid refs: %s\n' "$ref_err" > "$sidecar"
+        continue
+      fi
+
+      [ "${#file_refs[@]}" -eq 0 ] || for r in "${file_refs[@]}"; do
+        case "$r" in
+          issue:*|pr:*|record:*|file:*|branch:*|worktree:*) ;;
+          *)
+            ref_err="bad ref '$r' (expected issue:o/r#N, pr:o/r#N, record:ID, file:PATH, branch:NAME, worktree:PATH)"
+            break
+            ;;
+        esac
+      done
+      if [ -n "$ref_err" ]; then
+        printf 'Invalid refs: %s\n' "$ref_err" > "$sidecar"
+        continue
+      fi
+    fi
+
+    # Title
+    file_title=""
+    if [ "$fm_present" = 1 ]; then
+      file_title="$(fm_get "$f" title)"
+    fi
+    if [ -z "$file_title" ]; then
+      first_h="$(printf '%s\n' "$file_body" | grep -m1 '^[[:space:]]*#[[:space:]]' | sed 's/^[[:space:]]*#[[:space:]]*//' || true)"
+      if [ -n "$first_h" ]; then
+        file_title="$first_h"
+      else
+        file_title="$name"
+      fi
+    fi
+
+    # Idempotence check
+    sha="$(sha_of "$f")"
+    ext_src="inbox:$name"
+    if [ -f "$DB" ]; then
+      local already
+      already="$(printf "SELECT id FROM records WHERE ext_source=%s AND ext_sha=%s LIMIT 1;" "$(lit "$ext_src")" "$(lit "$sha")" | sqlro 2>/dev/null)"
+      if [ -n "$already" ]; then
+        # Already ingested
+        ts="$(date -u +%Y%m%dT%H%M%SZ)"
+        dest_dir="$inbox_dir/$dest_dir_name"
+        mkdir -p "$dest_dir" || true
+        mv "$f" "$dest_dir/${ts}-${base}"
+        rm -f "$sidecar"
+        continue
+      fi
+    fi
+
+    # Ingest record
+    source_="operator-verbatim"
+    by="operator"
+    quote="$file_body"
+    title="$file_title"
+    body=""
+    refs=()
+    [ "${#file_refs[@]}" -gt 0 ] && refs=("${file_refs[@]}")
+    supersedes="$file_supersedes"
+    ext_source_="$ext_src"
+    ext_sha_="$sha"
+
+    new_id="$(do_add "$file_type" "$resolved_proj")" || {
+      printf 'Write failed: %s\n' "$new_id" > "$sidecar"
+      continue
+    }
+
+    # Move processed file
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    dest_dir="$inbox_dir/$dest_dir_name"
+    mkdir -p "$dest_dir" || true
+    mv "$f" "$dest_dir/${ts}-${base}"
+    rm -f "$sidecar"
+    any_written=1
+    ingested_count=$((ingested_count + 1))
+    echo "ingested $new_id: $base"
+  done
+
+  if [ "$any_written" = 1 ]; then
+    ( vault_render_full >/dev/null ) || echo "atelier-memory: vault render warning" >&2
+  fi
+  return 0
+}
+
+cmd_verify() {
+  parse_opts "$@"
+  [ -n "$project" ] || die "usage: verify --project P [--apply]"
+  local rp
+  rp="$(resolve_project "$project")" || exit 2
+  ensure_db
+
+  # Record last_verified in meta table
+  printf "INSERT OR REPLACE INTO meta (key, value) VALUES ('last_verified:' || %s, strftime('%%Y-%%m-%%dT%%H:%%M:%%SZ','now'));\n" "$(lit "$rp")" | sqlrun >/dev/null 2>&1 || true
+
+  [ -f "$DB" ] || return 0
+
+  # Determine project backend
+  local backend="files"
+  if [ -f "$rp/.roadmap.json" ] && command -v jq >/dev/null 2>&1; then
+    backend="$(jq -r '.backend // "files"' "$rp/.roadmap.json" 2>/dev/null)"
+    [ -z "$backend" ] || [ "$backend" = "null" ] && backend="files"
+  fi
+
+  if [ "$backend" = "linear" ]; then
+    echo "linear: board freshness check is deferred (no Linear bash API)"
+  fi
+
+  # Query open records with refs
+  local rows
+  rows="$(printf "SELECT id || '|' || type || '|' || hex(title) || '|' || hex(refs) || '|' || hex(project)
+FROM records
+WHERE (project=%s OR project='*')
+  AND superseded_by IS NULL
+  AND closed_at IS NULL
+  AND refs != '[]' AND refs != '' AND refs IS NOT NULL;" "$(lit "$rp")" | sqlro 2>/dev/null)"
+
+  [ -n "$rows" ] || return 0
+
+  local tmp_cache
+  tmp_cache="$(mktemp -d)" || return 0
+
+  local stale_ids=() stale_refs=() stale_states=() stale_titles=() stale_types=() stale_projs=()
+  local r_line rec_id rec_type hex_title hex_refs hex_proj rec_title rec_refs_json rec_proj
+  local ref_arr r_item target num state cfile is_stale observed_state
+
+  while IFS= read -r r_line; do
+    [ -n "$r_line" ] || continue
+    IFS='|' read -r rec_id rec_type hex_title hex_refs hex_proj <<<"$r_line"
+    rec_title="$(dec "$hex_title")"
+    rec_refs_json="$(dec "$hex_refs")"
+    rec_proj="$(dec "$hex_proj")"
+
+    ref_arr=()
+    if command -v jq >/dev/null 2>&1; then
+      while IFS= read -r r_item; do
+        [ -n "$r_item" ] && ref_arr+=("$r_item")
+      done < <(printf '%s' "$rec_refs_json" | jq -r '.[]?' 2>/dev/null)
+    fi
+
+    [ "${#ref_arr[@]}" -gt 0 ] || continue
+    for r_item in "${ref_arr[@]}"; do
+      is_stale=0
+      observed_state=""
+
+      case "$r_item" in
+        file:*)
+          target="${r_item#file:}"
+          local check_f
+          case "$target" in
+            /*) check_f="$target" ;;
+            *) check_f="$rp/$target" ;;
+          esac
+          if [ ! -e "$check_f" ]; then
+            is_stale=1
+            observed_state="missing"
+          fi
+          ;;
+
+        branch:*)
+          target="${r_item#branch:}"
+          if [ -d "$rp/.git" ] || [ -f "$rp/.git" ]; then
+            if ! git -C "$rp" rev-parse --verify --quiet "refs/heads/$target" >/dev/null 2>&1 \
+               && [ -z "$(git -C "$rp" branch --list "$target" 2>/dev/null)" ]; then
+              is_stale=1
+              observed_state="missing"
+            fi
+          fi
+          ;;
+
+        worktree:*)
+          target="${r_item#worktree:}"
+          if [ -d "$rp/.git" ] || [ -f "$rp/.git" ]; then
+            if ! git -C "$rp" worktree list --porcelain 2>/dev/null | grep -q -E "(worktree .*$target|branch refs/heads/$target)"; then
+              is_stale=1
+              observed_state="missing"
+            fi
+          fi
+          ;;
+
+        record:*)
+          if [ "$rec_type" = "held" ]; then
+            target="${r_item#record:}"
+            local other_row
+            other_row="$(printf "SELECT coalesce(closed_at,'') || '|' || coalesce(superseded_by,'') FROM records WHERE id=%s;" "$(lit "$target")" | sqlro 2>/dev/null)"
+            if [ -n "$other_row" ]; then
+              local o_clat="${other_row%%|*}"
+              if [ -n "$o_clat" ]; then
+                is_stale=1
+                observed_state="resolved"
+              fi
+            fi
+          fi
+          ;;
+
+        issue:*|pr:*)
+          if [ "$backend" = "linear" ]; then
+            # Defer board freshness check for linear
+            continue
+          fi
+
+          local is_pr=0
+          case "$r_item" in pr:*) is_pr=1 ;; esac
+          target="${r_item#*:}"
+          num="${target##*#}"
+
+          if [ "$backend" = "files" ]; then
+            # Check ROADMAP.md and HISTORY.md
+            if [ -f "$rp/HISTORY.md" ] && grep -q -E "(^|[[:space:]#])$num([[:space:]]|$|:|\))" "$rp/HISTORY.md" 2>/dev/null; then
+              is_stale=1
+              [ "$is_pr" = 1 ] && observed_state="merged" || observed_state="closed"
+            elif [ -f "$rp/ROADMAP.md" ] && grep -q -E "\[x\].*(#$num\b|\b$num\b)" "$rp/ROADMAP.md" 2>/dev/null; then
+              is_stale=1
+              [ "$is_pr" = 1 ] && observed_state="merged" || observed_state="closed"
+            fi
+          else
+            # github-project: check offline mirror first if present
+            if [ -f "$rp/HISTORY.md" ] && grep -q -E "(^|[[:space:]#])$num([[:space:]]|$|:|\))" "$rp/HISTORY.md" 2>/dev/null; then
+              is_stale=1
+              [ "$is_pr" = 1 ] && observed_state="merged" || observed_state="closed"
+            elif [ -f "$rp/ROADMAP.md" ] && grep -q -E "\[x\].*(#$num\b|\b$num\b)" "$rp/ROADMAP.md" 2>/dev/null; then
+              is_stale=1
+              [ "$is_pr" = 1 ] && observed_state="merged" || observed_state="closed"
+            elif command -v gh >/dev/null 2>&1; then
+              cfile="$tmp_cache/$(printf '%s' "$r_item" | sed 's/[^A-Za-z0-9_.-]/_/g')"
+              if [ -f "$cfile" ]; then
+                state="$(cat "$cfile")"
+              else
+                local gh_args=()
+                if case "$target" in *"#"*) true ;; *) false ;; esac; then
+                  gh_args=("-R" "${target%#*}" "${target##*#}")
+                else
+                  gh_args=("$target")
+                fi
+                if [ "$is_pr" = 1 ]; then
+                  state="$(git -C "$rp" gh pr view "${gh_args[@]}" --json state --jq .state 2>/dev/null || gh pr view "${gh_args[@]}" --json state --jq .state 2>/dev/null || true)"
+                else
+                  state="$(git -C "$rp" gh issue view "${gh_args[@]}" --json state --jq .state 2>/dev/null || gh issue view "${gh_args[@]}" --json state --jq .state 2>/dev/null || true)"
+                fi
+                printf '%s' "$state" > "$cfile"
+              fi
+
+              case "$state" in
+                CLOSED)
+                  is_stale=1
+                  observed_state="closed"
+                  ;;
+                MERGED)
+                  is_stale=1
+                  observed_state="merged"
+                  ;;
+              esac
+            fi
+          fi
+          ;;
+      esac
+
+      if [ "$is_stale" = 1 ]; then
+        echo "$rec_id $r_item $observed_state"
+        stale_ids+=("$rec_id")
+        stale_refs+=("$r_item")
+        stale_states+=("$observed_state")
+        stale_titles+=("$rec_title")
+        stale_types+=("$rec_type")
+        stale_projs+=("$rec_proj")
+        break
+      fi
+    done
+  done <<<"$rows"
+
+  if [ "$apply" = 1 ] && [ "${#stale_ids[@]}" -gt 0 ]; then
+    local i count="${#stale_ids[@]}" s_id s_ref s_state s_title s_type s_proj
+    local s_sql="" npfx close_reason
+    for ((i=0; i<count; i++)); do
+      s_id="${stale_ids[$i]}"
+      s_ref="${stale_refs[$i]}"
+      s_state="${stale_states[$i]}"
+      s_title="${stale_titles[$i]}"
+      s_type="${stale_types[$i]}"
+      s_proj="${stale_projs[$i]}"
+      npfx="$(prefix_of "$s_type")"
+      close_reason="verify: $s_ref $s_state"
+
+      s_sql="$s_sql
+INSERT INTO records (id,type,project,source,title,body,quote,refs,created_at,created_by,superseded_by,superseded_at,closed_at,closed_by)
+VALUES ((SELECT '$npfx-' || (COALESCE(MAX(CAST(SUBSTR(id,3) AS INTEGER)),0)+1) FROM records WHERE type='$s_type'),
+  '$s_type', $(lit "$s_proj"), 'board-derived',
+  $(lit "Closed: $s_title"),
+  $(lit "Automatically closed by verify: $s_ref is $s_state"),
+  NULL, $(lit "[\"$s_ref\"]"),
+  strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'atelier-memory verify',
+  NULL, NULL,
+  strftime('%Y-%m-%dT%H:%M:%SZ','now'), $(lit "$close_reason"));
+UPDATE records SET superseded_by=(SELECT id FROM records WHERE rowid=last_insert_rowid()),
+  superseded_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+ WHERE id=$(lit "$s_id") AND superseded_by IS NULL;"
+    done
+
+    if [ -n "$s_sql" ]; then
+      printf 'BEGIN IMMEDIATE;%s\nCOMMIT;\n' "$s_sql" | sqlrun >/dev/null 2>&1 || die "verify --apply failed"
+      ( vault_render_full >/dev/null ) || echo "atelier-memory: vault render warning" >&2
+    fi
+  fi
+  rm -rf "$tmp_cache"
+  return 0
+}
+
 cmd_render() {
   parse_opts "$@"
   vault_render_full "$vault_override"
@@ -723,6 +1251,8 @@ case "$sub" in
   search)    cmd_search "$@" ;;
   brief)     cmd_brief "$@" ;;
   import)    cmd_import "$@" ;;
+  ingest)    cmd_ingest "$@" ;;
+  verify)    cmd_verify "$@" ;;
   render)    cmd_render "$@" ;;
   *)         usage >&2; die "unknown subcommand: $sub" ;;
 esac

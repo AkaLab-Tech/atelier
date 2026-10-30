@@ -15,6 +15,8 @@ mem="$(command -v atelier-memory 2>/dev/null || true)"
 [ -n "$mem" ] || mem="${CLAUDE_PLUGIN_ROOT:-}/scripts/atelier-memory"
 [ -x "$mem" ] || exit 0
 
+"$mem" ingest >/dev/null 2>&1 || true
+
 out="$("$mem" brief --project "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null || true)"
 [ -n "$out" ] || exit 0
 

@@ -80,10 +80,12 @@ else
 fi
 
 # --- 2. Top-level session allowed on all write subcommands -----------------
-assert_allow "top-level add"       "" "" 'atelier-memory add fact --project . --source agent-inferred --title x'
-assert_allow "top-level supersede" "" "" 'atelier-memory supersede F-1 --source agent-inferred --title y'
-assert_allow "top-level close"     "" "" 'atelier-memory close Q-1 --by D-1'
-assert_allow "top-level import"    "" "" 'atelier-memory import --project .'
+assert_allow "top-level add"            "" "" 'atelier-memory add fact --project . --source agent-inferred --title x'
+assert_allow "top-level supersede"      "" "" 'atelier-memory supersede F-1 --source agent-inferred --title y'
+assert_allow "top-level close"          "" "" 'atelier-memory close Q-1 --by D-1'
+assert_allow "top-level import"         "" "" 'atelier-memory import --project .'
+assert_allow "top-level ingest"         "" "" 'atelier-memory ingest'
+assert_allow "top-level verify --apply" "" "" 'atelier-memory verify --project . --apply'
 
 # --- 3. Subagent identification signals (.agent_id, .agent_type, env) ------
 assert_block "agent_id set: add" \
@@ -100,6 +102,10 @@ assert_block "subagent close" "sub-1" "implementer" \
   'atelier-memory close Q-1 --by D-1'
 assert_block "subagent import (no --dry-run)" "sub-1" "implementer" \
   'atelier-memory import --project .'
+assert_block "subagent ingest" "sub-1" "implementer" \
+  'atelier-memory ingest'
+assert_block "subagent verify --apply" "sub-1" "implementer" \
+  'atelier-memory verify --project . --apply'
 assert_block "subagent via scripts/atelier-memory path" "sub-1" "implementer" \
   'scripts/atelier-memory add decision --project . --source agent-inferred --title d'
 assert_block "subagent via \$MEM variable" "sub-1" "implementer" \
@@ -143,6 +149,7 @@ assert_allow "subagent list"   "sub-1" "implementer" 'atelier-memory list --proj
 assert_allow "subagent show"   "sub-1" "implementer" 'atelier-memory show D-1'
 assert_allow "subagent search" "sub-1" "implementer" 'atelier-memory search foo --project .'
 assert_allow "subagent brief"  "sub-1" "implementer" 'atelier-memory brief --project .'
+assert_allow "subagent verify" "sub-1" "implementer" 'atelier-memory verify --project .'
 assert_allow "subagent path"   "sub-1" "implementer" 'atelier-memory path'
 assert_allow "subagent render" "sub-1" "implementer" 'atelier-memory render'
 assert_allow "subagent render --full" "sub-1" "implementer" 'atelier-memory render --full'
@@ -154,6 +161,10 @@ assert_allow "inline isolated ATELIER_CONFIG_DIR" "sub-1" "tester" \
   "ATELIER_CONFIG_DIR=$ISO atelier-memory add fact --project . --source agent-inferred --title x"
 assert_allow "symlink to isolated dir" "sub-1" "tester" \
   "ATELIER_CONFIG_DIR=$TMP/link-iso-acd atelier-memory add fact --project . --source agent-inferred --title x"
+assert_allow "inline isolated ATELIER_CONFIG_DIR ingest" "sub-1" "tester" \
+  "ATELIER_CONFIG_DIR=$ISO atelier-memory ingest"
+assert_allow "inline isolated ATELIER_CONFIG_DIR verify --apply" "sub-1" "tester" \
+  "ATELIER_CONFIG_DIR=$ISO atelier-memory verify --project . --apply"
 assert_allow 'ATELIER_CONFIG_DIR=$(mktemp -d)' "sub-1" "tester" \
   'ATELIER_CONFIG_DIR="$(mktemp -d)" atelier-memory add fact --project . --source agent-inferred --title x'
 assert_allow "in-command TMP=\$(mktemp -d) then ATELIER_CONFIG_DIR=\$TMP/cfg" "sub-1" "tester" \
