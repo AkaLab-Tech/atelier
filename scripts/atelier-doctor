@@ -1651,6 +1651,118 @@ check_project_registry() {
   fi
 }
 
+# #608 (#597c): scan task worktrees of registered projects for prod/stage env files.
+check_worktree_env_files() {
+  local pf="$ATELIER_CONFIG_DIR/projects.json"
+  [ -f "$pf" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local scanner
+  scanner="$(command -v atelier-worktree-create 2>/dev/null || true)"
+  if [ -z "$scanner" ] || [ ! -x "$scanner" ]; then
+    local this="${BASH_SOURCE[0]}"
+    while [ -L "$this" ]; do
+      local target; target="$(readlink "$this" 2>/dev/null || true)"
+      if [[ "$target" == /* ]]; then
+        this="$target"
+      else
+        this="$(dirname "$this")/$target"
+      fi
+    done
+    local script_dir; script_dir="$(cd -P "$(dirname "$this")" 2>/dev/null && pwd)"
+    if [ -x "$script_dir/atelier-worktree-create" ]; then
+      scanner="$script_dir/atelier-worktree-create"
+    elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "${CLAUDE_PLUGIN_ROOT}/scripts/atelier-worktree-create" ]; then
+      scanner="${CLAUDE_PLUGIN_ROOT}/scripts/atelier-worktree-create"
+    fi
+  fi
+  if [ -z "$scanner" ] || [ ! -x "$scanner" ]; then
+    push_host "$SKIP task worktrees env check (atelier-worktree-create not found)"
+    return 0
+  fi
+
+  local nl=$'\n'
+  local p problems=0
+
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ -d "$p" ] || continue
+    git -C "$p" rev-parse --git-dir >/dev/null 2>&1 || continue
+
+    local main_canon
+    main_canon="$(cd -P "$p" 2>/dev/null && pwd || printf '%s' "$p")"
+
+    local -a wts=()
+    local seen_wts="$nl"
+    local line w w_norm
+
+    while IFS= read -r line; do
+      case "$line" in
+        "worktree "*)
+          w="${line#worktree }"
+          [ -n "$w" ] || continue
+          [ -d "$w" ] || continue
+          w_norm="$(cd -P "$w" 2>/dev/null && pwd || printf '%s' "$w")"
+          [ "$w_norm" = "$main_canon" ] && continue
+          case "$seen_wts" in
+            *"${nl}${w_norm}${nl}"*) ;;
+            *)
+              seen_wts+="${w_norm}${nl}"
+              wts+=("$w")
+              ;;
+          esac
+          ;;
+      esac
+    done < <(git -C "$p" worktree list --porcelain 2>/dev/null || true)
+
+    local sib_dir="${p%/}-worktrees"
+    if [ -d "$sib_dir" ]; then
+      local orphan o_norm
+      while IFS= read -r orphan; do
+        [ -n "$orphan" ] || continue
+        [ -d "$orphan" ] || continue
+        o_norm="$(cd -P "$orphan" 2>/dev/null && pwd || printf '%s' "$orphan")"
+        [ "$o_norm" = "$main_canon" ] && continue
+        case "$seen_wts" in
+          *"${nl}${o_norm}${nl}"*) ;;
+          *)
+            seen_wts+="${o_norm}${nl}"
+            wts+=("$orphan")
+            ;;
+        esac
+      done < <(find "$sib_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)
+    fi
+
+    local wt
+    for wt in ${wts[@]+"${wts[@]}"}; do
+      local scan_out rc=0
+      scan_out="$("$scanner" --scan-env "$wt" 2>/dev/null)" || rc=$?
+      if [ "$rc" -eq 1 ]; then
+        local f
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          push_host "$WARN task worktree contains prod/stage env file: $p · $wt · $f"
+          problems=$((problems + 1))
+        done <<< "$scan_out"
+      fi
+    done
+  done < <(jq -r '.projects // {} | keys[]' "$pf" 2>/dev/null)
+
+  if [ "$problems" -gt 0 ]; then
+    push_fix_manual "# Run in the operator's own terminal, not through an agent:
+# 1. List affected files:
+#    atelier-doctor
+# 2. Remove prod/stage copies (.env.prod*, .env.production*, .env.stage*, .env.staging*)
+#    from each listed task worktree with rm <path>. Never touch the main checkout's own files.
+# 3. Optional exposure check by name:
+#    grep -l -E '\.env\.(prod|production|stage|staging)' ~/.claude-work/projects/*/*.jsonl
+# 4. Re-run atelier-doctor and confirm no hits.
+# See docs/troubleshooting.md for the full procedure."
+  else
+    push_host "$OK task worktrees clean (no prod/stage env files in registered projects)"
+  fi
+}
+
 # ---------- main ----------
 #
 # Args were parsed at the top of the script into $RUN_FIXES; --help also
@@ -1679,6 +1791,7 @@ check_vercel
 check_neon
 check_workspaces
 check_project_registry
+check_worktree_env_files
 check_user_settings_stale_paths
 check_atelier_config_dir
 check_sqlite_fts5
