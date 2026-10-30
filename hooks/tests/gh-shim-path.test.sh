@@ -11,7 +11,7 @@
 
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." && pwd)"
 HOOK="$REPO_ROOT/hooks/gh-shim-path.sh"
 HOOKS_JSON="$REPO_ROOT/hooks/hooks.json"
 INSTALL="$REPO_ROOT/install.sh"
@@ -32,10 +32,11 @@ chmod +x "$RTSHIMS/gh" "$PROOT/scripts/shims/gh"
 printf '#!/bin/sh\necho REAL\n' > "$STUB/gh"; chmod +x "$STUB/gh"
 printf '#!/bin/sh\necho RC-GH\n' > "$RCBIN/gh"; chmod +x "$RCBIN/gh"
 
-# hook ENVFILE ROOT RUNTIME -> sets RC, ERR
+# hook ENVFILE ROOT RUNTIME [KEY=VAL ...] -> sets RC, ERR
 hook() {
-  ERR="$(env -i HOME="$HOME_DIR" PATH=/usr/bin:/bin ${1:+CLAUDE_ENV_FILE="$1"} \
-    ${2:+CLAUDE_PLUGIN_ROOT="$2"} ATELIER_RUNTIME_DIR="$3" bash "$HOOK" 2>&1 >/dev/null </dev/null)"; RC=$?
+  local ef="${1-}" root="${2-}" rt="${3-}"; shift 3 2>/dev/null || true
+  ERR="$(env -i HOME="$HOME_DIR" PATH=/usr/bin:/bin ${ef:+CLAUDE_ENV_FILE="$ef"} \
+    ${root:+CLAUDE_PLUGIN_ROOT="$root"} ${rt:+ATELIER_RUNTIME_DIR="$rt"} "$@" bash "$HOOK" 2>&1 >/dev/null </dev/null)"; RC=$?
 }
 
 # --- runtime dir preferred; sourcing resolves gh to the shim ---
@@ -88,6 +89,40 @@ hook "$EF" "$TMP/empty-root" "$TMP/no-such-runtime"
 EF="$TMP/env5"; : > "$EF"
 hook "$EF" "$REPO_ROOT" "$TMP/no-such-runtime"
 [ "$(cat "$EF")" = "export PATH=\"$REPO_ROOT/scripts/shims:\$PATH\"" ] && pass "real plugin root resolves to scripts/shims in this repo" || fail "repo root: $(cat "$EF")"
+
+# --- XDG_CONFIG_HOME recording (#624) ---
+# When XDG_CONFIG_HOME is set:
+# 1) records into $CLAUDE_ENV_FILE as export ATELIER_ORIGINAL_XDG_CONFIG_HOME=...
+# 2) writes into $ATELIER_CONFIG_DIR/.operator-xdg
+CUSTOM_ACD="$TMP/custom-acd"
+CUSTOM_XDG="$TMP/custom-xdg"
+EF_XDG="$TMP/env-xdg"; : > "$EF_XDG"
+hook "$EF_XDG" "$PROOT" "$RT" "XDG_CONFIG_HOME=$CUSTOM_XDG" "ATELIER_CONFIG_DIR=$CUSTOM_ACD"
+[ "$RC" = 0 ] && pass "hook exits 0 with XDG_CONFIG_HOME set" || fail "rc=$RC with XDG_CONFIG_HOME"
+[ -f "$CUSTOM_ACD/.operator-xdg" ] && [ "$(cat "$CUSTOM_ACD/.operator-xdg")" = "$CUSTOM_XDG" ] \
+  && pass "\$ATELIER_CONFIG_DIR/.operator-xdg records \$XDG_CONFIG_HOME" || fail ".operator-xdg content mismatch: $(cat "$CUSTOM_ACD/.operator-xdg" 2>/dev/null)"
+grep -q "export ATELIER_ORIGINAL_XDG_CONFIG_HOME=\"$CUSTOM_XDG\"" "$EF_XDG" \
+  && pass "\$CLAUDE_ENV_FILE exports ATELIER_ORIGINAL_XDG_CONFIG_HOME" || fail "env file missing export: $(cat "$EF_XDG")"
+grep -q "export PATH=" "$EF_XDG" \
+  && pass "\$CLAUDE_ENV_FILE still exports PATH" || fail "env file missing PATH export"
+
+# Fallback when ATELIER_CONFIG_DIR is unset: writes to $HOME/.claude-work/.operator-xdg
+EF_FALLBACK="$TMP/env-xdg-fallback"; : > "$EF_FALLBACK"
+FALLBACK_XDG="$TMP/custom-xdg-fallback"
+hook "$EF_FALLBACK" "$PROOT" "$RT" "XDG_CONFIG_HOME=$FALLBACK_XDG"
+[ -f "$HOME_DIR/.claude-work/.operator-xdg" ] && [ "$(cat "$HOME_DIR/.claude-work/.operator-xdg")" = "$FALLBACK_XDG" ] \
+  && pass "unset ATELIER_CONFIG_DIR falls back to \$HOME/.claude-work/.operator-xdg" || fail "fallback .operator-xdg missing: $(cat "$HOME_DIR/.claude-work/.operator-xdg" 2>/dev/null)"
+grep -q "export ATELIER_ORIGINAL_XDG_CONFIG_HOME=\"$FALLBACK_XDG\"" "$EF_FALLBACK" \
+  && pass "fallback env file exports ATELIER_ORIGINAL_XDG_CONFIG_HOME" || fail "fallback env file missing export"
+
+# When XDG_CONFIG_HOME is empty/unset: no export and no .operator-xdg written
+EF_NO_XDG="$TMP/env-no-xdg"; : > "$EF_NO_XDG"
+EMPTY_ACD="$TMP/empty-acd"
+hook "$EF_NO_XDG" "$PROOT" "$RT" "ATELIER_CONFIG_DIR=$EMPTY_ACD"
+[ ! -f "$EMPTY_ACD/.operator-xdg" ] \
+  && pass "unset XDG_CONFIG_HOME does not create .operator-xdg" || fail ".operator-xdg created unexpectedly"
+! grep -q "ATELIER_ORIGINAL_XDG_CONFIG_HOME" "$EF_NO_XDG" \
+  && pass "unset XDG_CONFIG_HOME does not write ATELIER_ORIGINAL_XDG_CONFIG_HOME to env file" || fail "env file has unexpected export"
 
 # --- hooks.json wiring ---
 jq -e '[.hooks.SessionStart[]?.hooks[]?.command | select(. != null) | test("gh-shim-path\\.sh")] | any' "$HOOKS_JSON" >/dev/null 2>&1 \
