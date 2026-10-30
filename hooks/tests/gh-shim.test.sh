@@ -15,7 +15,7 @@
 
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." && pwd)"
 SHIM_SRC="$REPO_ROOT/scripts/shims"
 
 TMP="$(cd -P "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$TMP"' EXIT
@@ -128,6 +128,15 @@ bash -n "$SHIM_SRC/gh" && pass "bash -n scripts/shims/gh" || fail "bash -n scrip
 echo "== refused under a personal identity =="
 blocked "pr review"                personal 'gh pr review 1 --approve'
 blocked "pr comment"               personal 'gh pr comment 1 -b hi'
+blocked "pr close --comment"       personal 'gh pr close 1 --comment "done"'
+blocked "pr close -c"              personal 'gh pr close 1 -c "done"'
+blocked "pr reopen --comment"      personal 'gh pr reopen 1 --comment "reopen"'
+blocked "issue comment"            personal 'gh issue comment 3 -b hi'
+blocked "issue close --comment"    personal 'gh issue close 3 --comment "done"'
+blocked "issue close -c"           personal 'gh issue close 3 -c "done"'
+blocked "issue reopen -c"          personal 'gh issue reopen 3 -c "reopen"'
+blocked "extension exec"           personal 'gh extension exec foo'
+blocked "ext exec"                 personal 'gh ext exec foo'
 blocked "pr -R o/r review"         personal 'gh pr -R o/r review 1'
 blocked "issue comment"            personal 'gh issue comment 3 -b hi'
 blocked "auth token"               personal 'gh auth token'
@@ -264,6 +273,14 @@ blocked "passwd lookup fails: symlinked author still blocked via intact HOME" no
   PATH="$FAILSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYM" GH_CONFIG_DIR="$SYM/gh/author"
 blocked "passwd lookup fails: symlinked author still blocked via XDG_CONFIG_HOME" none 'gh pr review 1 --approve' \
   PATH="$FAILSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYMX" GH_CONFIG_DIR="$SYMX/gh/author" XDG_CONFIG_HOME="$XDGH"
+blocked "symlinked author + inline XDG_CONFIG_HOME=<other> (ATELIER_ORIGINAL_XDG_CONFIG_HOME set)" none \
+  "XDG_CONFIG_HOME='$TMP/other' gh pr review 1 --approve" \
+  PATH="$FAILSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYMX" GH_CONFIG_DIR="$SYMX/gh/author" ATELIER_ORIGINAL_XDG_CONFIG_HOME="$XDGH"
+printf '%s\n' "$XDGH" > "$SYMX/.operator-xdg"
+blocked "symlinked author + inline XDG_CONFIG_HOME=<other> (.operator-xdg set)" none \
+  "XDG_CONFIG_HOME='$TMP/other' gh pr review 1 --approve" \
+  PATH="$FAILSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYMX" GH_CONFIG_DIR="$SYMX/gh/author"
+rm -f "$SYMX/.operator-xdg"
 passes "passwd lookup fails + inline HOME=/nonexistent: fail-open for the passwd candidate only (pinned)" none \
   'HOME=/nonexistent gh pr review 1 --approve' $'ARG[pr]\nARG[review]\nARG[1]\nARG[--approve]' \
   PATH="$FAILSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYM" GH_CONFIG_DIR="$SYM/gh/author"
@@ -291,7 +308,18 @@ done
 passes "author: pr comment"  author   'gh pr comment 1 -b hi' $'ARG[pr]\nARG[comment]\nARG[1]\nARG[-b]\nARG[hi]'
 passes "author: graphql review" author "gh api graphql -f query='mutation{addPullRequestReview(input:{})}'" $'ARG[api]\nARG[graphql]\nARG[-f]\nARG[query=mutation{addPullRequestReview(input:{})}]'
 passes "personal: pr view"   personal 'gh pr view 1'   $'ARG[pr]\nARG[view]\nARG[1]'
+passes "personal: pr close without comment" personal 'gh pr close 1' $'ARG[pr]\nARG[close]\nARG[1]'
 passes "personal: issue list" personal 'gh issue list'  $'ARG[issue]\nARG[list]'
+passes "personal: issue close without comment" personal 'gh issue close 2' $'ARG[issue]\nARG[close]\nARG[2]'
+passes "personal: pr status -c" personal 'gh pr status -c' $'ARG[pr]\nARG[status]\nARG[-c]'
+passes "personal: extension list" personal 'gh extension list' $'ARG[extension]\nARG[list]'
+passes "personal: ext list" personal 'gh ext list' $'ARG[ext]\nARG[list]'
+passes "personal: version" personal 'gh version' $'ARG[version]'
+passes "personal: ext (no args)" personal 'gh ext' $'ARG[ext]'
+passes "author: pr close --comment" author 'gh pr close 1 --comment done' $'ARG[pr]\nARG[close]\nARG[1]\nARG[--comment]\nARG[done]'
+passes "author: issue close -c" author 'gh issue close 2 -c done' $'ARG[issue]\nARG[close]\nARG[2]\nARG[-c]\nARG[done]'
+passes "author: extension exec" author 'gh extension exec foo' $'ARG[extension]\nARG[exec]\nARG[foo]'
+passes "author: ext exec" author 'gh ext exec foo' $'ARG[ext]\nARG[exec]\nARG[foo]'
 passes "none: pr view"       none     'gh pr view 1'   $'ARG[pr]\nARG[view]\nARG[1]'
 passes "personal: project item-edit" personal 'gh project item-edit --id X' $'ARG[project]\nARG[item-edit]\nARG[--id]\nARG[X]'
 passes "token env: project item-edit" none 'gh project item-edit --id X' $'ARG[project]\nARG[item-edit]\nARG[--id]\nARG[X]' GH_TOKEN=tok

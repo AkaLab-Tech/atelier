@@ -20,7 +20,7 @@
 # shellcheck disable=SC2016  # single quotes are intentional: the hook must see the literal $HOME / $(...) text
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." && pwd)"
 HOOK="$REPO_ROOT/hooks/block-operator-gh-identity.sh"
 
 TMP="$(mktemp -d)"
@@ -29,9 +29,11 @@ trap 'rm -rf "$TMP"' EXIT
 T_HOME="$TMP/home"
 ACD="$TMP/acd"
 BIN="$TMP/bin"
-mkdir -p "$T_HOME/.config/gh" "$ACD/gh/author" "$ACD/gh/reviewer" "$BIN" "$TMP/logs" "$TMP/work"
+ORIG_XDG="$TMP/orig-xdg"
+mkdir -p "$T_HOME/.config/gh" "$ACD/gh/author" "$ACD/gh/reviewer" "$BIN" "$TMP/logs" "$TMP/work" "$ORIG_XDG/gh"
 ln -s "$T_HOME/.config/gh" "$TMP/link-personal"
 ln -s "$ACD/gh/author" "$TMP/link-author"
+ln -s "$ORIG_XDG/gh" "$TMP/link-orig-xdg"
 printf '#!/bin/sh\necho "fake gh must never be called" >&2\nexit 97\n' >"$BIN/gh"
 chmod +x "$BIN/gh"
 
@@ -49,7 +51,7 @@ run_hook() {
   payload="$(jq -cn --arg c "$command_str" '{tool_name:"Bash", tool_input:{command:$c}}')"
   (
     cd "$TMP/work" || exit 99
-    env -u GH_CONFIG_DIR -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u XDG_CONFIG_HOME \
+    env -u GH_CONFIG_DIR -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u XDG_CONFIG_HOME -u ATELIER_ORIGINAL_XDG_CONFIG_HOME \
       HOME="$T_HOME" ATELIER_CONFIG_DIR="$ACD" \
       CLAUDE_PLUGIN_ROOT="$REPO_ROOT" CLAUDE_PROJECT_DIR="$TMP/logs" \
       PATH="$BIN:$PATH" "$@" \
@@ -113,6 +115,15 @@ done
 echo "== gh pr review / comment under non-atelier identity =="
 assert_block "gh pr review --comment personal"   'gh pr review 1 --comment --body x'
 assert_block "gh pr review --request-changes"    'gh pr review 1 --request-changes --body x'
+assert_block "gh pr close --comment personal"    'gh pr close 1 --comment "closing"'
+assert_block "gh pr close -c personal"           'gh pr close 1 -c "closing"'
+assert_block "gh pr close -c=x personal"         'gh pr close 1 -c=closing'
+assert_block "gh pr reopen --comment personal"   'gh pr reopen 1 --comment "reopening"'
+assert_block "gh issue close --comment personal" 'gh issue close 2 --comment "done"'
+assert_block "gh issue close -c personal"        'gh issue close 2 -c "fixed"'
+assert_block "gh issue reopen -c personal"       'gh issue reopen 2 -c "reopening"'
+assert_block "gh extension exec personal"        'gh extension exec foo'
+assert_block "gh ext exec personal"              'gh ext exec foo'
 
 echo "== gh api REST review/comment endpoints =="
 export_author="GH_CONFIG_DIR=$PERSONAL"
@@ -176,6 +187,34 @@ assert_block "osascript Chrome javascript"       "osascript -e 'tell application
 assert_block "osascript Chrome github.com"       "osascript -e 'tell application \"Google Chrome\" to open location \"https://github.com\"'"
 assert_block "osascript Safari"                  "osascript -e 'tell application \"Safari\" to do JavaScript \"1\" in document 1'"
 
+echo "== original XDG config directory enforcement (#624) =="
+assert_block "GH_CONFIG_DIR matches ATELIER_ORIGINAL_XDG_CONFIG_HOME" \
+  "GH_CONFIG_DIR=$ORIG_XDG/gh gh pr review 1 --approve" \
+  "ATELIER_ORIGINAL_XDG_CONFIG_HOME=$ORIG_XDG"
+assert_block "GH_CONFIG_DIR matches ATELIER_ORIGINAL_XDG_CONFIG_HOME for pr comment" \
+  "GH_CONFIG_DIR=$ORIG_XDG/gh gh pr comment 1 -b hi" \
+  "ATELIER_ORIGINAL_XDG_CONFIG_HOME=$ORIG_XDG"
+assert_block "GH_CONFIG_DIR matches ATELIER_ORIGINAL_XDG_CONFIG_HOME for pr close --comment" \
+  "GH_CONFIG_DIR=$ORIG_XDG/gh gh pr close 1 -c done" \
+  "ATELIER_ORIGINAL_XDG_CONFIG_HOME=$ORIG_XDG"
+assert_block "GH_CONFIG_DIR matches ATELIER_ORIGINAL_XDG_CONFIG_HOME for extension exec" \
+  "GH_CONFIG_DIR=$ORIG_XDG/gh gh extension exec foo" \
+  "ATELIER_ORIGINAL_XDG_CONFIG_HOME=$ORIG_XDG"
+assert_block "symlink to original XDG blocked via ATELIER_ORIGINAL_XDG_CONFIG_HOME" \
+  "GH_CONFIG_DIR=$TMP/link-orig-xdg gh pr review 1 --approve" \
+  "ATELIER_ORIGINAL_XDG_CONFIG_HOME=$ORIG_XDG"
+assert_block "credential grab from ATELIER_ORIGINAL_XDG_CONFIG_HOME" \
+  "cat $ORIG_XDG/gh/hosts.yml" \
+  "ATELIER_ORIGINAL_XDG_CONFIG_HOME=$ORIG_XDG"
+
+# With .operator-xdg file written in $ACD
+printf '%s\n' "$ORIG_XDG" > "$ACD/.operator-xdg"
+assert_block "GH_CONFIG_DIR matches .operator-xdg file" \
+  "GH_CONFIG_DIR=$ORIG_XDG/gh gh pr review 1 --approve"
+assert_block "credential grab blocked via .operator-xdg file" \
+  "cat $ORIG_XDG/gh/hosts.yml"
+rm -f "$ACD/.operator-xdg"
+
 echo "== legitimate shapes pass =="
 assert_allow "author gh pr comment"              'gh pr comment 1 -b hi' GH_CONFIG_DIR="$AUTHOR"
 assert_allow "author gh pr review --comment"     'gh pr review 1 --comment --body x' GH_CONFIG_DIR="$AUTHOR"
@@ -191,6 +230,16 @@ assert_allow "symlink resolving to author"       "GH_CONFIG_DIR=$TMP/link-author
 assert_allow "author REST POST review"           'gh api -X POST repos/o/r/pulls/1/reviews -f body=x' GH_CONFIG_DIR="$AUTHOR"
 assert_allow "reviewer graphql review mutation"  "GH_CONFIG_DIR=$REVIEWER gh api graphql -f query='mutation { addPullRequestReview(input:{}) { clientMutationId } }'"
 assert_allow "reads: gh pr view personal"        'gh pr view 1'
+assert_allow "reads: gh pr close without comment" 'gh pr close 1'
+assert_allow "reads: gh issue close without comment" 'gh issue close 2'
+assert_allow "extension list personal"          'gh extension list'
+assert_allow "ext list personal"                'gh ext list'
+assert_allow "author pr close --comment"        'gh pr close 1 --comment "done"' GH_CONFIG_DIR="$AUTHOR"
+assert_allow "author issue close -c"            'gh issue close 2 -c "done"' GH_CONFIG_DIR="$AUTHOR"
+assert_allow "author extension exec"            'gh extension exec foo' GH_CONFIG_DIR="$AUTHOR"
+assert_allow "author ext exec"                  'gh ext exec foo' GH_CONFIG_DIR="$AUTHOR"
+assert_allow "author allowed with ATELIER_ORIGINAL_XDG_CONFIG_HOME set" \
+  'gh pr review 1 --approve' GH_CONFIG_DIR="$AUTHOR" "ATELIER_ORIGINAL_XDG_CONFIG_HOME=$ORIG_XDG"
 assert_allow "reads: gh pr view author"          'gh pr view 1' GH_CONFIG_DIR="$AUTHOR"
 assert_allow "reads: gh pr view reviewer"        "GH_CONFIG_DIR=$REVIEWER gh pr view 1"
 assert_allow "reads: gh pr list token"           'GH_TOKEN=abc gh pr list'

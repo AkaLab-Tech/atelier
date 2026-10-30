@@ -208,6 +208,22 @@ identity_allowed() { # value of the effective GH_CONFIG_DIR
       return 1
     fi
   fi
+  local orig_xdg="${ATELIER_ORIGINAL_XDG_CONFIG_HOME:-}"
+  if [ -z "$orig_xdg" ]; then
+    if [ -f "$ACD/.operator-xdg" ]; then
+      orig_xdg="$(head -n 1 "$ACD/.operator-xdg" 2>/dev/null || true)"
+    elif [ -f "$HOME_DIR/.claude-work/.operator-xdg" ]; then
+      orig_xdg="$(head -n 1 "$HOME_DIR/.claude-work/.operator-xdg" 2>/dev/null || true)"
+    fi
+  fi
+  if [ -n "$orig_xdg" ]; then
+    local po
+    po="$(canon "$orig_xdg/gh")"
+    if [ "$cv" = "$po" ]; then
+      IDENT_WHY="GH_CONFIG_DIR resolves to the operator's personal gh config ($po)"
+      return 1
+    fi
+  fi
   aa="$(canon "$ACD/gh/author")"
   ar="$(canon "$ACD/gh/reviewer")"
   if [ "$cv" = "$aa" ] || [ "$cv" = "$ar" ]; then
@@ -277,12 +293,23 @@ is_personal_cfg_path() {
   if [ -n "$x" ]; then
     case "$t" in "$x"/gh|"$x"/gh/*) return 0 ;; esac
   fi
+  local ox="${ATELIER_ORIGINAL_XDG_CONFIG_HOME:-}"
+  if [ -z "$ox" ]; then
+    if [ -f "$ACD/.operator-xdg" ]; then
+      ox="$(head -n 1 "$ACD/.operator-xdg" 2>/dev/null || true)"
+    elif [ -f "$HOME_DIR/.claude-work/.operator-xdg" ]; then
+      ox="$(head -n 1 "$HOME_DIR/.claude-work/.operator-xdg" 2>/dev/null || true)"
+    fi
+  fi
+  if [ -n "$ox" ]; then
+    case "$t" in "$ox"/gh|"$ox"/gh/*) return 0 ;; esac
+  fi
   return 1
 }
 
 analyze_gh() { # args after `gh` live in GH_ARGS
   local a prev_kind="" p1="" p2="" seen_api=0 endpoint="" method="" fields=0
-  local unverifiable=0 show_token=0 alltext lc
+  local unverifiable=0 show_token=0 has_comment=0 alltext lc
   for a in ${GH_ARGS[@]+"${GH_ARGS[@]}"}; do
     if [ -n "$prev_kind" ]; then
       case "$prev_kind" in
@@ -302,7 +329,13 @@ analyze_gh() { # args after `gh` live in GH_ARGS
       --field=*|--raw-field=*) fields=1; case "${a#*=}" in query=@*) unverifiable=1 ;; esac ;;
       -f?*|-F?*) fields=1; case "${a:2}" in query=@*) unverifiable=1 ;; esac ;;
       --show-token|-t) show_token=1 ;;
+      --comment|--comment=*) has_comment=1 ;;
       -H|--header|-q|--jq|--template|--cache|--hostname|-p|--preview|-R|--repo|-b|--body) prev_kind="other" ;;
+      -[!-]*)
+        case "$a" in
+          *c*) has_comment=1 ;;
+        esac
+        ;;
       -*) : ;;
       *)
         if [ -z "$p1" ]; then p1="$a"
@@ -322,6 +355,12 @@ analyze_gh() { # args after `gh` live in GH_ARGS
   case "$p1/$p2" in
     pr/review|pr/comment)
       check_identity "gh pr $p2" ;;
+    pr/close|pr/reopen|issue/close|issue/reopen)
+      if [ "$has_comment" -eq 1 ]; then
+        check_identity "gh $p1 $p2 --comment"
+      fi ;;
+    extension/exec|ext/exec)
+      check_identity "gh $p1 exec" ;;
     auth/token)
       check_exfil_identity "gh auth token" ;;
     auth/status)

@@ -60,10 +60,18 @@ is_atelier_identity() {
   # Lookup failure only drops the passwd-home candidate; the $HOME / XDG ones still apply.
   local pw
   pw="$(passwd_home)"
-  for c in "$HOME/.config/gh" "${XDG_CONFIG_HOME:+$XDG_CONFIG_HOME/gh}" "${pw:+$pw/.config/gh}"; do
+  acd="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+  local orig_xdg="${ATELIER_ORIGINAL_XDG_CONFIG_HOME:-}"
+  if [ -z "$orig_xdg" ]; then
+    if [ -f "$acd/.operator-xdg" ]; then
+      orig_xdg="$(head -n 1 "$acd/.operator-xdg" 2>/dev/null || true)"
+    elif [ -f "$HOME/.claude-work/.operator-xdg" ]; then
+      orig_xdg="$(head -n 1 "$HOME/.claude-work/.operator-xdg" 2>/dev/null || true)"
+    fi
+  fi
+  for c in "$HOME/.config/gh" "${XDG_CONFIG_HOME:+$XDG_CONFIG_HOME/gh}" "${orig_xdg:+$orig_xdg/gh}" "${pw:+$pw/.config/gh}"; do
     [ -n "$c" ] && [ "$cur" = "$(canon_dir "$c")" ] && return 1
   done
-  acd="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
   for c in "$acd/gh/author" "$acd/gh/reviewer"; do
     [ "$cur" = "$(canon_dir "$c")" ] && return 0
   done
@@ -103,7 +111,7 @@ classify() {
   # equal to review/comment/token counts. Trade-off: a flag value literally
   # equal to one of them is refused under a non-atelier identity (fail
   # closed); the atelier identities never reach this code.
-  local a skip=0 group="" w has_status=0
+  local a skip=0 group="" w has_status=0 subcmd="" has_comment=0
   for a in "$@"; do
     if [ -z "$group" ]; then
       if [ "$skip" = 1 ]; then skip=0; continue; fi
@@ -116,10 +124,36 @@ classify() {
     fi
     w="$a"
     case "$group" in
-      pr)
-        case "$w" in review|comment) REASON="gh pr $w posts as the active identity"; return 0 ;; esac ;;
-      issue)
-        if [ "$w" = comment ]; then REASON="gh issue comment posts as the active identity"; return 0; fi ;;
+      pr|issue)
+        case "$w" in
+          review)
+            if [ "$group" = pr ]; then
+              REASON="gh pr review posts as the active identity"; return 0
+            fi
+            ;;
+          comment)
+            REASON="gh $group comment posts as the active identity"; return 0
+            ;;
+          close|reopen)
+            subcmd="$w"
+            ;;
+        esac
+        case "$w" in
+          --comment|--comment=*) has_comment=1 ;;
+          --*) ;;
+          -[!-]*)
+            case "$w" in
+              *c*) has_comment=1 ;;
+            esac
+            ;;
+        esac
+        ;;
+      extension|ext)
+        if [ "$w" = exec ]; then
+          REASON="gh $group exec runs an extension as the active identity"
+          return 0
+        fi
+        ;;
       auth)
         if [ "$w" = token ]; then REASON="gh auth token reveals a credential"; return 0; fi
         if [ "$w" = git-credential ]; then REASON="gh auth git-credential reveals a credential"; return 0; fi
@@ -128,6 +162,12 @@ classify() {
   done
 
   case "$group" in
+    pr|issue)
+      if [ -n "$subcmd" ] && [ "$has_comment" = 1 ]; then
+        REASON="gh $group $subcmd --comment posts as the active identity"
+        return 0
+      fi
+      ;;
     auth)
       if [ "$has_status" = 1 ] && auth_status_shows_token "$@"; then
         REASON="gh auth status --show-token reveals a credential"; return 0
@@ -250,7 +290,7 @@ if ! is_atelier_identity; then
     case "$a" in -R|--repo|--hostname) skip=1 ;; -*) ;; *) first="$a"; break ;; esac
   done
   case "$first" in
-    ""|agent-task|alias|api|attestation|auth|browse|cache|codespace|completion|config|copilot|extension|gist|gpg-key|help|issue|label|licenses|org|pr|preview|project|release|repo|ruleset|run|search|secret|skill|ssh-key|status|variable|workflow) ;;
+    ""|agent-task|alias|api|attestation|auth|browse|cache|codespace|completion|config|copilot|ext|extension|gist|gpg-key|help|issue|label|licenses|org|pr|preview|project|release|repo|ruleset|run|search|secret|skill|ssh-key|status|variable|version|workflow) ;;
     *)
       echo "atelier-gh-shim: BLOCKED gh $first: not a built-in gh command (alias or extension) and the identity is not an atelier one. Fix: run under the session's author identity (inherited GH_CONFIG_DIR=\$ATELIER_CONFIG_DIR/gh/author) or, for reviews, GH_CONFIG_DIR=\"\$ATELIER_CONFIG_DIR/gh/reviewer\"; unset any GH_TOKEN/GITHUB_TOKEN." >&2
       exit 1
