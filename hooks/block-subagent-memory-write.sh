@@ -81,7 +81,7 @@ block() { # reason detail
    Command: ${CUR_SEG_TEXT:0:300}
    Reason:  $1
    Detail:  $2
-   Rule:    PLAN.md §3 & §17 / operator-rules.md — chain subagents never write to the real project memory store; top-level sessions own real-store writes (add, supersede, close, import).
+   Rule:    PLAN.md §3 & §17 / operator-rules.md — chain subagents never write to the real project memory store; top-level sessions own real-store writes (add, supersede, close, import, ingest, verify --apply).
    Action:  For tests, pass an isolated ATELIER_CONFIG_DIR (e.g. ATELIER_CONFIG_DIR="\$(mktemp -d)" or /tmp/...). For real memory capture, report the item in your hand-back so the top-level session records it.
 MSG
   log_decision "$HOOK_NAME" "Bash" "$1" "block" "$2"
@@ -161,13 +161,13 @@ check_write() { # label
 }
 
 analyze_memory() { # args after atelier-memory
-  local a sub="" has_dry=0 end_opts=0 skip_redir=0
+  local a sub="" has_dry=0 has_apply=0 end_opts=0 skip_redir=0
   for a in "$@"; do
     [ "$skip_redir" = 1 ] && { skip_redir=0; continue; }
     [[ "$a" =~ ^([0-9]*>>?|[0-9]*<<?|&>>?)$ ]] && { skip_redir=1; continue; }
     [[ "$a" =~ $REDIR_RE ]] && continue
     if [ "$end_opts" = 0 ]; then
-      case "$a" in --) end_opts=1; continue ;; -h|--help) return 0 ;; --dry-run) has_dry=1 ;; esac
+      case "$a" in --) end_opts=1; continue ;; -h|--help) return 0 ;; --dry-run) has_dry=1 ;; --apply) has_apply=1 ;; esac
     fi
     [ -z "$sub" ] && sub="$a"
   done
@@ -175,8 +175,9 @@ analyze_memory() { # args after atelier-memory
   case "$sub" in *'$'*) expand_cfg "$sub"; sub="$EXP_CFG" ;; esac
   case "$sub" in
     list|show|search|brief|path|render|-h|--help) return 0 ;;
+    verify) [ "$has_apply" = 1 ] && check_write "atelier-memory verify --apply" || return 0 ;;
     import) [ "$has_dry" = 1 ] && return 0; check_write "atelier-memory import" ;;
-    add|supersede|close|*'$'*|*'`'*) check_write "atelier-memory $sub" ;;
+    ingest|add|supersede|close|*'$'*|*'`'*) check_write "atelier-memory $sub" ;;
   esac
 }
 
