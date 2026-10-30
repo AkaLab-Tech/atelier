@@ -3,7 +3,7 @@
 # Regression test for hooks/block-env-read.sh — the PreToolUse(Bash) hook that
 # blocks shell reads / copies / moves / deletes of protected `.env*` files
 # while allowing name-only listing and the .example/.sample/.template/.dist
-# templates (task #605, slice 597e).
+# templates (task #605, slice 597e; task #625).
 #
 # Hermetic: fixtures live in `mktemp -d`; the hook is driven directly with a
 # JSON payload. Assertions use only exit codes, stderr text, log entries and
@@ -188,6 +188,39 @@ expect_allow "git commit -m 'document .env handling'"
 expect_allow "node -e 'console.log(process.env.HOME)'"
 expect_allow "echo import.meta.env.VITE_X"
 expect_allow 'cat README.md'
+
+echo "block-env-read — task #625 compound pipelines"
+expect_block '{ ls .env; } | xargs cat'
+expect_block '(ls .env) | xargs cat'
+expect_allow '{ test -f .env; }'
+expect_allow '(test -f .env)'
+
+echo "block-env-read — task #625 case-insensitive matching"
+expect_block 'cat .ENV'
+expect_block 'cat .Env'
+expect_block 'cat .ENV.local'
+expect_allow 'cat .ENV.example'
+expect_allow 'cat .Env.SAMPLE'
+
+echo "block-env-read — task #625 recursive grep detection"
+expect_block 'grep -r query .'
+expect_block 'grep -rn needle'
+expect_block 'grep -R needle dir/'
+expect_allow 'grep -r --exclude=".env*" query .'
+expect_allow 'grep -r --exclude="*.env*" query .'
+expect_allow 'grep query file.txt'
+
+echo "block-env-read — task #625 runtime --env-file flag"
+expect_allow 'node --env-file=.env index.js'
+expect_allow 'tsx --env-file=.env script.ts'
+expect_block "node -e \"fs.readFileSync('.env')\""
+
+echo "block-env-read — task #625 template copying"
+expect_allow '[ -f .env ] || cp .env.example .env'
+expect_allow 'cp .env.example .env'
+expect_block 'cp .env /tmp/copy'
+expect_block 'cp .env .env.bak'
+expect_block 'cp .env .env.example'
 
 echo "block-env-read — malformed / missing input fails open"
 for raw in '' 'not json' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \
