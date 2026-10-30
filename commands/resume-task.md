@@ -1,7 +1,7 @@
 ---
 description: Continue a task after interruption or unblocking. Auto-detects the resume mode from `IN_PROGRESS.md` state — "interrupted" (active entry, partial progress) vs "blocked-resumed" (entry has the `[BLOCKED]` marker and the GitHub issue has been closed by the operator). Runs the mode-specific cleanup, then hands off to `task-orchestrator`.
 argument-hint: "<task-id> [--yes|-y] [--ignore-live]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(git worktree:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(env:*), Bash(jq:*), Bash(test:*), Bash(gh issue view:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh api graphql:*), Bash(atelier-task-backend:*), Bash(atelier-resolve-base:*), Bash(git fetch:*), Skill, Task, Bash(atelier-subagent-ledger:*)
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(atelier-worktree-create:*), Bash(git worktree:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(env:*), Bash(jq:*), Bash(test:*), Bash(gh issue view:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh api graphql:*), Bash(atelier-task-backend:*), Bash(atelier-resolve-base:*), Bash(git fetch:*), Skill, Task, Bash(atelier-subagent-ledger:*)
 ---
 
 You are running the `/resume-task` slash command. Three distinct entry points lead here — all end with the same orchestrator hand-off, but they require different pre-flight cleanup:
@@ -110,11 +110,11 @@ The board says the task is in progress, but there is no open PR to inherit from 
    ```
    Find the entry whose branch matches `task/<id>-*`.
 
-2. **Worktree found** → the common case (the interruption happened after `/atelier:next-task` step 5 but before its step 8 hand-off, or partway through the specialist chain). Use it as-is; any partial work is preserved. Proceed to step 5 with `resume_mode: interrupted`.
+2. **Worktree found** → the common case (the interruption happened after `/atelier:next-task` step 5 but before its step 8 hand-off, or partway through the specialist chain). Run `atelier-worktree-create --scan-env <worktree>` before dispatching. On exit 1, stop and print the flagged names plus a pointer to the cleanup procedure in `docs/troubleshooting.md`; do not dispatch the orchestrator. Otherwise use it as-is; any partial work is preserved. Proceed to step 5 with `resume_mode: interrupted`.
 
 3. **Worktree not found** (the operator, or a housekeeping sweep, removed it after the interruption) → recreate it exactly the way `/atelier:next-task` step 5 does, cut from the current `origin/<base>`. Resolve `<base>` now (only on this path; resumes that reuse an existing worktree are never blocked): `atelier-resolve-base "$(git rev-parse --show-toplevel)"` (`base=`, `source=`). On a non-zero exit stop and print its `reason=`. Then `git fetch origin <base>`:
    ```bash
-   git wt switch task/<id>-<slug> --from origin/<base>
+   atelier-worktree-create "$MAIN_ROOT" task/<id>-<slug> --from origin/<base>
    ```
    Resolve `<slug>` from the task's title (from `getTask(id)` in step 2), using the same slug convention `/next-task` uses. The recreated worktree starts clean — there is no partial implementation to preserve, so this is effectively attempt 1, same as a task with no prior work. Proceed to step 5 with `resume_mode: interrupted`.
 

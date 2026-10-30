@@ -31,7 +31,7 @@
 #   Group 4 — Step 3b worktree resolve-or-recreate
 #     - looks for the worktree via `git wt list` / `git worktree list --porcelain`
 #     - worktree found -> resume_mode: interrupted, use as-is
-#     - worktree not found -> recreate via `git wt switch task/<id>-<slug> --from origin/<base>`
+#     - worktree not found -> recreate via `atelier-worktree-create "$MAIN_ROOT" task/<id>-<slug> --from origin/<base>`
 #     - never re-issues moveTask (both in step 3b body and Hard refusals)
 #   Group 5 — Step 5 hand-off carries board-interrupted-resume through cleanly
 #     - worktree_path sourced from step 3b for this mode
@@ -144,8 +144,8 @@ chk_prose "$RESUME_TASK" 'git wt list   # or: git worktree list --porcelain' \
 chk_prose "$RESUME_TASK" '**Worktree found** → the common case' \
   "step 3b: worktree-found branch uses it as-is"
 
-chk_prose "$RESUME_TASK" 'git wt switch task/<id>-<slug> --from origin/<base>' \
-  "step 3b: worktree-not-found branch recreates via git wt switch --from origin/<base>"
+chk_prose "$RESUME_TASK" 'atelier-worktree-create "$MAIN_ROOT" task/<id>-<slug> --from origin/<base>' \
+  "step 3b: worktree-not-found branch recreates via atelier-worktree-create --from origin/<base>"
 
 chk_prose "$RESUME_TASK" 'Proceed to step 5 with `resume_mode: interrupted`.' \
   "step 3b: both worktree outcomes proceed with resume_mode: interrupted"

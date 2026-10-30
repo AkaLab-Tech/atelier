@@ -24,6 +24,7 @@
 # Exit: 0 = all assertions passed, 1 = at least one failed.
 
 set -uo pipefail
+unset ATELIER_RUNTIME_DIR
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 UNINSTALL="$REPO_ROOT/scripts/atelier-uninstall"
