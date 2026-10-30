@@ -327,6 +327,117 @@ memtest_assert_isolated   # this call bypasses mem(); guard it explicitly
 [ "$(rc mem add fact --source agent-inferred --title t)" = 2 ] && pass "add without --project exits 2" || fail "add w/o project"
 [ "$(rc mem add fact --project "$PROJ" --source agent-inferred)" = 2 ] && pass "add without --title exits 2" || fail "add w/o title"
 
+# --- missing xxd: exits 2 naming xxd, never mutates or creates DB (#658) ---
+NOXXD="$TMP/noxxd-bin"; mkdir -p "$NOXXD"
+for t in bash env cat sed awk tr dirname basename head readlink jq git sqlite3 mkdir chmod grep date; do
+  p="$(command -v "$t" 2>/dev/null)" && [ -n "$p" ] && ln -sf "$p" "$NOXXD/$t"
+done
+memtest_assert_isolated
+db_cksum_xxd="$(cksum < "$DB")"; n_before_xxd="$(count)"
+xxd_err="$(env PATH="$NOXXD" bash "$MEM" add fact --project "$PROJ" --source agent-inferred --title "no xxd" 2>&1 >/dev/null)"; xxd_rc=$?
+case "$xxd_err" in *xxd*) xxd_msg_ok=1 ;; *) xxd_msg_ok=0 ;; esac
+[ "$xxd_rc" = 2 ] && [ "$xxd_msg_ok" = 1 ] \
+  && pass "missing xxd on add exits 2 with an error naming xxd" \
+  || fail "missing xxd add: rc=$xxd_rc err=$xxd_err"
+[ "$(cksum < "$DB")" = "$db_cksum_xxd" ] && [ "$(count)" = "$n_before_xxd" ] \
+  && pass "missing xxd leaves existing DB byte-identical with the same record count" \
+  || fail "missing xxd modified existing DB"
+NOXXD_FRESH="$TMP/noxxd-fresh"
+ATELIER_CONFIG_DIR="$NOXXD_FRESH" memtest_assert_isolated
+xxd_fresh_err="$(ATELIER_CONFIG_DIR="$NOXXD_FRESH" env PATH="$NOXXD" bash "$MEM" add fact --project "$PROJ" --source agent-inferred --title "no xxd fresh" 2>&1 >/dev/null)"; xxd_fresh_rc=$?
+[ "$xxd_fresh_rc" = 2 ] && [ ! -e "$NOXXD_FRESH" ] \
+  && pass "missing xxd on a fresh ATELIER_CONFIG_DIR exits 2 and creates no directory or DB file" \
+  || fail "missing xxd fresh dir: rc=$xxd_fresh_rc exists=$([ -e "$NOXXD_FRESH" ] && echo yes || echo no) err=$xxd_fresh_err"
+
+# --- WAL side files absent & sqlro fallback (#658) -------------------------
+WAL_CFG="$TMP/wal-cfg"; WAL_DB="$WAL_CFG/atelier/memory.db"
+ATELIER_CONFIG_DIR="$WAL_CFG" memtest_assert_isolated
+wal_id="$(ATELIER_CONFIG_DIR="$WAL_CFG" mem add decision --project "$PROJ" --source agent-inferred --title "WAL decision" --body "wal body term")"
+printf 'PRAGMA wal_checkpoint(TRUNCATE);' | sqlite3 "$WAL_DB" >/dev/null
+rm -f "$WAL_DB-wal" "$WAL_DB-shm"
+wal_ok=1
+wal_list="$(ATELIER_CONFIG_DIR="$WAL_CFG" mem list --project "$PROJ" 2>&1)" || wal_ok=0
+has "$wal_list" "WAL decision" || wal_ok=0
+rm -f "$WAL_DB-wal" "$WAL_DB-shm"
+wal_show="$(ATELIER_CONFIG_DIR="$WAL_CFG" mem show "$wal_id" 2>&1)" || wal_ok=0
+has "$wal_show" "wal body term" || wal_ok=0
+rm -f "$WAL_DB-wal" "$WAL_DB-shm"
+wal_search="$(ATELIER_CONFIG_DIR="$WAL_CFG" mem search wal --project "$PROJ" 2>&1)" || wal_ok=0
+has "$wal_search" "WAL decision" || wal_ok=0
+rm -f "$WAL_DB-wal" "$WAL_DB-shm"
+wal_brief="$(ATELIER_CONFIG_DIR="$WAL_CFG" mem brief --project "$PROJ" 2>&1)" || wal_ok=0
+has "$wal_brief" "WAL decision" || wal_ok=0
+rm -f "$WAL_DB-wal" "$WAL_DB-shm"
+wal_hook="$(PATH="$REPO_ROOT/scripts:$PATH" ATELIER_CONFIG_DIR="$WAL_CFG" CLAUDE_PROJECT_DIR="$PROJ" bash "$REPO_ROOT/hooks/memory-brief.sh" 2>&1)" || wal_ok=0
+has "$wal_hook" "WAL decision" || wal_ok=0
+[ "$wal_ok" = 1 ] \
+  && pass "list/show/search/brief and hooks/memory-brief.sh succeed when -wal/-shm side files are absent" \
+  || fail "read path failed with missing -wal/-shm side files"
+
+# Host probe: if host sqlite3 -readonly fails when -wal/-shm (or -shm) are absent, verify sqlro fallback directly.
+rm -f "$WAL_DB-wal" "$WAL_DB-shm"
+host_ro_fails=""
+if ! printf 'SELECT count(*) FROM records;\n' | sqlite3 -readonly "$WAL_DB" >/dev/null 2>&1; then
+  host_ro_fails="both-absent"
+else
+  : > "$WAL_DB-wal"; rm -f "$WAL_DB-shm"
+  if ! printf 'SELECT count(*) FROM records;\n' | sqlite3 -readonly "$WAL_DB" >/dev/null 2>&1; then
+    host_ro_fails="shm-absent"
+  fi
+fi
+reset_wal_state() {
+  if [ "$host_ro_fails" = "shm-absent" ]; then : > "$WAL_DB-wal"; rm -f "$WAL_DB-shm"; else rm -f "$WAL_DB-wal" "$WAL_DB-shm"; fi
+}
+if [ -n "$host_ro_fails" ]; then
+  h_ok=1
+  reset_wal_state; has "$(ATELIER_CONFIG_DIR="$WAL_CFG" mem list --project "$PROJ" 2>&1)" "WAL decision" || h_ok=0
+  reset_wal_state; has "$(ATELIER_CONFIG_DIR="$WAL_CFG" mem show "$wal_id" 2>&1)" "wal body term" || h_ok=0
+  reset_wal_state; has "$(ATELIER_CONFIG_DIR="$WAL_CFG" mem search wal --project "$PROJ" 2>&1)" "WAL decision" || h_ok=0
+  reset_wal_state; has "$(ATELIER_CONFIG_DIR="$WAL_CFG" mem brief --project "$PROJ" 2>&1)" "WAL decision" || h_ok=0
+  reset_wal_state; has "$(PATH="$REPO_ROOT/scripts:$PATH" ATELIER_CONFIG_DIR="$WAL_CFG" CLAUDE_PROJECT_DIR="$PROJ" bash "$REPO_ROOT/hooks/memory-brief.sh" 2>&1)" "WAL decision" || h_ok=0
+  [ "$h_ok" = 1 ] \
+    && pass "host sqlite3 -readonly failure ($host_ro_fails) recovered via sqlro fallback across list/show/search/brief/hook" \
+    || fail "host sqlite3 -readonly fallback ($host_ro_fails)"
+else
+  echo "  SKIP: host sqlite3 -readonly did not fail on missing -wal/-shm side files (fallback exercised via shim below)"
+fi
+rm -f "$WAL_DB-wal" "$WAL_DB-shm"
+
+# Deterministic shim: force sqlite3 -readonly to fail and verify PRAGMA query_only=ON fallback + no DB creation when missing.
+REAL_SQLITE3="$(command -v sqlite3)"
+ROFAIL_BIN="$TMP/rofail-bin"; mkdir -p "$ROFAIL_BIN"
+cat > "$ROFAIL_BIN/sqlite3" <<EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [ "\$arg" = "-readonly" ]; then
+    echo "Error: unable to open database file" >&2
+    exit 14
+  fi
+done
+exec "$REAL_SQLITE3" "\$@"
+EOF
+chmod +x "$ROFAIL_BIN/sqlite3"
+ATELIER_CONFIG_DIR="$WAL_CFG" memtest_assert_isolated
+fb_ok=1
+has "$(PATH="$ROFAIL_BIN:$PATH" ATELIER_CONFIG_DIR="$WAL_CFG" mem list --project "$PROJ" 2>&1)" "WAL decision" || fb_ok=0
+has "$(PATH="$ROFAIL_BIN:$PATH" ATELIER_CONFIG_DIR="$WAL_CFG" mem show "$wal_id" 2>&1)" "wal body term" || fb_ok=0
+has "$(PATH="$ROFAIL_BIN:$PATH" ATELIER_CONFIG_DIR="$WAL_CFG" mem search wal --project "$PROJ" 2>&1)" "WAL decision" || fb_ok=0
+has "$(PATH="$ROFAIL_BIN:$PATH" ATELIER_CONFIG_DIR="$WAL_CFG" mem brief --project "$PROJ" 2>&1)" "WAL decision" || fb_ok=0
+has "$(PATH="$ROFAIL_BIN:$REPO_ROOT/scripts:$PATH" ATELIER_CONFIG_DIR="$WAL_CFG" CLAUDE_PROJECT_DIR="$PROJ" bash "$REPO_ROOT/hooks/memory-brief.sh" 2>&1)" "WAL decision" || fb_ok=0
+[ "$fb_ok" = 1 ] \
+  && pass "sqlro PRAGMA query_only=ON fallback serves list/show/search/brief and hooks/memory-brief.sh when sqlite3 -readonly fails" \
+  || fail "sqlro fallback under sqlite3 -readonly failure"
+ROFAIL_EMPTY="$TMP/rofail-empty"
+ATELIER_CONFIG_DIR="$ROFAIL_EMPTY" memtest_assert_isolated
+PATH="$ROFAIL_BIN:$PATH" ATELIER_CONFIG_DIR="$ROFAIL_EMPTY" mem list --project "$PROJ" >/dev/null 2>&1 || true
+PATH="$ROFAIL_BIN:$PATH" ATELIER_CONFIG_DIR="$ROFAIL_EMPTY" mem show D-1 >/dev/null 2>&1 || true
+PATH="$ROFAIL_BIN:$PATH" ATELIER_CONFIG_DIR="$ROFAIL_EMPTY" mem search wal --project "$PROJ" >/dev/null 2>&1 || true
+PATH="$ROFAIL_BIN:$PATH" ATELIER_CONFIG_DIR="$ROFAIL_EMPTY" mem brief --project "$PROJ" >/dev/null 2>&1 || true
+PATH="$ROFAIL_BIN:$REPO_ROOT/scripts:$PATH" ATELIER_CONFIG_DIR="$ROFAIL_EMPTY" CLAUDE_PROJECT_DIR="$PROJ" bash "$REPO_ROOT/hooks/memory-brief.sh" >/dev/null 2>&1 || true
+[ ! -e "$ROFAIL_EMPTY" ] \
+  && pass "sqlro fallback never creates a missing DB or config directory" \
+  || fail "sqlro fallback created $ROFAIL_EMPTY"
+
 # --- empty vs unset ATELIER_CONFIG_DIR (#666) ------------------------------
 EMPTY_HOME="$TMP/empty-home"; mkdir -p "$EMPTY_HOME"
 [ "$(ATELIER_CONFIG_DIR="" HOME="$EMPTY_HOME" rc bash "$MEM" --help)" = 0 ] \
