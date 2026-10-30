@@ -384,6 +384,7 @@ Capture each item **when it comes up**, not at the end of the session:
   as `$(mktemp -d)` or `/tmp/...`).
 - To load Claude Code's own per-project memory files, run
   `atelier-memory import --dry-run`, then `atelier-memory import`.
+- The Obsidian vault at `~/Atelier/` is a regenerated read-only render of `memory.db`; do not edit generated files directly. The inbox folder (`Inbox/` or `Entrada/`) is the operator's input for drafts and notes to capture.
 
 ### Gate runs and sandbox/classifier denials
 

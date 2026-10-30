@@ -174,7 +174,7 @@ analyze_memory() { # args after atelier-memory
   [ -z "$sub" ] && return 0
   case "$sub" in *'$'*) expand_cfg "$sub"; sub="$EXP_CFG" ;; esac
   case "$sub" in
-    list|show|search|brief|path|-h|--help) return 0 ;;
+    list|show|search|brief|path|render|-h|--help) return 0 ;;
     import) [ "$has_dry" = 1 ] && return 0; check_write "atelier-memory import" ;;
     add|supersede|close|*'$'*|*'`'*) check_write "atelier-memory $sub" ;;
   esac

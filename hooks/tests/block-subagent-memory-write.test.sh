@@ -144,6 +144,8 @@ assert_allow "subagent show"   "sub-1" "implementer" 'atelier-memory show D-1'
 assert_allow "subagent search" "sub-1" "implementer" 'atelier-memory search foo --project .'
 assert_allow "subagent brief"  "sub-1" "implementer" 'atelier-memory brief --project .'
 assert_allow "subagent path"   "sub-1" "implementer" 'atelier-memory path'
+assert_allow "subagent render" "sub-1" "implementer" 'atelier-memory render'
+assert_allow "subagent render --full" "sub-1" "implementer" 'atelier-memory render --full'
 assert_allow "subagent --help" "sub-1" "implementer" 'atelier-memory --help'
 assert_allow "subagent import --dry-run" "sub-1" "implementer" 'atelier-memory import --dry-run --project .'
 
