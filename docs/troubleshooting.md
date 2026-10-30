@@ -228,6 +228,7 @@ To check whether auto-mode is currently active, inside any atelier session: `/st
 
 **Cause:** One of the M2.4 PreToolUse hooks intercepted the operation:
 - `block-env-commit` — refuses any commit that touches `.env*` files.
+- `block-env-read` (#597e) — refuses shell commands that read, copy, move, delete or touch the contents of a protected `.env*` file (covers `.envrc`; `.env.example` stays viewable via shell while the Read tool denies it #597d).
 - `scan-edit-write` — refuses an edit/write whose content matches a sensitive-pattern catalog.
 - `scan-git-add` — refuses a `git add` that stages a `.env*` file.
 - `safe-package-change` — refuses a `pnpm add/install/update` for a too-new package or unauthorized post-install scripts.
@@ -243,6 +244,35 @@ To check whether auto-mode is currently active, inside any atelier session: `/st
 **Cause:** Per-task worktree isolation (#196a) is enforced categorically, not by the (necessarily shared) `settings.json` `Edit`/`Write` glob — every sibling task's worktree lives under the same `<worktree>-worktrees/**` parent, so no static permission pattern can express "this task's worktree only". Instead, `hooks/block-cross-worktree-edit.sh` lets a session self-claim a worktree the first time it writes into it, and denies that session from also writing into a **different**, freshly-claimed worktree belonging to someone else — most often because you (or a parallel `/atelier:next-task` / `/atelier:babysit-prs` run) are mid-task in worktree A and something in the same session tried to also edit worktree B.
 
 **Fix:** This is almost always working as intended — finish or hand off the worktree you already own before touching the other one. In the common case (a session that finished normally — its top-level turn ended and control returned to you) its claims are already released by a `Stop` hook the moment that happens, so re-running the edit a moment later usually just works. If the other worktree's owning session crashed or was killed mid-turn (so `Stop` never fired) and you don't want to wait, the claim also ages out on its own after `ownerTtlSeconds` in that worktree's `.atelier.json` (default 43200s / 12h) — a claim that old is reclaimed automatically by the next session that touches it; an actively-used claim's mtime is refreshed on every accepted write from its owner, so an active task chain never ages out from under itself. There's no in-session override; a deliberate cross-worktree edit is the operator's own call, made manually outside Claude Code. Inspect `<worktree>/.task-log/hook-decisions.jsonl` for `"hook":"block-cross-worktree-edit"` lines to see exactly which worktree collided and when, and which `token-source` (`bridge-env`/`payload-session-id`/`transcript-parent-dir`) the deciding session resolved — `atelier-doctor` also reports whether the current session has the strong `bridge-env` source available.
+
+### Production/staging env files inside task worktrees
+
+**Symptom:** `atelier-doctor` reports `! task worktree contains prod/stage env file: <project> · <worktree> · <file>`.
+
+**Cause:** A task worktree was created with or contains copies of production or staging environment files (`.env.prod*`, `.env.production*`, `.env.stage*`, `.env.staging*`). Task worktrees must never hold production or staging credentials: tasks run against development or local environments only (PLAN.md §3).
+
+**Operator cleanup procedure:**
+> [!IMPORTANT]
+> Run this procedure in your own terminal, not through an agent. Agents are deliberately blocked from deleting `.env*` files by `hooks/block-env-read.sh`.
+
+1. **List affected files by name only:** Run `atelier-doctor`, or for each registered project path `P`:
+   ```bash
+   git -C "$P" worktree list --porcelain | awk '/^worktree /{print $2}' | while read -r w; do [ "$w" = "$P" ] && continue; find "$w" -maxdepth 1 -name '.env*' -print; done; find "$P-worktrees" -maxdepth 2 -name '.env*' -print 2>/dev/null
+   ```
+   (This prints paths only).
+2. **Remove prod/stage copies:** Remove prod/stage copies (`.env.prod*`, `.env.production*`, `.env.stage*`, `.env.staging*`) from each listed task worktree with `rm <path>`. Never touch the main checkout's own files.
+3. **Optional exposure check by name:**
+   ```bash
+   grep -l -E '\.env\.(prod|production|stage|staging)' ~/.claude-work/projects/*/*.jsonl
+   ```
+   lists transcripts that mention those names without printing content. Rotating credentials is the operator's call.
+4. **Re-run `atelier-doctor`** and confirm no hits.
+
+**Configuring allowed worktree env files (`worktreeEnvFiles`):**
+When `atelier-worktree-create` provisions a task worktree, it copies only the env files declared in `.atelier.json` under `worktreeEnvFiles`. By default, this is `[".env.local"]`. Projects relying on other development env files must declare them explicitly. Production and staging env files (`.env.prod*`, `.env.production*`, `.env.stage*`, `.env.staging*`) are rejected by `atelier-worktree-create` even if declared.
+
+**Read protection (`hooks/block-env-read.sh`):**
+`hooks/block-env-read.sh` (#597e) intercepts Bash commands and blocks commands that read, copy, move, delete or otherwise touch the contents of a protected `.env*` file (including `.env`, `.env.local`, and `.envrc`). It allows name-only operations (`ls`, `test`, `[`, `[[`, `find` without `-exec`/`-delete`, `git status`, `git check-ignore`). Non-secret template files such as `.env.example`, `.env.sample`, `.env.template`, and `.env.dist` stay viewable through the shell (e.g. `cat .env.example`), while the Claude Code `Read` tool denies `./.env*` across the board (#597d).
 
 ### A command is blocked by `block-operator-gh-identity` / `block-operator-browser-github` (operator GitHub identity guard)
 
