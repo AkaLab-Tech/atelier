@@ -172,6 +172,15 @@
         ]
       },
       {
+        "matcher": "mcp__github__.*|mcp__plugin_.*github.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/block-github-mcp-write.sh"
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {

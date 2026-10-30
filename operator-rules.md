@@ -216,9 +216,13 @@ review, approval, review comment and PR comment an agent posts goes out under
 `$ATELIER_CONFIG_DIR/gh/author` or `gh/reviewer` — never the operator's personal
 `~/.config/gh`, an inherited or inline `GH_TOKEN` / `GITHUB_TOKEN` /
 `GH_ENTERPRISE_TOKEN`, or the operator's logged-in Chrome (agents do not browse
-github.com in Chrome at all; they use `gh`). The `PreToolUse` hooks
-`hooks/block-operator-gh-identity.sh` (Bash) and
-`hooks/block-operator-browser-github.sh` (Claude in Chrome) enforce this
+github.com in Chrome at all; they use `gh`). All GitHub writes must go through
+`gh` CLI commands under AtelierAuthor or AtelierReviewer only; GitHub MCP write
+tools are blocked categorically because GitHub MCP runs authenticated as the
+operator's personal account. The `PreToolUse` hooks
+`hooks/block-operator-gh-identity.sh` (Bash),
+`hooks/block-operator-browser-github.sh` (Claude in Chrome), and
+`hooks/block-github-mcp-write.sh` (GitHub MCP writes, #648) enforce this
 categorically (PLAN.md §3). **Amended by #638 (flagged change to the #544
 "no in-session override" rule, same protective intent):** for an explicit
 allowlist of guards only, the operator can unlock one exact action. The guard
