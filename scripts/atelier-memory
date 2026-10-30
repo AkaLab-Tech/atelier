@@ -35,16 +35,17 @@ set -u
 
 usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; }
 
-CFG="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
-DB="$CFG/atelier/memory.db"
-LATEST_SCHEMA=3
-
 die() { echo "atelier-memory: $*" >&2; exit 2; }
 refuse() { echo "atelier-memory: refused — $*" >&2; exit 3; }
 
 case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 [ $# -ge 1 ] || { usage >&2; exit 2; }
 sub="$1"; shift
+
+[ "${ATELIER_CONFIG_DIR+x}" = x ] && [ -z "$ATELIER_CONFIG_DIR" ] && die "ATELIER_CONFIG_DIR is set but empty"
+CFG="${ATELIER_CONFIG_DIR-$HOME/.claude-work}"
+DB="$CFG/atelier/memory.db"
+LATEST_SCHEMA=3
 
 if [ "$sub" = path ]; then printf '%s\n' "$DB"; exit 0; fi
 
