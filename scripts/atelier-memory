@@ -50,6 +50,7 @@ LATEST_SCHEMA=3
 if [ "$sub" = path ]; then printf '%s\n' "$DB"; exit 0; fi
 
 command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is required"
+command -v xxd >/dev/null 2>&1 || die "xxd is required"
 
 # ---------- SQL helpers ----------
 
@@ -60,7 +61,16 @@ dec() { printf '%s' "$1" | xxd -r -p; }
 
 # SQL comes in on stdin (no argv size limit).
 sqlrun() { sqlite3 -bail -cmd '.timeout 5000' "$DB"; }
-sqlro() { sqlite3 -readonly -bail -cmd '.timeout 5000' "$DB"; }
+sqlro() {
+  [ -f "$DB" ] || return 1
+  local sql out
+  sql="$(cat)"
+  if out="$(printf '%s\n' "$sql" | sqlite3 -readonly -bail -cmd '.timeout 5000' "$DB" 2>/dev/null)"; then
+    [ -z "$out" ] || printf '%s\n' "$out"
+    return 0
+  fi
+  printf 'PRAGMA query_only=ON;\n%s\n' "$sql" | sqlite3 -bail -cmd '.timeout 5000' "$DB"
+}
 
 user_version() { printf 'PRAGMA user_version;' | sqlite3 -cmd '.timeout 5000' "$DB" 2>/dev/null; }
 
