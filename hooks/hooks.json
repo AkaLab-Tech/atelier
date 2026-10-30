@@ -153,6 +153,15 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/block-subagent-memory-write.sh"
+          }
+        ]
+      },
+      {
         "matcher": "mcp__claude-in-chrome__.*|mcp__plugin_.*claude-in-chrome.*",
         "hooks": [
           {

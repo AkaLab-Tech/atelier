@@ -374,6 +374,14 @@ Capture each item **when it comes up**, not at the end of the session:
 - **Writes go only through `atelier-memory`.** Never edit `memory.db` directly and
   never write memory files inside a project repo or worktree. Supersede the old
   record instead of adding a duplicate.
+- **Top-level sessions own real-store writes (#666).** Only the top-level session runs
+  write subcommands (`add`, `supersede`, `close`, `import` without `--dry-run`) against
+  the real store (`$ATELIER_CONFIG_DIR/atelier/memory.db`); chain subagents (`implementer`,
+  `tester`, `e2e-runner`, `docker-runner`, `pr-author`, `pr-opener`, `reviewer`,
+  `unblocker`, `task-orchestrator`, `planner`, `task-decomposer`) never write to the real
+  store unless the task explicitly asks for it (enforced by the `PreToolUse` Bash hook
+  `hooks/block-subagent-memory-write.sh`; tests pass an isolated `ATELIER_CONFIG_DIR` such
+  as `$(mktemp -d)` or `/tmp/...`).
 - To load Claude Code's own per-project memory files, run
   `atelier-memory import --dry-run`, then `atelier-memory import`.
 
