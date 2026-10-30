@@ -51,7 +51,7 @@ empty log file.
 | Attempts | What runs | What happens on failure |
 | --- | --- | --- |
 | **01, 02, 03** | The specialist retries inside the *same* worktree, with all prior `.task-log/*.md` injected as context. | Write attempt log, return `continue`. After attempt 03 fails, the next decision is `reset`. |
-| **(between 03 and 04)** | `git wt rm <branch> --force` (after operator confirmation if the worktree is dirty), then, after `git fetch origin <base>`, `git wt switch <branch> --from origin/<base>` to recreate from the updated base (`<base>` is the orchestrator's `base` when supplied, otherwise `atelier-resolve-base <project_root>`; unresolved → do not reset, surface `reset blocked: base branch unresolved (<reason>)`). Logs survive — they live in `.task-log/`, which is **not** wiped, see below. | N/A — this is a state transition, not an attempt. |
+| **(between 03 and 04)** | `git wt rm <branch> --force` (after operator confirmation if the worktree is dirty), then, after `git fetch origin <base>`, `atelier-worktree-create "<project_root>" <branch> --from origin/<base>` to recreate from the updated base (`<base>` is the orchestrator's `base` when supplied, otherwise `atelier-resolve-base <project_root>`; unresolved → do not reset, surface `reset blocked: base branch unresolved (<reason>)`). Logs survive — they live in `.task-log/`, which is **not** wiped, see below. | N/A — this is a state transition, not an attempt. |
 | **04, 05, 06** | Same specialist retries inside the *fresh* worktree, still seeded with **all** logs (01..03 from the pre-reset attempts + the new ones). | Write attempt log, return `continue`. After attempt 06 fails, the only valid next decision is `hard-stop`. |
 | **07+** | **Forbidden.** The skill refuses to issue any `continue` or `reset` past attempt 06. | Return `hard-stop` and hand off to `unblocker`. |
 
@@ -71,7 +71,7 @@ preference:
 
 1. **Copy out, copy back.** Before `git wt rm`, copy `.task-log/` to a
    temporary location (`/tmp/atelier-task-log-<task-id>/`). After
-   `git wt switch <branch> --from origin/<base>` recreates the worktree, copy it back into the new
+   `atelier-worktree-create "<project_root>" <branch> --from origin/<base>` recreates the worktree, copy it back into the new
    worktree. This is the default — it works for any project layout.
 2. **Commit the logs to the branch.** If the project layout allows it
    (e.g., `.task-log/` is gitignored at the project root but the branch
@@ -220,7 +220,7 @@ Next step:  re-invoke <specialist> with all .task-log/*.md as context.
 Next step:  preserve .task-log/ outside the worktree (copy to
             /tmp/atelier-task-log-<branch>/), then
             `git wt rm <branch> --force`, `git fetch origin <base>` and
-            `git wt switch <branch> --from origin/<base>` to recreate from
+            `atelier-worktree-create "<project_root>" <branch> --from origin/<base>` to recreate from
             the updated base. Restore .task-log/. Then re-invoke
             <specialist>. The new attempt is number 04 / 06.
 </if>

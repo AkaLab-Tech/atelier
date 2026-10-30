@@ -1,7 +1,7 @@
 ---
 description: Cut a version release for a project by delegating the whole author → review → merge coordination to task-orchestrator (non-task PR coordination mode) — the command never authors, reviews, or merges the bump PR from its own turn.
 argument-hint: "[<version>|major|minor|patch] [--project <path>] [--all] [--yes|-y]"
-allowed-tools: Read, Bash(atelier-release resolve:*), Bash(git fetch:*), Bash(git tag:*), Bash(git push origin v*), Bash(git ls-remote:*), Bash(git describe:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git status:*), Bash(git diff:*), Skill, Task, AskUserQuestion
+allowed-tools: Read, Bash(atelier-release resolve:*), Bash(git fetch:*), Bash(atelier-worktree-create:*), Bash(git tag:*), Bash(git push origin v*), Bash(git ls-remote:*), Bash(git describe:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git status:*), Bash(git diff:*), Skill, Task, AskUserQuestion
 ---
 
 You are running the `/atelier:release` slash command. Cut the **next** SemVer release for one project (per [PLAN.md §14](PLAN.md), design decision recorded in §14.9). **This command never authors, reviews, or merges the bump PR from its own turn.** This command delegates the whole author→review→merge coordination to `task-orchestrator` (non-task PR coordination mode); it never dispatches `pr-author`, `reviewer`, or `auto-merge` from its own turn — exactly the way `/atelier:align` delegates its base PR.
@@ -71,7 +71,7 @@ Display a short summary: `current` → `next_version` (`inferred_bump` or the ex
 
 ### 5. Create the release worktree — `git-wt` skill
 
-Invoke the `git-wt` skill (or `git wt switch <branch> --from origin/main` directly, scoped to `<project>`) to create a worktree for branch **`task/release-<next_version>`** — **never** `release/*` or `hotfix/*`. `pr-flow` and the permission matrix ([PLAN.md §3](PLAN.md)) refuse pushes to `release/*` / `hotfix/*` outright (they are treated as protected branches), so the release bump must ride a `task/*`-shaped name to be pushable at all. Capture the absolute worktree path the skill prints — every following step is scoped to it.
+Run `atelier-worktree-create "<project>" <branch> --from origin/main` to create a worktree for branch **`task/release-<next_version>`** — **never** `release/*` or `hotfix/*`. `pr-flow` and the permission matrix ([PLAN.md §3](PLAN.md)) refuse pushes to `release/*` / `hotfix/*` outright (they are treated as protected branches), so the release bump must ride a `task/*`-shaped name to be pushable at all. Capture the absolute worktree path printed on stdout — every following step is scoped to it.
 
 A release has **no** roadmap/board item, so there is no tracking-file move to make in this step — unlike `/atelier:next-task` step 6, this command never edits `ROADMAP.md` / `IN_PROGRESS.md` (or calls `moveTask`) for the release branch.
 
