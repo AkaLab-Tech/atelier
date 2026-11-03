@@ -7,10 +7,12 @@
 #
 # Usage:
 #   atelier-worktree-create <project_root> <branch> --from <ref>
-#   atelier-worktree-create --scan-env <dir>
+#   atelier-worktree-create --scan-env [--depth N] <dir>
 #   atelier-worktree-create --help
 #
 # Create mode prints the worktree path as the LAST stdout line on success.
+# Committed templates (*.example, *.sample, *.template, *.dist) are exempt:
+# never flagged, never block creation.
 # Env files are only ever handled by name (copied with cp, never opened).
 #
 # Exit codes:
@@ -31,24 +33,29 @@ usage() {
   cat <<USAGE
 Usage:
   $SCRIPT_NAME <project_root> <branch> --from <ref>
-  $SCRIPT_NAME --scan-env <dir>
+  $SCRIPT_NAME --scan-env [--depth N] <dir>
   $SCRIPT_NAME --help
 
 Creates a worktree with 'git wt switch <branch> --from <ref> --no-env', then
 copies only the files listed in <project_root>/.atelier.json worktreeEnvFiles
 (default [".env.local"]) from the main checkout. Prod/stage env files
 (.env.prod*, .env.production*, .env.stage*, .env.staging*) are never copied
-and make the command exit 1 if present in the new worktree.
+and make the command exit 1 if present in the new worktree. Committed
+templates (*.example, *.sample, *.template, *.dist) are exempt.
 
 --scan-env <dir> lists prod/stage .env* names directly under <dir> (name-only;
-no file is opened). Exit 0 none, 1 flagged, 2 error.
+no file is opened). With --depth N it also descends up to N levels (pruning
+.git and node_modules) and prints paths relative to <dir>. Exit 0 none,
+1 flagged, 2 error.
 USAGE
 }
 
 # Case-insensitive basename classifier for production/staging env files.
+# Template suffixes match hooks/block-env-read.sh and are never flagged.
 is_prod_stage() {
   local lower
   lower="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  [[ "$lower" =~ \.(example|sample|template|dist)$ ]] && return 1
   [[ "$lower" =~ ^\.env\.(prod|production|stage|staging)([._-].*)?$ ]]
 }
 
@@ -57,16 +64,16 @@ is_valid_env_name() {
 }
 
 scan_env() {
-  local dir="$1" f name flagged=0
+  local dir="$1" depth="${2:-1}" f name flagged=0
   [[ -d "$dir" ]] || die "not a directory: $dir"
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
     name="$(basename "$f")"
     if is_prod_stage "$name"; then
-      printf '%s\n' "$name"
+      printf '%s\n' "${f#"$dir"/}"
       flagged=1
     fi
-  done < <(find "$dir" -maxdepth 1 -iname '.env*' 2>/dev/null | sort) || die "cannot scan $dir"
+  done < <(find "$dir" -maxdepth "$depth" \( -name .git -o -name node_modules \) -prune -o -iname '.env*' -print 2>/dev/null | sort) || die "cannot scan $dir"
   return "$flagged"
 }
 
@@ -74,8 +81,12 @@ main() {
   case "${1:-}" in
     -h|--help) usage; exit 0 ;;
     --scan-env)
+      local depth=1
+      if [[ $# -eq 4 && "$2" == "--depth" && "$3" =~ ^[1-9][0-9]*$ ]]; then
+        depth="$3"; set -- "$1" "$4"
+      fi
       [[ $# -eq 2 ]] || { usage >&2; exit 2; }
-      rc=0; scan_env "$2" || rc=$?
+      rc=0; scan_env "$2" "$depth" || rc=$?
       exit "$rc"
       ;;
   esac

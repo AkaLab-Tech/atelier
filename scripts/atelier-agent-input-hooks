@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+#
+# atelier-agent-input-hooks — read-only detection of enabled plugins whose
+# PreToolUse hooks match the Agent/Task tool and so may rewrite dispatch input
+# (#689). In auto mode Claude Code can refuse such a dispatch once with
+# "a hook changed this call's input".
+#
+# Usage:
+#   atelier-agent-input-hooks detect [--project <root>] [--json]
+#     Effective enabledPlugins = $ATELIER_CONFIG_DIR/settings.json, overridden
+#     by <project>/.claude/settings.json then settings.local.json (project =
+#     --project or $CLAUDE_PROJECT_DIR). Prints one TSV line per matching
+#     PreToolUse entry: plugin_key  name  version  matcher  known  tested
+#     (--json: the same as a JSON array). Nothing and exit 0 when none.
+#   atelier-agent-input-hooks render-block [--plugin-root <path>]
+#     Prints the context-mode subagent routing block, rendered from the
+#     installed copy of context-mode (never vendored). Exit 3 when
+#     context-mode is not enabled/installed, 2 when node or its modules are
+#     unusable.
+#   atelier-agent-input-hooks tested-range
+#     Prints the context-mode version range atelier has verified.
+#
+# Never modifies any plugin file. atelier's own hooks are never listed.
+
+set -euo pipefail
+
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+CONTEXT_MODE_TESTED_MIN="1.0.169"
+CONTEXT_MODE_TESTED_MAX="1.0.169"
+
+die() { echo "atelier-agent-input-hooks: $*" >&2; exit 2; }
+
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+# Numeric per-segment compare: prints -1, 0 or 1 for $1 vs $2.
+vercmp() {
+  local IFS=. i a b
+  local -a x y
+  read -r -a x <<<"${1%%[-+]*}"
+  read -r -a y <<<"${2%%[-+]*}"
+  for ((i = 0; i < ${#x[@]} || i < ${#y[@]}; i++)); do
+    a="${x[i]:-0}"; b="${y[i]:-0}"
+    [[ "$a" =~ ^[0-9]+$ ]] || a=0
+    [[ "$b" =~ ^[0-9]+$ ]] || b=0
+    if ((10#$a < 10#$b)); then echo -1; return; fi
+    if ((10#$a > 10#$b)); then echo 1; return; fi
+  done
+  echo 0
+}
+
+in_tested_range() {
+  [ "$(vercmp "$1" "$CONTEXT_MODE_TESTED_MIN")" -ge 0 ] &&
+    [ "$(vercmp "$1" "$CONTEXT_MODE_TESTED_MAX")" -le 0 ]
+}
+
+# Emits PreToolUse entries (matcher per line) matching Agent/Task for a plugin.
+plugin_matchers() {
+  local root="$1" f docs=() src
+  [ -f "$root/hooks/hooks.json" ] && docs+=("$root/hooks/hooks.json")
+  if [ -f "$root/.claude-plugin/plugin.json" ]; then
+    src="$(jq -c '.hooks // empty' "$root/.claude-plugin/plugin.json")" || return 1
+    if [ -n "$src" ]; then
+      case "$src" in
+        \"*) f="$(jq -r . <<<"$src")"
+             [ -f "$root/$f" ] && docs+=("$root/$f") ;;
+        \{*) printf '%s' "$src" >"$TMP_INLINE"; docs+=("$TMP_INLINE") ;;
+      esac
+    fi
+  fi
+  [ "${#docs[@]}" -gt 0 ] || return 0
+  jq -r '
+    (if (.hooks | type) == "object" then .hooks else . end)
+    | (.PreToolUse // [])[]
+    | (.matcher // "") as $m
+    | select($m == "" or $m == "*" or ("Agent" | test("^(" + $m + ")$")) or ("Task" | test("^(" + $m + ")$")))
+    | (if $m == "" then "@@EMPTY@@" else $m end)' "${docs[@]}"
+}
+
+cmd_detect() {
+  local project="${CLAUDE_PROJECT_DIR:-}" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project="${2-}"; shift 2 ;;
+      --json) json=1; shift ;;
+      *) die "detect: unknown argument: $1" ;;
+    esac
+  done
+
+  local -a settings=()
+  local s
+  for s in "$ATELIER_CONFIG_DIR/settings.json" \
+           ${project:+"$project/.claude/settings.json" "$project/.claude/settings.local.json"}; do
+    [ -f "$s" ] && settings+=("$s")
+  done
+  local installed="$ATELIER_CONFIG_DIR/plugins/installed_plugins.json"
+  [ "${#settings[@]}" -gt 0 ] && [ -f "$installed" ] || { [ "$json" -eq 1 ] && echo '[]'; return 0; }
+
+  local keys
+  keys="$(jq -s -r '[.[] | (.enabledPlugins? // {}) | objects] | add // {} | to_entries[] | select(.value == true) | .key' "${settings[@]}" 2>/dev/null)" || {
+    echo "atelier-agent-input-hooks: unreadable settings JSON; nothing detected" >&2
+    keys=""
+  }
+
+  TMP_INLINE="$(mktemp)"
+  trap 'rm -f "$TMP_INLINE"' EXIT
+  local rows="" key path version name known tested m ms
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    path="$(jq -r --arg k "$key" '.plugins[$k][0].installPath // empty' "$installed" 2>/dev/null || true)"
+    version="$(jq -r --arg k "$key" '.plugins[$k][0].version // empty' "$installed" 2>/dev/null || true)"
+    path="${path/#\~/$HOME}"
+    [ -n "$path" ] && [ -d "$path" ] || continue
+    if ! ms="$(plugin_matchers "$path" 2>/dev/null)"; then
+      echo "atelier-agent-input-hooks: skipping $key (unreadable hooks or invalid matcher)" >&2
+      continue
+    fi
+    [ -n "$ms" ] || continue
+    name="${key%%@*}"
+    known="unknown"; tested="no"
+    if [ "$name" = "context-mode" ]; then
+      known="context-mode"
+      in_tested_range "$version" && tested="yes"
+    fi
+    while IFS= read -r m; do
+      [ "$m" = "@@EMPTY@@" ] && m=""
+      rows+="$key"$'\t'"$name"$'\t'"$version"$'\t'"$m"$'\t'"$known"$'\t'"$tested"$'\n'
+    done <<<"$ms"
+  done <<<"$keys"
+
+  if [ "$json" -eq 1 ]; then
+    printf '%s' "$rows" | jq -R -s '[split("\n")[] | select(length > 0) | split("\t")
+      | {plugin: .[0], name: .[1], version: .[2], matcher: .[3], known: .[4], tested: .[5]}]'
+  else
+    printf '%s' "$rows"
+  fi
+}
+
+cmd_render_block() {
+  local root=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --plugin-root) root="${2-}"; shift 2 ;;
+      *) die "render-block: unknown argument: $1" ;;
+    esac
+  done
+  if [ -z "$root" ]; then
+    local line
+    line="$("$0" detect --json 2>/dev/null | jq -r '[.[] | select(.known == "context-mode")][0].plugin // empty')" || line=""
+    [ -n "$line" ] || exit 3
+    root="$(jq -r --arg k "$line" '.plugins[$k][0].installPath // empty' "$ATELIER_CONFIG_DIR/plugins/installed_plugins.json")"
+    root="${root/#\~/$HOME}"
+    [ -n "$root" ] && [ -d "$root" ] || exit 3
+  fi
+  command -v node >/dev/null 2>&1 || die "node is required"
+  [ -f "$root/hooks/routing-block.mjs" ] || die "missing $root/hooks/routing-block.mjs"
+  [ -f "$root/hooks/core/tool-naming.mjs" ] || die "missing $root/hooks/core/tool-naming.mjs"
+
+  # Imports only routing-block.mjs and tool-naming.mjs. pretooluse.mjs and
+  # core/routing.mjs are deliberately never loaded: pretooluse.mjs self-heals
+  # context-mode's config and matchers, which atelier must not trigger.
+  # Mirrors core/routing.mjs (Agent branch) for Claude Code.
+  ATELIER_CM_ROOT="$root" node --input-type=module -e '
+    import { pathToFileURL } from "node:url";
+    const r = process.env.ATELIER_CM_ROOT;
+    const { createRoutingBlock } = await import(pathToFileURL(r + "/hooks/routing-block.mjs").href);
+    const { createToolNamer } = await import(pathToFileURL(r + "/hooks/core/tool-naming.mjs").href);
+    process.stdout.write(createRoutingBlock(createToolNamer("claude-code"), { includeCommands: false, toolSearchBootstrap: true }));
+  ' || die "render-block: import of context-mode modules failed"
+}
+
+sub="${1-}"
+[ $# -gt 0 ] && shift
+case "$sub" in
+  detect) cmd_detect "$@" ;;
+  render-block) cmd_render_block "$@" ;;
+  tested-range) printf '%s–%s\n' "$CONTEXT_MODE_TESTED_MIN" "$CONTEXT_MODE_TESTED_MAX" ;;
+  *) die "usage: atelier-agent-input-hooks <detect|render-block> [...]" ;;
+esac

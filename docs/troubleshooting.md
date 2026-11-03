@@ -257,19 +257,19 @@ To check whether auto-mode is currently active, inside any atelier session: `/st
 
 1. **List affected files by name only:** Run `atelier-doctor`, or for each registered project path `P`:
    ```bash
-   git -C "$P" worktree list --porcelain | awk '/^worktree /{print $2}' | while read -r w; do [ "$w" = "$P" ] && continue; find "$w" -maxdepth 1 -name '.env*' -print; done; find "$P-worktrees" -maxdepth 2 -name '.env*' -print 2>/dev/null
+   git -C "$P" worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r w; do [ "$w" = "$P" ] && continue; find "$w" -maxdepth 4 \( -name .git -o -name node_modules \) -prune -o -iname '.env*' ! -iname '*.example' ! -iname '*.sample' ! -iname '*.template' ! -iname '*.dist' -print; done; find "$P-worktrees" -maxdepth 2 -iname '.env*' ! -iname '*.example' ! -iname '*.sample' ! -iname '*.template' ! -iname '*.dist' -print 2>/dev/null
    ```
-   (This prints paths only).
-2. **Remove prod/stage copies:** Remove prod/stage copies (`.env.prod*`, `.env.production*`, `.env.stage*`, `.env.staging*`) from each listed task worktree with `rm <path>`. Never touch the main checkout's own files.
+   (This prints paths only; committed templates are excluded because they are never flagged.)
+2. **Remove prod/stage copies:** Remove only the listed real prod/stage files (`.env.prod*`, `.env.production*`, `.env.stage*`, `.env.staging*`) from each task worktree with `rm <path>`. Committed templates (`*.example`, `*.sample`, `*.template`, `*.dist`) are never flagged and must not be deleted. Never touch the main checkout's own files.
 3. **Optional exposure check by name:**
    ```bash
-   grep -l -E '\.env\.(prod|production|stage|staging)' ~/.claude-work/projects/*/*.jsonl
+   grep -l -E '\.env\.(prod|production|stage|staging)' "${ATELIER_CONFIG_DIR:-$HOME/.claude}/projects"/*/*.jsonl
    ```
    lists transcripts that mention those names without printing content. Rotating credentials is the operator's call.
 4. **Re-run `atelier-doctor`** and confirm no hits.
 
 **Configuring allowed worktree env files (`worktreeEnvFiles`):**
-When `atelier-worktree-create` provisions a task worktree, it copies only the env files declared in `.atelier.json` under `worktreeEnvFiles`. By default, this is `[".env.local"]`. Projects relying on other development env files must declare them explicitly. Production and staging env files (`.env.prod*`, `.env.production*`, `.env.stage*`, `.env.staging*`) are rejected by `atelier-worktree-create` even if declared.
+When `atelier-worktree-create` provisions a task worktree, it copies only the env files declared in `.atelier.json` under `worktreeEnvFiles`. By default, this is `[".env.local"]`. Projects relying on other development env files must declare them explicitly. Production and staging env files (`.env.prod*`, `.env.production*`, `.env.stage*`, `.env.staging*`) are rejected by `atelier-worktree-create` even if declared. Committed templates (`*.example`, `*.sample`, `*.template`, `*.dist`) are exempt and never block creation.
 
 **Read protection (`hooks/block-env-read.sh`):**
 `hooks/block-env-read.sh` (#597e) intercepts Bash commands and blocks commands that read, copy, move, delete or otherwise touch the contents of a protected `.env*` file (including `.env`, `.env.local`, and `.envrc`). It allows name-only operations (`ls`, `test`, `[`, `[[`, `find` without `-exec`/`-delete`, `git status`, `git check-ignore`). Non-secret template files such as `.env.example`, `.env.sample`, `.env.template`, and `.env.dist` stay viewable through the shell (e.g. `cat .env.example`), while the Claude Code `Read` tool denies `./.env*` across the board (#597d).
@@ -360,6 +360,18 @@ Legacy case: in `verdict` mode, a PR that already carries a real `CHANGES_REQUES
 **Fix:** the dispatch is held, not retried. The command asks you once, in the same session, whether to re-dispatch the unchanged brief, leave it held, or abandon the task. An already-denied brief is never reworded. For new briefs, follow `commands/next-task.md` §8: the whole brief inline in the dispatch prompt (files as data only), facts only, domain named plainly, no discussion of the permission system, no restated enforcement lists, no contract overrides (they belong in the approved plan), no task or session history. The held session never clears, compacts or restarts itself to re-send the dispatch, and atelier never suggests `/clear` plus re-dispatch after a denial; the standing practice is a fresh context per task (`/clear` between tasks, before `/atelier:next-task`). Every denial is recorded locally: run `atelier-dispatch-denial report [--since <date>] [--project <name>]` and file `/feedback` with its output (tag, attempt, prompt hash, prior denials in the session, your choice, re-issue result); the exact prompts are kept 0600 under `~/.local/state/atelier/dispatch-denials/`. See `operator-rules.md` § "Multi-session setups (plan + worker sessions)".
 
 **Note (#590):** the settings template now allows `Agent(atelier:task-orchestrator)` and `Agent(atelier:planner)`. Auto mode (the supported mode) drops `Agent` allow rules on entry on Claude Code 2.1.309, so the dispatch is still classified and this denial can still occur. The rule does not change the hold-and-ask flow above. Evidence: `docs/research/agent-allow-rule-classifier-2026-10-23.md`.
+
+### Agent dispatch refused: "a hook changed this call's input" (context-mode)
+
+**Symptom:** in auto mode an `Agent` dispatch (for example `task-orchestrator` or `planner`) is refused once with "a hook changed this call's input", and `atelier-doctor` shows a `context-mode <version>: PreToolUse hook appends <context_window_protection> ...` warning.
+
+**Cause:** context-mode's PreToolUse hook (matcher `Agent`) appends a `<context_window_protection>` block to every Agent prompt, unconditionally. Claude Code 2.1.317 classifies the input as it was before that hook ran, so the rewritten call is treated as different from what was approved. Any other enabled plugin whose PreToolUse matcher covers `Agent`/`Task` can trigger the same refusal.
+
+**What atelier does:** `atelier-doctor` only warns (it never fixes anything, and it notes whether the installed version is in the range atelier has tested). How a refused dispatch is handled is tracked separately in #690 and #691, with neutral wording.
+
+**Fix (today):** leave auto mode for the session, or disable context-mode for the session, then re-dispatch. Do not hand-edit context-mode's matcher: its self-heal and `ctx-upgrade` undo the edit.
+
+**Diagnostics:** `atelier-agent-input-hooks detect` lists every enabled plugin whose PreToolUse matcher matches `Agent`/`Task` (plugin, version, matcher, tested range); add `--json` for machine output. No output means none was found.
 
 ### Worker session asks you to paste a phrase
 
