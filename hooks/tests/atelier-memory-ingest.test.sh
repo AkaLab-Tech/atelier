@@ -338,6 +338,35 @@ else
 fi
 rm -f "$VAULT/Inbox/bad-ref.md" "$VAULT/Inbox/bad-ref.error.txt"
 
+# Injection-shaped ref in frontmatter (#684): rejected, nothing ingested
+cat > "$VAULT/Inbox/inj-ref.md" <<'EOF'
+---
+refs: ["issue:o/r#1' UNION SELECT 'X-9', hex('INJECTED') --"]
+---
+Body content.
+EOF
+mem ingest >/dev/null 2>&1 || true
+if [ -f "$VAULT/Inbox/inj-ref.md" ] && grep -q 'Invalid refs' "$VAULT/Inbox/inj-ref.error.txt" 2>/dev/null; then
+  pass "injection-shaped issue ref rejected by ingest frontmatter check"
+else
+  fail "injection-shaped ref accepted by ingest"
+fi
+rm -f "$VAULT/Inbox/inj-ref.md" "$VAULT/Inbox/inj-ref.error.txt"
+
+cat > "$VAULT/Inbox/ok-ref.md" <<'EOF'
+---
+refs: ["issue:owner/repo#101", "pr:acme/repo#100", "file:README.md"]
+---
+Body with well-formed refs 684.
+EOF
+mem ingest >/dev/null 2>&1 || true
+if [ ! -f "$VAULT/Inbox/ok-ref.error.txt" ] && [ ! -f "$VAULT/Inbox/ok-ref.md" ]; then
+  pass "well-formed issue/pr/file refs still ingest"
+else
+  fail "well-formed refs rejected by ingest"
+fi
+rm -f "$VAULT/Inbox/ok-ref.error.txt"
+
 # Empty body
 cat > "$VAULT/Inbox/empty-body.md" <<'EOF'
 ---

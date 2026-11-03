@@ -244,8 +244,14 @@ EOF
 count_before="$(dbq "SELECT count(*) FROM records;")"
 r1_orig="$(dbq "SELECT title || '|' || source || '|' || refs FROM records WHERE id='R-1';")"
 
+mkdir -p "$VAULT/Records/mynotes"
+printf 'operator note\n' > "$VAULT/Records/mynotes/a.md"
+printf 'hidden\n' > "$VAULT/Records/.hidden.md"
 apply_out="$(mem verify --project "$PROJ" --apply 2>&1)"
 apply_r=$?
+[ "$(cat "$VAULT/Records/mynotes/a.md" 2>/dev/null)" = "operator note" ] && [ "$(cat "$VAULT/Records/.hidden.md" 2>/dev/null)" = "hidden" ] \
+  && pass "verify --apply's full render keeps operator subfolders and dotfiles (#684)" \
+  || fail "verify --apply destroyed operator content in Records/"
 
 if [ "$apply_r" -eq 0 ]; then
   pass "verify --apply completed with exit 0"

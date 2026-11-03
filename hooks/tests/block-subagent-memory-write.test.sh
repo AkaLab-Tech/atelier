@@ -178,6 +178,67 @@ assert_allow "ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 env" "sub-1" "implementer" \
 assert_allow "ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 inline" "sub-1" "implementer" \
   'ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 atelier-memory close Q-1 --by D-1'
 
+# --- 8. #684: relative ATELIER_CONFIG_DIR, function/xargs prefixes, unknown subs ----
+mkdir -p "$T_HOME/.claude-work/sub"
+assert_block "relative ATELIER_CONFIG_DIR=. (cwd is the real config dir)" "sub-1" "implementer" \
+  'cd ~/.claude-work && ATELIER_CONFIG_DIR=. atelier-memory add fact --project . --source agent-inferred --title x'
+assert_block "relative ATELIER_CONFIG_DIR=sub" "sub-1" "implementer" \
+  'ATELIER_CONFIG_DIR=sub atelier-memory add fact --project . --source agent-inferred --title x'
+assert_block "function keyword wrapper" "sub-1" "implementer" \
+  'function f { atelier-memory add x; }; f'
+assert_block "function keyword with parens" "sub-1" "implementer" \
+  'function f() { atelier-memory add x; }; f'
+assert_block "NAME() wrapper" "sub-1" "implementer" \
+  'f() { atelier-memory add x; }; f'
+assert_block "xargs -I{} placeholder subcommand" "sub-1" "implementer" \
+  'printf add | xargs -I{} atelier-memory {} x'
+assert_block "xargs -I {} separated placeholder subcommand" "sub-1" "implementer" \
+  'printf add | xargs -I {} atelier-memory {} x'
+assert_block "xargs with no subcommand supplied" "sub-1" "implementer" \
+  'printf add | xargs atelier-memory'
+assert_block "xargs -n 1 add" "sub-1" "implementer" \
+  'printf x | xargs -n 1 atelier-memory add'
+assert_allow "function wrapper with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "function f { ATELIER_CONFIG_DIR=$ISO atelier-memory add x; }; f"
+assert_allow "xargs -I{} with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "printf add | ATELIER_CONFIG_DIR=$ISO xargs -I{} atelier-memory {} x"
+assert_allow "xargs read-only subcommand" "sub-1" "implementer" \
+  'printf x | xargs -n 1 atelier-memory show'
+assert_block "unknown future subcommand goes through the write check" "sub-1" "implementer" \
+  'atelier-memory frobnicate --project .'
+assert_allow "unknown subcommand with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "ATELIER_CONFIG_DIR=$ISO atelier-memory frobnicate --project ."
+
+# --- 9. #684: render into a non-isolated vault ------------------------------
+assert_block "render --vault ~/Atelier with isolated config dir" "sub-1" "implementer" \
+  "ATELIER_CONFIG_DIR=$ISO atelier-memory render --vault ~/Atelier"
+assert_block "render --vault=\$HOME/Atelier" "sub-1" "implementer" \
+  'atelier-memory render --vault=$HOME/Atelier'
+assert_block "render --vault \$HOME" "sub-1" "implementer" \
+  'atelier-memory render --vault "$HOME"'
+assert_block "render --vault /" "sub-1" "implementer" \
+  'atelier-memory render --vault /'
+assert_block "render --vault inside the real config dir" "sub-1" "implementer" \
+  "atelier-memory render --vault $ACD/vault"
+assert_block "inline ATELIER_MEMORY_VAULT=~/Atelier + render" "sub-1" "implementer" \
+  'ATELIER_MEMORY_VAULT=~/Atelier atelier-memory render --full'
+assert_block "exported ATELIER_MEMORY_VAULT + render" "sub-1" "implementer" \
+  'export ATELIER_MEMORY_VAULT=$HOME/Atelier; atelier-memory render'
+assert_block "inherited ATELIER_MEMORY_VAULT=~/Atelier + render" "sub-1" "implementer" \
+  'atelier-memory render' ATELIER_MEMORY_VAULT="$T_HOME/Atelier"
+assert_block "ATELIER_MEMORY_VAULT=~/Atelier + add in isolated config dir" "sub-1" "implementer" \
+  "ATELIER_CONFIG_DIR=$ISO ATELIER_MEMORY_VAULT=~/Atelier atelier-memory add fact --project . --source agent-inferred --title x"
+assert_allow "render --vault isolated path" "sub-1" "implementer" \
+  "atelier-memory render --vault $TMP/iso-vault"
+assert_allow "ATELIER_MEMORY_VAULT isolated + render" "sub-1" "implementer" \
+  'atelier-memory render' ATELIER_MEMORY_VAULT="$TMP/iso-vault"
+assert_allow "ATELIER_MEMORY_VAULT=off + render" "sub-1" "implementer" \
+  'atelier-memory render' ATELIER_MEMORY_VAULT=off
+assert_allow "isolated config dir + isolated vault + add" "sub-1" "implementer" \
+  "ATELIER_CONFIG_DIR=$ISO ATELIER_MEMORY_VAULT=$TMP/iso-vault atelier-memory add fact --project . --source agent-inferred --title x"
+assert_allow "ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 bypasses the vault check" "sub-1" "implementer" \
+  'ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 atelier-memory render --vault ~/Atelier'
+
 echo ""
 if [ "$fails" -eq 0 ]; then
   echo "block-subagent-memory-write: all checks passed"
