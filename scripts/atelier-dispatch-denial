@@ -4,13 +4,16 @@
 # dispatches (#457), so the operator has evidence to file via /feedback.
 #
 # Usage:
-#   atelier-dispatch-denial record --project <root> --command <next-task|resume-task|plan-task>
-#       --agent <task-orchestrator|planner> --task <id> --tag '<verbatim>'
-#       --attempt <1|2> --prompt-file <path>
+#   atelier-dispatch-denial record --project <root>
+#       --command <next-task|resume-task|plan-task|task-orchestrator>
+#       --agent <task-orchestrator|planner|implementer|tester|e2e-runner|pr-author|pr-opener|reviewer>
+#       --task <id> --tag '<verbatim>' --attempt <1|2> --prompt-file <path>
 #       [--session-role plan|worker|unknown] [--prior-denials-in-session <n>]
+#       [--hook <plugin_key[,plugin_key...]>]
 #     Appends one JSON line to dispatch-denials.jsonl and keeps a copy of the
 #     exact dispatch prompt (dir 0700, file 0600). Prints the ref (a timestamp)
-#     on stdout.
+#     on stdout. --hook names the plugin hook behind a hook-changed-input
+#     refusal (stored as "hook", null when absent).
 #   atelier-dispatch-denial outcome --ref <ref> --choice <redispatch|held|abandon>
 #       [--reissue accepted|denied]
 #     Records the operator's answer and the re-issue result.
@@ -37,7 +40,7 @@ sha256_of() {
 
 cmd_record() {
   local project="" command="" agent="" task="" tag="" attempt="" pfile=""
-  local role="unknown" prior=""
+  local role="unknown" prior="" hook=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="${2-}"; shift 2 ;;
@@ -49,6 +52,7 @@ cmd_record() {
       --prompt-file) pfile="${2-}"; shift 2 ;;
       --session-role) role="${2-}"; shift 2 ;;
       --prior-denials-in-session) prior="${2-}"; shift 2 ;;
+      --hook) hook="${2-}"; shift 2 ;;
       *) die "record: unknown argument: $1" ;;
     esac
   done
@@ -83,11 +87,12 @@ cmd_record() {
     --arg ref "$ref" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg project "$pname" \
     --arg root "$project" --arg command "$command" --arg agent "$agent" --arg task "$task" \
     --arg tag "$tag" --argjson attempt "$attempt" --arg copy "$copy" --arg sha "$sha" \
-    --argjson lines "$lines" --arg form "$form" --arg role "$role" --arg prior "$prior" \
+    --argjson lines "$lines" --arg form "$form" --arg role "$role" --arg prior "$prior" --arg hook "$hook" \
     '{type:"denial",ref:$ref,date:$date,project:$project,project_root:$root,command:$command,
       agent:$agent,task:$task,tag:$tag,attempt:$attempt,prompt_copy:$copy,prompt_sha256:$sha,
       prompt_lines:$lines,prompt_form:$form,session_role:$role,
-      prior_denials_in_session:(if $prior == "" then null else ($prior|tonumber) end)}' >> "$LOG")
+      prior_denials_in_session:(if $prior == "" then null else ($prior|tonumber) end),
+      hook:(if $hook == "" then null else $hook end)}' >> "$LOG")
   chmod 600 "$LOG"
   echo "$ref"
 }
@@ -129,7 +134,7 @@ cmd_report() {
     | map(select(($since == "") or (.date[0:10] >= $since)))
     | map(select(($project == "") or (.project == $project)))
     | .[] | . as $d | ($out[$d.ref] // {}) as $o
-    | "| \($d.date[0:10]) | \($d.project) | \($d.agent) | \($d.task) | \($d.tag) | \($d.attempt) | \($d.prompt_sha256[0:12]) | \($d.prompt_lines) | \($d.prompt_form) | \($d.prior_denials_in_session // "?") | \($o.choice // "-") | \($o.reissue // "-") |"
+    | "| \($d.date[0:10]) | \($d.project) | \($d.agent) | \($d.task) | \($d.tag)\(if $d.hook then " (\($d.hook))" else "" end) | \($d.attempt) | \($d.prompt_sha256[0:12]) | \($d.prompt_lines) | \($d.prompt_form) | \($d.prior_denials_in_session // "?") | \($o.choice // "-") | \($o.reissue // "-") |"
   ' "$LOG"
 }
 
@@ -139,6 +144,6 @@ case "$sub" in
   record) cmd_record "$@" ;;
   outcome) cmd_outcome "$@" ;;
   report) cmd_report "$@" ;;
-  -h|--help|help|"") sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//'; [ -n "$sub" ] || exit 2 ;;
+  -h|--help|help|"") sed -n '3,24p' "$0" | sed 's/^# \{0,1\}//'; [ -n "$sub" ] || exit 2 ;;
   *) die "unknown subcommand: $sub" ;;
 esac

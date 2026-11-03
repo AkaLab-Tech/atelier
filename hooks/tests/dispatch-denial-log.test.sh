@@ -11,6 +11,7 @@
 #   D4 — outcome links back by --ref; unknown ref / bad choice exit 2
 #   D5 — report renders a table; filters by --since and --project
 #   D6 — prompt_form classification (file-pointer vs inline); refs are unique
+#   D7 — optional --hook stored as "hook" (null when absent); report renders it
 #
 # Run:  hooks/tests/dispatch-denial-log.test.sh
 # Exit: 0 = all pass, 1 = at least one failure.
@@ -137,6 +138,26 @@ eq "D5: --since + --project combine (no rows)" "$(printf '%s\n' "$BOTH" | tail -
 # Empty state: report still prints the header and exits 0.
 EMPTY="$(ATELIER_STATE_DIR="$TMP/empty" bash "$HELPER" report)"
 eq "D5: report on missing log prints header only" "$(printf '%s\n' "$EMPTY" | grep -c '^|')" "2"
+
+# --- D7 (#691): --hook ------------------------------------------------------
+REF7="$(rec /w/delta '#691' 'hook-changed-input' "$TMP/inline.md" --hook 'context-mode@context-mode')"
+eq "D7: --hook stored" "$(jq -r --arg r "$REF7" 'select(.ref==$r and .type=="denial") | .hook' "$LOG")" "context-mode@context-mode"
+eq "D7: absent --hook is null" "$(row .hook)" "null"
+eq "D7: old record without hook field parses as null" "$(jq -r 'select(.ref=="20200101T000000Z") | .hook' "$LOG")" "null"
+REP7="$(bash "$HELPER" report)"
+case "$(printf '%s\n' "$REP7" | grep '| delta |')" in *"| hook-changed-input (context-mode@context-mode) |"*) pass "D7: report renders tag with hook";; *) fail "D7: report tag cell wrong";; esac
+case "$(printf '%s\n' "$REP7" | grep '| gamma |')" in *"| [Old Tag] | 1 |"*) pass "D7: old record still reports without hook";; *) fail "D7: old record row wrong";; esac
+case "$(printf '%s\n' "$REP7" | grep '| alpha | task-orchestrator | #457')" in *"| [Auto-Mode Bypass] | 1 |"*) pass "D7: no-hook row keeps plain tag";; *) fail "D7: no-hook row changed";; esac
+# Edge cases: multi-key value, empty value, --hook with an unrelated tag.
+REF7M="$(rec /w/epsilon '#691' 'hook-changed-input' "$TMP/inline.md" --hook 'a@x,b@y')"
+eq "D7: comma-joined multi-key --hook stored verbatim" "$(jq -r --arg r "$REF7M" 'select(.ref==$r and .type=="denial") | .hook' "$LOG")" "a@x,b@y"
+REF7E="$(rec /w/zeta '#691' 'hook-changed-input' "$TMP/inline.md" --hook '')"
+eq "D7: empty --hook is stored as null" "$(jq -r --arg r "$REF7E" 'select(.ref==$r and .type=="denial") | .hook' "$LOG")" "null"
+REF7T="$(rec /w/eta '#691' '[Safety Bypass Flag]' "$TMP/inline.md" --hook 'c@z')"
+eq "D7: --hook kept with a non-hook-changed-input tag" "$(jq -r --arg r "$REF7T" 'select(.ref==$r and .type=="denial") | .hook' "$LOG")" "c@z"
+REP7B="$(bash "$HELPER" report)"
+case "$(printf '%s\n' "$REP7B" | grep '| epsilon |')" in *"| hook-changed-input (a@x,b@y) |"*) pass "D7: report renders multi-key hook";; *) fail "D7: multi-key report cell wrong";; esac
+case "$(printf '%s\n' "$REP7B" | grep '| zeta |')" in *"| hook-changed-input | 1 |"*) pass "D7: empty hook renders bare tag";; *) fail "D7: empty hook row wrong";; esac
 
 echo ""
 if [ "$fails" -eq 0 ]; then

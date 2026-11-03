@@ -367,7 +367,7 @@ Legacy case: in `verdict` mode, a PR that already carries a real `CHANGES_REQUES
 
 **Cause:** context-mode's PreToolUse hook (matcher `Agent`) appends a `<context_window_protection>` block to every Agent prompt, unconditionally. Claude Code 2.1.317 classifies the input as it was before that hook ran, so the rewritten call is treated as different from what was approved. Any other enabled plugin whose PreToolUse matcher covers `Agent`/`Task` can trigger the same refusal.
 
-**What atelier does:** `atelier-doctor` only warns (it never fixes anything, and it notes whether the installed version is in the range atelier has tested). How a refused dispatch is handled is tracked separately in #690 and #691, with neutral wording.
+**What atelier does:** `atelier-doctor` only warns (it never fixes anything, and it notes whether the installed version is in the range atelier has tested). A refused dispatch is held, not retried, and ends in `held: <agent> dispatch refused — plugin hook <plugin_key> rewrites Agent input (hook-changed-input) — <id>`, where `<plugin_key>` is the enabled plugin whose hook matches `Agent` (from `atelier-agent-input-hooks detect`; `unknown` when none is found). Each such hold is recorded locally: run `atelier-dispatch-denial report` and look for the tag `hook-changed-input (<plugin_key>)`. The single re-issue of the refused dispatch is tracked separately in #690, with neutral wording.
 
 **Fix (today):** leave auto mode for the session, or disable context-mode for the session, then re-dispatch. Do not hand-edit context-mode's matcher: its self-heal and `ctx-upgrade` undo the edit.
 
