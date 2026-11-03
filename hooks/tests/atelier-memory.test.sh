@@ -474,6 +474,21 @@ ATELIER_CONFIG_DIR="$HC" mem add decision --project "$GR" --source agent-inferre
 [ -n "$(ATELIER_CONFIG_DIR="$HC" mem brief --project "$GR")" ] && [ "$(ATELIER_CONFIG_DIR="$HC" mem brief --project "$GR")" = "$(ATELIER_CONFIG_DIR="$HC" mem brief --project "$TMP/gitwt")" ] \
   && pass "brief from a worktree path equals brief from the main checkout" || fail "worktree brief differs"
 
+# --- ref shape validation (#684) -------------------------------------------
+n0="$(count)"
+for bad in "issue:o/r#1' UNION SELECT 'X-9', hex('INJECTED') --" "issue:owner/repo" "issue:owner/repo#x" "pr:no-slash#1" \
+           "issue:o/r#1\"" "record:bogus" "record:Q-" "file:a
+b" "branch:x$(printf '\001')y"; do
+  [ "$(rc mem add fact --project "$PROJ" --source agent-inferred --title x --ref "$bad")" = 2 ] \
+    && pass "malformed --ref rejected: $(printf '%s' "$bad" | head -c 30 | tr '\n' ' ')" \
+    || fail "malformed --ref accepted: $bad"
+done
+[ "$(count)" = "$n0" ] && pass "rejected refs wrote nothing" || fail "rejected refs wrote rows"
+for ok in "issue:owner/repo#101" "pr:acme/repo#100" "record:Q-1" "file:scripts/atelier-memory" "branch:feat/x" "worktree:task-1-x" "issue:o_r.x-y/a_b#7"; do
+  [ "$(rc mem add fact --project "$PROJ" --source agent-inferred --title ok --ref "$ok")" = 0 ] \
+    && pass "well-formed --ref accepted: $ok" || fail "well-formed --ref rejected: $ok"
+done
+
 echo ""
 if [ "$fails" -eq 0 ]; then echo "atelier-memory: all checks passed"; exit 0; fi
 echo "atelier-memory: $fails check(s) failed"; exit 1

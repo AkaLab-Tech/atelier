@@ -388,7 +388,9 @@ Capture each item **when it comes up**, not at the end of the session:
   `unblocker`, `task-orchestrator`, `planner`, `task-decomposer`) never write to the real
   store unless the task explicitly asks for it (enforced by the `PreToolUse` Bash hook
   `hooks/block-subagent-memory-write.sh`; tests pass an isolated `ATELIER_CONFIG_DIR` such
-  as `$(mktemp -d)` or `/tmp/...`).
+  as `$(mktemp -d)` or `/tmp/...`). The hook also blocks a subagent `render` (or any rendering
+  subcommand) into an explicit non-isolated vault (`--vault` / `ATELIER_MEMORY_VAULT` pointing at
+  `~/Atelier`, the real config dir, `$HOME` or `/`) and refuses a relative `ATELIER_CONFIG_DIR`.
 - To load Claude Code's own per-project memory files, run
   `atelier-memory import --dry-run`, then `atelier-memory import`.
 - **Inbox drop workflow.** The Obsidian vault at `~/Atelier/` is a regenerated read-only render of

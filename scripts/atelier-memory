@@ -312,14 +312,23 @@ prefix_of() {
 }
 valid_id() { case "$1" in [RQDFHG]-[0-9]*) case "${1#?-}" in *[!0-9]*) return 1 ;; esac; return 0 ;; *) return 1 ;; esac; }
 
+# Shape check for one ref; also gates stored refs before the renderer uses them.
+valid_ref() {
+  local r="$1" v re='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$'
+  case "$r" in *[[:cntrl:]]*) return 1 ;; esac
+  case "$r" in
+    issue:*|pr:*) v="${r#*:}"; [[ "$v" =~ $re ]] ;;
+    record:*) valid_id "${r#record:}" ;;
+    file:*|branch:*|worktree:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 refs_json() {
   if [ "${#refs[@]}" -eq 0 ]; then printf '[]'; return; fi
   local r
   for r in "${refs[@]}"; do
-    case "$r" in
-      issue:*|pr:*|record:*|file:*|branch:*|worktree:*) ;;
-      *) die "bad --ref '$r' (expected issue:o/r#N, pr:o/r#N, record:ID, file:PATH, branch:NAME or worktree:PATH)" ;;
-    esac
+    valid_ref "$r" || die "bad --ref '$r' (expected issue:o/r#N, pr:o/r#N, record:ID, file:PATH, branch:NAME or worktree:PATH)"
   done
   jq -nc '$ARGS.positional' --args "${refs[@]}"
 }
@@ -936,13 +945,10 @@ cmd_ingest() {
       fi
 
       [ "${#file_refs[@]}" -eq 0 ] || for r in "${file_refs[@]}"; do
-        case "$r" in
-          issue:*|pr:*|record:*|file:*|branch:*|worktree:*) ;;
-          *)
-            ref_err="bad ref '$r' (expected issue:o/r#N, pr:o/r#N, record:ID, file:PATH, branch:NAME, worktree:PATH)"
-            break
-            ;;
-        esac
+        if ! valid_ref "$r"; then
+          ref_err="bad ref '$r' (expected issue:o/r#N, pr:o/r#N, record:ID, file:PATH, branch:NAME, worktree:PATH)"
+          break
+        fi
       done
       if [ -n "$ref_err" ]; then
         printf 'Invalid refs: %s\n' "$ref_err" > "$sidecar"

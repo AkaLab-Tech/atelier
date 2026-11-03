@@ -40,6 +40,8 @@ REDIR_RE='^([0-9]*>>?|[0-9]*<<?|&>>?|[0-9]*<>&?[0-9-]*)'
 S_CFG_STATE=""; S_CFG_VAL=""; S_CFG_LOCAL=""; S_CFG_LOCAL_VAL=""
 S_ALLOW="${ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE:-}"
 E_CFG_STATE=""; E_CFG_VAL=""; E_ALLOW=""; E_UNK=""; ENV_UNK_IN=""; CUR_SEG_TEXT=""
+S_MV_SET=""; S_MV_VAL=""; E_MV_SET=""; E_MV_VAL=""
+[ -n "${ATELIER_MEMORY_VAULT+x}" ] && { S_MV_SET=1; S_MV_VAL="$ATELIER_MEMORY_VAULT"; }
 
 vmap_set() { [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && printf -v "V__$1" '%s' "$2" || true; }
 vmap_unset() { [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && unset "V__$1" || true; }
@@ -48,12 +50,14 @@ apply_assign() { # P name value
   case "$2" in
     ATELIER_CONFIG_DIR) printf -v "$1_CFG_STATE" '%s' "set"; printf -v "$1_CFG_VAL" '%s' "$3" ;;
     ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE) printf -v "$1_ALLOW" '%s' "$3" ;;
+    ATELIER_MEMORY_VAULT) printf -v "$1_MV_SET" '%s' "1"; printf -v "$1_MV_VAL" '%s' "$3" ;;
   esac
 }
 
 shell_assign() { # name value exported
   vmap_set "$1" "$2"
   [ "$1" = "ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE" ] && { S_ALLOW="$2"; return; }
+  [ "$1" = "ATELIER_MEMORY_VAULT" ] && { S_MV_SET=1; S_MV_VAL="$2"; return; }
   [ "$1" = "ATELIER_CONFIG_DIR" ] || return 0
   if [ "$3" = "1" ] || [ "$S_CFG_STATE" = "set" ] || { [ -z "$S_CFG_STATE" ] && [ -n "${ATELIER_CONFIG_DIR+x}" ]; }; then
     S_CFG_STATE="set"; S_CFG_VAL="$2"
@@ -71,6 +75,7 @@ apply_unset() { # P name
   case "$2" in
     ATELIER_CONFIG_DIR) printf -v "$1_CFG_STATE" '%s' "cleared"; printf -v "$1_CFG_VAL" '%s' "" ;;
     ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE) printf -v "$1_ALLOW" '%s' "" ;;
+    ATELIER_MEMORY_VAULT) printf -v "$1_MV_SET" '%s' ""; printf -v "$1_MV_VAL" '%s' "" ;;
   esac
 }
 
@@ -138,7 +143,7 @@ cfg_isolated() {
   [[ "$p" =~ $dot_re ]] && { CFG_WHY="ATELIER_CONFIG_DIR='$raw' contains '..' path traversal"; return 1; }
   [[ "$p" =~ $mk_re ]] && return 0
   case "$p" in *'$'*|*'`'*) CFG_WHY="ATELIER_CONFIG_DIR='$raw' uses a dynamic value that cannot be proven isolated"; return 1 ;; esac
-  case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+  case "$p" in /*) ;; *) CFG_WHY="ATELIER_CONFIG_DIR='$raw' is a relative path; use an absolute isolated directory"; return 1 ;; esac
   cv="$(_realpath_lenient "$p")"; cr="$(_realpath_lenient "$REAL_ACD")"; cd_="$(_realpath_lenient "$DEF_ACD")"; ch="$(_realpath_lenient "$HOME_DIR")"
   if [ "$cv" = "$cr" ] || [[ "$cv" == "$cr"/* ]] || [ "$cv" = "$cd_" ] || [[ "$cv" == "$cd_"/* ]]; then
     CFG_WHY="ATELIER_CONFIG_DIR resolves to the real config dir ($cv)"; return 1
@@ -160,24 +165,64 @@ check_write() { # label
   log_decision "$HOOK_NAME" "Bash" "$1" "allow" "isolated ATELIER_CONFIG_DIR"
 }
 
+# Rendering writes into a vault; blocks an explicit target that is not an isolated directory.
+vault_target_check() { # label vault-arg
+  local label="$1" v="$2" p cv ch mk_re='^(\$\(mktemp|`mktemp)([[:space:])`]|$)' dot_re='(^|/)\.\.(/|$)' base
+  [ "$E_ALLOW" = "1" ] && return 0
+  if [ -z "$v" ]; then
+    [ "$E_MV_SET" = 1 ] || return 0
+    v="$E_MV_VAL"
+    [ "$v" = "off" ] && return 0
+  fi
+  expand_cfg "$v"; p="$EXP_CFG"
+  [[ "$p" =~ $mk_re ]] && return 0
+  [ -z "$p" ] && block "$label into an empty vault path" "the vault target resolves to an empty string"
+  [[ "$p" =~ $dot_re ]] && block "$label into a vault with '..' path traversal" "vault target '$v' cannot be proven isolated"
+  case "$p" in *'$'*|*'`'*) block "$label into a dynamic vault path" "vault target '$v' cannot be proven isolated" ;; esac
+  case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+  cv="$(_realpath_lenient "$p")"; ch="$(_realpath_lenient "$HOME_DIR")"
+  for base in "$ch/Atelier" "$(_realpath_lenient "$REAL_ACD")" "$(_realpath_lenient "$DEF_ACD")"; do
+    if [ "$cv" = "$base" ] || [[ "$cv" == "$base"/* ]]; then
+      block "$label into a non-isolated vault ($cv)" "the vault target is the real Atelier vault or inside the real config dir"
+    fi
+  done
+  if [ "$cv" = "/" ] || [ "$cv" = "$ch" ]; then
+    block "$label into a non-isolated vault ($cv)" "the vault target resolves to '$cv'"
+  fi
+  return 0
+}
+
 analyze_memory() { # args after atelier-memory
-  local a sub="" has_dry=0 has_apply=0 end_opts=0 skip_redir=0
+  local a sub="" has_dry=0 has_apply=0 end_opts=0 skip_redir=0 take_vault=0 vault_arg=""
   for a in "$@"; do
     [ "$skip_redir" = 1 ] && { skip_redir=0; continue; }
+    [ "$take_vault" = 1 ] && { take_vault=0; vault_arg="$a"; continue; }
     [[ "$a" =~ ^([0-9]*>>?|[0-9]*<<?|&>>?)$ ]] && { skip_redir=1; continue; }
     [[ "$a" =~ $REDIR_RE ]] && continue
     if [ "$end_opts" = 0 ]; then
-      case "$a" in --) end_opts=1; continue ;; -h|--help) return 0 ;; --dry-run) has_dry=1 ;; --apply) has_apply=1 ;; esac
+      case "$a" in
+        --) end_opts=1; continue ;;
+        -h|--help) return 0 ;;
+        --dry-run) has_dry=1 ;;
+        --apply) has_apply=1 ;;
+        --vault) take_vault=1; continue ;;
+        --vault=*) vault_arg="${a#--vault=}"; continue ;;
+      esac
     fi
     [ -z "$sub" ] && sub="$a"
   done
+  # Under xargs the subcommand arrives on stdin, so an absent or placeholder one is a write.
+  if [ "${IN_XARGS:-0}" = 1 ]; then
+    case "$sub" in ''|'{}') sub="xargs-supplied" ;; esac
+  fi
   [ -z "$sub" ] && return 0
   case "$sub" in *'$'*) expand_cfg "$sub"; sub="$EXP_CFG" ;; esac
   case "$sub" in
-    list|show|search|brief|path|render|-h|--help) return 0 ;;
-    verify) [ "$has_apply" = 1 ] && check_write "atelier-memory verify --apply" || return 0 ;;
-    import) [ "$has_dry" = 1 ] && return 0; check_write "atelier-memory import" ;;
-    ingest|add|supersede|close|*'$'*|*'`'*) check_write "atelier-memory $sub" ;;
+    list|show|search|brief|path|-h|--help) return 0 ;;
+    render) vault_target_check "atelier-memory render" "$vault_arg" ;;
+    verify) [ "$has_apply" = 1 ] || return 0; check_write "atelier-memory verify --apply"; vault_target_check "atelier-memory verify --apply" "$vault_arg" ;;
+    import) [ "$has_dry" = 1 ] && return 0; check_write "atelier-memory import"; vault_target_check "atelier-memory import" "$vault_arg" ;;
+    *) check_write "atelier-memory $sub"; vault_target_check "atelier-memory $sub" "$vault_arg" ;;
   esac
 }
 
@@ -199,7 +244,7 @@ scan_subst() { # token depth
 }
 
 process_script() { # script depth
-  local script="$1" depth="$2" out seg nt i j k c rest t base sub do_split env_split E_UNK xflag has_c
+  local script="$1" depth="$2" out seg nt i j k c rest t base sub do_split env_split E_UNK xflag has_c IN_XARGS=0
   [ "$depth" -gt 4 ] && return 0
   local -a toks
   lex "$script"; out="$LEX_OUT"
@@ -211,6 +256,7 @@ process_script() { # script depth
     CUR_SEG_TEXT="${toks[*]}"
     E_UNK="$ENV_UNK_IN"; ENV_UNK_IN=""
     E_CFG_STATE="$S_CFG_STATE"; E_CFG_VAL="$S_CFG_VAL"; E_ALLOW="$S_ALLOW"
+    E_MV_SET="$S_MV_SET"; E_MV_VAL="$S_MV_VAL"; IN_XARGS=0
     for t in "${toks[@]}"; do case "$t" in *'$('*|*'`'*) scan_subst "$t" "$depth" ;; esac; done
     i=0
     while [ "$i" -lt "$nt" ]; do
@@ -225,7 +271,7 @@ process_script() { # script depth
             t="${toks[$i]}"; do_split=0
             if [[ "$t" =~ $ASSIGN_RE ]]; then apply_assign E "${t%%=*}" "${t#*=}"; i=$((i + 1))
             elif [ "$t" = "-" ] || [ "$t" = "--ignore-environment" ]; then
-              apply_unset E ATELIER_CONFIG_DIR; apply_unset E ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE; i=$((i + 1))
+              apply_unset E ATELIER_CONFIG_DIR; apply_unset E ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE; apply_unset E ATELIER_MEMORY_VAULT; i=$((i + 1))
             elif { [ "$t" = "--unset" ] || [ "$t" = "--split-string" ] || [ "$t" = "--chdir" ] || [ "$t" = "--path" ] || [ "$t" = "--argv0" ]; }; then
               [ "$t" = "--unset" ] && [ $((i + 1)) -lt "$nt" ] && apply_unset E "${toks[$((i + 1))]}"
               [ "$t" = "--split-string" ] && { sub="${toks[$((i + 1))]:-}"; do_split=1; }
@@ -239,7 +285,7 @@ process_script() { # script depth
               while [ "$k" -lt "${#t}" ]; do
                 c="${t:$k:1}"; k=$((k + 1))
                 case "$c" in
-                  i) apply_unset E ATELIER_CONFIG_DIR; apply_unset E ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE ;;
+                  i) apply_unset E ATELIER_CONFIG_DIR; apply_unset E ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE; apply_unset E ATELIER_MEMORY_VAULT ;;
                   0|v) ;;
                   u|S|C|P|a)
                     rest="${t:$k}"; k=${#t}; [ -z "$rest" ] && [ "$i" -lt "$nt" ] && { rest="${toks[$i]}"; i=$((i + 1)); }
@@ -253,12 +299,23 @@ process_script() { # script depth
             if [ "$do_split" = 1 ]; then
               for ((j = i; j < nt; j++)); do sub+=" ${toks[$j]}"; done
               case "$sub" in -*) sub="env $sub" ;; esac
-              ( S_CFG_STATE="$E_CFG_STATE"; S_CFG_VAL="$E_CFG_VAL"; S_CFG_LOCAL=""; S_ALLOW="$E_ALLOW"; ENV_UNK_IN="$E_UNK"; process_script "$sub" $((depth + 1)) ) || exit $?
+              ( S_CFG_STATE="$E_CFG_STATE"; S_CFG_VAL="$E_CFG_VAL"; S_CFG_LOCAL=""; S_ALLOW="$E_ALLOW"; S_MV_SET="$E_MV_SET"; S_MV_VAL="$E_MV_VAL"; ENV_UNK_IN="$E_UNK"; process_script "$sub" $((depth + 1)) ) || exit $?
               env_split=1; i=$nt
             fi
           done
           continue ;;
-        command|exec|nohup|time|builtin|sudo|nice|stdbuf|timeout|setsid|caffeinate|xargs|ionice|coproc)
+        function) i=$((i + 2)); continue ;;
+        xargs)
+          IN_XARGS=1; i=$((i + 1))
+          while [ "$i" -lt "$nt" ]; do
+            case "${toks[$i]}" in
+              -I|-L|-n|-P|-d|-E|-s|-a) i=$((i + 2)) ;;
+              -*) i=$((i + 1)) ;;
+              *) break ;;
+            esac
+          done
+          continue ;;
+        command|exec|nohup|time|builtin|sudo|nice|stdbuf|timeout|setsid|caffeinate|ionice|coproc)
           i=$((i + 1)); while [ "$i" -lt "$nt" ]; do case "${toks[$i]}" in -*|[0-9]*) i=$((i + 1)) ;; *) break ;; esac; done; continue ;;
         bash|sh|zsh|dash|ksh|source|.)
           has_c=0
@@ -292,14 +349,14 @@ process_script() { # script depth
       bash|sh|zsh|dash|ksh)
         for ((j = i + 1; j < nt; j++)); do
           if [[ "${toks[$j]}" =~ ^-[A-Za-z]*c[A-Za-z]*$ ]] && [ $((j + 1)) -lt "$nt" ]; then
-            ( S_CFG_STATE="$E_CFG_STATE"; S_CFG_VAL="$E_CFG_VAL"; S_CFG_LOCAL=""; S_ALLOW="$E_ALLOW"; ENV_UNK_IN="$E_UNK"; process_script "${toks[$((j + 1))]}" $((depth + 1)) ) || exit $?
+            ( S_CFG_STATE="$E_CFG_STATE"; S_CFG_VAL="$E_CFG_VAL"; S_CFG_LOCAL=""; S_ALLOW="$E_ALLOW"; S_MV_SET="$E_MV_SET"; S_MV_VAL="$E_MV_VAL"; ENV_UNK_IN="$E_UNK"; process_script "${toks[$((j + 1))]}" $((depth + 1)) ) || exit $?
             break
           fi
         done ;;
       eval)
         sub="${toks[*]:$((i + 1))}"
         if [ -n "$sub" ]; then
-          if [ "$i" -gt 0 ]; then ( S_CFG_STATE="$E_CFG_STATE"; S_CFG_VAL="$E_CFG_VAL"; S_ALLOW="$E_ALLOW"; ENV_UNK_IN="$E_UNK"; process_script "$sub" $((depth + 1)) ) || exit $?
+          if [ "$i" -gt 0 ]; then ( S_CFG_STATE="$E_CFG_STATE"; S_CFG_VAL="$E_CFG_VAL"; S_ALLOW="$E_ALLOW"; S_MV_SET="$E_MV_SET"; S_MV_VAL="$E_MV_VAL"; ENV_UNK_IN="$E_UNK"; process_script "$sub" $((depth + 1)) ) || exit $?
           else process_script "$sub" $((depth + 1)); fi
         fi ;;
     esac
