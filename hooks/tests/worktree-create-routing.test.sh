@@ -151,8 +151,8 @@ sect() {
 chk_exit() {
   local label="$1" text="$2"
   if [ -z "$text" ]; then fail "$label — section not found"; return; fi
-  printf '%s' "$text" | grep -qiF 'exit 1' && pass "$label: handles exit 1" || fail "$label: no exit 1 handling"
-  printf '%s' "$text" | grep -qiE 'exit 2|exit 1 or 2' && pass "$label: handles exit 2" || fail "$label: no exit 2 handling"
+  grep -qiF -- 'exit 1' <<<"$text" && pass "$label: handles exit 1" || fail "$label: no exit 1 handling"
+  grep -qiE -- 'exit 2|exit 1 or 2' <<<"$text" && pass "$label: handles exit 2" || fail "$label: no exit 2 handling"
 }
 
 echo "=== Group 5: heading / wording names atelier-worktree-create ==="
@@ -165,15 +165,15 @@ chk_prose "$REPO_ROOT/operator-rules.md" 'via `atelier-worktree-create`' "operat
 chk_prose "$REPO_ROOT/skills/task-discovery/SKILL.md" 'atelier-worktree-create' "task-discovery names atelier-worktree-create"
 orch="$REPO_ROOT/agents/task-orchestrator.md"
 orch_step2="$(sect "$orch" '2. **Set up isolation.**')"
-printf '%s' "$orch_step2" | grep -qF 'atelier-worktree-create "<project_root>" task/<id>-<slug> --from origin/<base>' \
+grep -qF -- 'atelier-worktree-create "<project_root>" task/<id>-<slug> --from origin/<base>' <<<"$orch_step2" \
   && pass "orchestrator step 2 uses atelier-worktree-create" || fail "orchestrator step 2 does not use atelier-worktree-create"
-printf '%s' "$orch_step2" | grep -qF 'Invoke the `git-wt` skill' && fail "orchestrator step 2 still invokes git-wt skill" || pass "orchestrator step 2: no git-wt skill invocation"
+grep -qF -- 'Invoke the `git-wt` skill' <<<"$orch_step2" && fail "orchestrator step 2 still invokes git-wt skill" || pass "orchestrator step 2: no git-wt skill invocation"
 orch_reset="$(grep -F -- '- `reset` →' "$orch")"
-printf '%s' "$orch_reset" | grep -qF 'atelier-worktree-create "<project_root>" <branch> --from origin/<base>' \
+grep -qF -- 'atelier-worktree-create "<project_root>" <branch> --from origin/<base>' <<<"$orch_reset" \
   && pass "orchestrator reset uses atelier-worktree-create" || fail "orchestrator reset does not use atelier-worktree-create"
-printf '%s' "$orch_reset" | grep -qF 'git fetch origin <base>' && printf '%s' "$orch_reset" | grep -qF 'git wt rm <branch> --force' \
+grep -qF -- 'git fetch origin <base>' <<<"$orch_reset" && grep -qF -- 'git wt rm <branch> --force' <<<"$orch_reset" \
   && pass "orchestrator reset matches retry-with-logs (rm --force, fetch, create)" || fail "orchestrator reset differs from retry-with-logs"
-printf '%s' "$orch_reset" | grep -qF 're-`switch`' && fail "orchestrator reset still says rm + re-switch" || pass "orchestrator reset: no rm + re-switch cycle"
+grep -qF -- 're-`switch`' <<<"$orch_reset" && fail "orchestrator reset still says rm + re-switch" || pass "orchestrator reset: no rm + re-switch cycle"
 
 echo "=== Group 6: exit 1 / exit 2 handling spelled out per creation site ==="
 
@@ -190,7 +190,7 @@ echo "=== Group 7: resume-task scans before reuse and stops on exit 2 ==="
 
 rt="$REPO_ROOT/commands/resume-task.md"
 r3b2="$(grep -F '2. **Worktree found**' "$rt")"
-printf '%s' "$r3b2" | grep -qF 'On exit 2 (scan failed), stop' && printf '%s' "$r3b2" | grep -qF 'do not dispatch' \
+grep -qF -- 'On exit 2 (scan failed), stop' <<<"$r3b2" && grep -qF -- 'do not dispatch' <<<"$r3b2" \
   && pass "resume-task 3b.2 stops on exit 2 without dispatching" || fail "resume-task 3b.2 does not stop on exit 2"
 SCAN='atelier-worktree-create --scan-env <'
 r4b="$(sect "$rt" '### 4b.')"
@@ -198,10 +198,10 @@ r4c="$(sect "$rt" '### 4c.')"
 r3="$(sect "$rt" '### 3. ')"
 for pair in "4b:$r4b" "4c:$r4c" "files-backend interrupted resume (step 3):$r3"; do
   label="${pair%%:*}"; body="${pair#*:}"
-  printf '%s' "$body" | grep -qF -- "$SCAN" && pass "resume-task $label runs --scan-env before reuse" || fail "resume-task $label lacks --scan-env"
-  printf '%s' "$body" | grep -qF 'Exit 2 → the scan failed: stop' && pass "resume-task $label stops on scan exit 2" || fail "resume-task $label lacks exit 2 stop"
+  grep -qF -- "$SCAN" <<<"$body" && pass "resume-task $label runs --scan-env before reuse" || fail "resume-task $label lacks --scan-env"
+  grep -qF -- 'Exit 2 → the scan failed: stop' <<<"$body" && pass "resume-task $label stops on scan exit 2" || fail "resume-task $label lacks exit 2 stop"
 done
-printf '%s' "$r4c" | grep -qF 'If the worktree exists' && pass "resume-task 4c scans only when the worktree exists" || fail "resume-task 4c scan not conditioned on existing worktree"
+grep -qF -- 'If the worktree exists' <<<"$r4c" && pass "resume-task 4c scans only when the worktree exists" || fail "resume-task 4c scan not conditioned on existing worktree"
 
 echo ""
 if [ "$fails" -eq 0 ]; then
