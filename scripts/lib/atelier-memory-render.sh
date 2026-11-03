@@ -90,11 +90,83 @@ vault_dir_resolve() {
     printf '%s' "$ATELIER_MEMORY_VAULT"
     return 0
   fi
-  if [ -n "${ATELIER_CONFIG_DIR:-}" ] && [ "$ATELIER_CONFIG_DIR" != "$HOME/.claude-work" ]; then
+  if [ -n "${ATELIER_CONFIG_DIR:-}" ] && [ "$(vault_canon_path "$ATELIER_CONFIG_DIR")" != "$(vault_canon_path "$HOME/.claude-work")" ]; then
     printf '%s/vault' "$ATELIER_CONFIG_DIR"
     return 0
   fi
   printf '%s/Atelier' "$HOME"
+}
+
+# Physical path when the directory exists; otherwise the spelling minus trailing slashes.
+vault_canon_path() {
+  local p="$1"
+  if [ -d "$p" ]; then
+    (cd -P "$p" 2>/dev/null && pwd -P) && return 0
+  fi
+  while [ "${#p}" -gt 1 ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
+  printf '%s' "$p"
+}
+
+# Refuse a vault that would make the render operate on the filesystem root or the home dir.
+vault_refuse_unsafe() {
+  local c h
+  c="$(vault_canon_path "$1")"; h="$(vault_canon_path "$HOME")"
+  if [ "$c" = "/" ] || [ "$c" = "$h" ]; then
+    echo "atelier-memory: refusing to render into '$1' (resolves to / or \$HOME)" >&2
+    return 1
+  fi
+  return 0
+}
+
+# Serialise renders per vault: mkdir lock + pid file; a dead owner's lock is taken over.
+VAULT_LOCK_DIR=""; VAULT_LOCK_DEPTH=0
+vault_lock() {
+  if [ "$VAULT_LOCK_DEPTH" -gt 0 ]; then VAULT_LOCK_DEPTH=$((VAULT_LOCK_DEPTH + 1)); return 0; fi
+  local lockd="$1/.atelier-render.lock" n=0 pid
+  mkdir -p "$1" || return 1
+  while ! mkdir "$lockd" 2>/dev/null; do
+    pid="$(cat "$lockd/pid" 2>/dev/null)" || pid=""
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+      if mv "$lockd" "$lockd.stale.$$" 2>/dev/null; then
+        rm -f "$lockd.stale.$$/pid"; rmdir "$lockd.stale.$$" 2>/dev/null
+      fi
+      continue
+    fi
+    n=$((n + 1))
+    if [ "$n" -gt 100 ]; then
+      echo "atelier-memory: vault render skipped (another render in progress)" >&2
+      return 2
+    fi
+    sleep 0.1
+  done
+  printf '%s' "$$" > "$lockd/pid"
+  VAULT_LOCK_DIR="$lockd"; VAULT_LOCK_DEPTH=1
+  return 0
+}
+
+vault_unlock() {
+  [ "$VAULT_LOCK_DEPTH" -gt 0 ] || return 0
+  VAULT_LOCK_DEPTH=$((VAULT_LOCK_DEPTH - 1))
+  if [ "$VAULT_LOCK_DEPTH" -eq 0 ]; then
+    rm -f "$VAULT_LOCK_DIR/pid"; rmdir "$VAULT_LOCK_DIR" 2>/dev/null
+    VAULT_LOCK_DIR=""
+  fi
+  return 0
+}
+
+# SQL condition: records.refs (JSON array) contains exactly <ref>; the value enters as a hex literal.
+vault_refs_json1() {
+  if [ -z "${VAULT_JSON1:-}" ]; then
+    if printf "SELECT 1 FROM json_each('[\"a\"]');" | sqlite3 :memory: >/dev/null 2>&1; then VAULT_JSON1=1; else VAULT_JSON1=0; fi
+  fi
+  [ "$VAULT_JSON1" = 1 ]
+}
+refs_match_sql() { # <ref>
+  if vault_refs_json1; then
+    printf 'EXISTS (SELECT 1 FROM json_each(records.refs) WHERE value = %s)' "$(lit "$1")"
+  else
+    printf 'instr(records.refs, %s) > 0' "$(lit "\"$1\"")"
+  fi
 }
 
 vault_is_enabled() {
@@ -315,7 +387,7 @@ vault_render_issue_stub() { # <issue_val> (owner/repo#N) <target_file>
   local repo_part="${val%#*}" num_part="${val#*#}"
   local url="https://github.com/${repo_part}/issues/${num_part}"
   local rows
-  rows="$(printf "SELECT id, hex(title) FROM records WHERE refs LIKE '%%\"issue:%s\"%%' ORDER BY created_at DESC;" "$val" | sqlro 2>/dev/null)"
+  rows="$(printf "SELECT id, hex(title) FROM records WHERE %s ORDER BY created_at DESC;" "$(refs_match_sql "issue:$val")" | sqlro 2>/dev/null)"
 
   {
     printf '%s\n\n' "$BANNER"
@@ -342,7 +414,7 @@ vault_render_pr_stub() { # <pr_val> (owner/repo#N) <target_file>
   local repo_part="${val%#*}" num_part="${val#*#}"
   local url="https://github.com/${repo_part}/pull/${num_part}"
   local rows
-  rows="$(printf "SELECT id, hex(title) FROM records WHERE refs LIKE '%%\"pr:%s\"%%' ORDER BY created_at DESC;" "$val" | sqlro 2>/dev/null)"
+  rows="$(printf "SELECT id, hex(title) FROM records WHERE %s ORDER BY created_at DESC;" "$(refs_match_sql "pr:$val")" | sqlro 2>/dev/null)"
 
   {
     printf '%s\n\n' "$BANNER"
@@ -414,7 +486,7 @@ vault_render_index_note() { # <target_file>
 
 # ---------- Full Render ----------
 
-vault_render_full() {
+_vault_render_full_body() {
   local cli_vault="${1:-}"
   if ! vault_is_enabled "$cli_vault"; then
     echo "atelier-memory: vault render disabled" >&2
@@ -466,6 +538,11 @@ vault_render_full() {
       while IFS= read -r ref; do
         [ -n "$ref" ] || continue
         case "$ref" in
+          issue:*|pr:*)
+            valid_ref "$ref" || { echo "atelier-memory: skipping malformed stored ref" >&2; continue; }
+            ;;
+        esac
+        case "$ref" in
           issue:*)
             val="${ref#issue:}"
             slug="$(slug_safe_ref "$val")"
@@ -504,18 +581,21 @@ vault_render_full() {
       local old_d="$1" new_target="$2"
       [ -n "$old_d" ] || return 0
       [ -d "$VAULT/$old_d" ] || return 0
-      local f fbase
-      for f in "$VAULT/$old_d"/*; do
-        [ -e "$f" ] || continue
-        if is_atelier_file "$f"; then
+      local f dest
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if [ -f "$f" ] && [ ! -L "$f" ] && is_atelier_file "$f"; then
           rm -f "$f"
+          continue
+        fi
+        dest="$VAULT/$new_target/$(basename "$f")"
+        if [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
+          mkdir -p "$VAULT/$new_target"
+          mv "$f" "$dest"
         else
           echo "atelier-memory: leaving operator file in place: $f" >&2
-          fbase="$(basename "$f")"
-          cp -p "$f" "$TMP_DIR/$new_target/$fbase"
-          rm -f "$f"
         fi
-      done
+      done < <(find "$VAULT/$old_d" -mindepth 1 -maxdepth 1)
       rmdir "$VAULT/$old_d" 2>/dev/null || true
     }
 
@@ -526,27 +606,34 @@ vault_render_full() {
   fi
 
   # Swap each generated directory into $VAULT safely
+  # In-place reconcile: only top-level generated (bannered) regular files are replaced or
+  # removed; operator subfolders, dotfiles, symlinks and un-bannered files are never touched.
   swap_folder() {
     local dir_name="$1"
     local target="$VAULT/$dir_name" staged="$TMP_DIR/$dir_name"
-    if [ -d "$target" ]; then
-      local f fbase
-      for f in "$target"/*; do
-        [ -e "$f" ] || continue
-        if ! is_atelier_file "$f"; then
-          echo "atelier-memory: leaving operator file in place: $f" >&2
-          fbase="$(basename "$f")"
-          cp -p "$f" "$staged/$fbase"
-        fi
-      done
-      local swap_tmp
-      swap_tmp="$(mktemp -d "${VAULT_PARENT}/.atelier-vault-swap.XXXXXX")"
-      mv "$target" "$swap_tmp/old"
+    if [ ! -d "$target" ]; then
       mv "$staged" "$target"
-      rm -rf "$swap_tmp"
-    else
-      mv "$staged" "$target"
+      return
     fi
+    local f fbase dest
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      fbase="$(basename "$f")"
+      case "$fbase" in .*) continue ;; esac
+      [ ! -L "$f" ] && is_atelier_file "$f" || continue
+      [ -e "$staged/$fbase" ] && continue
+      rm -f "$f"
+    done < <(find "$target" -mindepth 1 -maxdepth 1 -type f)
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      fbase="$(basename "$f")"
+      dest="$target/$fbase"
+      if [ -L "$dest" ] || [ -d "$dest" ] || { [ -e "$dest" ] && ! is_atelier_file "$dest"; }; then
+        echo "atelier-memory: leaving operator file in place: $dest" >&2
+        continue
+      fi
+      mv -f "$f" "$dest"
+    done < <(find "$staged" -mindepth 1 -maxdepth 1 -type f)
   }
 
   swap_folder "$DIR_PROJECTS"
@@ -578,7 +665,7 @@ vault_render_full() {
 
 # ---------- Incremental Render ----------
 
-vault_render_incremental() {
+_vault_render_incremental_body() {
   local touched_id="$1" cli_vault="${2:-}"
   if ! vault_is_enabled "$cli_vault"; then return 0; fi
 
@@ -589,11 +676,11 @@ vault_render_incremental() {
 
   # If vault doesn't exist or marker file missing or language changed: fall back to full render
   if [ ! -d "$VAULT" ] || ! vault_read_marker "$VAULT"; then
-    vault_render_full "$cli_vault"
+    _vault_render_full_body "$cli_vault"
     return $?
   fi
   if [ "$MARKER_LANG" != "$lang" ] || [ "$MARKER_INDEX" != "$INDEX_FILE" ]; then
-    vault_render_full "$cli_vault"
+    _vault_render_full_body "$cli_vault"
     return $?
   fi
 
@@ -632,7 +719,7 @@ vault_render_incremental() {
 
   # Records referencing touched_id
   local referencing
-  referencing="$(printf "SELECT id FROM records WHERE refs LIKE '%%\"record:%s\"%%';" "$touched_id" | sqlro 2>/dev/null)"
+  referencing="$(printf "SELECT id FROM records WHERE %s;" "$(refs_match_sql "record:$touched_id")" | sqlro 2>/dev/null)"
   if [ -n "$referencing" ]; then
     while IFS= read -r id; do [ -n "$id" ] && to_update+=("$id"); done <<<"$referencing"
   fi
@@ -668,6 +755,11 @@ vault_render_incremental() {
       while IFS= read -r r; do
         [ -n "$r" ] || continue
         case "$r" in
+          issue:*|pr:*)
+            valid_ref "$r" || { echo "atelier-memory: skipping malformed stored ref" >&2; continue; }
+            ;;
+        esac
+        case "$r" in
           issue:*)
             val="${r#issue:}"
             slug="$(slug_safe_ref "$val")"
@@ -698,4 +790,36 @@ vault_render_incremental() {
     mv -f "$VAULT/$INDEX_FILE.tmp.$$" "$VAULT/$INDEX_FILE"
 
   return 0
+}
+
+# Lock + signal-safe release around a render body; a skipped render (lock busy) is not an error.
+_vault_render_locked() { # <vault> <body-fn> [args...]
+  local vault="$1" fn="$2" rc lrc
+  shift 2
+  vault_lock "$vault"; lrc=$?
+  [ "$lrc" -eq 0 ] || { [ "$lrc" -eq 2 ] && return 0; return 1; }
+  trap 'VAULT_LOCK_DEPTH=1; vault_unlock; exit 143' INT TERM HUP
+  "$fn" "$@"; rc=$?
+  trap - INT TERM HUP
+  vault_unlock
+  return $rc
+}
+
+vault_render_full() {
+  local cli_vault="${1:-}" v
+  if ! vault_is_enabled "$cli_vault"; then
+    echo "atelier-memory: vault render disabled" >&2
+    return 0
+  fi
+  v="$(vault_dir_resolve "$cli_vault")"
+  vault_refuse_unsafe "$v" || return 1
+  _vault_render_locked "$v" _vault_render_full_body "$cli_vault"
+}
+
+vault_render_incremental() {
+  local touched_id="$1" cli_vault="${2:-}" v
+  if ! vault_is_enabled "$cli_vault"; then return 0; fi
+  v="$(vault_dir_resolve "$cli_vault")"
+  vault_refuse_unsafe "$v" || return 1
+  _vault_render_locked "$v" _vault_render_incremental_body "$touched_id" "$cli_vault"
 }
