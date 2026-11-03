@@ -307,7 +307,10 @@ session:
   as `held: orchestrator dispatch denied (<tag verbatim>) — <id>`: the
   operator is asked once in the same session, the identical brief is re-issued
   once only on their answer, and it is never reworded or moved to another
-  session.
+  session. A dispatch refused with "a hook changed this call's input" ends in
+  the distinct held line naming the plugin hook (`held: <agent> dispatch
+  refused — plugin hook <plugin_key> rewrites Agent input
+  (hook-changed-input) — <id>`) and is recorded with tag `hook-changed-input`.
 - **Dispatch prompts are inline; briefs stay lean (#457).** The `Task`/`Agent`
   prompt carries the whole brief; files are data only, never "Read X and follow
   it". Workers and plan sessions dispatch `task-orchestrator` and the planner
