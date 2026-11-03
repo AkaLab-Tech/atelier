@@ -98,7 +98,7 @@ This step applies only when step 2's `files`-backend branch found exactly one he
 Look at the matched heading line from step 2.
 
 - If it contains the literal `[BLOCKED]` substring → **blocked-resume mode**. Continue to step 4a.
-- Otherwise → **interrupted-resume mode**. Skip to step 5.
+- Otherwise → **interrupted-resume mode**. Resolve the task's worktree (`git wt list`, branch `task/<id>-*`). If it exists, Run `atelier-worktree-create --scan-env <worktree>` before reusing it. Exit 0 → continue. Exit 1 → prod/stage env files are present: stop, print the flagged names from the output, point to the cleanup procedure in `docs/troubleshooting.md`, and do not dispatch the orchestrator. Exit 2 → the scan failed: stop and report the output verbatim. Then skip to step 5.
 
 ### 3b. Board-interrupted-resume — resolve or recreate the worktree (non-`files` backend, #66)
 
@@ -110,12 +110,14 @@ The board says the task is in progress, but there is no open PR to inherit from 
    ```
    Find the entry whose branch matches `task/<id>-*`.
 
-2. **Worktree found** → the common case (the interruption happened after `/atelier:next-task` step 5 but before its step 8 hand-off, or partway through the specialist chain). Run `atelier-worktree-create --scan-env <worktree>` before dispatching. On exit 1, stop and print the flagged names plus a pointer to the cleanup procedure in `docs/troubleshooting.md`; do not dispatch the orchestrator. Otherwise use it as-is; any partial work is preserved. Proceed to step 5 with `resume_mode: interrupted`.
+2. **Worktree found** → the common case (the interruption happened after `/atelier:next-task` step 5 but before its step 8 hand-off, or partway through the specialist chain). Run `atelier-worktree-create --scan-env <worktree>` before dispatching. On exit 1, stop and print the flagged names plus a pointer to the cleanup procedure in `docs/troubleshooting.md`; do not dispatch the orchestrator. On exit 2 (scan failed), stop and report its output verbatim; do not dispatch. On exit 0 use it as-is; any partial work is preserved. Proceed to step 5 with `resume_mode: interrupted`.
 
 3. **Worktree not found** (the operator, or a housekeeping sweep, removed it after the interruption) → recreate it exactly the way `/atelier:next-task` step 5 does, cut from the current `origin/<base>`. Resolve `<base>` now (only on this path; resumes that reuse an existing worktree are never blocked): `atelier-resolve-base "$(git rev-parse --show-toplevel)"` (`base=`, `source=`). On a non-zero exit stop and print its `reason=`. Then `git fetch origin <base>`:
    ```bash
    atelier-worktree-create "$MAIN_ROOT" task/<id>-<slug> --from origin/<base>
    ```
+   Exit 0 → capture the last stdout line as the worktree path. Exit 1 → the worktree was created but holds prod/stage env files and no path was printed: stop, print the flagged names from stderr, point to `docs/troubleshooting.md`, and do not dispatch. Exit 2 → nothing was created: stop and report stderr verbatim.
+
    Resolve `<slug>` from the task's title (from `getTask(id)` in step 2), using the same slug convention `/next-task` uses. The recreated worktree starts clean — there is no partial implementation to preserve, so this is effectively attempt 1, same as a task with no prior work. Proceed to step 5 with `resume_mode: interrupted`.
 
 Either way, **do not** call `moveTask` again here — the board is already correctly in the `inProgress` bucket from the original claim; re-issuing the same move is unnecessary and reproduces the exact `task-not-in-from-bucket` symptom this recovery path exists to resolve.
@@ -144,7 +146,7 @@ Three outcomes:
 
 The contract: closing the issue is the operator's signal. The 6 attempt logs are already preserved in the closed issue's body (the `<details>` blocks added by `unblocker`), so the on-disk copies can be deleted to give the retry budget a clean slate.
 
-1. Resolve the worktree path from the heading's metadata block (the `> Worktree (preserved): <path>` line). Call it `<wt>`.
+1. Resolve the worktree path from the heading's metadata block (the `> Worktree (preserved): <path>` line). Call it `<wt>`. **Pre-flight it** (before anything is wiped): run `atelier-worktree-create --scan-env <wt>` before reusing it. Exit 0 → continue. Exit 1 → prod/stage env files are present: stop, print the flagged names from the output, point to the cleanup procedure in `docs/troubleshooting.md`, and do not dispatch the orchestrator. Exit 2 → the scan failed: stop and report the output verbatim.
 
 2. **Wipe `<wt>/.task-log/`.** List the files, remove each one explicitly (no recursive `rm -r`, no `-f`), then `rmdir` the empty directory:
 
@@ -189,7 +191,7 @@ The PR from step 2 was opened but never reviewed/merged. Confirm it is in a stat
 
 2. **CI must not be failing.** If `statusCheckRollup` contains any `conclusion: FAILURE` check, **stop** and surface them — a red PR is not finishable by re-running review; the implementer must fix it (a separate resume on a re-opened task). Pending (`IN_PROGRESS`/`QUEUED`) checks are handled automatically: the orchestrator's pre-merge CI wait step blocks until they reach a terminal state before invoking `auto-merge` — no manual re-invoke needed when checks are still running.
 
-3. **Resolve the worktree.** Find it via `git wt list` (or `git worktree list`) matching `task/<id>-*`. If the worktree is gone (operator removed it), that is fine for PR-open-resume — the PR branch on origin is the source of truth; record `worktree_path: <none>` and note it. The `reviewer` reviews the PR via `gh`, not the local tree.
+3. **Resolve the worktree.** Find it via `git wt list` (or `git worktree list`) matching `task/<id>-*`. If the worktree is gone (operator removed it), that is fine for PR-open-resume — the PR branch on origin is the source of truth; record `worktree_path: <none>` and note it. The `reviewer` reviews the PR via `gh`, not the local tree. If the worktree exists, Run `atelier-worktree-create --scan-env <worktree>` before reusing it. Exit 0 → continue. Exit 1 → prod/stage env files are present: stop, print the flagged names from the output, point to the cleanup procedure in `docs/troubleshooting.md`, and do not dispatch the orchestrator. Exit 2 → the scan failed: stop and report the output verbatim.
 
 Carry the PR number, URL, and branch into step 5.
 

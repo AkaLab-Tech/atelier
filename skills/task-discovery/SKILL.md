@@ -228,7 +228,7 @@ The claim registry (open `task/*` PRs) and the collision-avoidance logic are **i
 
 The orchestrator (`task-orchestrator` agent) takes the returned record and:
 1. Moves the task block from `ROADMAP.md` to `IN_PROGRESS.md` (files backend) or calls `moveTask(id, "roadmap", "in_progress")` (non-files backend).
-2. Invokes `git-wt` with the `worktree` field to create the per-task worktree.
+2. Creates the per-task worktree with `atelier-worktree-create` (using the `worktree` field's branch).
 3. Hands `acceptance` and `context` to `implementer` as the spec.
 
 When this skill is invoked **directly by the operator** ("what's next?"), present the result in a short table — id, title, type, priority, estimate, and a **planned?** column (`[ready]` vs `unplanned — run /plan-task`). Show unplanned high-priority items too, so the operator sees what to plan next; do not hide them the way the autonomous auto-pick does. Then ask whether to plan or claim, rather than auto-claiming. A task can only be claimed once it is `[ready]`.

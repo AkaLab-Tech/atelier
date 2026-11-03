@@ -207,9 +207,9 @@ Display the chosen task in a short summary (`id`, `title`, `priority`, `estimate
 - **Interactive mode, auto-picked (no id in `$ARGUMENTS`):** ask explicitly: *"Claim this task?"*. Wait for a yes/no. If no, stop — do not move tracking or create a worktree. The operator has not yet seen which task `task-discovery` chose, so this confirmation is still meaningful.
 - **Non-interactive mode:** log a single line `auto-claiming task <id> (non-interactive)` (`claiming task <id> (next part <N>)` for a next part, which is only reachable with a named id) and proceed to step 5. No prompt. The operator's `--yes` / `-y` flag (or `ATELIER_AUTO=1`) **is** the consent.
 
-### 5. Create the per-task worktree — `git-wt` skill
+### 5. Create the per-task worktree — `atelier-worktree-create`
 
-Run `atelier-worktree-create "$MAIN_ROOT" <branch> --from origin/<base>` to create the worktree for branch `task/<id-without-#>-<kebab-slug>` **cut from `origin/<base>`** — the ref fetched in step 1. The operator's local branches are left untouched. Capture the **absolute path** printed on stdout — every subsequent step runs scoped to that path.
+Run `atelier-worktree-create "$MAIN_ROOT" <branch> --from origin/<base>` to create the worktree for branch `task/<id-without-#>-<kebab-slug>` **cut from `origin/<base>`** — the ref fetched in step 1. The operator's local branches are left untouched. Handle the exit code: Exit 0 → use the last stdout line as the path. Exit 1 → the worktree was created but holds prod/stage env files and no path was printed: stop, print the flagged names from stderr, point to `docs/troubleshooting.md`, and do **not** claim the task (stop before step 6). Exit 2 → nothing was created: stop and report stderr verbatim, and do not claim. On exit 0, capture the **absolute path** printed on stdout — every subsequent step runs scoped to that path.
 
 **Next part (`CLAIM_KIND=next-part`).** The earlier part's `task/<id>-<slug>` branch still exists locally or on origin, so the new branch is `task/<id>-<slug>-part<N>`, N = merged parts + 1 (from step 3). The `task/<id>-` prefix is kept so the push hook, the claim registry and housekeeping keep matching it, and the name never collides with an earlier part's branch. For a first claim the branch name is unchanged.
 

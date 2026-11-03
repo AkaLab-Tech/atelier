@@ -49,7 +49,7 @@ Never `git commit` (or `git push`) to `main`, `master`, `develop`,
 For every code change, create a branch first:
 
 1. `git checkout -b task/<id>-<slug>` for ROADMAP-driven tasks. The
-   `/atelier:next-task` flow does this automatically via the `git-wt` skill.
+   `/atelier:next-task` flow does this automatically via `atelier-worktree-create`.
    On `github-project`, `<id>` is the GitHub issue number; the board's Atelier ID is only a cross-check, and housekeeping keeps and reports a mismatch rather than removing it.
 2. `git checkout -b chore/<short-name>` for non-roadmap chores
    (migrations, dependency bumps, cleanups, infrastructure).

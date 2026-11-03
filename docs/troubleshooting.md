@@ -257,19 +257,19 @@ To check whether auto-mode is currently active, inside any atelier session: `/st
 
 1. **List affected files by name only:** Run `atelier-doctor`, or for each registered project path `P`:
    ```bash
-   git -C "$P" worktree list --porcelain | awk '/^worktree /{print $2}' | while read -r w; do [ "$w" = "$P" ] && continue; find "$w" -maxdepth 1 -name '.env*' -print; done; find "$P-worktrees" -maxdepth 2 -name '.env*' -print 2>/dev/null
+   git -C "$P" worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r w; do [ "$w" = "$P" ] && continue; find "$w" -maxdepth 4 \( -name .git -o -name node_modules \) -prune -o -iname '.env*' ! -iname '*.example' ! -iname '*.sample' ! -iname '*.template' ! -iname '*.dist' -print; done; find "$P-worktrees" -maxdepth 2 -iname '.env*' ! -iname '*.example' ! -iname '*.sample' ! -iname '*.template' ! -iname '*.dist' -print 2>/dev/null
    ```
-   (This prints paths only).
-2. **Remove prod/stage copies:** Remove prod/stage copies (`.env.prod*`, `.env.production*`, `.env.stage*`, `.env.staging*`) from each listed task worktree with `rm <path>`. Never touch the main checkout's own files.
+   (This prints paths only; committed templates are excluded because they are never flagged.)
+2. **Remove prod/stage copies:** Remove only the listed real prod/stage files (`.env.prod*`, `.env.production*`, `.env.stage*`, `.env.staging*`) from each task worktree with `rm <path>`. Committed templates (`*.example`, `*.sample`, `*.template`, `*.dist`) are never flagged and must not be deleted. Never touch the main checkout's own files.
 3. **Optional exposure check by name:**
    ```bash
-   grep -l -E '\.env\.(prod|production|stage|staging)' ~/.claude-work/projects/*/*.jsonl
+   grep -l -E '\.env\.(prod|production|stage|staging)' "${ATELIER_CONFIG_DIR:-$HOME/.claude}/projects"/*/*.jsonl
    ```
    lists transcripts that mention those names without printing content. Rotating credentials is the operator's call.
 4. **Re-run `atelier-doctor`** and confirm no hits.
 
 **Configuring allowed worktree env files (`worktreeEnvFiles`):**
-When `atelier-worktree-create` provisions a task worktree, it copies only the env files declared in `.atelier.json` under `worktreeEnvFiles`. By default, this is `[".env.local"]`. Projects relying on other development env files must declare them explicitly. Production and staging env files (`.env.prod*`, `.env.production*`, `.env.stage*`, `.env.staging*`) are rejected by `atelier-worktree-create` even if declared.
+When `atelier-worktree-create` provisions a task worktree, it copies only the env files declared in `.atelier.json` under `worktreeEnvFiles`. By default, this is `[".env.local"]`. Projects relying on other development env files must declare them explicitly. Production and staging env files (`.env.prod*`, `.env.production*`, `.env.stage*`, `.env.staging*`) are rejected by `atelier-worktree-create` even if declared. Committed templates (`*.example`, `*.sample`, `*.template`, `*.dist`) are exempt and never block creation.
 
 **Read protection (`hooks/block-env-read.sh`):**
 `hooks/block-env-read.sh` (#597e) intercepts Bash commands and blocks commands that read, copy, move, delete or otherwise touch the contents of a protected `.env*` file (including `.env`, `.env.local`, and `.envrc`). It allows name-only operations (`ls`, `test`, `[`, `[[`, `find` without `-exec`/`-delete`, `git status`, `git check-ignore`). Non-secret template files such as `.env.example`, `.env.sample`, `.env.template`, and `.env.dist` stay viewable through the shell (e.g. `cat .env.example`), while the Claude Code `Read` tool denies `./.env*` across the board (#597d).

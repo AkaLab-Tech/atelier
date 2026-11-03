@@ -143,6 +143,57 @@ bash "$HELPER" --scan-env "$TMP/does-not-exist" >/dev/null 2>&1; rc=$?
 bash "$HELPER" --scan-env >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 2 ] && pass "--scan-env without dir: exit 2" || fail "no-dir rc=$rc"
 
+# 11. is_prod_stage classifier: templates exempt (any case), real files flagged
+awk '/^is_prod_stage\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$HELPER" > "$TMP/cls.sh"
+[ -s "$TMP/cls.sh" ] || fail "could not extract is_prod_stage()"
+# shellcheck disable=SC1091
+source "$TMP/cls.sh"
+for f in .env.production.example .env.prod.sample .env.staging.template .env.stage.dist .ENV.Production.EXAMPLE; do
+  is_prod_stage "$f" && fail "is_prod_stage flagged template $f" || pass "is_prod_stage exempts template $f"
+done
+for f in .env.prod .env.production .env.production.local .env.staging .env.stage.local .ENV.PROD; do
+  is_prod_stage "$f" && pass "is_prod_stage flags $f" || fail "is_prod_stage missed $f"
+done
+
+# 12. create mode: only a committed template in the new worktree -> exit 0, path printed
+new_repo
+export STUB_PLANT=".env.production.example"
+run_create b12
+[ "$RC" -eq 0 ] && pass "template-only worktree: exit 0" || fail "template-only rc=$RC err=$ERR"
+[ "$(printf '%s\n' "$OUT" | tail -n1)" = "$WTS/b12" ] && pass "template-only: path is last stdout line" || fail "template-only last line: $(printf '%s\n' "$OUT" | tail -n1)"
+has b12 .env.production.example && pass "template left in place (not deleted)" || fail "template missing"
+
+# 13. template alongside a real prod file -> only the real file flagged, exit 1
+new_repo
+export STUB_PLANT=".env.production.example .env.production .env.staging.template"
+run_create b13
+[ "$RC" -eq 1 ] && pass "template + real prod: exit 1" || fail "template + prod rc=$RC"
+printf '%s\n' "$ERR" | grep -qF -- '.env.production' && pass "stderr lists .env.production" || fail "stderr: $ERR"
+printf '%s\n' "$ERR" | grep -qF -- '.env.production.example' && fail "stderr flagged template: $ERR" || pass "stderr does not list template .env.production.example"
+printf '%s\n' "$ERR" | grep -qF -- '.env.staging.template' && fail "stderr flagged .env.staging.template" || pass "stderr does not list .env.staging.template"
+
+# 14. --scan-env with templates only / templates + real file
+d="$TMP/scan-tpl"; mkdir -p "$d"
+for f in .env.production.example .env.prod.sample .env.staging.template .env.stage.dist .ENV.Production.EXAMPLE; do : > "$d/$f"; done
+out="$(bash "$HELPER" --scan-env "$d" 2>/dev/null)"; rc=$?
+{ [ "$rc" -eq 0 ] && [ -z "$out" ]; } && pass "--scan-env templates only: exit 0, no output" || fail "templates rc=$rc out=$out"
+: > "$d/.env.production"
+out="$(bash "$HELPER" --scan-env "$d" 2>/dev/null)"; rc=$?
+[ "$rc" -eq 1 ] && pass "--scan-env templates + .env.production: exit 1" || fail "mixed rc=$rc"
+[ "$out" = ".env.production" ] && pass "--scan-env lists only .env.production" || fail "mixed out: $out"
+
+# 15. --depth: nested copies found, node_modules/.git pruned, nested templates exempt, default top-level only
+d="$TMP/scan-nested"; mkdir -p "$d/apps/web" "$d/node_modules/pkg" "$d/.git/x"
+: > "$d/apps/web/.env.production"; : > "$d/apps/web/.env.production.example"
+: > "$d/node_modules/pkg/.env.production"; : > "$d/.git/x/.env.staging"
+out="$(bash "$HELPER" --scan-env "$d" 2>/dev/null)"; rc=$?
+{ [ "$rc" -eq 0 ] && [ -z "$out" ]; } && pass "create-mode scan stays top-level only" || fail "top-level rc=$rc out=$out"
+out="$(bash "$HELPER" --scan-env --depth 4 "$d" 2>/dev/null)"; rc=$?
+[ "$rc" -eq 1 ] && pass "--depth 4: exit 1 on nested prod file" || fail "depth rc=$rc"
+[ "$out" = "apps/web/.env.production" ] && pass "--depth 4 lists only apps/web/.env.production (relative)" || fail "depth out: $out"
+bash "$HELPER" --scan-env --depth 0 "$d" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 2 ] && pass "--depth 0 invalid: exit 2" || fail "depth 0 rc=$rc"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "All tests passed."; exit 0; fi
 echo "$fails test(s) FAILED."; exit 1

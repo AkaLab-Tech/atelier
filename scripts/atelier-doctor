@@ -1736,8 +1736,11 @@ check_worktree_env_files() {
     local wt
     for wt in ${wts[@]+"${wts[@]}"}; do
       local scan_out rc=0
-      scan_out="$("$scanner" --scan-env "$wt" 2>/dev/null)" || rc=$?
-      if [ "$rc" -eq 1 ]; then
+      scan_out="$("$scanner" --scan-env --depth 4 "$wt" 2>/dev/null)" || rc=$?
+      if [ "$rc" -eq 2 ]; then
+        push_host "$WARN could not scan task worktree: $p · $wt"
+        problems=$((problems + 1))
+      elif [ "$rc" -eq 1 ]; then
         local f
         while IFS= read -r f; do
           [ -n "$f" ] || continue
@@ -1752,10 +1755,12 @@ check_worktree_env_files() {
     push_fix_manual "# Run in the operator's own terminal, not through an agent:
 # 1. List affected files:
 #    atelier-doctor
-# 2. Remove prod/stage copies (.env.prod*, .env.production*, .env.stage*, .env.staging*)
-#    from each listed task worktree with rm <path>. Never touch the main checkout's own files.
+# 2. Remove only the listed real prod/stage files (.env.prod*, .env.production*,
+#    .env.stage*, .env.staging*) from each task worktree with rm <path>. Committed
+#    templates (*.example, *.sample, *.template, *.dist) are never flagged and must
+#    not be deleted. Never touch the main checkout's own files.
 # 3. Optional exposure check by name:
-#    grep -l -E '\.env\.(prod|production|stage|staging)' ~/.claude-work/projects/*/*.jsonl
+#    grep -l -E '\.env\.(prod|production|stage|staging)' \"\${ATELIER_CONFIG_DIR:-\$HOME/.claude}/projects\"/*/*.jsonl
 # 4. Re-run atelier-doctor and confirm no hits.
 # See docs/troubleshooting.md for the full procedure."
   else
