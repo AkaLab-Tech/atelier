@@ -11,6 +11,7 @@
 #   D4 — outcome links back by --ref; unknown ref / bad choice exit 2
 #   D5 — report renders a table; filters by --since and --project
 #   D6 — prompt_form classification (file-pointer vs inline); refs are unique
+#   D8 — outcome --choice auto-reissue stored and reported; invalid choice still dies
 #   D7 — optional --hook stored as "hook" (null when absent); report renders it
 #
 # Run:  hooks/tests/dispatch-denial-log.test.sh
@@ -158,6 +159,17 @@ eq "D7: --hook kept with a non-hook-changed-input tag" "$(jq -r --arg r "$REF7T"
 REP7B="$(bash "$HELPER" report)"
 case "$(printf '%s\n' "$REP7B" | grep '| epsilon |')" in *"| hook-changed-input (a@x,b@y) |"*) pass "D7: report renders multi-key hook";; *) fail "D7: multi-key report cell wrong";; esac
 case "$(printf '%s\n' "$REP7B" | grep '| zeta |')" in *"| hook-changed-input | 1 |"*) pass "D7: empty hook renders bare tag";; *) fail "D7: empty hook row wrong";; esac
+
+# --- D8 (#690): outcome --choice auto-reissue --------------------------------
+REF8="$(rec /w/theta '#690' 'hook-changed-input' "$TMP/inline.md" --hook 'c@z' --attempt 1)"
+bash "$HELPER" outcome --ref "$REF8" --choice auto-reissue --reissue accepted >/dev/null 2>&1
+eq "D8: auto-reissue outcome exits 0" "$?" "0"
+eq "D8: auto-reissue choice stored" "$(jq -r --arg r "$REF8" 'select(.ref==$r and .type=="outcome") | .choice' "$LOG")" "auto-reissue"
+eq "D8: auto-reissue reissue stored" "$(jq -r --arg r "$REF8" 'select(.ref==$r and .type=="outcome") | .reissue' "$LOG")" "accepted"
+REP8="$(bash "$HELPER" report)"
+case "$(printf '%s\n' "$REP8" | grep '| theta |')" in *"| auto-reissue | accepted |"*) pass "D8: report shows auto-reissue accepted";; *) fail "D8: report row wrong";; esac
+bash "$HELPER" outcome --ref "$REF8" --choice bogus >/dev/null 2>&1
+eq "D8: invalid choice still exits 2" "$?" "2"
 
 echo ""
 if [ "$fails" -eq 0 ]; then

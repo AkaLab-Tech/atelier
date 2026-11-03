@@ -5,7 +5,7 @@
 #
 # Usage:
 #   atelier-dispatch-denial record --project <root>
-#       --command <next-task|resume-task|plan-task|task-orchestrator>
+#       --command <next-task|resume-task|plan-task|release|babysit-prs|finish-task|abandon-task|task-orchestrator>
 #       --agent <task-orchestrator|planner|implementer|tester|e2e-runner|pr-author|pr-opener|reviewer>
 #       --task <id> --tag '<verbatim>' --attempt <1|2> --prompt-file <path>
 #       [--session-role plan|worker|unknown] [--prior-denials-in-session <n>]
@@ -14,7 +14,7 @@
 #     exact dispatch prompt (dir 0700, file 0600). Prints the ref (a timestamp)
 #     on stdout. --hook names the plugin hook behind a hook-changed-input
 #     refusal (stored as "hook", null when absent).
-#   atelier-dispatch-denial outcome --ref <ref> --choice <redispatch|held|abandon>
+#   atelier-dispatch-denial outcome --ref <ref> --choice <redispatch|held|abandon|auto-reissue>
 #       [--reissue accepted|denied]
 #     Records the operator's answer and the re-issue result.
 #   atelier-dispatch-denial report [--since <YYYY-MM-DD>] [--project <name>]
@@ -108,7 +108,7 @@ cmd_outcome() {
     esac
   done
   [ -n "$ref" ] || die "outcome: --ref is required"
-  case "$choice" in redispatch|held|abandon) ;; *) die "outcome: --choice must be redispatch|held|abandon" ;; esac
+  case "$choice" in redispatch|held|abandon|auto-reissue) ;; *) die "outcome: --choice must be redispatch|held|abandon|auto-reissue" ;; esac
   [ -z "$reissue" ] || case "$reissue" in accepted|denied) ;; *) die "outcome: --reissue must be accepted|denied" ;; esac
   if [ ! -f "$LOG" ] || ! grep -q "\"ref\":\"$ref\"" "$LOG"; then die "outcome: unknown ref: $ref"; fi
   (umask 077; jq -cn --arg ref "$ref" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
