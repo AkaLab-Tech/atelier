@@ -110,7 +110,7 @@ for m in '*' ''; do
   reset
   add_plugin p@mkt 1.0.0 "$(hooks_for "$m")"; enable p@mkt
   out="$(run_detect)"
-  if printf '%s\n' "$out" | grep -q '^p@mkt'; then pass "D6 matcher '$m' matches"; else fail "D6 matcher '$m': [$out]"; fi
+  if grep -q -- '^p@mkt' <<<"$out"; then pass "D6 matcher '$m' matches"; else fail "D6 matcher '$m': [$out]"; fi
 done
 for m in 'Bash' 'mcp__.*'; do
   reset
@@ -131,7 +131,7 @@ add_plugin bad@mkt 1.0.0 '{ this is not json'
 add_plugin good@mkt 1.0.0 "$(hooks_for Agent)"
 enable bad@mkt good@mkt
 out="$(run_detect)"; rc=$?
-if [ "$rc" = 0 ] && ! printf '%s' "$out" | grep -q '^bad@mkt' && printf '%s' "$out" | grep -q '^good@mkt'; then
+if [ "$rc" = 0 ] && ! grep -q -- '^bad@mkt' <<<"$out" && grep -q -- '^good@mkt' <<<"$out"; then
   pass "D8 malformed hooks.json skipped, exit 0"; else fail "D8: rc=$rc out=[$out]"; fi
 
 # D9
