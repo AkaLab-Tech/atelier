@@ -361,6 +361,18 @@ Legacy case: in `verdict` mode, a PR that already carries a real `CHANGES_REQUES
 
 **Note (#590):** the settings template now allows `Agent(atelier:task-orchestrator)` and `Agent(atelier:planner)`. Auto mode (the supported mode) drops `Agent` allow rules on entry on Claude Code 2.1.309, so the dispatch is still classified and this denial can still occur. The rule does not change the hold-and-ask flow above. Evidence: `docs/research/agent-allow-rule-classifier-2026-10-23.md`.
 
+### Agent dispatch refused: "a hook changed this call's input" (context-mode)
+
+**Symptom:** in auto mode an `Agent` dispatch (for example `task-orchestrator` or `planner`) is refused once with "a hook changed this call's input", and `atelier-doctor` shows a `context-mode <version>: PreToolUse hook appends <context_window_protection> ...` warning.
+
+**Cause:** context-mode's PreToolUse hook (matcher `Agent`) appends a `<context_window_protection>` block to every Agent prompt, unconditionally. Claude Code 2.1.317 classifies the input as it was before that hook ran, so the rewritten call is treated as different from what was approved. Any other enabled plugin whose PreToolUse matcher covers `Agent`/`Task` can trigger the same refusal.
+
+**What atelier does:** `atelier-doctor` only warns (it never fixes anything, and it notes whether the installed version is in the range atelier has tested). How a refused dispatch is handled is tracked separately in #690 and #691, with neutral wording.
+
+**Fix (today):** leave auto mode for the session, or disable context-mode for the session, then re-dispatch. Do not hand-edit context-mode's matcher: its self-heal and `ctx-upgrade` undo the edit.
+
+**Diagnostics:** `atelier-agent-input-hooks detect` lists every enabled plugin whose PreToolUse matcher matches `Agent`/`Task` (plugin, version, matcher, tested range); add `--json` for machine output. No output means none was found.
+
 ### Worker session asks you to paste a phrase
 
 **Symptom:** in a multi-terminal setup, a worker session asks you to type or paste a sentence (an "authorization phrase") into its terminal before it will review or merge a PR.

@@ -1797,6 +1797,62 @@ check_neon
 check_workspaces
 check_project_registry
 check_worktree_env_files
+# #689: warn when an enabled plugin's PreToolUse hook rewrites Agent/Task input.
+# Warn-only: no fix block, never touches EXIT_STATUS.
+check_agent_input_hooks() {
+  local helper
+  helper="$(command -v atelier-agent-input-hooks 2>/dev/null || true)"
+  if [ -z "$helper" ] || [ ! -x "$helper" ]; then
+    local this="${BASH_SOURCE[0]}"
+    while [ -L "$this" ]; do
+      local target; target="$(readlink "$this" 2>/dev/null || true)"
+      if [[ "$target" == /* ]]; then
+        this="$target"
+      else
+        this="$(dirname "$this")/$target"
+      fi
+    done
+    local script_dir; script_dir="$(cd -P "$(dirname "$this")" 2>/dev/null && pwd)"
+    if [ -x "$script_dir/atelier-agent-input-hooks" ]; then
+      helper="$script_dir/atelier-agent-input-hooks"
+    elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "${CLAUDE_PLUGIN_ROOT}/scripts/atelier-agent-input-hooks" ]; then
+      helper="${CLAUDE_PLUGIN_ROOT}/scripts/atelier-agent-input-hooks"
+    fi
+  fi
+  if [ -z "$helper" ] || [ ! -x "$helper" ]; then
+    push_host "$SKIP Agent-input hooks check (atelier-agent-input-hooks not found)"
+    return 0
+  fi
+
+  local rows
+  rows="$("$helper" detect 2>/dev/null || true)"
+  if [ -z "$rows" ]; then
+    push_host "$OK no enabled plugin rewrites Agent/Task input (auto-mode dispatches unaffected)"
+    return 0
+  fi
+
+  local cc=""
+  if command -v claude >/dev/null 2>&1; then
+    cc="$(claude --version 2>/dev/null | awk 'NR==1{print $1}' || true)"
+    [ -n "$cc" ] && cc=" (CC $cc)"
+  fi
+
+  local key name version matcher known tested
+  while IFS=$'\t' read -r key name version matcher known tested; do
+    [ -n "$key" ] || continue
+    if [ "$known" = "context-mode" ]; then
+      local range; range="$("$helper" tested-range 2>/dev/null || echo "?–?")"
+      local tail_msg="tested range $range"
+      if [ "$tested" != "yes" ]; then
+        tail_msg="version $version is outside atelier's tested range $range; behaviour unverified"
+      fi
+      push_host "$WARN context-mode $version: PreToolUse hook appends <context_window_protection> to every Agent prompt — in auto mode a dispatch can be refused once with \"a hook changed this call's input\" (see docs/troubleshooting.md; $tail_msg)$cc"
+    else
+      push_host "$WARN $name $version: PreToolUse hook matches Agent/Task (matcher \"$matcher\") and may rewrite dispatch input — auto-mode dispatches may be refused$cc"
+    fi
+  done <<<"$rows"
+}
+
 check_user_settings_stale_paths
 check_atelier_config_dir
 check_sqlite_fts5
@@ -1809,6 +1865,7 @@ check_project_defaultmode_override
 check_atelier_automode_managed
 check_automode_environment_stale_paths
 check_automode_handwritten_overlap
+check_agent_input_hooks
 
 # ---------- emit the report ----------
 

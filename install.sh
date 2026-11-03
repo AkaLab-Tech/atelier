@@ -1723,6 +1723,9 @@ phase_c_1_setup_project_helper() {
   # #457: local record of denied task-orchestrator / planner dispatches.
   _phase_c_1_symlink_helper atelier-dispatch-denial
 
+  # #689: read-only detection of plugins whose PreToolUse hooks rewrite Agent input.
+  _phase_c_1_symlink_helper atelier-agent-input-hooks
+
   # #606: worktree creation with --no-env + allowlisted env-file copy.
   _phase_c_1_symlink_helper atelier-worktree-create
 
