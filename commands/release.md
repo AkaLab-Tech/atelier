@@ -83,11 +83,13 @@ This command carries no `Edit` / `Write` tool — it cannot touch `.claude-plugi
 - The change this task makes: `.claude-plugin/plugin.json`'s `.version` field (or the project's equivalent version manifest) becomes `<next_version>`; that manifest is the only file in scope. Committing is the author agent's step.
 - `interactive: <bool>` from this command's interaction mode.
 
-Wait for the dispatch to report the edit is done before proceeding — do not assume it landed.
+Wait for the dispatch to report the edit is done before proceeding — do not assume it landed. If this dispatch is refused with 'a hook changed this call's input', follow `/atelier:next-task` §8 (one verbatim re-issue, then the held line).
 
 ### 7. Delegate author → review → merge coordination — `task-orchestrator` dispatch (`Task`)
 
 Dispatch the `atelier:task-orchestrator` agent via `Task` in **non-task PR coordination mode** — this command carries no `Edit`/`Write` tool and no `gh pr merge`/`gh pr review` in its `allowed-tools`, and would not author, review, or merge the bump PR from its own turn even if it could. The whole author→review→merge chain (author → `reviewer` → the Pre-merge CI wait → `auto-merge`) is the orchestrator's job, dispatched as ITS OWN sub-agent calls one level down from this command's turn — exactly the way `/atelier:align` delegates its base PR.
+
+If this dispatch is refused with 'a hook changed this call's input', follow `/atelier:next-task` §8 (one verbatim re-issue, then the held line).
 
 Hand it a briefing carrying:
 
@@ -133,7 +135,7 @@ Runs only when `<project>`'s `.claude-plugin/plugin.json` `name` is listed in th
    ```
 
    Afterwards verify with read-only `git -C <wt> status --porcelain`, `git -C <wt> diff --stat`, and `git -C <wt> log origin/main..HEAD`: only `.claude-plugin/marketplace.json` is modified, and nothing is committed beyond `origin/main`. On any mismatch, stop and report it.
-3. Dispatch `atelier:task-orchestrator` in `mode: non-task-pr` exactly as in step 7 (no `task_id`, `interactive: <bool>`), with `repo` = the claude-plugins repo, `head` = the pin branch, `base` = its default branch, `title` = `chore(release): pin <plugin> to v<next_version>`, and `author_agent: pr-opener` (the branch is `chore/*`). The branch reaches `pr-opener` with the change uncommitted, so `pr-opener` makes the commit under the author identity. Lanes, as in steps 6–7: prepare = `implementer`, author = `pr-opener` (commits), review = `reviewer`, merge = `task-orchestrator` through `auto-merge`.
+3. Dispatch `atelier:task-orchestrator` in `mode: non-task-pr` exactly as in step 7 (no `task_id`, `interactive: <bool>`), with `repo` = the claude-plugins repo, `head` = the pin branch, `base` = its default branch, `title` = `chore(release): pin <plugin> to v<next_version>`, and `author_agent: pr-opener` (the branch is `chore/*`). The branch reaches `pr-opener` with the change uncommitted, so `pr-opener` makes the commit under the author identity. Lanes, as in steps 6–7: prepare = `implementer`, author = `pr-opener` (commits), review = `reviewer`, merge = `task-orchestrator` through `auto-merge`. If this dispatch is refused with 'a hook changed this call's input', follow `/atelier:next-task` §8 (one verbatim re-issue, then the held line).
 
 On `merged` proceed to step 9. On `held` (including `held: merge blocked by auto-mode classifier — human merge required`), print: "tag pushed, but operators keep receiving the previous pinned release until the pin PR merges", the pin PR URL, and the held reason verbatim — do **not** print the step 9 recipe, and do not retry or merge another way.
 

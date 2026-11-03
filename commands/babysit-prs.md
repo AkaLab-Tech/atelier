@@ -192,6 +192,8 @@ cd <worktree_path> && ... prefix. See operator-rules.md § Operating against the
 
 Record the orchestrator's returned status for the final report.
 
+If this dispatch is refused with 'a hook changed this call's input', follow `/atelier:next-task` §8 (one verbatim re-issue, then the held line).
+
 ### 6. Produce the per-pass report
 
 > Render the labels below in the operator's chatLanguage — the English is illustrative structure, not literal output.

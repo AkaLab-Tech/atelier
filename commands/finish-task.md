@@ -38,7 +38,7 @@ Dispatch the `task-orchestrator` agent via `Task` in **non-task PR coordination 
 - `interactive: true` unless the operator ran this under `--yes`/autonomous mode
 - No `task_id` (that field would route the orchestrator into its standard task chain and re-run the implementer)
 
-The orchestrator owns the rest: `pr-author` runs the push gate (`safe-commit`), commits, pushes to `origin task/<id>-<slug>` and opens the PR; then `reviewer` and the Auto-merge gate run as the orchestrator's own sub-agents. This command does not dispatch `pr-author`, `reviewer` or `auto-merge` itself.
+The orchestrator owns the rest: `pr-author` runs the push gate (`safe-commit`), commits, pushes to `origin task/<id>-<slug>` and opens the PR; then `reviewer` and the Auto-merge gate run as the orchestrator's own sub-agents. This command does not dispatch `pr-author`, `reviewer` or `auto-merge` itself. If this dispatch is refused with 'a hook changed this call's input', follow `/atelier:next-task` §8 (one verbatim re-issue, then the held line).
 
 Handle the orchestrator's terminal response:
 
