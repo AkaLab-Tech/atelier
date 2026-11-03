@@ -7,7 +7,7 @@
 # Run:  hooks/tests/doctor-worktree-env-files.test.sh
 # Exit: 0 = all assertions pass, 1 = at least one failed.
 
-# shellcheck disable=SC2015,SC1091,SC2329  # pass() always succeeds; dynamic source & callbacks
+# shellcheck disable=SC2015,SC1091,SC2329,SC2016,SC2088  # pass() always succeeds; dynamic source & callbacks
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -213,6 +213,77 @@ case "$out" in
     pass "case 8: reports SKIP when scanner missing" ;;
   *) fail "case 8: expected SKIP, got: $out" ;;
 esac
+
+# ---------- case 9: scan error (exit 2) -> WARN, never "clean" ----------
+# A scanner stub that exits 2 (e.g. unreadable / non-directory worktree) is
+# resolved first on PATH. Real unreadable-dir behaviour is covered by the helper
+# test (--scan-env on a non-directory exits 2).
+proj9="$TMP/proj9"
+mkrepo "$proj9"
+wt9="$TMP/proj9-wt"
+git -C "$proj9" worktree add -q -b branch9 "$wt9" HEAD
+mkdir -p "$TMP/stub2"
+printf '#!/usr/bin/env bash\nexit 2\n' > "$TMP/stub2/atelier-worktree-create"
+chmod +x "$TMP/stub2/atelier-worktree-create"
+register "$proj9"
+reset
+OLD_PATH="$PATH"
+PATH="$TMP/stub2:$PATH"
+check_worktree_env_files
+PATH="$OLD_PATH"
+out="$(all_host)"
+case "$out" in
+  *"$WARN could not scan task worktree: $proj9 · $wt9"*) pass "case 9: scan exit 2 reports WARN" ;;
+  *) fail "case 9: expected could-not-scan WARN, got: $out" ;;
+esac
+case "$out" in *"task worktrees clean"*) fail "case 9: reported clean despite scan error: $out" ;; *) pass "case 9: no clean line on scan error" ;; esac
+[ ${#FIX_LINES[@]} -eq 1 ] && pass "case 9: manual fix pushed" || fail "case 9: expected 1 fix, got ${#FIX_LINES[@]}"
+# real helper: non-directory -> exit 2
+: > "$TMP/not-a-dir"
+rc=0; "$REPO_ROOT/scripts/atelier-worktree-create" --scan-env --depth 4 "$TMP/not-a-dir" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && pass "case 9: real scanner on non-directory exits 2" || fail "case 9: real scanner rc=$rc"
+
+# ---------- case 10: nested copies, templates, pruned dirs ----------
+proj10="$TMP/proj10"
+mkrepo "$proj10"
+wt10="$TMP/proj10-wt"
+git -C "$proj10" worktree add -q -b branch10 "$wt10" HEAD
+mkdir -p "$wt10/apps/web" "$wt10/node_modules/pkg"
+: > "$wt10/apps/web/.env.production"
+: > "$wt10/apps/web/.env.production.example"
+: > "$wt10/.env.production.example"
+: > "$wt10/.env.staging.template"
+: > "$wt10/node_modules/pkg/.env.production"
+register "$proj10"
+reset
+check_worktree_env_files
+out="$(all_host)"
+fix="$(all_fix)"
+[ ${#HOST_LINES[@]} -eq 1 ] && pass "case 10: exactly 1 WARN (nested real file only)" || fail "case 10: expected 1 host line, got ${#HOST_LINES[@]}: $out"
+case "$out" in *"$wt10 · apps/web/.env.production"*) pass "case 10: nested apps/web/.env.production flagged" ;; *) fail "case 10: nested copy missed: $out" ;; esac
+case "$out" in *"node_modules"*) fail "case 10: descended into node_modules: $out" ;; *) pass "case 10: node_modules not scanned" ;; esac
+case "$out" in *".example"*|*".template"*) fail "case 10: template flagged: $out" ;; *) pass "case 10: templates not flagged" ;; esac
+
+# ---------- case 11: fix text exempts templates, uses ATELIER_CONFIG_DIR ----------
+case "$fix" in
+  *"templates"*"must"*"not be deleted"*) pass "case 11: fix text says templates must not be deleted" ;;
+  *) fail "case 11: fix text missing template exemption: $fix" ;;
+esac
+case "$fix" in *'ATELIER_CONFIG_DIR'*) pass "case 11: exposure grep uses ATELIER_CONFIG_DIR" ;; *) fail "case 11: ATELIER_CONFIG_DIR missing: $fix" ;; esac
+case "$fix" in *'~/.claude-work'*) fail "case 11: hardcoded ~/.claude-work in fix text" ;; *) pass "case 11: no hardcoded ~/.claude-work" ;; esac
+case "$fix" in *'.env.prod*, .env.production*'*'rm <path>'*) pass "case 11: rm limited to listed real files" ;; *) fail "case 11: fix text rm wording unexpected" ;; esac
+case "$fix" in *'Remove only the listed'*) pass "case 11: fix text says remove only the listed files" ;; *) fail "case 11: missing 'Remove only the listed'" ;; esac
+
+# ---------- case 12: troubleshooting doc ----------
+doc="$REPO_ROOT/docs/troubleshooting.md"
+grep -qF -- '-iname' "$doc" && pass "case 12: doc step 1 uses -iname" || fail "case 12: doc lacks -iname"
+grep -qF -- "sed -n 's/^worktree //p'" "$doc" && grep -qF -- 'IFS= read -r w' "$doc" \
+  && pass "case 12: doc step 1 handles paths with spaces" || fail "case 12: doc step 1 not space-safe"
+grep -qF -- 'Committed templates (`*.example`, `*.sample`, `*.template`, `*.dist`) are never flagged and must not be deleted' "$doc" \
+  && pass "case 12: doc step 2 exempts templates" || fail "case 12: doc step 2 lacks template exemption"
+grep -qF -- 'from each listed task worktree with `rm <path>`' "$doc" && fail "case 12: doc still blanket-rm" || pass "case 12: doc no blanket-rm"
+grep -qF -- '${ATELIER_CONFIG_DIR:-$HOME/.claude}/projects' "$doc" && pass "case 12: doc grep uses ATELIER_CONFIG_DIR" || fail "case 12: doc grep lacks ATELIER_CONFIG_DIR"
+grep -qF -- '~/.claude-work/projects' "$doc" && fail "case 12: doc hardcodes ~/.claude-work" || pass "case 12: doc no hardcoded ~/.claude-work"
 
 echo ""
 if [ "$fails" -eq 0 ]; then
