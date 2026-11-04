@@ -27,11 +27,17 @@ export ATELIER_CONFIG_DIR="$TMP/cfg"
 
 # Aborts (exit 1) unless the DB path for the current environment is under $TMP
 # and not under the real config dir. An empty ATELIER_CONFIG_DIR is refused: it
-# would silently fall back to $HOME/.claude-work.
+# would silently fall back to $HOME/.claude-work. Each distinct (passing)
+# ATELIER_CONFIG_DIR value is verified once and remembered in a file under $TMP
+# (a file, not a variable, so it survives $(...) subshells); any other value is
+# checked afresh, so every override still goes through the full check.
 memtest_assert_isolated() {
   local p real
   if [ -z "${ATELIER_CONFIG_DIR:-}" ]; then
     memtest_abort "ATELIER_CONFIG_DIR is empty/unset (would fall back to \$HOME/.claude-work)"
+  fi
+  if [ -f "$TMP/.memtest-verified" ] && grep -qxF -- "$ATELIER_CONFIG_DIR" "$TMP/.memtest-verified"; then
+    return 0
   fi
   p="$(bash "$MEM" path 2>/dev/null)" || p=""
   case "$p" in
@@ -43,6 +49,7 @@ memtest_assert_isolated() {
       "$real"|"$real"/*) memtest_abort "DB path '$p' is under the real config dir '$real'" ;;
     esac
   done
+  printf '%s\n' "$ATELIER_CONFIG_DIR" >> "$TMP/.memtest-verified"
   return 0
 }
 

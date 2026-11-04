@@ -12,7 +12,7 @@ The repo is **implemented and shipping** (currently v0.37.x — see `.claude-plu
 - `bootstrap.sh` — the repo-less one-line entry point (#39): installs Claude Code, registers the marketplace, installs the atelier plugin, then delegates to the cached `install.sh --from-cache`. The only curl|bash artifact; keep it small and auditable.
 - `.claude-plugin/` — plugin + marketplace manifests.
 - `scripts/` — 37 `atelier-*` helper binaries (doctor, setup-project, task backends, etc.).
-- `hooks/` — 12 hook scripts + `hooks.json` manifest + pattern catalogues in `hooks/patterns/`, with a hermetic regression suite (34 `*.test.sh`) in `hooks/tests/`.
+- `hooks/` — 12 hook scripts + `hooks.json` manifest + pattern catalogues in `hooks/patterns/`, with a hermetic regression suite (`*.test.sh`, auto-discovered) in `hooks/tests/`.
 - `agents/` — 14 agent definitions; `skills/` — 9 skills; `commands/` — 29 slash commands.
 - `docs/` (operator guide, quickstart, troubleshooting, research notes) and `templates/` (settings, project CLAUDE.md, `.atelier.json`).
 - CI: `.github/workflows/structural.yml` runs `bash -n` on all shell, the `hooks/tests/*.test.sh` suite, JSON validation, YAML-frontmatter parsing, and an `atelier-setup-project --help` smoke.
@@ -81,5 +81,5 @@ Per PLAN.md §11: multi-repo tasks, deployment/release management, cost monitori
 ## Working with this repo right now
 
 - Work happens on `task/<id>-<slug>` (or `fix/*` / `docs/*` / `chore/*`) branches in PRs against `main` — never commit to `main` directly.
-- There is no compile step. Validate changes the way CI does (`.github/workflows/structural.yml`): `bash -n` every touched shell file, run the hermetic suite (`for t in hooks/tests/*.test.sh; do bash "$t"; done`), and check touched JSON with `jq .` / `python3 -m json.tool`. Run `shellcheck` on modified scripts when available.
+- There is no compile step. Validate changes the way CI does (`.github/workflows/structural.yml`): `bash -n` every touched shell file, run the hermetic suite with `bash hooks/tests/run-all.sh` (parallel, per-file timings; `--serial` / `-j N` / `--only <glob>` available; the CI loop `for t in hooks/tests/*.test.sh; do bash "$t"; done` is equivalent), and check touched JSON with `jq .` / `python3 -m json.tool`. Run `shellcheck` on modified scripts when available.
 - New hook behaviour needs a matching hermetic test in `hooks/tests/*.test.sh` — the suite is auto-discovered by CI, so adding a test never requires editing the workflow.

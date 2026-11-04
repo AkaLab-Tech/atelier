@@ -33,6 +33,8 @@ fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 # shellcheck source=hooks/tests/memory-test-isolation.sh
 . "$REPO_ROOT/hooks/tests/memory-test-isolation.sh"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT"
+# The vault is covered by atelier-memory-render/ingest tests; rendering it after every write here is ~0.5 s of unrelated work per call.
+export ATELIER_MEMORY_VAULT=off
 CFG="$ATELIER_CONFIG_DIR"
 DB="$CFG/atelier/memory.db"
 
