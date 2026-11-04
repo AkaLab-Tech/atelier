@@ -92,6 +92,9 @@ hook_cwd="$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)"
 # A `cd`/`pushd` anywhere in the command changes what a relative path means for
 # later segments, so the recursive-grep path check cannot be trusted then.
 cd_in_command=0
+has_subst=0
+seg_piped=0
+case "$command_str" in *'$('*|*'<('*|*'>('*|*'`'*) has_subst=1 ;; esac
 printf '%s' "$command_str" | grep -Eq '(^|[^[:alnum:]_./-])(cd|pushd)([[:space:]]|$)' && cd_in_command=1
 
 # Strips the prefixes that run another command without changing what it reads:
@@ -272,6 +275,11 @@ grep_path_operands() {
 # operand exists under the hook cwd, and none contains a protected file.
 recursive_grep_paths_safe() {
   [ "$cd_in_command" = 0 ] || return 1
+  # Operands may be built by a substitution (split into other segments), fed
+  # through xargs or piped stdin, so the explicit paths cannot be trusted.
+  [ "$has_subst" = 0 ] || return 1
+  [ "$seg_piped" = 0 ] || return 1
+  printf '%s' "$1" | grep -Eq '(^|[^[:alnum:]_./-])xargs([[:space:]]|$)' && return 1
   [ -d "$hook_cwd" ] || return 1
   local op out found=0
   while IFS= read -r op; do
@@ -285,6 +293,30 @@ recursive_grep_paths_safe() {
   [ "$found" = 1 ]
 }
 
+# 0 when the segment runs a real script file with no stdin feed (pipe, heredoc,
+# herestring, `<` redirect, `-` operand) and is not bun exec/run/x or bunx.
+env_file_has_script_operand() {
+  local cmd="$1" rest="$2" seg="$3" w script="" skip=0 first=1
+  [ "$seg_piped" = 0 ] || return 1
+  case "$seg" in *'<'*) return 1 ;; esac
+  case "$rest" in bunx|bunx\ *) return 1 ;; esac
+  while IFS= read -r w; do
+    if [ "$first" = 1 ]; then first=0; continue; fi
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$w" in
+      --env-file) skip=1 ;;
+      -) return 1 ;;
+      -*) ;;
+      *) script="$w"; break ;;
+    esac
+  done < <(shell_words "$rest")
+  [ -n "$script" ] || return 1
+  if [ "$cmd" = bun ]; then
+    case "$script" in run|exec|x) return 1 ;; esac
+  fi
+  return 0
+}
+
 # Protected names in a segment, one per line.
 protected_tokens() {
   local seg="$1" orig_seg="$1"
@@ -294,7 +326,8 @@ protected_tokens() {
       # `--env-file` only loads the file for the app. With an eval/print flag or
       # an `env`/`printenv` word the command can print the loaded values, so the
       # flag stays and the file name is reported.
-      if ! printf '%s' "$SEG_REST" | grep -Eq '(^|[[:space:]])(-[A-Za-z]*[ep]|--eval|--print)|(^|[[:space:]])(eval|env|printenv)([[:space:]]|$)'; then
+      if env_file_has_script_operand "$SEG_CMD" "$SEG_REST" "$seg" \
+         && ! printf '%s' "$SEG_REST" | grep -Eq '(^|[[:space:]])(-[A-Za-z]*[ep]|--eval|--print)|(^|[[:space:]])(eval|env|printenv)([[:space:]]|$)'; then
         seg="$(printf '%s' "$seg" | sed -E 's/--env-file(=|[[:space:]]+)('\''|")?[^[:space:]'\''"]*('\''|")?//g')"
       fi
       ;;
@@ -478,6 +511,7 @@ while IFS= read -r seg; do
     opens=$((opens - 1))
   done
 
+  seg_piped="$piped"
   tokens="$(protected_tokens "$seg")"
 
   # Inside `$(`, backticks or `<(`/`>(`: the output is consumed by something

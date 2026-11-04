@@ -315,6 +315,22 @@ expect_allow 'grep -rn TODO src/'
 expect_allow 'grep -rn --exclude-dir=node_modules X src/'
 expect_block 'grep -rn TODO'
 expect_block 'grep -rn TODO .'
+
+echo "block-env-read — task #686 cycle 2 substitution / xargs / stdin-fed runtimes"
+: > "$CLEANTREE/server.js"
+expect_block 'grep -rn SECRET src/ $(printf .)'
+expect_block 'grep -rn SECRET src/ `printf .`'
+expect_block 'echo . | xargs grep -rn SECRET src/'
+expect_block "echo 'console.log(process.env)' | node --env-file=.env"
+expect_block $'node --env-file=.env <<EOF\nconsole.log(process.env)\nEOF'
+expect_block 'node --env-file=.env < x.js'
+expect_block 'node --env-file=.env -'
+expect_block "bun --env-file=.env exec 'echo \$SECRET'"
+expect_block 'bun --env-file=.env run x'
+expect_block 'bun --env-file=.env x y'
+expect_block 'bunx --env-file=.env y'
+expect_allow 'node --env-file=.env server.js'
+expect_allow 'grep -rn TODO src/'
 HOOK_CWD="$DIRTYTREE"
 expect_block 'grep -rn TODO src/'
 expect_block 'grep -rn --exclude-dir=node_modules X src/'
