@@ -19,8 +19,11 @@
 # stop    records an interim stop (SubagentStop fires on every turn end); an annotation only,
 #         the entry stays open until `finish`. Unknown or closed id is a no-op, exit 0.
 # live    prints open entries, one per line:
-#           agent_id<TAB>agent_type<TAB>step<TAB>age_s<TAB>fresh|stale<TAB>running|paused:<secs-since-last-stop>
+#           agent_id<TAB>agent_type<TAB>step<TAB>age_s<TAB>fresh|stale<TAB>running|paused:<secs-since-last-stop><TAB>wait-ok|wait-exceeded|-
 #         fresh while age_s < ownerTtlSeconds (from W/.atelier.json, default 43200).
+#         Column 7 is `-` for a running entry; for a paused one `wait-exceeded` once the
+#         seconds since the last stop reach subagentWait.pausedMaxSeconds (W/.atelier.json,
+#         default 600), else `wait-ok`.
 #         Exit 0 none open, 3 some open, 2 error.
 #
 # No polling, no waiting: every subcommand reads or appends once and returns.
@@ -28,8 +31,9 @@
 set -u
 
 DEFAULT_TTL_SECONDS=43200
+DEFAULT_PAUSED_MAX_SECONDS=600
 
-usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
 
 case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 [ $# -ge 1 ] || { usage >&2; exit 2; }
@@ -73,6 +77,13 @@ ttl_of() {
   local t=""
   [ -f "$1/.atelier.json" ] && t="$(jq -r '.ownerTtlSeconds // empty' "$1/.atelier.json" 2>/dev/null || true)"
   case "$t" in ''|*[!0-9]*) t="$DEFAULT_TTL_SECONDS" ;; esac
+  printf '%s' "$t"
+}
+
+paused_max_of() {
+  local t=""
+  [ -f "$1/.atelier.json" ] && t="$(jq -r '.subagentWait.pausedMaxSeconds // empty' "$1/.atelier.json" 2>/dev/null || true)"
+  case "$t" in ''|*[!0-9]*|0) t="$DEFAULT_PAUSED_MAX_SECONDS" ;; esac
   printf '%s' "$t"
 }
 
@@ -135,10 +146,12 @@ case "$sub" in
     ledger="$(ledger_of "$wt")"
     [ -f "$ledger" ] || exit 0
     ttl="$(ttl_of "$wt")"
-    out="$(open_entries "$ledger" | jq -r --argjson now "$(now_epoch)" --argjson ttl "$ttl" '
+    pmax="$(paused_max_of "$wt")"
+    out="$(open_entries "$ledger" | jq -r --argjson now "$(now_epoch)" --argjson ttl "$ttl" --argjson pmax "$pmax" '
       ($now - .ts) as $age
       | [.agent_id, .agent_type, (.step // ""), ($age|tostring), (if $age < $ttl then "fresh" else "stale" end),
-         (if .last_stop_ts then "paused:" + (($now - .last_stop_ts)|tostring) else "running" end)]
+         (if .last_stop_ts then "paused:" + (($now - .last_stop_ts)|tostring) else "running" end),
+         (if .last_stop_ts then (if ($now - .last_stop_ts) >= $pmax then "wait-exceeded" else "wait-ok" end) else "-" end)]
       | @tsv')" || exit 2
     [ -n "$out" ] || exit 0
     printf '%s\n' "$out"

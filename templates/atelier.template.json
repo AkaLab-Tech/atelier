@@ -39,6 +39,10 @@
     "maxWaitSeconds": 900,
     "pollIntervalSeconds": 15
   },
+  "subagentWait": {
+    "_comment": "Bounded wait on a paused specialist child (#709). A child that stopped a turn without a hand-back (ledger column 6 `paused:<secs>`) is waited for by the orchestrator ending its turn, up to `pausedMaxSeconds` since its last stop. Past the bound the orchestrator may hand back `held: <type> <agent_id> paused <secs>s without a hand-back — resume it, then resume this orchestrator`. Absent block, or a non-positive value → built-in default (600).",
+    "pausedMaxSeconds": 600
+  },
   "reviewFix": {
     "_comment": "Bounded automated review-fix loop (#24). When `enabled: true`, a `reviewer` → `request-changes` verdict automatically re-dispatches `implementer` (and `tester` when coverage is implicated) on the same worktree/branch, re-pushes, and re-runs `reviewer` — up to `maxCycles` times — before escalating to the operator. Set `enabled: false` to revert to today's surface-and-stop terminal: findings are surfaced immediately and the PR is left open for manual follow-up. Only code-addressable findings (correctness / test coverage / code quality / security) drive the loop; structural findings (scope alignment, oversize, missing dependency justification, pending human comments) route to their existing handlers or escalate directly without consuming a cycle. Absent block → built-in defaults (`enabled: true`, `maxCycles: 2`).",
     "enabled": true,

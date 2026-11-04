@@ -43,6 +43,7 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
 
 ## Decision rules
 
+- **Gate runs stay in the foreground.** Run every lint, typecheck or test command as a foreground Bash call with an explicit `timeout` sized to the suite, up to the 600000 ms tool maximum. Never set `run_in_background: true` on a gate command, and never end a turn while waiting on your own background work. If a gate run still goes to the background, do not stop to wait: hand back a final report with `Unresolved: gate run left the foreground: <command>` and `Next: Blocked — see Unresolved`, so the parent gets a hand-back instead of a paused child.
 - **Never** edit `package.json` or `pnpm-lock.yaml` directly. Adding a dependency goes through `pnpm add` (and, when it exists, the `safe-install` skill applying [PLAN.md §4](PLAN.md)). If you need a new dependency, stop and surface the request to the orchestrator — do not install it yourself in a code-only handoff.
 - **Never** edit `.github/workflows/**`, `Dockerfile`, or `docker-compose*` files. Those are out of scope for any automated agent.
 - **Never** commit, push, or open a PR. Those are `pr-author`'s job.

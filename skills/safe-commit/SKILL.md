@@ -141,6 +141,7 @@ The `✓ / ✗` symbols and the `Result:` line (`GREEN`, `RED`, or `SERVICE-UNRE
 
 ## Decision rules
 
+- **Gate runs stay in the foreground.** Run every lint, typecheck or test command as a foreground Bash call with an explicit `timeout` sized to the suite, up to the 600000 ms tool maximum. Never set `run_in_background: true` on a gate command, and never end a turn while waiting on your own background work. If a gate run still goes to the background, do not stop to wait: report the gate as not run (`gate run left the foreground: <command>`) instead of waiting.
 - **Never** soften a red. If a flake is suspected, run the failing test command **once more**; if it goes green on retry, surface `tests: ✓ pass (RETRIED — flake suspected: <test-name>)`. Don't silently retry forever — one retry, then trust the result.
 - **Never** quarantine or skip a test to make a red go green. That belongs in `tester` after the operator confirms the test is genuinely flaky.
 - **Never** add a `--passWithNoTests` flag, `--bail=false`, or any other shape-changing flag to the test command. Use what `package.json` defines.

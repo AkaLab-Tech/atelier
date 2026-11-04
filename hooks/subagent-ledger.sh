@@ -12,7 +12,10 @@
 #                          agent is a task-orchestrator, denies a report that leaves a fresh
 #                          live child in the worktree's ledger without a stop attempt: a
 #                          `Live sub-agents:` line naming every live agent id with `stopped` or
-#                          `TaskStop failed`. Disclosure with a stop attempt always unblocks.
+#                          `TaskStop failed`. Disclosure with a stop attempt always unblocks. A paused child whose
+#                          ledger column 7 is `wait-exceeded` may instead be disclosed with a line
+#                          naming its id plus `paused` and `resume` (#709); while it is `wait-ok`
+#                          only a stop attempt unblocks.
 #
 # Fails open everywhere: jq missing, no `Worktree:` line in the report, a different agent type,
 # or an unreadable ledger all allow. Nothing here waits or polls.
@@ -78,6 +81,7 @@ if [ "$rc" -ne 3 ]; then
 fi
 
 fresh_ids="$(printf '%s\n' "$live" | awk -F'\t' '$5 == "fresh" {print $1}')"
+exceeded_ids="$(printf '%s\n' "$live" | awk -F'\t' '$5 == "fresh" && $7 == "wait-exceeded" {print $1}')"
 if [ -z "$fresh_ids" ]; then
   log_decision "$HOOK_NAME" "SubagentHandback" "" "allow" "only stale live entries"
   close_own
@@ -88,7 +92,12 @@ disclosed="$(printf '%s\n' "$message" | awk 'f {print} tolower($0) ~ /live sub-a
 missing=""
 for id in $fresh_ids; do
   # Disclosure needs a stop attempt: the id's own line must say `stopped` or `TaskStop failed`.
-  printf '%s\n' "$disclosed" | grep -F -- "$id" | grep -Eiq 'stopped|TaskStop failed' || missing="$missing $id"
+  line="$(printf '%s\n' "$disclosed" | grep -F -- "$id")"
+  printf '%s\n' "$line" | grep -Eiq 'stopped|TaskStop failed' && continue
+  if printf '%s\n' "$exceeded_ids" | grep -Fqx -- "$id" && printf '%s\n' "$line" | grep -Eiq 'paused' && printf '%s\n' "$line" | grep -Eiq 'resume'; then
+    continue
+  fi
+  missing="$missing $id"
 done
 
 if [ -z "$missing" ]; then
@@ -107,6 +116,7 @@ atelier:subagent-ledger BLOCKED
      1. End your turn WITHOUT handing back and wait for the child's hand-back report (no sleep, no polling); an interim notification without a report means it is still live
      2. If the child's work is moot, TaskStop it and record: atelier-subagent-ledger finish --agent-id <id> --state stopped
      3. If TaskStop errors, disclose it as a last resort: add a line "Live sub-agents: <agent_id> (<type>, <step>) - still running: TaskStop failed (<error>)" naming every id above, then hand back again.
+     4. A child paused past subagentWait.pausedMaxSeconds (ledger column 7 wait-exceeded) is disclosed as: "Live sub-agents: <agent_id> (<type>, <step>) - paused <secs>s past the wait bound: resume <agent_id>, then resume the orchestrator"
 MSG
 log_decision "$HOOK_NAME" "SubagentHandback" "undisclosed-live-child" "block" "undisclosed live sub-agents: $missing"
 exit 2
