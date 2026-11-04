@@ -353,6 +353,34 @@ expect_block 'grep -rn --exclude-dir=node_modules X src/'
 expect_block 'grep -rn TODO'
 HOOK_CWD=""
 
+echo "block-env-read — task #686 cycle 4 quoted redirects / strict operands / env -C"
+# env file at root and in sub/, clean src/.
+RTFX="$TMP/rtfx"; mkdir -p "$RTFX/src" "$RTFX/sub/src"
+: > "$RTFX/.env"; : > "$RTFX/sub/.env"; : > "$RTFX/src/a.ts"
+HOOK_CWD="$RTFX"
+# Quoted redirect characters are plain operands (here: '.' still follows).
+expect_block "grep -rn SECRET src/ '>' ."
+expect_block 'grep -rn SECRET src/ ">" .'
+expect_block "grep -rn SECRET src/ '2>' ."
+expect_block "grep -rn SECRET src/ '<' ."
+# Quoted path operand fails closed.
+expect_block "grep -rn SECRET 'src/'"
+# env -C / --chdir change the directory: the allowance fails closed.
+expect_block 'env -C sub grep -rn SECRET src/'
+expect_block 'env -Csub grep -rn SECRET src/'
+expect_block 'env --chdir=sub grep -rn SECRET src/'
+expect_block 'env --chdir sub grep -rn SECRET src/'
+# Unquoted redirects and plain operands stay allowed.
+expect_allow 'grep -rn TODO src/'
+expect_allow 'grep -rn "foo bar" src/'
+expect_allow 'grep -rn --exclude-dir=node_modules X src/'
+expect_allow 'grep -rn X src/ 2>/dev/null'
+HOOK_CWD="$CDFX"
+expect_block 'env -C sub cp .env.example .env'
+expect_block 'env --chdir=sub cp .env.example .env'
+expect_allow 'cp .env.example .env'
+HOOK_CWD=""
+
 echo "block-env-read — malformed / missing input fails open"
 for raw in '' 'not json' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \
            '{"tool_name":"Bash","tool_input":{"command":""}}' \

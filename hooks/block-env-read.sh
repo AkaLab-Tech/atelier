@@ -36,14 +36,15 @@
 #     pnpm and npx are not exempt.
 #   - `cp <template> <env file>` is allowed only when the destination does not
 #     exist (resolved against the hook input `cwd`; a relative dest after a
-#     `cd`/`pushd` in the command is blocked); any `-t`/`--t*` (target
+#     `cd`/`pushd`/`env -C` in the command is blocked); any `-t`/`--t*` (target
 #     directory, incl. `-at`, `-t/tmp/x`, `--target=`) is blocked.
 #   - Recursive grep (grep/egrep/fgrep/ggrep/zgrep/zegrep/zfgrep, `-r`/`-R`/
 #     `--recursive`/`-d recurse`/`--directories=recurse`; rgrep always) is
 #     blocked unless `--exclude=.env*` / `--exclude='*.env*'` (nothing narrower
 #     counts) or every explicit path operand exists under `cwd` and holds no
 #     `.env*` file other than templates. No explicit path (default `.`), a
-#     `cd`/`pushd` in the command, or an unknown operand stays blocked.
+#     `cd`/`pushd`/`env -C`, a quoted/glob operand, or an unknown operand
+#     stays blocked.
 #   - Subshell `)` closes are matched against open `$(`/`<(`/`>(` before any
 #     brace/paren block, so `{ ls .env; x=$(a | b); } | xargs cat` is blocked.
 #
@@ -96,6 +97,8 @@ has_subst=0
 seg_piped=0
 case "$command_str" in *'$('*|*'<('*|*'>('*|*'`'*) has_subst=1 ;; esac
 printf '%s' "$command_str" | grep -Eq '(^|[^[:alnum:]_./-])(cd|pushd)([[:space:]]|$)' && cd_in_command=1
+# `env -C <dir>` / `--chdir` runs the command elsewhere, same effect as a cd.
+printf '%s' "$command_str" | grep -Eq '(^|[^[:alnum:]_./-])env[[:space:]]([^;&|]*[[:space:]])?(-[A-Za-z]*C|--chdir)' && cd_in_command=1
 
 # Strips the prefixes that run another command without changing what it reads:
 # a leading `(`/`{`/`!`/`\`, `VAR=val`, `sudo`/`command`/`builtin`/`exec`/
@@ -213,18 +216,21 @@ is_grep_env_excluded() {
   printf '%s' "$seg" | grep -Eq -- "--exclude(=|[[:space:]]+)['\"]?\\*?\\.env\\*['\"]?([[:space:]]|\$)"
 }
 
-# Quote-aware word split, one word per line, quotes removed.
+# Quote-aware word split, one word per line, quotes removed. With a second
+# argument, each line is prefixed `U` (fully unquoted) or `Q` (any quote,
+# backslash or unterminated quote seen in that word).
 shell_words() {
-  printf '%s\n' "$1" | awk '{
-    n = length($0); w = ""; inw = 0; q = ""
+  printf '%s\n' "$1" | awk -v flag="${2:-}" '{
+    n = length($0); w = ""; inw = 0; q = ""; qd = 0
     for (i = 1; i <= n; i++) {
       c = substr($0, i, 1)
       if (q != "") { if (c == q) { q = "" } else { w = w c }; continue }
-      if (c == "\"" || c == "\047") { q = c; inw = 1; continue }
-      if (c == " " || c == "\t") { if (inw) { print w; w = ""; inw = 0 }; continue }
+      if (c == "\"" || c == "\047") { q = c; inw = 1; qd = 1; continue }
+      if (c == "\\") { qd = 1 }
+      if (c == " " || c == "\t") { if (inw) { print (flag != "" ? (qd ? "Q" : "U") : "") w; w = ""; inw = 0; qd = 0 }; continue }
       w = w c; inw = 1
     }
-    if (inw) print w
+    if (inw) print (flag != "" ? ((qd || q != "") ? "Q" : "U") : "") w
   }'
 }
 
@@ -233,11 +239,13 @@ shell_words() {
 grep_path_operands() {
   seg_command "$1"
   local -a ws=()
-  local w i ch idx=1 n have_pat=0 eoo=0
-  while IFS= read -r w; do ws+=("$w"); done < <(shell_words "$SEG_REST")
+  local w i ch idx=1 n have_pat=0 eoo=0 qf
+  while IFS= read -r w; do ws+=("$w"); done < <(shell_words "$SEG_REST" flag)
   n=${#ws[@]}
   while [ "$idx" -lt "$n" ]; do
     w="${ws[$idx]}"
+    qf="${w:0:1}"
+    w="${w:1}"
     idx=$((idx + 1))
     if [ "$eoo" = 0 ]; then
       case "$w" in
@@ -263,6 +271,7 @@ grep_path_operands() {
       esac
     fi
     if [ "$have_pat" = 0 ]; then have_pat=1; continue; fi
+    if [ "$qf" = Q ]; then printf '%s\n' "'$w'"; continue; fi
     if [[ "$w" =~ ^[0-9]*[\<\>] ]]; then
       [[ "$w" =~ ^[0-9]*(\>\>?|\<|\>\&|\&\>)$ ]] && idx=$((idx + 1))
       continue
@@ -285,6 +294,8 @@ recursive_grep_paths_safe() {
   while IFS= read -r op; do
     [ -n "$op" ] || continue
     case "$op" in -*) return 1 ;; esac
+    # Fail closed: only a plain unquoted path word is trusted.
+    [[ "$op" =~ ^[A-Za-z0-9_./+,@:%=-]+$ ]] || return 1
     found=1
     (cd "$hook_cwd" 2>/dev/null && [ -e "$op" ]) || return 1
     out="$(cd "$hook_cwd" && find -L "$op" -iname '.env*' ! -iname '*.example' ! -iname '*.sample' ! -iname '*.template' ! -iname '*.dist' -print -quit 2>/dev/null)" || return 1
