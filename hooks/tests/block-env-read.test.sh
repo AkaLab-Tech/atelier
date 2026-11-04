@@ -414,6 +414,17 @@ expect_block "grep -r --exclude='.env*' --include='*' X ."
 expect_block 'grep -r --exclude=.env* --include .envrc X .'
 expect_allow "grep -r --exclude='.env*' --include='*.ts' X ."
 expect_allow "grep -r --include='*.md' --exclude='*.env*' X ."
+expect_block "grep -r --exclude='.env*' --include='.env.development' X ."
+expect_block "grep -r --exclude='.env*' --include=.env.test X ."
+expect_block "grep -r --exclude='.env*' --include='.env.staging' X ."
+expect_block "grep -r --exclude='.env*' --include={*.ts,.env} X ."
+# Review-fix cycle 1: option-looking operands after `--`, flock --command.
+expect_block "bash -c 'cat -- --exclude .env'"
+expect_block "bash -c 'cat -- --exclude=.env'"
+expect_block 'flock /tmp/l --command "grep -r X ."'
+expect_block 'flock /tmp/l --command="grep -r X ."'
+expect_allow "bash -c \"grep -r --exclude='.env*' X .\""
+expect_allow "flock /tmp/l grep -r --exclude='.env*' X ."
 HOOK_CWD=""
 
 echo "block-env-read — malformed / missing input fails open"

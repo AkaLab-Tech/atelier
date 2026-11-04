@@ -294,7 +294,11 @@ is_grep_env_excluded() {
       esac
     fi
     [ -n "$pat" ] || continue
-    for name in .env .env.local .env.production .envrc; do
+    case "$pat" in
+      *'{'*|*'['*) return 1 ;;
+      .env*) case "$pat" in *.example|*.sample|*.template|*.dist) ;; *) return 1 ;; esac ;;
+    esac
+    for name in .env .env.local .env.production .env.development .env.test .env.staging .envrc; do
       # shellcheck disable=SC2254
       case "$name" in $pat) return 1 ;; esac
     done
@@ -312,6 +316,8 @@ shell_c_string() {
     if [ "$skipnext" = 1 ]; then skipnext=0; continue; fi
     case "$w" in
       -o|-O|+O) skipnext=1 ;;
+      --command=*) [ "$cmd" = flock ] && { printf '%s\n' "${w#--command=}"; return 0; } ;;
+      --command) [ "$cmd" = flock ] && take=1 ;;
       -c|-[A-Za-z]*c) take=1 ;;
       -*|+*) ;;
       *) [ "$cmd" = flock ] || return 0 ;;
@@ -446,6 +452,21 @@ env_file_has_script_operand() {
   return 0
 }
 
+# 0 when some piece of a `-c` string has `--exclude` but is not a grep command.
+shell_piece_nongrep_exclude() {
+  local piece sc="${SEG_CMD:-}" sr="${SEG_REST:-}" found=1
+  while IFS= read -r piece; do
+    case "$piece" in *--exclude*) ;; *) continue ;; esac
+    seg_command "$piece"
+    case "$SEG_CMD" in
+      grep|egrep|fgrep|ggrep|zgrep|zegrep|zfgrep|rgrep) ;;
+      *) found=0 ;;
+    esac
+  done < <(printf '%s\n' "$1" | awk '{ gsub(/&&|\|\||[;|]/, "\n"); print }')
+  SEG_CMD="$sc"; SEG_REST="$sr"
+  return "$found"
+}
+
 # Protected names in a segment, one per line.
 protected_tokens() {
   local seg="$1" orig_seg="$1" cstr="" preload_re
@@ -469,8 +490,14 @@ protected_tokens() {
         seg="$(printf '%s' "$seg" | sed -E 's/--env-file(=|[[:space:]]+)('\''|")?[^[:space:]'\''"]*('\''|")?//g')"
       fi
       ;;
-    grep|egrep|fgrep|ggrep|zgrep|zegrep|zfgrep|rgrep|bash|sh|zsh|dash|ksh|flock)
-      # For a shell/flock `-c` string the inner pass re-checks the exclusion.
+    bash|sh|zsh|dash|ksh|flock)
+      # Strip `--exclude` only when every piece carrying one is a grep; the
+      # inner pass re-checks the exclusion itself.
+      if ! shell_piece_nongrep_exclude "$cstr"; then
+        seg="$(printf '%s' "$seg" | sed -E 's/--exclude(=|[[:space:]]+)('\''|")?[^[:space:]'\''"]*('\''|")?//g')"
+      fi
+      ;;
+    grep|egrep|fgrep|ggrep|zgrep|zegrep|zfgrep|rgrep)
       seg="$(printf '%s' "$seg" | sed -E 's/--exclude(=|[[:space:]]+)('\''|")?[^[:space:]'\''"]*('\''|")?//g')"
       ;;
   esac
