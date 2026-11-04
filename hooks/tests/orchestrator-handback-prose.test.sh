@@ -17,6 +17,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 AGENT="$REPO_ROOT/agents/task-orchestrator.md"
 RESUME="$REPO_ROOT/commands/resume-task.md"
 RULES="$REPO_ROOT/operator-rules.md"
+TESTER="$REPO_ROOT/agents/tester.md"
+ROOT_CLAUDE="$REPO_ROOT/CLAUDE.md"
 HOOKS_JSON="$REPO_ROOT/hooks/hooks.json"
 INSTALL="$REPO_ROOT/install.sh"
 
@@ -81,6 +83,16 @@ if printf '%s' "$stripped" | grep -Eiq 'sleep|poll|while[[:space:]]+(true|\[|:)|
 else
   ok "subsection has no sleep/poll/while-loop wording beyond the prohibition"
 fi
+
+echo "== paused-child wait (#709)"
+contains "held Status string for a paused child" "$AGENT" 'held: <type> <agent_id> paused <secs>s without a hand-back — resume it, then resume this orchestrator'
+count_is "held paused-child Status in both vocabularies" "$AGENT" '`held: <type> <agent_id> paused <secs>s without a hand-back — resume it, then resume this orchestrator`' 3
+contains "Drain paused-child rule" "$AGENT" '**Paused child (column 6 `paused:<secs>`).**'
+contains "wait-ok means end the turn and wait" "$AGENT" '`wait-ok`: wait for it. End your turn without handing back, with no sleep and no poll'
+contains "wait-exceeded may hand back" "$AGENT" '`wait-exceeded` (seconds since its last stop reached `subagentWait.pausedMaxSeconds`, default 600)'
+contains "tester foreground rule" "$TESTER" "**Gate runs stay in the foreground.**"
+contains "tester foreground hand-back state" "$TESTER" 'Red — gate run left the foreground: <command>'
+contains "root CLAUDE.md names the parallel runner" "$ROOT_CLAUDE" 'hooks/tests/run-all.sh -j 8'
 
 echo "== hooks/hooks.json"
 if command -v jq >/dev/null 2>&1; then

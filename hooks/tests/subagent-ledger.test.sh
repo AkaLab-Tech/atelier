@@ -261,6 +261,73 @@ done
 eq "both closed as superseded-by-resume" "$(jq -rs '[.[]|select(.event=="finish" and .state=="superseded-by-resume")]|length' "$WT/.task-log/subagents.jsonl")" "2"
 has "reason is kept in the ledger" "$(jq -rs '[.[]|select(.event=="finish")][0].reason' "$WT/.task-log/subagents.jsonl")" "--ignore-live"
 
+echo "== helper: paused wait bound (column 7, #709)"
+# Rewrite every stop ts in the worktree ledger to "$2 seconds ago".
+age_stop() {
+  local secs="$2" f="$1/.task-log/subagents.jsonl" now
+  now="$(date -u +%s)"
+  jq -c --argjson old "$((now - secs))" 'if .event=="stop" then .ts=$old else . end' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+pause_child() { # worktree id
+  printf '%s' "{\"hook_event_name\":\"SubagentStop\",\"agent_id\":\"$2\",\"agent_type\":\"implementer\"}" | bash "$HOOK" >/dev/null 2>&1
+}
+col7() { "$LEDGER" live --worktree "$1" | cut -f7; }
+WT="$(new_wt pw)"
+"$LEDGER" start --worktree "$WT" --agent-id pw1 --type implementer --step 5 >/dev/null 2>&1
+eq "running entry has column 7 '-'" "$(col7 "$WT")" "-"
+pause_child "$WT" pw1
+age_stop "$WT" 599
+out="$("$LEDGER" live --worktree "$WT")"
+eq "paused under the default bound is wait-ok" "$(printf '%s' "$out" | cut -f7)" "wait-ok"
+eq "columns 1-5 unchanged for a paused entry" "$(printf '%s' "$out" | awk -F'\t' '{print $1"|"$2"|"$3"|"$5}')" "pw1|implementer|5|fresh"
+case "$(printf '%s' "$out" | cut -f6)" in paused:59[0-9]|paused:600) ok "column 6 stays paused:<secs>" ;; *) bad "column 6 unexpected: $(printf '%s' "$out" | cut -f6)" ;; esac
+eq "live output has exactly 7 columns" "$(printf '%s' "$out" | awk -F'\t' '{print NF}')" "7"
+age_stop "$WT" 601
+eq "paused over the default bound (no .atelier.json) is wait-exceeded" "$(col7 "$WT")" "wait-exceeded"
+printf '{"subagentWait": {"pausedMaxSeconds": "abc"}}\n' > "$WT/.atelier.json"
+eq "non-numeric pausedMaxSeconds falls back to 600 (exceeded)" "$(col7 "$WT")" "wait-exceeded"
+age_stop "$WT" 100
+eq "non-numeric pausedMaxSeconds falls back to 600 (ok)" "$(col7 "$WT")" "wait-ok"
+printf '{"subagentWait": {"pausedMaxSeconds": 0}}\n' > "$WT/.atelier.json"
+eq "zero pausedMaxSeconds falls back to 600 (ok)" "$(col7 "$WT")" "wait-ok"
+age_stop "$WT" 700
+eq "zero pausedMaxSeconds falls back to 600 (exceeded)" "$(col7 "$WT")" "wait-exceeded"
+printf '{"subagentWait": {"pausedMaxSeconds": 1000}}\n' > "$WT/.atelier.json"
+eq "configured pausedMaxSeconds raises the bound (700s is wait-ok)" "$(col7 "$WT")" "wait-ok"
+age_stop "$WT" 1001
+eq "configured pausedMaxSeconds is honoured (1001s is wait-exceeded)" "$(col7 "$WT")" "wait-exceeded"
+printf '{"subagentWait": {"pausedMaxSeconds": 30}}\n' > "$WT/.atelier.json"
+age_stop "$WT" 31
+eq "configured pausedMaxSeconds lowers the bound (31s is wait-exceeded)" "$(col7 "$WT")" "wait-exceeded"
+age_stop "$WT" 5
+eq "configured pausedMaxSeconds lowers the bound (5s is wait-ok)" "$(col7 "$WT")" "wait-ok"
+
+echo "== hook: handback guard with a paused child (#709)"
+WT="$(new_wt pg)"
+"$LEDGER" start --worktree "$WT" --agent-id pg1 --type implementer --step 2 >/dev/null 2>&1
+pause_child "$WT" pg1
+age_stop "$WT" 10
+PMSG="Task: x
+Worktree: $WT
+Status: held"
+run_hook "$(hb_payload task-orchestrator "$PMSG
+Live sub-agents: pg1 (implementer, 2) - paused 10s past the wait bound: resume pg1, then resume the orchestrator")"
+eq "wait-ok child disclosed with paused+resume is denied" "$RC" "2"
+has "denial names the paused child" "$OUT" "pg1"
+age_stop "$WT" 700
+run_hook "$(hb_payload task-orchestrator "$PMSG
+Live sub-agents: pg1 (implementer, 2) - paused 700s past the wait bound: resume pg1, then resume the orchestrator")"
+eq "wait-exceeded child disclosed with paused+resume is allowed" "$RC" "0"
+run_hook "$(hb_payload task-orchestrator "$PMSG")"
+eq "wait-exceeded child not named is still denied" "$RC" "2"
+has "denial offers the paused-child disclosure (way 4)" "$OUT" "4. A child paused past subagentWait.pausedMaxSeconds"
+run_hook "$(hb_payload task-orchestrator "$PMSG
+Live sub-agents: pg1 (implementer, 2) - paused 700s")"
+eq "wait-exceeded child with paused but no resume is denied" "$RC" "2"
+run_hook "$(hb_payload task-orchestrator "$PMSG
+Live sub-agents: pg1 (implementer, 2) - resume pg1")"
+eq "wait-exceeded child with resume but no paused is denied" "$RC" "2"
+
 echo
 echo "subagent-ledger: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -45,6 +45,7 @@ The operator-facing rules loaded by `SessionStart` (`operator-rules.md`) are aut
 
 ## Decision rules
 
+- **Gate runs stay in the foreground.** Run every lint, typecheck or test command as a foreground Bash call with an explicit `timeout` sized to the suite, up to the 600000 ms tool maximum. Never set `run_in_background: true` on a gate command, and never end a turn while waiting on your own background work. If a gate run still goes to the background, do not stop to wait: hand back a final report with `Final state: Red — gate run left the foreground: <command>`, so the parent gets a hand-back instead of a paused child.
 - **Never** weaken an existing test to make a new change pass. If a previously green test now fails, the new code is wrong — surface that.
 - **Never** mock at a layer the production code does not actually depend on. Mock at the real seam (HTTP, filesystem, system clock, randomness). Internal pure functions are tested directly.
 - **Never** edit `package.json` to add a test dependency. If a new test util is genuinely required, stop and surface the request to the orchestrator (route through `safe-install` per [PLAN.md §4](PLAN.md)).
@@ -60,7 +61,7 @@ End your turn with:
 - **Added/modified tests:** bullet list `path/to/test — what it covers`.
 - **Commands run:** the exact `pnpm` commands (lint, typecheck, test) and pass/fail for each.
 - **Coverage gaps:** any acceptance bullet you could not cover (e.g., requires e2e — defer to `e2e-runner`).
-- **Final state:** "Green — ready for `pr-author`" or "Red — see Commands run" or "Blocked — see Coverage gaps" or `needs-operator-permission` (a gate command was denied; no retry).
+- **Final state:** "Green — ready for `pr-author`" or "Red — see Commands run" or "Blocked — see Coverage gaps" or "Red — gate run left the foreground: <command>" or `needs-operator-permission` (a gate command was denied; no retry).
 
 On a denial, `Final state: needs-operator-permission` carries three lines:
 
