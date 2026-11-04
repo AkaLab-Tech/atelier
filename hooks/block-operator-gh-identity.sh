@@ -208,22 +208,21 @@ identity_allowed() { # value of the effective GH_CONFIG_DIR
       return 1
     fi
   fi
-  local orig_xdg="${ATELIER_ORIGINAL_XDG_CONFIG_HOME:-}"
-  if [ -z "$orig_xdg" ]; then
-    if [ -f "$ACD/.operator-xdg" ]; then
-      orig_xdg="$(head -n 1 "$ACD/.operator-xdg" 2>/dev/null || true)"
-    elif [ -f "$HOME_DIR/.claude-work/.operator-xdg" ]; then
-      orig_xdg="$(head -n 1 "$HOME_DIR/.claude-work/.operator-xdg" 2>/dev/null || true)"
-    fi
+  local orig_env="${ATELIER_ORIGINAL_XDG_CONFIG_HOME:-}" orig_file="" orig_xdg
+  if [ -f "$ACD/.operator-xdg" ]; then
+    orig_file="$(head -n 1 "$ACD/.operator-xdg" 2>/dev/null || true)"
+  elif [ -f "$HOME_DIR/.claude-work/.operator-xdg" ]; then
+    orig_file="$(head -n 1 "$HOME_DIR/.claude-work/.operator-xdg" 2>/dev/null || true)"
   fi
-  if [ -n "$orig_xdg" ]; then
+  for orig_xdg in "$orig_env" "$orig_file"; do
+    [ -n "$orig_xdg" ] || continue
     local po
     po="$(canon "$orig_xdg/gh")"
     if [ "$cv" = "$po" ]; then
       IDENT_WHY="GH_CONFIG_DIR resolves to the operator's personal gh config ($po)"
       return 1
     fi
-  fi
+  done
   aa="$(canon "$ACD/gh/author")"
   ar="$(canon "$ACD/gh/reviewer")"
   if [ "$cv" = "$aa" ] || [ "$cv" = "$ar" ]; then
@@ -293,17 +292,16 @@ is_personal_cfg_path() {
   if [ -n "$x" ]; then
     case "$t" in "$x"/gh|"$x"/gh/*) return 0 ;; esac
   fi
-  local ox="${ATELIER_ORIGINAL_XDG_CONFIG_HOME:-}"
-  if [ -z "$ox" ]; then
-    if [ -f "$ACD/.operator-xdg" ]; then
-      ox="$(head -n 1 "$ACD/.operator-xdg" 2>/dev/null || true)"
-    elif [ -f "$HOME_DIR/.claude-work/.operator-xdg" ]; then
-      ox="$(head -n 1 "$HOME_DIR/.claude-work/.operator-xdg" 2>/dev/null || true)"
-    fi
+  local ox_file=""
+  if [ -f "$ACD/.operator-xdg" ]; then
+    ox_file="$(head -n 1 "$ACD/.operator-xdg" 2>/dev/null || true)"
+  elif [ -f "$HOME_DIR/.claude-work/.operator-xdg" ]; then
+    ox_file="$(head -n 1 "$HOME_DIR/.claude-work/.operator-xdg" 2>/dev/null || true)"
   fi
-  if [ -n "$ox" ]; then
+  for ox in "${ATELIER_ORIGINAL_XDG_CONFIG_HOME:-}" "$ox_file"; do
+    [ -n "$ox" ] || continue
     case "$t" in "$ox"/gh|"$ox"/gh/*) return 0 ;; esac
-  fi
+  done
   return 1
 }
 

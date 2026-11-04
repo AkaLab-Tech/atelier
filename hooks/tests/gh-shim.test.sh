@@ -280,6 +280,20 @@ printf '%s\n' "$XDGH" > "$SYMX/.operator-xdg"
 blocked "symlinked author + inline XDG_CONFIG_HOME=<other> (.operator-xdg set)" none \
   "XDG_CONFIG_HOME='$TMP/other' gh pr review 1 --approve" \
   PATH="$FAILSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYMX" GH_CONFIG_DIR="$SYMX/gh/author"
+# #686 §8: a forged ATELIER_ORIGINAL_XDG_CONFIG_HOME (plus inline XDG_CONFIG_HOME) must not
+# mask the operator's XDG recorded in .operator-xdg: both sources count.
+blocked "forged ORIGINAL_XDG + inline XDG_CONFIG_HOME, .operator-xdg names operator XDG" none \
+  "ATELIER_ORIGINAL_XDG_CONFIG_HOME=/x XDG_CONFIG_HOME=/y gh pr comment 1 -b hi" \
+  PATH="$FAILSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYMX" GH_CONFIG_DIR="$SYMX/gh/author"
+blocked "forged ORIGINAL_XDG (inherited) + .operator-xdg names operator XDG" none \
+  "gh pr comment 1 -b hi" \
+  PATH="$FAILSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYMX" GH_CONFIG_DIR="$SYMX/gh/author" ATELIER_ORIGINAL_XDG_CONFIG_HOME=/x
+rm -f "$SYMX/.operator-xdg"
+# Reverse: env names the operator XDG, the file holds a different path -> still refused.
+printf '%s\n' "/some/other/xdg" > "$SYMX/.operator-xdg"
+blocked "env names operator XDG, .operator-xdg holds another path (either source matches)" none \
+  "gh pr comment 1 -b hi" \
+  PATH="$FAILSTUB:$BASEPATH" ATELIER_CONFIG_DIR="$SYMX" GH_CONFIG_DIR="$SYMX/gh/author" ATELIER_ORIGINAL_XDG_CONFIG_HOME="$XDGH"
 rm -f "$SYMX/.operator-xdg"
 passes "passwd lookup fails + inline HOME=/nonexistent: fail-open for the passwd candidate only (pinned)" none \
   'HOME=/nonexistent gh pr review 1 --approve' $'ARG[pr]\nARG[review]\nARG[1]\nARG[--approve]' \

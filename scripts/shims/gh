@@ -61,15 +61,14 @@ is_atelier_identity() {
   local pw
   pw="$(passwd_home)"
   acd="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
-  local orig_xdg="${ATELIER_ORIGINAL_XDG_CONFIG_HOME:-}"
-  if [ -z "$orig_xdg" ]; then
-    if [ -f "$acd/.operator-xdg" ]; then
-      orig_xdg="$(head -n 1 "$acd/.operator-xdg" 2>/dev/null || true)"
-    elif [ -f "$HOME/.claude-work/.operator-xdg" ]; then
-      orig_xdg="$(head -n 1 "$HOME/.claude-work/.operator-xdg" 2>/dev/null || true)"
-    fi
+  # Both recorded sources count: an env value an attacker sets must not mask the file.
+  local orig_env="${ATELIER_ORIGINAL_XDG_CONFIG_HOME:-}" orig_file=""
+  if [ -f "$acd/.operator-xdg" ]; then
+    orig_file="$(head -n 1 "$acd/.operator-xdg" 2>/dev/null || true)"
+  elif [ -f "$HOME/.claude-work/.operator-xdg" ]; then
+    orig_file="$(head -n 1 "$HOME/.claude-work/.operator-xdg" 2>/dev/null || true)"
   fi
-  for c in "$HOME/.config/gh" "${XDG_CONFIG_HOME:+$XDG_CONFIG_HOME/gh}" "${orig_xdg:+$orig_xdg/gh}" "${pw:+$pw/.config/gh}"; do
+  for c in "$HOME/.config/gh" "${XDG_CONFIG_HOME:+$XDG_CONFIG_HOME/gh}" "${orig_env:+$orig_env/gh}" "${orig_file:+$orig_file/gh}" "${pw:+$pw/.config/gh}"; do
     [ -n "$c" ] && [ "$cur" = "$(canon_dir "$c")" ] && return 1
   done
   for c in "$acd/gh/author" "$acd/gh/reviewer"; do

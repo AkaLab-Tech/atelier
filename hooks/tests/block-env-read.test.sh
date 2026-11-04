@@ -30,6 +30,14 @@ mkdir -p "$FX"
 : > "$FX/.env.local"
 : > "$FX/.env.example"
 
+# Fixture dirs for cwd-dependent rules (passed through HOOK_CWD).
+HOOK_CWD=""
+ABS="$TMP/abs"; mkdir -p "$ABS"; : > "$ABS/.env.example"          # no env file present
+CLEANTREE="$TMP/cleantree"; mkdir -p "$CLEANTREE/src"
+: > "$CLEANTREE/.env"; : > "$CLEANTREE/src/a.ts"; : > "$CLEANTREE/src/.env.example"
+DIRTYTREE="$TMP/dirtytree"; mkdir -p "$DIRTYTREE/src"
+: > "$DIRTYTREE/src/a.ts"; : > "$DIRTYTREE/src/.env"
+
 fails=0
 cases=0
 pass() { cases=$((cases + 1)); printf '  PASS: %s\n' "$1"; }
@@ -41,9 +49,14 @@ LAST_LOG=""
 
 # run_hook <command-string>  -> echoes exit code; sets LAST_ERR / LAST_LOG.
 # Runs in the current shell (not a subshell) so LAST_* globals survive.
+# When HOOK_CWD is set, it is passed as the hook input `cwd`.
 run_hook() {
   local payload
-  payload="$(jq -cn --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}')"
+  if [ -n "${HOOK_CWD:-}" ]; then
+    payload="$(jq -cn --arg c "$1" --arg d "$HOOK_CWD" '{tool_name:"Bash", cwd:$d, tool_input:{command:$c}}')"
+  else
+    payload="$(jq -cn --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}')"
+  fi
   run_raw "$payload"
 }
 
@@ -216,11 +229,157 @@ expect_allow 'tsx --env-file=.env script.ts'
 expect_block "node -e \"fs.readFileSync('.env')\""
 
 echo "block-env-read — task #625 template copying"
-expect_allow '[ -f .env ] || cp .env.example .env'
+# #686: the destination already exists in the fixture dir -> overwrite blocked.
+expect_block '[ -f .env ] || cp .env.example .env'
+expect_block 'cp .env.example .env'
+expect_block 'cp .env.example .env.local'
+HOOK_CWD="$ABS"
 expect_allow 'cp .env.example .env'
+expect_allow '[ -f .env ] || cp .env.example .env'
+expect_allow 'cp .env.example .env.local'
+HOOK_CWD=""
+# #686 review fix: cwd has no env file, sub/ has one; a cd/pushd makes a
+# relative destination unresolvable, an absolute one is still checked.
+CDFX="$TMP/cdfx"; mkdir -p "$CDFX/sub"
+: > "$CDFX/.env.example"; : > "$CDFX/sub/.env"
+HOOK_CWD="$CDFX"
+expect_block 'cd sub && cp .env.example .env'
+expect_block 'pushd sub && cp .env.example .env'
+expect_block 'cp .env.example sub/.env'
+expect_allow 'cp .env.example .env'
+expect_allow "cd sub && cp .env.example $CDFX/nonexistent-dest/.env"
+HOOK_CWD=""
 expect_block 'cp .env /tmp/copy'
 expect_block 'cp .env .env.bak'
 expect_block 'cp .env .env.example'
+
+echo "block-env-read — task #686 s1 --env-file with dumping runtimes"
+expect_block 'node --env-file=.env -p "JSON.stringify(process.env)"'
+expect_block 'node --env-file=.env --print "process.env"'
+expect_block 'node --env-file=.env -e "console.log(process.env)"'
+expect_block 'node --env-file=.env --eval "console.log(process.env)"'
+expect_block 'bun --env-file=.env -e "console.log(Bun.env)"'
+expect_block 'docker run --rm --env-file .env alpine env'
+expect_block 'docker run --rm --env-file .env alpine printenv'
+expect_block 'docker-compose --env-file .env config'
+expect_block 'docker compose --env-file .env config'
+expect_block 'pnpm --env-file=.env exec printenv'
+expect_block 'npx --env-file=.env printenv'
+expect_allow 'node --env-file=.env server.js'
+
+echo "block-env-read — task #686 s2 cp target-directory forms"
+expect_block 'cp -t/tmp/leak a.example .env'
+expect_block 'cp -t /tmp/leak a.example .env'
+expect_block 'cp --target=/tmp/x.example a.example .env'
+expect_block 'cp --target-directory=/tmp/x.example a.example .env'
+expect_block 'cp -at /tmp/x.example .env'
+expect_block 'cp -ta /tmp/x.example .env'
+expect_block 'cp --targ=/tmp/x.example a.example .env'
+expect_block 'cp --t=/tmp/x.example a.example .env'
+expect_block 'cp --target-dir /tmp/x.example a.example .env'
+# Target dirs without a 't' (the /tmp cases above pass by accident via the 't').
+expect_block 'cp -t /var/x.example a.example .env*'
+expect_block 'cp -t/var/leak a.example .env*'
+expect_block 'cp -t /var/x a.example .env'
+expect_block 'cp -t/var/x a.example .env'
+expect_block 'cp -at /var/x a.example .env'
+expect_block 'cp -ta /var/x a.example .env'
+# Glob operands that can expand to env files, source or destination.
+expect_block 'cp a.example .env*'
+expect_block 'cp a.example .env?'
+expect_block "cp a.example '.env[a-z]'"
+# Plain template copy with an absent destination stays allowed (cwd has no .env.local).
+HOOK_CWD="$CDFX"
+expect_allow 'cp .env.example .env.local'
+expect_allow 'cp -v .env.example .env.local'
+HOOK_CWD=""
+
+echo "block-env-read — task #686 s3 grep --exclude must cover .env"
+expect_block 'grep -r --exclude=.envrc SECRET .'
+expect_block "grep -r --exclude='*.env' SECRET ."
+expect_allow "grep -r --exclude='.env*' X ."
+expect_allow 'grep -r --exclude=.env* X .'
+expect_allow "grep -r --exclude '.env*' X ."
+expect_allow 'grep -r --exclude ".env*" X .'
+expect_allow "grep -r --exclude='*.env*' X ."
+expect_allow 'grep -r --exclude=*.env* X .'
+expect_allow "grep -r --exclude '*.env*' X ."
+
+echo "block-env-read — task #686 s4 recursive grep variants"
+expect_block 'grep -d recurse SECRET .'
+expect_block 'grep --directories=recurse SECRET .'
+expect_block 'grep --directories recurse SECRET .'
+expect_block 'env grep -r SECRET .'
+expect_block 'env -i grep -r SECRET .'
+expect_block 'timeout 5 grep -r SECRET .'
+expect_block 'nice -n 5 grep -r SECRET .'
+expect_block 'nohup grep -r SECRET .'
+expect_block 'time grep -r SECRET .'
+expect_block 'xargs grep -r SECRET .'
+expect_block '\grep -r SECRET .'
+expect_block 'ggrep -r SECRET .'
+expect_block 'zgrep -r SECRET .'
+expect_block 'rgrep SECRET .'
+
+echo "block-env-read — task #686 s5 compound with substitutions"
+expect_block '{ ls .env; x=$(true | true); } | xargs cat'
+expect_block '`date`; (ls .env) | xargs cat'
+
+echo "block-env-read — task #686 s6 recursive grep with path operands"
+HOOK_CWD="$CLEANTREE"
+expect_allow 'grep -rn TODO src/'
+expect_allow 'grep -rn --exclude-dir=node_modules X src/'
+expect_block 'grep -rn TODO'
+expect_block 'grep -rn TODO .'
+
+echo "block-env-read — task #686 cycle 2 substitution / xargs / stdin-fed runtimes"
+: > "$CLEANTREE/server.js"
+expect_block 'grep -rn SECRET src/ $(printf .)'
+expect_block 'grep -rn SECRET src/ `printf .`'
+expect_block 'echo . | xargs grep -rn SECRET src/'
+expect_block "echo 'console.log(process.env)' | node --env-file=.env"
+expect_block $'node --env-file=.env <<EOF\nconsole.log(process.env)\nEOF'
+expect_block 'node --env-file=.env < x.js'
+expect_block 'node --env-file=.env -'
+expect_block "bun --env-file=.env exec 'echo \$SECRET'"
+expect_block 'bun --env-file=.env run x'
+expect_block 'bun --env-file=.env x y'
+expect_block 'bunx --env-file=.env y'
+expect_allow 'node --env-file=.env server.js'
+expect_allow 'grep -rn TODO src/'
+HOOK_CWD="$DIRTYTREE"
+expect_block 'grep -rn TODO src/'
+expect_block 'grep -rn --exclude-dir=node_modules X src/'
+expect_block 'grep -rn TODO'
+HOOK_CWD=""
+
+echo "block-env-read — task #686 cycle 4 quoted redirects / strict operands / env -C"
+# env file at root and in sub/, clean src/.
+RTFX="$TMP/rtfx"; mkdir -p "$RTFX/src" "$RTFX/sub/src"
+: > "$RTFX/.env"; : > "$RTFX/sub/.env"; : > "$RTFX/src/a.ts"
+HOOK_CWD="$RTFX"
+# Quoted redirect characters are plain operands (here: '.' still follows).
+expect_block "grep -rn SECRET src/ '>' ."
+expect_block 'grep -rn SECRET src/ ">" .'
+expect_block "grep -rn SECRET src/ '2>' ."
+expect_block "grep -rn SECRET src/ '<' ."
+# Quoted path operand fails closed.
+expect_block "grep -rn SECRET 'src/'"
+# env -C / --chdir change the directory: the allowance fails closed.
+expect_block 'env -C sub grep -rn SECRET src/'
+expect_block 'env -Csub grep -rn SECRET src/'
+expect_block 'env --chdir=sub grep -rn SECRET src/'
+expect_block 'env --chdir sub grep -rn SECRET src/'
+# Unquoted redirects and plain operands stay allowed.
+expect_allow 'grep -rn TODO src/'
+expect_allow 'grep -rn "foo bar" src/'
+expect_allow 'grep -rn --exclude-dir=node_modules X src/'
+expect_allow 'grep -rn X src/ 2>/dev/null'
+HOOK_CWD="$CDFX"
+expect_block 'env -C sub cp .env.example .env'
+expect_block 'env --chdir=sub cp .env.example .env'
+expect_allow 'cp .env.example .env'
+HOOK_CWD=""
 
 echo "block-env-read — malformed / missing input fails open"
 for raw in '' 'not json' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \

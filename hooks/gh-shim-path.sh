@@ -5,13 +5,15 @@
 # enforces the GitHub identity at exec time (scripts/shims/gh). Never blocks:
 # always exits 0.
 
+acd="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
 if [ -n "${XDG_CONFIG_HOME:-}" ]; then
-  acd="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
   mkdir -p "$acd" 2>/dev/null || true
   printf '%s\n' "$XDG_CONFIG_HOME" > "$acd/.operator-xdg"
   if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -f "$CLAUDE_ENV_FILE" ]; then
-    printf 'export ATELIER_ORIGINAL_XDG_CONFIG_HOME="%s"\n' "$XDG_CONFIG_HOME" >> "$CLAUDE_ENV_FILE"
+    printf 'export ATELIER_ORIGINAL_XDG_CONFIG_HOME=%q\n' "$XDG_CONFIG_HOME" >> "$CLAUDE_ENV_FILE"
   fi
+else
+  rm -f "$acd/.operator-xdg" 2>/dev/null || true
 fi
 
 shim_dir=""

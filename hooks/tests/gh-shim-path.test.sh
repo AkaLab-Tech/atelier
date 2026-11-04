@@ -101,7 +101,7 @@ hook "$EF_XDG" "$PROOT" "$RT" "XDG_CONFIG_HOME=$CUSTOM_XDG" "ATELIER_CONFIG_DIR=
 [ "$RC" = 0 ] && pass "hook exits 0 with XDG_CONFIG_HOME set" || fail "rc=$RC with XDG_CONFIG_HOME"
 [ -f "$CUSTOM_ACD/.operator-xdg" ] && [ "$(cat "$CUSTOM_ACD/.operator-xdg")" = "$CUSTOM_XDG" ] \
   && pass "\$ATELIER_CONFIG_DIR/.operator-xdg records \$XDG_CONFIG_HOME" || fail ".operator-xdg content mismatch: $(cat "$CUSTOM_ACD/.operator-xdg" 2>/dev/null)"
-grep -q "export ATELIER_ORIGINAL_XDG_CONFIG_HOME=\"$CUSTOM_XDG\"" "$EF_XDG" \
+grep -qxF "export ATELIER_ORIGINAL_XDG_CONFIG_HOME=$(printf '%q' "$CUSTOM_XDG")" "$EF_XDG" \
   && pass "\$CLAUDE_ENV_FILE exports ATELIER_ORIGINAL_XDG_CONFIG_HOME" || fail "env file missing export: $(cat "$EF_XDG")"
 grep -q "export PATH=" "$EF_XDG" \
   && pass "\$CLAUDE_ENV_FILE still exports PATH" || fail "env file missing PATH export"
@@ -112,7 +112,7 @@ FALLBACK_XDG="$TMP/custom-xdg-fallback"
 hook "$EF_FALLBACK" "$PROOT" "$RT" "XDG_CONFIG_HOME=$FALLBACK_XDG"
 [ -f "$HOME_DIR/.claude-work/.operator-xdg" ] && [ "$(cat "$HOME_DIR/.claude-work/.operator-xdg")" = "$FALLBACK_XDG" ] \
   && pass "unset ATELIER_CONFIG_DIR falls back to \$HOME/.claude-work/.operator-xdg" || fail "fallback .operator-xdg missing: $(cat "$HOME_DIR/.claude-work/.operator-xdg" 2>/dev/null)"
-grep -q "export ATELIER_ORIGINAL_XDG_CONFIG_HOME=\"$FALLBACK_XDG\"" "$EF_FALLBACK" \
+grep -qxF "export ATELIER_ORIGINAL_XDG_CONFIG_HOME=$(printf '%q' "$FALLBACK_XDG")" "$EF_FALLBACK" \
   && pass "fallback env file exports ATELIER_ORIGINAL_XDG_CONFIG_HOME" || fail "fallback env file missing export"
 
 # When XDG_CONFIG_HOME is empty/unset: no export and no .operator-xdg written
@@ -123,6 +123,27 @@ hook "$EF_NO_XDG" "$PROOT" "$RT" "ATELIER_CONFIG_DIR=$EMPTY_ACD"
   && pass "unset XDG_CONFIG_HOME does not create .operator-xdg" || fail ".operator-xdg created unexpectedly"
 ! grep -q "ATELIER_ORIGINAL_XDG_CONFIG_HOME" "$EF_NO_XDG" \
   && pass "unset XDG_CONFIG_HOME does not write ATELIER_ORIGINAL_XDG_CONFIG_HOME to env file" || fail "env file has unexpected export"
+
+# #686 §8: stale .operator-xdg is removed when XDG_CONFIG_HOME is unset.
+STALE_ACD="$TMP/stale-acd"; mkdir -p "$STALE_ACD"; printf '%s\n' "/stale/xdg" > "$STALE_ACD/.operator-xdg"
+EF_STALE="$TMP/env-stale"; : > "$EF_STALE"
+hook "$EF_STALE" "$PROOT" "$RT" "ATELIER_CONFIG_DIR=$STALE_ACD"
+[ "$RC" = 0 ] && [ ! -e "$STALE_ACD/.operator-xdg" ] \
+  && pass "unset XDG_CONFIG_HOME removes a stale .operator-xdg" || fail "stale .operator-xdg still present (rc=$RC)"
+# ...and falls back to $HOME/.claude-work when ATELIER_CONFIG_DIR is unset.
+mkdir -p "$HOME_DIR/.claude-work"; printf '%s\n' "/stale/xdg" > "$HOME_DIR/.claude-work/.operator-xdg"
+hook "$TMP/env-stale2" "$PROOT" "$RT"
+[ ! -e "$HOME_DIR/.claude-work/.operator-xdg" ] \
+  && pass "stale .operator-xdg under \$HOME/.claude-work is removed too" || fail "stale fallback .operator-xdg still present"
+
+# #686 §8: the export is %q-quoted; a path with a space round-trips when sourced.
+SP_XDG="$TMP/xdg with space"; EF_SP="$TMP/env-space"; : > "$EF_SP"
+hook "$EF_SP" "$PROOT" "$RT" "XDG_CONFIG_HOME=$SP_XDG" "ATELIER_CONFIG_DIR=$TMP/acd-space"
+grep -qxF "export ATELIER_ORIGINAL_XDG_CONFIG_HOME=$(printf '%q' "$SP_XDG")" "$EF_SP" \
+  && pass "space path is written %q-quoted" || fail "space path export: $(cat "$EF_SP")"
+got="$(env -i HOME="$HOME_DIR" PATH=/usr/bin:/bin bash -c ". '$EF_SP'; printf '%s' \"\$ATELIER_ORIGINAL_XDG_CONFIG_HOME\"")"
+[ "$got" = "$SP_XDG" ] && pass "sourcing the env file restores the exact path with a space" || fail "sourced value: $got"
+[ "$(cat "$TMP/acd-space/.operator-xdg")" = "$SP_XDG" ] && pass ".operator-xdg holds the space path verbatim" || fail ".operator-xdg: $(cat "$TMP/acd-space/.operator-xdg" 2>/dev/null)"
 
 # --- hooks.json wiring ---
 jq -e '[.hooks.SessionStart[]?.hooks[]?.command | select(. != null) | test("gh-shim-path\\.sh")] | any' "$HOOKS_JSON" >/dev/null 2>&1 \
