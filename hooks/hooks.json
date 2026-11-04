@@ -172,7 +172,7 @@
         ]
       },
       {
-        "matcher": "mcp__github__.*|mcp__plugin_.*github.*",
+        "matcher": "mcp__.*[Gg][Ii][Tt][Hh][Uu][Bb].*__.*",
         "hooks": [
           {
             "type": "command",

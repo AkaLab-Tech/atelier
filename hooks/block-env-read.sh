@@ -27,9 +27,28 @@
 #   - Everything else is BLOCKED: cat/head/tail/grep/awk/sed/source/`.`/cp/mv/
 #     rm, `< .env` redirection, interpreter one-liners, even `echo ".env"`.
 #     Blocking rm/mv is deliberate: deleting these files is an operator action.
+#   - Command prefixes are skipped before the command word is read: `\cmd`,
+#     `VAR=val`, `sudo`/`command`/`builtin`/`exec`/`nohup`/`time`, `env [-i|-u X]
+#     [VAR=val]`, `timeout [opts] <dur>`, `nice [-n N]`, `xargs [opts]`.
+#   - `--env-file` is exempt only for node/tsx/ts-node/deno/bun, and only when
+#     the segment has no `-e`/`-p`/`-pe`/`--eval`/`--print` and no `env`/
+#     `printenv` word (those can print the loaded values). docker, docker-compose,
+#     pnpm and npx are not exempt.
+#   - `cp <template> <env file>` is allowed only when the destination does not
+#     exist (resolved against the hook input `cwd`); any `-t`/`--t*` (target
+#     directory, incl. `-at`, `-t/tmp/x`, `--target=`) is blocked.
+#   - Recursive grep (grep/egrep/fgrep/ggrep/zgrep/zegrep/zfgrep, `-r`/`-R`/
+#     `--recursive`/`-d recurse`/`--directories=recurse`; rgrep always) is
+#     blocked unless `--exclude=.env*` / `--exclude='*.env*'` (nothing narrower
+#     counts) or every explicit path operand exists under `cwd` and holds no
+#     `.env*` file other than templates. No explicit path (default `.`), a
+#     `cd`/`pushd` in the command, or an unknown operand stays blocked.
+#   - Subshell `)` closes are matched against open `$(`/`<(`/`>(` before any
+#     brace/paren block, so `{ ls .env; x=$(a | b); } | xargs cat` is blocked.
 #
 # Known limits: defense in depth, not a sandbox. Obfuscated access
-# (`cat $(echo .e)nv`) is not caught. An app loading `.env` at runtime
+# (`cat $(echo .e)nv`) is not caught. A script run as `node --env-file=.env
+# script.js` can still print `process.env`. An app loading `.env` at runtime
 # (dotenv) is not a shell token and keeps working. Other tools that merely
 # mention `.env` in prose (e.g. `gh pr create --body "... .env ..."`) are
 # false positives; use `--body-file`. `.envrc` (direnv) is blocked too.
@@ -64,9 +83,21 @@ case "$command_str" in
   *) exit 0 ;;
 esac
 
-# First command word of a segment, skipping leading `VAR=val` assignments,
-# `sudo`/`command`/`builtin`/`exec`, and leading `(`/`{`/`!`.
-first_words() {
+# Hook-reported working directory: base for existence checks (cp destination,
+# recursive-grep path operands). Falls back to this process's cwd.
+hook_cwd="$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)"
+[ -n "$hook_cwd" ] || hook_cwd="$PWD"
+
+# A `cd`/`pushd` anywhere in the command changes what a relative path means for
+# later segments, so the recursive-grep path check cannot be trusted then.
+cd_in_command=0
+printf '%s' "$command_str" | grep -Eq '(^|[^[:alnum:]_./-])(cd|pushd)([[:space:]]|$)' && cd_in_command=1
+
+# Strips the prefixes that run another command without changing what it reads:
+# a leading `(`/`{`/`!`/`\`, `VAR=val`, `sudo`/`command`/`builtin`/`exec`/
+# `nohup`/`time`, `env [opts] [VAR=val]`, `timeout [opts] <dur>`, `nice [-n N]`,
+# `xargs [opts]`. Sets PREFIX_REST to the remaining words (command first).
+skip_prefix() {
   local seg="$1" w
   set -f
   # shellcheck disable=SC2086
@@ -74,76 +105,199 @@ first_words() {
   set +f
   while [ $# -gt 0 ]; do
     w="${1#[(\{!]}"
+    w="${w#\\}"
+    if [ -z "$w" ]; then shift; continue; fi
     case "$w" in
-      "") shift ;;
       [A-Za-z_]*=*) shift ;;
-      sudo|command|builtin|exec) shift ;;
-      *) break ;;
+      sudo|command|builtin|exec|nohup|time) shift ;;
+      env)
+        shift
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -u|--unset|-C|--chdir|-S|--split-string) shift; [ $# -gt 0 ] && shift ;;
+            -*|[A-Za-z_]*=*) shift ;;
+            *) break ;;
+          esac
+        done ;;
+      timeout)
+        shift
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -k|-s|--kill-after|--signal) shift; [ $# -gt 0 ] && shift ;;
+            -*) shift ;;
+            *) break ;;
+          esac
+        done
+        [ $# -gt 0 ] && shift ;;
+      nice)
+        shift
+        case "${1:-}" in
+          -n|--adjustment) shift; [ $# -gt 0 ] && shift ;;
+          -*) shift ;;
+        esac ;;
+      xargs)
+        shift
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -n|-I|-L|-P|-d|-E|-s|-a|-J|--max-args|--max-procs|--delimiter|--replace|--arg-file|--max-lines|--eof|--max-chars) shift; [ $# -gt 0 ] && shift ;;
+            -*) shift ;;
+            *) break ;;
+          esac
+        done ;;
+      *) set -- "$w" "${@:2}"; break ;;
     esac
   done
-  printf '%s %s' "${w:-}" "${2:-}"
+  PREFIX_REST="$*"
+}
+
+# Sets SEG_CMD (basename of the command word) and SEG_REST (words from it on).
+seg_command() {
+  skip_prefix "$1"
+  SEG_REST="$PREFIX_REST"
+  SEG_CMD="${SEG_REST%% *}"
+  SEG_CMD="${SEG_CMD##*/}"
 }
 
 is_grep_cmd() {
   case "$1" in
-    grep|egrep|fgrep) return 0 ;;
+    grep|egrep|fgrep|ggrep|zgrep|zegrep|zfgrep|rgrep) return 0 ;;
     *) return 1 ;;
   esac
 }
 
 is_recursive_grep() {
-  local seg="$1" words cmd
-  words="$(first_words "$seg")"
-  cmd="${words%% *}"
-  cmd="${cmd##*/}"
-  is_grep_cmd "$cmd" || return 1
-  # Long options: --recursive, --dereference-recursive
+  local seg="$1" arg opt next
+  seg_command "$seg"
+  is_grep_cmd "$SEG_CMD" || return 1
+  [ "$SEG_CMD" = rgrep ] && return 0
+  # Long options: --recursive, --dereference-recursive, --directories=recurse
   if printf '%s' "$seg" | grep -Eq '(^|[[:space:]])--(recursive|dereference-recursive)([[:space:]]|$)'; then
     return 0
   fi
-  # Short options containing r or R
+  if printf '%s' "$seg" | grep -Eq -- "(^|[[:space:]])--directories(=|[[:space:]]+)['\"]?recurse"; then
+    return 0
+  fi
+  # Short options containing r or R, or `-d recurse`
   set -f
   # shellcheck disable=SC2086
-  set -- $seg
+  set -- $SEG_REST
   set +f
+  shift # drop cmd
   while [ $# -gt 0 ]; do
-    case "$1" in
-      [A-Za-z_]*=*) shift ;;
-      sudo|command|builtin|exec) shift ;;
-      *) break ;;
-    esac
-  done
-  [ $# -gt 0 ] && shift # drop cmd
-  while [ $# -gt 0 ]; do
-    local arg="$1"
+    arg="$1"
     shift
     [ "$arg" = "--" ] && break
-    local opt="${arg#[\'\"]}"
+    opt="${arg#[\'\"]}"
     opt="${opt%[\'\"]}"
     case "$opt" in
       --*) ;;
       -*r*|-*R*) return 0 ;;
+      -d|-[A-Za-z]*d)
+        next="${1:-}"
+        next="${next#[\'\"]}"
+        next="${next%[\'\"]}"
+        [ "$next" = recurse ] && return 0 ;;
     esac
   done
   return 1
 }
 
+# Only a pattern excluding EVERY protected name unlocks a recursive grep:
+# exactly `.env*` or `*.env*`, after `--exclude=` or `--exclude `, quoted or not.
 is_grep_env_excluded() {
   local seg="$1"
-  printf '%s' "$seg" | grep -Eiq -- '--exclude(=|[[:space:]]+)('\''|")?(\*\.|\.)env'
+  printf '%s' "$seg" | grep -Eq -- "--exclude(=|[[:space:]]+)['\"]?\\*?\\.env\\*['\"]?([[:space:]]|\$)"
+}
+
+# Quote-aware word split, one word per line, quotes removed.
+shell_words() {
+  printf '%s\n' "$1" | awk '{
+    n = length($0); w = ""; inw = 0; q = ""
+    for (i = 1; i <= n; i++) {
+      c = substr($0, i, 1)
+      if (q != "") { if (c == q) { q = "" } else { w = w c }; continue }
+      if (c == "\"" || c == "\047") { q = c; inw = 1; continue }
+      if (c == " " || c == "\t") { if (inw) { print w; w = ""; inw = 0 }; continue }
+      w = w c; inw = 1
+    }
+    if (inw) print w
+  }'
+}
+
+# Explicit path operands of a grep segment, one per line (pattern and option
+# arguments excluded; redirections skipped).
+grep_path_operands() {
+  seg_command "$1"
+  local -a ws=()
+  local w i ch idx=1 n have_pat=0 eoo=0
+  while IFS= read -r w; do ws+=("$w"); done < <(shell_words "$SEG_REST")
+  n=${#ws[@]}
+  while [ "$idx" -lt "$n" ]; do
+    w="${ws[$idx]}"
+    idx=$((idx + 1))
+    if [ "$eoo" = 0 ]; then
+      case "$w" in
+        --) eoo=1; continue ;;
+        --regexp|--file) have_pat=1; idx=$((idx + 1)); continue ;;
+        --regexp=*|--file=*) have_pat=1; continue ;;
+        --max-count|--after-context|--before-context|--context|--directories|--devices|--include|--exclude|--exclude-from|--exclude-dir|--label|--binary-files)
+          idx=$((idx + 1)); continue ;;
+        --*) continue ;;
+        -?*)
+          i=1
+          while [ "$i" -lt "${#w}" ]; do
+            ch="${w:$i:1}"
+            case "$ch" in e|f) have_pat=1 ;; esac
+            case "$ch" in
+              [efmABCdD])
+                [ $((i + 1)) -ge "${#w}" ] && idx=$((idx + 1))
+                break ;;
+            esac
+            i=$((i + 1))
+          done
+          continue ;;
+      esac
+    fi
+    if [ "$have_pat" = 0 ]; then have_pat=1; continue; fi
+    if [[ "$w" =~ ^[0-9]*[\<\>] ]]; then
+      [[ "$w" =~ ^[0-9]*(\>\>?|\<|\>\&|\&\>)$ ]] && idx=$((idx + 1))
+      continue
+    fi
+    printf '%s\n' "$w"
+  done
+}
+
+# 0 when a recursive grep names at least one explicit path operand, every
+# operand exists under the hook cwd, and none contains a protected file.
+recursive_grep_paths_safe() {
+  [ "$cd_in_command" = 0 ] || return 1
+  [ -d "$hook_cwd" ] || return 1
+  local op out found=0
+  while IFS= read -r op; do
+    [ -n "$op" ] || continue
+    case "$op" in -*) return 1 ;; esac
+    found=1
+    (cd "$hook_cwd" 2>/dev/null && [ -e "$op" ]) || return 1
+    out="$(cd "$hook_cwd" && find -L "$op" -iname '.env*' ! -iname '*.example' ! -iname '*.sample' ! -iname '*.template' ! -iname '*.dist' -print -quit 2>/dev/null)" || return 1
+    [ -z "$out" ] || return 1
+  done < <(grep_path_operands "$1")
+  [ "$found" = 1 ]
 }
 
 # Protected names in a segment, one per line.
 protected_tokens() {
-  local seg="$1" orig_seg="$1" words cmd
-  words="$(first_words "$seg")"
-  cmd="${words%% *}"
-  cmd="${cmd##*/}"
-  case "$cmd" in
-    node|tsx|ts-node|deno|bun|docker|docker-compose|pnpm|npx)
-      seg="$(printf '%s' "$seg" | sed -E 's/--env-file(=|[[:space:]]+)('\''|")?[^[:space:]'\''"]*('\''|")?//g')"
+  local seg="$1" orig_seg="$1"
+  seg_command "$seg"
+  case "$SEG_CMD" in
+    node|tsx|ts-node|deno|bun)
+      # `--env-file` only loads the file for the app. With an eval/print flag or
+      # an `env`/`printenv` word the command can print the loaded values, so the
+      # flag stays and the file name is reported.
+      if ! printf '%s' "$SEG_REST" | grep -Eq '(^|[[:space:]])(-[A-Za-z]*[ep]|--eval|--print)|(^|[[:space:]])(eval|env|printenv)([[:space:]]|$)'; then
+        seg="$(printf '%s' "$seg" | sed -E 's/--env-file(=|[[:space:]]+)('\''|")?[^[:space:]'\''"]*('\''|")?//g')"
+      fi
       ;;
-    grep|egrep|fgrep)
+    grep|egrep|fgrep|ggrep|zgrep|zegrep|zfgrep|rgrep)
       seg="$(printf '%s' "$seg" | sed -E 's/--exclude(=|[[:space:]]+)('\''|")?[^[:space:]'\''"]*('\''|")?//g')"
       ;;
   esac
@@ -161,21 +315,20 @@ protected_tokens() {
         | grep -Evi '\.(example|sample|template|dist)$' || true ;;
   esac
 
-  # Recursive grep detection: if recursive and .env* is not explicitly excluded,
+  # Recursive grep detection: if recursive and .env* is not explicitly excluded
+  # and the explicit path operands are not provably free of protected files,
   # it touches all .env* files in searched directories.
-  if is_recursive_grep "$orig_seg" && ! is_grep_env_excluded "$orig_seg"; then
+  if is_recursive_grep "$orig_seg" && ! is_grep_env_excluded "$orig_seg" \
+     && ! recursive_grep_paths_safe "$orig_seg"; then
     printf '.env*\n'
   fi
 }
 
 # 0 when the segment is allowed to name a protected file.
 segment_is_name_only() {
-  local seg="$1" words cmd sub
-  words="$(first_words "$seg")"
-  cmd="${words%% *}"
-  sub="${words#* }"
-  cmd="${cmd##*/}"
-  case "$cmd" in
+  local seg="$1" sub
+  seg_command "$seg"
+  case "$SEG_CMD" in
     ls|test|"["|"[[") return 0 ;;
     find)
       printf '%s' "$seg" | grep -Eq '(^|[[:space:]])-(exec|execdir|ok|okdir|delete|fprint[0a-z]*|fls)([[:space:]]|$)' && return 1
@@ -184,16 +337,9 @@ segment_is_name_only() {
       # Inspect non-option positional arguments of cp
       set -f
       # shellcheck disable=SC2086
-      set -- $seg
+      set -- $SEG_REST
       set +f
-      while [ $# -gt 0 ]; do
-        case "$1" in
-          [A-Za-z_]*=*) shift ;;
-          sudo|command|builtin|exec) shift ;;
-          *) break ;;
-        esac
-      done
-      [ $# -gt 0 ] && shift
+      shift
       local end_of_opts=0
       local positional=()
       while [ $# -gt 0 ]; do
@@ -202,7 +348,11 @@ segment_is_name_only() {
         if [ "$end_of_opts" = 0 ]; then
           case "$arg" in
             --) end_of_opts=1; continue ;;
-            -t|--target-directory|--target-directory=*) return 1 ;;
+            # `--t*` abbreviates --target-directory; any short cluster with `t`
+            # (-t, -at, -t/tmp/x) names a target directory.
+            --t*) return 1 ;;
+            --*) continue ;;
+            -?*t*) return 1 ;;
             -*) continue ;;
           esac
         fi
@@ -222,8 +372,16 @@ segment_is_name_only() {
           return 1
         fi
       done
+      # A template may create the env file, never overwrite the operator's.
+      case "$dest" in
+        /*) ;;
+        *) dest="$hook_cwd/$dest" ;;
+      esac
+      if [ -e "$dest" ] || [ -L "$dest" ]; then
+        return 1
+      fi
       return 0 ;;
-    grep|egrep|fgrep)
+    grep|egrep|fgrep|ggrep|zgrep|zegrep|zfgrep|rgrep)
       if is_recursive_grep "$seg"; then
         if is_grep_env_excluded "$seg"; then
           return 0
@@ -252,6 +410,8 @@ segment_is_name_only() {
 
 PIPE_MARK="@@PIPE@@"
 SUB_MARK="@@SUB@@"
+BT_MARK="@@BT@@"
+sub_depth=0
 blocked_token=""
 blocked_reason=""
 allowed_token=""
@@ -265,7 +425,10 @@ while IFS= read -r seg; do
   piped=0
   nested=0
   case "$seg" in "$PIPE_MARK"*) piped=1; seg="${seg#"$PIPE_MARK"}" ;; esac
-  case "$seg" in "$SUB_MARK"*) nested=1; seg="${seg#"$SUB_MARK"}" ;; esac
+  case "$seg" in
+    "$SUB_MARK"*) nested=1; sub_depth=$((sub_depth + 1)); seg="${seg#"$SUB_MARK"}" ;;
+    "$BT_MARK"*) nested=1; seg="${seg#"$BT_MARK"}" ;;
+  esac
   if [ "$piped" = 1 ]; then
     if [ -n "$prev_listing_token" ]; then
       blocked_token="$prev_listing_token"
@@ -300,11 +463,9 @@ while IFS= read -r seg; do
   count_paren_open=$(( ${#unquoted} - ${#stripped_open} ))
   opens=$((opens + count_paren_open))
 
-  if [ "$nested" = 0 ]; then
-    stripped_close="${unquoted//)}"
-    count_paren_close=$(( ${#unquoted} - ${#stripped_close} ))
-    closes=$((closes + count_paren_close))
-  fi
+  stripped_close="${unquoted//)}"
+  count_paren_close=$(( ${#unquoted} - ${#stripped_close} ))
+  closes=$((closes + count_paren_close))
 
   while [ "$opens" -gt 0 ]; do
     block_depth=$((block_depth + 1))
@@ -334,7 +495,10 @@ while IFS= read -r seg; do
   fi
 
   while [ "$closes" -gt 0 ]; do
-    if [ "$block_depth" -gt 0 ]; then
+    # A `)` closes an open `$(`/`<(`/`>(` before any brace/paren block.
+    if [ "$sub_depth" -gt 0 ]; then
+      sub_depth=$((sub_depth - 1))
+    elif [ "$block_depth" -gt 0 ]; then
       closed_token="${block_listing[block_depth]:-}"
       block_listing[block_depth]=""
       block_depth=$((block_depth - 1))
@@ -353,8 +517,10 @@ done < <(printf '%s\n' "$command_str" \
 /g' \
         -e 's/(^|[^|<>&])&($|[^>&])/\1\
 \2/g' \
-        -e 's/\$\(|<\(|>\(|`/\
+        -e 's/\$\(|<\(|>\(/\
 '"$SUB_MARK"'/g' \
+        -e 's/`/\
+'"$BT_MARK"'/g' \
   | sed -E 's/\|&?/\
 '"$PIPE_MARK"'/g')
 

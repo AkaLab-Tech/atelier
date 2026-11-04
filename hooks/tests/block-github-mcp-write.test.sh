@@ -116,7 +116,7 @@ assert_block "manage_notification_subscription"     "mcp__github__manage_notific
 assert_block "manage_repo_notification_sub"         "mcp__github__manage_repository_notification_subscription" '{}'
 assert_block "request_copilot_review"               "mcp__github__request_copilot_review" '{"pull_number":1}'
 assert_block "run_automation"                       "mcp__github__run_automation" '{}'
-assert_block "run_secret_scanning"                  "mcp__github__run_secret_scanning" '{}'
+assert_allow "run_secret_scanning (read-only scan)"      "mcp__github__run_secret_scanning" '{}'
 
 # =============================================================================
 # SECTION B: Plugin-namespaced write tools are blocked
@@ -185,35 +185,35 @@ assert_allow "empty tool payload"                   "" '{}'
 # SECTION F: Identity verification override (author / reviewer)
 # =============================================================================
 echo "== Section F: Identity verification override =="
-assert_allow "author identity allows add_issue_comment" \
+assert_block "author identity does NOT bypass: add_issue_comment" \
   "mcp__github__add_issue_comment" '{"body":"ok"}' \
   ATELIER_GITHUB_MCP_IDENTITY=author
 
-assert_allow "author identity allows pull_request_review_write" \
+assert_block "author identity does NOT bypass: pull_request_review_write" \
   "mcp__github__pull_request_review_write" '{"event":"APPROVE"}' \
   ATELIER_GITHUB_MCP_IDENTITY=author
 
-assert_allow "author identity allows delete_file" \
+assert_block "author identity does NOT bypass: delete_file" \
   "mcp__github__delete_file" '{"path":"file.txt"}' \
   ATELIER_GITHUB_MCP_IDENTITY=author
 
-assert_allow "author identity allows plugin merge_pull_request" \
+assert_block "author identity does NOT bypass: plugin merge_pull_request" \
   "mcp__plugin_atelier_github__merge_pull_request" '{"pull_number":1}' \
   ATELIER_GITHUB_MCP_IDENTITY=author
 
-assert_allow "reviewer identity allows add_issue_comment" \
+assert_block "reviewer identity does NOT bypass: add_issue_comment" \
   "mcp__github__add_issue_comment" '{"body":"ok"}' \
   ATELIER_GITHUB_MCP_IDENTITY=reviewer
 
-assert_allow "reviewer identity allows pull_request_review_write" \
+assert_block "reviewer identity does NOT bypass: pull_request_review_write" \
   "mcp__github__pull_request_review_write" '{"event":"APPROVE"}' \
   ATELIER_GITHUB_MCP_IDENTITY=reviewer
 
-assert_allow "reviewer identity allows delete_file" \
+assert_block "reviewer identity does NOT bypass: delete_file" \
   "mcp__github__delete_file" '{"path":"file.txt"}' \
   ATELIER_GITHUB_MCP_IDENTITY=reviewer
 
-assert_allow "reviewer identity allows plugin merge_pull_request" \
+assert_block "reviewer identity does NOT bypass: plugin merge_pull_request" \
   "mcp__plugin_atelier_github__merge_pull_request" '{"pull_number":1}' \
   ATELIER_GITHUB_MCP_IDENTITY=reviewer
 
@@ -224,6 +224,42 @@ assert_block "personal identity does NOT bypass block" \
 assert_block "operator identity does NOT bypass block" \
   "mcp__github__delete_file" '{"path":"fail.txt"}' \
   ATELIER_GITHUB_MCP_IDENTITY=operator
+
+# =============================================================================
+# SECTION H: other server names (#686) and the hooks.json matcher
+# =============================================================================
+echo "== Section H: server-name coverage (#686) =="
+assert_block "claude_ai_GitHub add_issue_comment" \
+  "mcp__claude_ai_GitHub__add_issue_comment" '{"body":"x"}'
+assert_block "github-enterprise create_issue" \
+  "mcp__github-enterprise__create_issue" '{"title":"x"}'
+assert_block "plugin_x_github create_issue" \
+  "mcp__plugin_x_github__create_issue" '{"title":"x"}'
+assert_block "claude_ai_GitHub add_issue_comment, identity=author still blocked" \
+  "mcp__claude_ai_GitHub__add_issue_comment" '{"body":"x"}' ATELIER_GITHUB_MCP_IDENTITY=author
+assert_block "github-enterprise create_issue, identity=reviewer still blocked" \
+  "mcp__github-enterprise__create_issue" '{"title":"x"}' ATELIER_GITHUB_MCP_IDENTITY=reviewer
+assert_allow "github get_issue" "mcp__github__get_issue" '{"issue_number":1}'
+assert_allow "github run_secret_scanning" "mcp__github__run_secret_scanning" '{}'
+assert_allow "claude_ai_GitHub get_issue" "mcp__claude_ai_GitHub__get_issue" '{"issue_number":1}'
+assert_allow "github only in tool segment (plugin_x_other__github_create)" \
+  "mcp__plugin_x_other__github_create" '{}'
+
+matcher="$(jq -r '.hooks.PreToolUse[] | select(.hooks[]?.command | test("block-github-mcp-write")) | .matcher' "$REPO_ROOT/hooks/hooks.json" 2>/dev/null | head -n 1)"
+for n in mcp__claude_ai_GitHub__add_issue_comment mcp__github-enterprise__create_issue; do
+  allowed_n=$((allowed_n + 1))
+  if [ -n "$matcher" ] && grep -Eq -- "^(${matcher})\$" <<<"$n"; then
+    pass "hooks.json matcher matches $n"
+  else
+    fail "hooks.json matcher '$matcher' does not match $n"
+  fi
+done
+allowed_n=$((allowed_n + 1))
+if [ -n "$matcher" ] && ! grep -Eq -- "^(${matcher})\$" <<<"mcp__plugin_x_other__github_create"; then
+  pass "hooks.json matcher does not match mcp__plugin_x_other__github_create"
+else
+  fail "hooks.json matcher '$matcher' wrongly matches mcp__plugin_x_other__github_create"
+fi
 
 # =============================================================================
 # SECTION G: Degraded jq fallback

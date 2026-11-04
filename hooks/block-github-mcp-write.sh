@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # atelier — PreToolUse hook on GitHub MCP tools
-# (mcp__github__*, plus plugin-namespaced variants). Blocks any write call
+# (mcp__<server>__* where the server name contains "github", any case). Blocks any write call
 # that runs under the operator's personal identity (#544, #648). Agents must
 # use `gh` under AtelierAuthor or AtelierReviewer for GitHub writes.
 #
@@ -38,26 +38,25 @@ fi
 
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)"
 
+# mcp__<server>__<tool>: match "github" (any case) in the server segment only.
 case "$tool_name" in
-  mcp__github__*|mcp__plugin_*github*) ;;
+  mcp__*__*) ;;
   *) exit 0 ;;
 esac
-
 tool_action="${tool_name##*__}"
-
-# Identity check: If ATELIER_GITHUB_MCP_IDENTITY is set to "author" or "reviewer", allow the call.
-identity="${ATELIER_GITHUB_MCP_IDENTITY:-}"
-if [ "$identity" = "author" ] || [ "$identity" = "reviewer" ]; then
-  log_decision "$HOOK_NAME" "$tool_name" "$tool_action" "allow" "read-only or verified identity"
-  exit 0
-fi
+server_part="${tool_name%__*}"
+server_part="${server_part#mcp__}"
+case "$(printf '%s' "$server_part" | tr '[:upper:]' '[:lower:]')" in
+  *github*) ;;
+  *) exit 0 ;;
+esac
 
 # Read vs Write partitioning:
 # 1. Read tools: evaluate read patterns first (e.g. get_discussion_comments starts with get_).
 # mark_all_notifications_read ends with _read but is a write tool (mark_*).
 case "$tool_action" in
   mark_*) ;;
-  get_*|list_*|search_*|*_read|*_get|*_list|check_*|*similarity_search|*_search)
+  get_*|list_*|search_*|run_secret_scanning|*_read|*_get|*_list|check_*|*similarity_search|*_search)
     log_decision "$HOOK_NAME" "$tool_name" "$tool_action" "allow" "read-only or verified identity"
     exit 0
     ;;
