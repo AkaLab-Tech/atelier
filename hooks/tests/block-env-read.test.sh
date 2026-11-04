@@ -407,6 +407,11 @@ expect_block 'bun --env-file=.env --preload ./p.ts server.ts'
 expect_block 'NODE_OPTIONS="--require ./dump.js" node --env-file=.env server.js'
 expect_allow 'node --env-file=.env server.js'
 expect_allow 'tsx --env-file=.env script.ts'
+# Review-fix cycle 3: preload long flags are end-anchored (no prefix false positive).
+expect_allow 'deno run --env-file=.env --import-map=im.json main.ts'
+expect_block 'deno run --env-file=.env --preload ./p.ts main.ts'
+expect_block 'node --env-file=.env -r./d.js s.js'
+expect_block 'node --env-file=.env --import=./d.mjs s.js'
 # Gap 3: --include cancels the env exclude.
 expect_block "grep -r --exclude='.env*' --include='.env*' X ."
 expect_block "grep -r --include='.env*' --exclude='.env*' X ."

@@ -496,8 +496,8 @@ protected_tokens() {
   case "$SEG_CMD" in
     node|tsx|ts-node|deno|bun)
       # A preload/loader runs before the app and can dump `process.env`.
-      preload_re='(^|[[:space:]])['\''"]?(-r|--require|--import|--loader|--experimental-loader|--preload|--experimental-preload)'
-      [ "$SEG_CMD" = deno ] && preload_re='(^|[[:space:]])['\''"]?--(import|preload|require|loader|experimental-loader|experimental-preload)'
+      preload_re='(^|[[:space:]])['\''"]?(-r|(--require|--import|--loader|--experimental-loader|--preload|--experimental-preload)(=|[[:space:]]|['\''"]|$))'
+      [ "$SEG_CMD" = deno ] && preload_re='(^|[[:space:]])['\''"]?--(import|preload|require|loader|experimental-loader|experimental-preload)(=|[[:space:]]|['\''"]|$)'
       if printf '%s' "$SEG_REST" | grep -Eq "$preload_re" \
          || printf '%s' "$command_str" | grep -Eq '(^|[^[:alnum:]_])NODE_OPTIONS='; then
         :
