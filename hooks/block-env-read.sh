@@ -175,8 +175,17 @@ skip_prefix() {
       flock)
         # `flock <file> -c <cmd>` runs the string in a shell: left as the
         # command word so shell_c_string can inspect it.
-        case " $* " in *" -c "*|*" --command"*) set -- "$w" "${@:2}"; break ;; esac
         shift
+        local fl_args=("$@") fl_i=0 fl_ops=0
+        while [ "$fl_i" -lt "${#fl_args[@]}" ]; do
+          case "${fl_args[fl_i]}" in
+            -c|--command|--command=*) set -- "$w" "$@"; break 2 ;;
+            -w|-E|--timeout|--conflict-exit-code) fl_i=$((fl_i + 1)) ;;
+            -*) ;;
+            *) fl_ops=$((fl_ops + 1)); [ "$fl_ops" -ge 2 ] && break ;;
+          esac
+          fl_i=$((fl_i + 1))
+        done
         while [ $# -gt 0 ]; do
           case "$1" in
             -w|-E|--timeout|--conflict-exit-code) shift; [ $# -gt 0 ] && shift ;;
@@ -309,18 +318,28 @@ is_grep_env_excluded() {
 # Prints the command string of `bash|sh|zsh|dash|ksh -c`, `-lc`, `-ec`, ... or
 # `flock <file> -c`. $1 command name, $2 its words (SEG_REST). Empty if none.
 shell_c_string() {
-  local cmd="$1" w take=0 first=1 skipnext=0
+  local cmd="$1" w take=0 first=1 skipnext=0 operands=0
   while IFS= read -r w; do
     if [ "$first" = 1 ]; then first=0; continue; fi
-    if [ "$take" = 1 ]; then printf '%s\n' "$w"; return 0; fi
     if [ "$skipnext" = 1 ]; then skipnext=0; continue; fi
+    if [ "$take" = 1 ]; then
+      case "$w" in -*|+*) continue ;; esac
+      printf '%s\n' "$w"; return 0
+    fi
     case "$w" in
-      -o|-O|+O) skipnext=1 ;;
       --command=*) [ "$cmd" = flock ] && { printf '%s\n' "${w#--command=}"; return 0; } ;;
       --command) [ "$cmd" = flock ] && take=1 ;;
-      -c|-[A-Za-z]*c) take=1 ;;
+      -w|-E|--timeout|--conflict-exit-code) [ "$cmd" = flock ] && skipnext=1 ;;
+      -c) take=1 ;;
+      +O) skipnext=1 ;;
+      -[A-Za-z]*)
+        [ "$cmd" = flock ] && continue
+        case "$w" in *c*) take=1 ;; esac
+        case "$w" in *[oO]) skipnext=1 ;; esac ;;
       -*|+*) ;;
-      *) [ "$cmd" = flock ] || return 0 ;;
+      *) if [ "$cmd" = flock ]; then
+           operands=$((operands + 1)); [ "$operands" -ge 2 ] && return 0
+         else return 0; fi ;;
     esac
   done < <(shell_words "$2")
   return 0
@@ -480,7 +499,7 @@ protected_tokens() {
       preload_re='(^|[[:space:]])['\''"]?(-r|--require|--import|--loader|--experimental-loader|--preload|--experimental-preload)'
       [ "$SEG_CMD" = deno ] && preload_re='(^|[[:space:]])['\''"]?--(import|preload|require|loader|experimental-loader|experimental-preload)'
       if printf '%s' "$SEG_REST" | grep -Eq "$preload_re" \
-         || printf '%s' "$seg" | grep -Eq '(^|[^[:alnum:]_])NODE_OPTIONS='; then
+         || printf '%s' "$command_str" | grep -Eq '(^|[^[:alnum:]_])NODE_OPTIONS='; then
         :
       # `--env-file` only loads the file for the app. With an eval/print flag or
       # an `env`/`printenv` word the command can print the loaded values, so the

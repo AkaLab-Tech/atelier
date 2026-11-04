@@ -425,6 +425,15 @@ expect_block 'flock /tmp/l --command "grep -r X ."'
 expect_block 'flock /tmp/l --command="grep -r X ."'
 expect_allow "bash -c \"grep -r --exclude='.env*' X .\""
 expect_allow "flock /tmp/l grep -r --exclude='.env*' X ."
+# Review-fix cycle 2: combined/reordered shell flags, exported preload, flock -c.
+expect_block 'bash -euo pipefail -c "grep -r X ."'
+expect_block 'bash -ce "grep -r X ."'
+expect_block 'sh -ce "grep -r X ."'
+expect_block 'bash -c -e "grep -r X ."'
+expect_block 'bash -c -- "grep -r X ."'
+expect_block 'export NODE_OPTIONS=--require=./d.js && node --env-file=.env s.js'
+expect_block 'NODE_OPTIONS=--require=./d.js; export NODE_OPTIONS; node --env-file=.env s.js'
+expect_block 'flock /tmp/l grep -r -c X .'
 HOOK_CWD=""
 
 echo "block-env-read — malformed / missing input fails open"
