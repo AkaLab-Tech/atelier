@@ -277,6 +277,22 @@ expect_block 'cp -ta /tmp/x.example .env'
 expect_block 'cp --targ=/tmp/x.example a.example .env'
 expect_block 'cp --t=/tmp/x.example a.example .env'
 expect_block 'cp --target-dir /tmp/x.example a.example .env'
+# Target dirs without a 't' (the /tmp cases above pass by accident via the 't').
+expect_block 'cp -t /var/x.example a.example .env*'
+expect_block 'cp -t/var/leak a.example .env*'
+expect_block 'cp -t /var/x a.example .env'
+expect_block 'cp -t/var/x a.example .env'
+expect_block 'cp -at /var/x a.example .env'
+expect_block 'cp -ta /var/x a.example .env'
+# Glob operands that can expand to env files, source or destination.
+expect_block 'cp a.example .env*'
+expect_block 'cp a.example .env?'
+expect_block "cp a.example '.env[a-z]'"
+# Plain template copy with an absent destination stays allowed (cwd has no .env.local).
+HOOK_CWD="$CDFX"
+expect_allow 'cp .env.example .env.local'
+expect_allow 'cp -v .env.example .env.local'
+HOOK_CWD=""
 
 echo "block-env-read — task #686 s3 grep --exclude must cover .env"
 expect_block 'grep -r --exclude=.envrc SECRET .'

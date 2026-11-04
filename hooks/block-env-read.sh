@@ -386,10 +386,14 @@ segment_is_name_only() {
             # (-t, -at, -t/tmp/x) names a target directory.
             --t*) return 1 ;;
             --*) continue ;;
-            -?*t*) return 1 ;;
+            -t*|-[!-]*t*) return 1 ;;
             -*) continue ;;
           esac
         fi
+        # A glob naming an env file can expand to the real one.
+        case "$arg" in
+          *[\*\?\[]*) printf '%s' "$arg" | grep -Eiq '\.env' && return 1 ;;
+        esac
         positional+=("$arg")
       done
       [ "${#positional[@]}" -ge 2 ] || return 1
