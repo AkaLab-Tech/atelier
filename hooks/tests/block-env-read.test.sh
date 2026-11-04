@@ -238,6 +238,17 @@ expect_allow 'cp .env.example .env'
 expect_allow '[ -f .env ] || cp .env.example .env'
 expect_allow 'cp .env.example .env.local'
 HOOK_CWD=""
+# #686 review fix: cwd has no env file, sub/ has one; a cd/pushd makes a
+# relative destination unresolvable, an absolute one is still checked.
+CDFX="$TMP/cdfx"; mkdir -p "$CDFX/sub"
+: > "$CDFX/.env.example"; : > "$CDFX/sub/.env"
+HOOK_CWD="$CDFX"
+expect_block 'cd sub && cp .env.example .env'
+expect_block 'pushd sub && cp .env.example .env'
+expect_block 'cp .env.example sub/.env'
+expect_allow 'cp .env.example .env'
+expect_allow "cd sub && cp .env.example $CDFX/nonexistent-dest/.env"
+HOOK_CWD=""
 expect_block 'cp .env /tmp/copy'
 expect_block 'cp .env .env.bak'
 expect_block 'cp .env .env.example'

@@ -35,7 +35,8 @@
 #     `printenv` word (those can print the loaded values). docker, docker-compose,
 #     pnpm and npx are not exempt.
 #   - `cp <template> <env file>` is allowed only when the destination does not
-#     exist (resolved against the hook input `cwd`); any `-t`/`--t*` (target
+#     exist (resolved against the hook input `cwd`; a relative dest after a
+#     `cd`/`pushd` in the command is blocked); any `-t`/`--t*` (target
 #     directory, incl. `-at`, `-t/tmp/x`, `--target=`) is blocked.
 #   - Recursive grep (grep/egrep/fgrep/ggrep/zgrep/zegrep/zfgrep, `-r`/`-R`/
 #     `--recursive`/`-d recurse`/`--directories=recurse`; rgrep always) is
@@ -373,9 +374,13 @@ segment_is_name_only() {
         fi
       done
       # A template may create the env file, never overwrite the operator's.
+      # A relative dest after a `cd`/`pushd` in the same command resolves
+      # somewhere the hook cannot see, so it is treated as possibly existing.
       case "$dest" in
         /*) ;;
-        *) dest="$hook_cwd/$dest" ;;
+        *)
+          [ "$cd_in_command" = 0 ] || return 1
+          dest="$hook_cwd/$dest" ;;
       esac
       if [ -e "$dest" ] || [ -L "$dest" ]; then
         return 1
