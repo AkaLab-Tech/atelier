@@ -29,10 +29,17 @@
 #     Blocking rm/mv is deliberate: deleting these files is an operator action.
 #   - Command prefixes are skipped before the command word is read: `\cmd`,
 #     `VAR=val`, `sudo`/`command`/`builtin`/`exec`/`nohup`/`time`, `env [-i|-u X]
-#     [VAR=val]`, `timeout [opts] <dur>`, `nice [-n N]`, `xargs [opts]`.
+#     [VAR=val]`, `timeout [opts] <dur>`, `nice [-n N]`, `xargs [opts]`, `stdbuf`, `ionice`,
+#     `chrt`, `taskset`, `setsid`, `unbuffer`, `caffeinate`, `doas`, `flock`.
+#     The strings of `bash|sh|zsh|dash|ksh -c` and `flock ... -c` get one inner
+#     recursive-grep pass (split on `;`, `&&`, `||`, `|`).
 #   - `--env-file` is exempt only for node/tsx/ts-node/deno/bun, and only when
 #     the segment has no `-e`/`-p`/`-pe`/`--eval`/`--print` and no `env`/
-#     `printenv` word (those can print the loaded values). docker, docker-compose,
+#     `printenv` word (those can print the loaded values), and no preload/loader
+#     (`-r`/`--require`/`--import`/`--loader`/`--experimental-loader`/`--preload`/
+#     `--experimental-preload`, or a `NODE_OPTIONS=` assignment; for deno only
+#     `--import`/`--preload`-style flags and `NODE_OPTIONS`, since `-r` is
+#     `--reload` there). docker, docker-compose,
 #     pnpm and npx are not exempt.
 #   - `cp <template> <env file>` is allowed only when the destination does not
 #     exist (resolved against the hook input `cwd`; a relative dest after a
@@ -41,7 +48,8 @@
 #   - Recursive grep (grep/egrep/fgrep/ggrep/zgrep/zegrep/zfgrep, `-r`/`-R`/
 #     `--recursive`/`-d recurse`/`--directories=recurse`; rgrep always) is
 #     blocked unless `--exclude=.env*` / `--exclude='*.env*'` (nothing narrower
-#     counts) or every explicit path operand exists under `cwd` and holds no
+#     counts, and any `--include` pattern that matches a protected name such as
+#     `.env`, `.env.local` or `.envrc` cancels it, in either order) or every explicit path operand exists under `cwd` and holds no
 #     `.env*` file other than templates. No explicit path (default `.`), a
 #     `cd`/`pushd`/`env -C`, a quoted/glob operand, or an unknown operand
 #     stays blocked.
@@ -54,6 +62,8 @@
 # (dotenv) is not a shell token and keeps working. Other tools that merely
 # mention `.env` in prose (e.g. `gh pr create --body "... .env ..."`) are
 # false positives; use `--body-file`. `.envrc` (direnv) is blocked too.
+# Uncovered wrappers: `find -exec`, `parallel`, `watch`, `script -c`, and a
+# `-c` string nested inside another `-c` string (one level is inspected).
 #
 # Contract (PreToolUse): stdin JSON; exit 0 allow; exit 2 block (stderr to
 # Claude). Unparseable or missing input exits 0 (fail open).
@@ -116,7 +126,65 @@ skip_prefix() {
     if [ -z "$w" ]; then shift; continue; fi
     case "$w" in
       [A-Za-z_]*=*) shift ;;
-      sudo|command|builtin|exec|nohup|time) shift ;;
+      sudo|command|builtin|exec|nohup|time|setsid|unbuffer) shift ;;
+      doas)
+        shift
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -u|-C) shift; [ $# -gt 0 ] && shift ;;
+            -*) shift ;;
+            *) break ;;
+          esac
+        done ;;
+      caffeinate)
+        shift
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -t|-w) shift; [ $# -gt 0 ] && shift ;;
+            -*) shift ;;
+            *) break ;;
+          esac
+        done ;;
+      stdbuf)
+        shift
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -i|-o|-e) shift; [ $# -gt 0 ] && shift ;;
+            -*) shift ;;
+            *) break ;;
+          esac
+        done ;;
+      ionice)
+        shift
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -c|-n|-p|-P|-u) shift; [ $# -gt 0 ] && shift ;;
+            -*) shift ;;
+            *) break ;;
+          esac
+        done ;;
+      chrt|taskset)
+        shift
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -*) shift ;;
+            *) break ;;
+          esac
+        done
+        [ $# -gt 0 ] && shift ;;
+      flock)
+        # `flock <file> -c <cmd>` runs the string in a shell: left as the
+        # command word so shell_c_string can inspect it.
+        case " $* " in *" -c "*|*" --command"*) set -- "$w" "${@:2}"; break ;; esac
+        shift
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -w|-E|--timeout|--conflict-exit-code) shift; [ $# -gt 0 ] && shift ;;
+            -*) shift ;;
+            *) break ;;
+          esac
+        done
+        [ $# -gt 0 ] && shift ;;
       env)
         shift
         while [ $# -gt 0 ]; do
@@ -213,7 +281,57 @@ is_recursive_grep() {
 # exactly `.env*` or `*.env*`, after `--exclude=` or `--exclude `, quoted or not.
 is_grep_env_excluded() {
   local seg="$1"
-  printf '%s' "$seg" | grep -Eq -- "--exclude(=|[[:space:]]+)['\"]?\\*?\\.env\\*['\"]?([[:space:]]|\$)"
+  printf '%s' "$seg" | grep -Eq -- "--exclude(=|[[:space:]]+)['\"]?\\*?\\.env\\*['\"]?([[:space:]]|\$)" || return 1
+  # An `--include` matching a protected name re-admits it, whatever the order.
+  local w pat want=0 name
+  while IFS= read -r w; do
+    pat=""
+    if [ "$want" = 1 ]; then pat="$w"; want=0
+    else
+      case "$w" in
+        --include=*) pat="${w#--include=}" ;;
+        --include) want=1 ;;
+      esac
+    fi
+    [ -n "$pat" ] || continue
+    for name in .env .env.local .env.production .envrc; do
+      # shellcheck disable=SC2254
+      case "$name" in $pat) return 1 ;; esac
+    done
+  done < <(shell_words "$seg")
+  return 0
+}
+
+# Prints the command string of `bash|sh|zsh|dash|ksh -c`, `-lc`, `-ec`, ... or
+# `flock <file> -c`. $1 command name, $2 its words (SEG_REST). Empty if none.
+shell_c_string() {
+  local cmd="$1" w take=0 first=1 skipnext=0
+  while IFS= read -r w; do
+    if [ "$first" = 1 ]; then first=0; continue; fi
+    if [ "$take" = 1 ]; then printf '%s\n' "$w"; return 0; fi
+    if [ "$skipnext" = 1 ]; then skipnext=0; continue; fi
+    case "$w" in
+      -o|-O|+O) skipnext=1 ;;
+      -c|-[A-Za-z]*c) take=1 ;;
+      -*|+*) ;;
+      *) [ "$cmd" = flock ] || return 0 ;;
+    esac
+  done < <(shell_words "$2")
+  return 0
+}
+
+# 0 when any piece of a `-c` string is a recursive grep that is neither
+# excluding the env files nor provably limited to env-free paths.
+inner_recursive_grep() {
+  local piece
+  while IFS= read -r piece; do
+    [ -n "$piece" ] || continue
+    if is_recursive_grep "$piece" && ! is_grep_env_excluded "$piece" \
+       && ! recursive_grep_paths_safe "$piece"; then
+      return 0
+    fi
+  done < <(printf '%s\n' "$1" | awk '{ gsub(/&&|\|\||[;|]/, "\n"); print }')
+  return 1
 }
 
 # Quote-aware word split, one word per line, quotes removed. With a second
@@ -330,19 +448,29 @@ env_file_has_script_operand() {
 
 # Protected names in a segment, one per line.
 protected_tokens() {
-  local seg="$1" orig_seg="$1"
+  local seg="$1" orig_seg="$1" cstr="" preload_re
   seg_command "$seg"
   case "$SEG_CMD" in
+    bash|sh|zsh|dash|ksh|flock) cstr="$(shell_c_string "$SEG_CMD" "$SEG_REST")" ;;
+  esac
+  case "$SEG_CMD" in
     node|tsx|ts-node|deno|bun)
+      # A preload/loader runs before the app and can dump `process.env`.
+      preload_re='(^|[[:space:]])['\''"]?(-r|--require|--import|--loader|--experimental-loader|--preload|--experimental-preload)'
+      [ "$SEG_CMD" = deno ] && preload_re='(^|[[:space:]])['\''"]?--(import|preload|require|loader|experimental-loader|experimental-preload)'
+      if printf '%s' "$SEG_REST" | grep -Eq "$preload_re" \
+         || printf '%s' "$seg" | grep -Eq '(^|[^[:alnum:]_])NODE_OPTIONS='; then
+        :
       # `--env-file` only loads the file for the app. With an eval/print flag or
       # an `env`/`printenv` word the command can print the loaded values, so the
       # flag stays and the file name is reported.
-      if env_file_has_script_operand "$SEG_CMD" "$SEG_REST" "$seg" \
+      elif env_file_has_script_operand "$SEG_CMD" "$SEG_REST" "$seg" \
          && ! printf '%s' "$SEG_REST" | grep -Eq '(^|[[:space:]])(-[A-Za-z]*[ep]|--eval|--print)|(^|[[:space:]])(eval|env|printenv)([[:space:]]|$)'; then
         seg="$(printf '%s' "$seg" | sed -E 's/--env-file(=|[[:space:]]+)('\''|")?[^[:space:]'\''"]*('\''|")?//g')"
       fi
       ;;
-    grep|egrep|fgrep|ggrep|zgrep|zegrep|zfgrep|rgrep)
+    grep|egrep|fgrep|ggrep|zgrep|zegrep|zfgrep|rgrep|bash|sh|zsh|dash|ksh|flock)
+      # For a shell/flock `-c` string the inner pass re-checks the exclusion.
       seg="$(printf '%s' "$seg" | sed -E 's/--exclude(=|[[:space:]]+)('\''|")?[^[:space:]'\''"]*('\''|")?//g')"
       ;;
   esac
@@ -365,6 +493,8 @@ protected_tokens() {
   # it touches all .env* files in searched directories.
   if is_recursive_grep "$orig_seg" && ! is_grep_env_excluded "$orig_seg" \
      && ! recursive_grep_paths_safe "$orig_seg"; then
+    printf '.env*\n'
+  elif [ -n "$cstr" ] && inner_recursive_grep "$cstr"; then
     printf '.env*\n'
   fi
 }
@@ -441,6 +571,12 @@ segment_is_name_only() {
         fi
         blocked_reason="recursive_grep"
         return 1
+      fi
+      return 1 ;;
+    bash|sh|zsh|dash|ksh|flock)
+      sub="$(shell_c_string "$SEG_CMD" "$SEG_REST")"
+      if [ -n "$sub" ] && inner_recursive_grep "$sub"; then
+        blocked_reason="recursive_grep"
       fi
       return 1 ;;
     git)

@@ -381,6 +381,41 @@ expect_block 'env --chdir=sub cp .env.example .env'
 expect_allow 'cp .env.example .env'
 HOOK_CWD=""
 
+echo "block-env-read — task #715 wrappers / shell -c / preload / --include"
+HOOK_CWD="$CLEANTREE"
+# Gap 1: wrappers and shell -c inner pass.
+expect_block 'stdbuf -o0 grep -r X .'
+expect_block 'stdbuf -o 0 grep -r X .'
+expect_block 'ionice -c3 grep -r X .'
+expect_block 'setsid grep -r X .'
+expect_block 'bash -c "grep -r X ."'
+expect_block "sh -c 'grep -r X .'"
+expect_block 'bash -lc "grep -r X ."'
+expect_block 'zsh -c "grep -R X ."'
+expect_block 'flock /tmp/l -c "grep -r X ."'
+expect_allow "stdbuf -o0 grep -r --exclude='.env*' X ."
+expect_allow "bash -c \"grep -r --exclude='.env*' X .\""
+expect_allow 'stdbuf -oL tail -f app.log'
+expect_allow 'bash -c "echo hi"'
+expect_allow "sh -c 'ls src'"
+# Gap 2: preload / loader flags disqualify the --env-file allowance.
+expect_block 'node --env-file=.env -r ./dump.js server.js'
+expect_block 'node --env-file=.env --require ./dump.js server.js'
+expect_block 'node --env-file=.env --import ./dump.mjs server.js'
+expect_block 'node --env-file=.env --loader ./l.mjs server.js'
+expect_block 'bun --env-file=.env --preload ./p.ts server.ts'
+expect_block 'NODE_OPTIONS="--require ./dump.js" node --env-file=.env server.js'
+expect_allow 'node --env-file=.env server.js'
+expect_allow 'tsx --env-file=.env script.ts'
+# Gap 3: --include cancels the env exclude.
+expect_block "grep -r --exclude='.env*' --include='.env*' X ."
+expect_block "grep -r --include='.env*' --exclude='.env*' X ."
+expect_block "grep -r --exclude='.env*' --include='*' X ."
+expect_block 'grep -r --exclude=.env* --include .envrc X .'
+expect_allow "grep -r --exclude='.env*' --include='*.ts' X ."
+expect_allow "grep -r --include='*.md' --exclude='*.env*' X ."
+HOOK_CWD=""
+
 echo "block-env-read — malformed / missing input fails open"
 for raw in '' 'not json' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \
            '{"tool_name":"Bash","tool_input":{"command":""}}' \
