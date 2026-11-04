@@ -31,6 +31,8 @@ fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 # shellcheck source=hooks/tests/memory-test-isolation.sh
 . "$REPO_ROOT/hooks/tests/memory-test-isolation.sh"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT"
+# The vault is covered by atelier-memory-render/ingest tests; rendering it after every write here is ~0.5 s of unrelated work per call.
+export ATELIER_MEMORY_VAULT=off
 DB="$ATELIER_CONFIG_DIR/atelier/memory.db"
 PROJ="$TMP/proj"; mkdir -p "$PROJ"
 echo "hello" > "$PROJ/file.txt"
@@ -230,13 +232,26 @@ ATELIER_CONFIG_DIR="$BC" mem add fact --project "$TMP/otherproj" --source agent-
 
 BIG="$TMP/big-cfg"
 long="$(printf 'L%.0s' $(seq 1 300))"
-for i in $(seq 1 12); do
-  ATELIER_CONFIG_DIR="$BIG" mem add request --project "$BP" --source agent-inferred --title "request $i $long" >/dev/null
-  ATELIER_CONFIG_DIR="$BIG" mem add question --project "$BP" --source agent-inferred --title "question $i $long" >/dev/null
-  ATELIER_CONFIG_DIR="$BIG" mem add decision --project "$BP" --source agent-inferred --title "decision $i $long" >/dev/null
-  ATELIER_CONFIG_DIR="$BIG" mem add held --project "$BP" --source agent-inferred --title "held $i $long" >/dev/null
-  ATELIER_CONFIG_DIR="$BIG" mem add fact --project "$BP" --source agent-inferred --title "fact $i" >/dev/null
-done
+# One real add per type (creates + migrates the DB); the other 11 rounds are the
+# same rows seeded in one transaction (fixture only: the add path is covered above).
+ATELIER_CONFIG_DIR="$BIG" mem add request --project "$BP" --source agent-inferred --title "request 1 $long" >/dev/null
+ATELIER_CONFIG_DIR="$BIG" mem add question --project "$BP" --source agent-inferred --title "question 1 $long" >/dev/null
+ATELIER_CONFIG_DIR="$BIG" mem add decision --project "$BP" --source agent-inferred --title "decision 1 $long" >/dev/null
+ATELIER_CONFIG_DIR="$BIG" mem add held --project "$BP" --source agent-inferred --title "held 1 $long" >/dev/null
+ATELIER_CONFIG_DIR="$BIG" mem add fact --project "$BP" --source agent-inferred --title "fact 1" >/dev/null
+bigproj="$(sqlite3 "$BIG/atelier/memory.db" "SELECT project FROM records LIMIT 1;")"
+ts="strftime('%Y-%m-%dT%H:%M:%SZ','now')"
+{
+  printf 'BEGIN IMMEDIATE;\n'
+  for i in $(seq 2 12); do
+    for spec in request:R question:Q decision:D held:H fact:F; do
+      ty="${spec%%:*}"; pf="${spec##*:}"
+      if [ "$ty" = fact ]; then t="fact $i"; else t="$ty $i $long"; fi
+      printf "INSERT INTO records (id,type,project,source,title,body,refs,created_at,created_by) VALUES ('%s-%s','%s','%s','agent-inferred','%s','','[]',%s,'agent');\n" "$pf" "$i" "$ty" "$bigproj" "$t" "$ts"
+    done
+  done
+  printf 'COMMIT;\n'
+} | sqlite3 -bail "$BIG/atelier/memory.db"
 ATELIER_CONFIG_DIR="$BIG" mem add digest --project "$BP" --source agent-inferred --title "digest $long" >/dev/null
 bigsnap="$(snap "$BP")"
 out="$(ATELIER_CONFIG_DIR="$BIG" mem brief --project "$BP")"

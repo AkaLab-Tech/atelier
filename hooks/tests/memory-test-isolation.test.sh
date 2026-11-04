@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Hermetic regression test for the memory tests' isolation (#665): runs the three
-# memory test files with a sentinel real-looking config dir as HOME /
+# Hermetic regression test for the memory tests' isolation (#665): runs a short
+# add/list/brief/import scenario with a sentinel real-looking config dir as HOME /
 # ATELIER_CONFIG_DIR and proves it is left byte-identical, and that the guard in
 # memory-test-isolation.sh aborts (writing nothing) when a call would resolve to
 # the sentinel or when ATELIER_CONFIG_DIR is empty. Skips cleanly without
@@ -41,12 +41,28 @@ jq -n --arg p "$PROJ" '{projects: {($p): {name: "sentinel"}}}' > "$SC/projects.j
 sqlite3 "$SC/atelier/memory.db" "PRAGMA journal_mode=DELETE; CREATE TABLE sentinel(v); INSERT INTO sentinel VALUES ('keep');" >/dev/null
 before="$(snap "$SH")"
 
-# --- the memory tests, with the sentinel passed as the real HOME/config dir ---
-for f in atelier-memory.test.sh atelier-memory-import.test.sh memory-brief-hook.test.sh; do
-  out="$(env HOME="$SH" ATELIER_CONFIG_DIR="$SC" bash "$T/$f" 2>&1)"; rc=$?
-  [ "$rc" = 0 ] && pass "$f passes with the sentinel as the real config dir" || fail "$f rc=$rc: $(printf '%s' "$out" | grep -m3 'FAIL\|ABORT')"
-done
-[ "$before" = "$(snap "$SH")" ] && pass "sentinel is byte-identical after the memory tests" || fail "sentinel changed"
+# --- mini-scenario: add/list/brief/import once each, sentinel as the real HOME/config dir ---
+# (The three full memory test files are not re-run here: that tripled the suite's
+# slowest files for no extra isolation coverage.)
+M="$S/scenario.sh"
+cat > "$M" <<'MEOF'
+TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"
+trap 'rm -rf "$TMP"' EXIT
+MEM="$1"; . "$2"
+P="$TMP/work/alpha"; mkdir -p "$P"
+enc="$(printf '%s' "$P" | sed 's/[^A-Za-z0-9]/-/g')"
+mkdir -p "$ATELIER_CONFIG_DIR/projects/$enc/memory"
+printf -- '---\nname: Scenario note\ndescription: imported once\nmetadata:\n  type: user\n---\nbody\n' > "$ATELIER_CONFIG_DIR/projects/$enc/memory/note.md"
+jq -n --arg p "$P" '{projects: {($p): {name: "alpha"}}}' > "$ATELIER_CONFIG_DIR/projects.json"
+mem add fact --project "$P" --source agent-inferred --title "scenario fact" >/dev/null || exit 11
+mem list --project "$P" | grep -q "scenario fact" || exit 12
+mem brief --project "$P" | grep -q "Project memory" || exit 13
+mem import >/dev/null 2>&1 || exit 14
+case "$(mem path)" in "$TMP"/*) ;; *) exit 15 ;; esac
+MEOF
+out="$(env HOME="$SH" ATELIER_CONFIG_DIR="$SC" bash "$M" "$MEM" "$T/memory-test-isolation.sh" 2>&1)"; rc=$?
+[ "$rc" = 0 ] && pass "add/list/brief/import scenario passes with the sentinel as the real config dir" || fail "scenario rc=$rc: $(printf '%s' "$out" | head -3)"
+[ "$before" = "$(snap "$SH")" ] && pass "sentinel is byte-identical after the scenario" || fail "sentinel changed"
 if find "$SH" \( -name '*-wal' -o -name '*-shm' \) | grep -q .; then fail "wal/shm created in the sentinel"; else pass "no -wal/-shm created in the sentinel"; fi
 
 # --- guard self-test: a bad override aborts and writes nothing ----------------

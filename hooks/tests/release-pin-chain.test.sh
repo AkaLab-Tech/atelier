@@ -32,11 +32,11 @@ fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 
 # chk_text <text> <fixed-string> <label> — present in the given text
 chk_text() {
-  if printf '%s\n' "$1" | grep -qF -- "$2"; then pass "$3"; else fail "$3 — token '$2' not found"; fi
+  if grep -qF -- "$2" <<<"$1"; then pass "$3"; else fail "$3 — token '$2' not found"; fi
 }
 # chk_text_absent <text> <fixed-string> <label> — absent from the given text
 chk_text_absent() {
-  if printf '%s\n' "$1" | grep -qF -- "$2"; then fail "$3 — token '$2' found but should be absent"; else pass "$3"; fi
+  if grep -qF -- "$2" <<<"$1"; then fail "$3 — token '$2' found but should be absent"; else pass "$3"; fi
 }
 
 for f in "$RELEASE_MD" "$SKILL_MD" "$ORCH_MD"; do
