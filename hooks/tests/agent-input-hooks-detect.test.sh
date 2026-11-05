@@ -13,6 +13,8 @@
 #   D9  atelier's own hooks/hooks.json         -> not listed
 #   D10 --json parses
 #   D11 inline plugin.json hooks object        -> detected
+#   H1-H5 handling: neutralised; hooks-not-registered / render-failed /
+#         untested-version; other plugins always unhandled (#729)
 #
 # Hermetic: scratch HOME + ATELIER_CONFIG_DIR, fixture plugin trees. No network.
 #
@@ -78,7 +80,7 @@ reset
 add_plugin context-mode@context-mode 1.0.169 "$(hooks_for "$CM_MATCHER")"
 enable context-mode@context-mode
 out="$(run_detect)"; rc=$?
-exp="$(printf 'context-mode@context-mode\tcontext-mode\t1.0.169\t%s\tcontext-mode\tyes' "$CM_MATCHER")"
+exp="$(printf 'context-mode@context-mode\tcontext-mode\t1.0.169\t%s\tcontext-mode\tyes\tunhandled\thooks-not-registered' "$CM_MATCHER")"
 if [ "$rc" = 0 ] && [ "$out" = "$exp" ]; then pass "D2 context-mode -> known=context-mode tested=yes"; else fail "D2: rc=$rc out=[$out]"; fi
 
 # D3
@@ -103,7 +105,7 @@ reset
 add_plugin other@mkt 2.0.0 "$(hooks_for 'Agent|Task')"
 enable other@mkt
 out="$(run_detect)"
-if [ "$out" = "$(printf 'other@mkt\tother\t2.0.0\tAgent|Task\tunknown\tno')" ]; then pass "D5 unknown plugin -> unknown"; else fail "D5: [$out]"; fi
+if [ "$out" = "$(printf 'other@mkt\tother\t2.0.0\tAgent|Task\tunknown\tno\tunhandled\tother-plugin')" ]; then pass "D5 unknown plugin -> unknown"; else fail "D5: [$out]"; fi
 
 # D6
 for m in '*' ''; do
@@ -123,7 +125,7 @@ done
 reset
 add_plugin context-mode@context-mode 1.0.170 "$(hooks_for Agent)"; enable context-mode@context-mode
 out="$(run_detect)"
-if [ "$out" = "$(printf 'context-mode@context-mode\tcontext-mode\t1.0.170\tAgent\tcontext-mode\tno')" ]; then pass "D7 1.0.170 -> tested=no"; else fail "D7: [$out]"; fi
+if [ "$out" = "$(printf 'context-mode@context-mode\tcontext-mode\t1.0.170\tAgent\tcontext-mode\tno\tunhandled\tuntested-version')" ]; then pass "D7 1.0.170 -> tested=no"; else fail "D7: [$out]"; fi
 
 # D8
 reset
@@ -156,7 +158,7 @@ reset
 add_plugin context-mode@context-mode 1.0.169 "$(hooks_for Agent)"; enable context-mode@context-mode
 js="$(run_detect --json)"
 if [ "$(printf '%s' "$js" | jq -r 'length')" = 1 ] \
-  && [ "$(printf '%s' "$js" | jq -r '.[0] | [.plugin,.name,.version,.matcher,.known,.tested] | join(",")')" = "context-mode@context-mode,context-mode,1.0.169,Agent,context-mode,yes" ]; then
+  && [ "$(printf '%s' "$js" | jq -r '.[0] | [.plugin,.name,.version,.matcher,.known,.tested,.handling,.reason] | join(",")')" = "context-mode@context-mode,context-mode,1.0.169,Agent,context-mode,yes,unhandled,hooks-not-registered" ]; then
   pass "D10 --json parses with expected fields"; else fail "D10: [$js]"; fi
 reset
 js="$(run_detect --json)"
@@ -169,7 +171,85 @@ dir="$TMP/plugins/inline-3.1.0"; mkdir -p "$dir/.claude-plugin"
 echo '{"name":"inline","hooks":{"PreToolUse":[{"matcher":"Task","hooks":[{"type":"command","command":"x"}]}]}}' > "$dir/.claude-plugin/plugin.json"
 enable inline@mkt
 out="$(run_detect)"
-if [ "$out" = "$(printf 'inline@mkt\tinline\t3.1.0\tTask\tunknown\tno')" ]; then pass "D11 inline plugin.json hooks detected"; else fail "D11: [$out]"; fi
+if [ "$out" = "$(printf 'inline@mkt\tinline\t3.1.0\tTask\tunknown\tno\tunhandled\tother-plugin')" ]; then pass "D11 inline plugin.json hooks detected"; else fail "D11: [$out]"; fi
+
+# handling (#729): fixture context-mode with a renderable routing block
+cm_with_render() { # <version> <ok|bad>
+  add_plugin context-mode@context-mode "$1" "$(hooks_for Agent)"
+  local d="$TMP/plugins/context-mode-$1"; mkdir -p "$d/hooks/core"
+  echo 'export const createToolNamer = () => ({});' > "$d/hooks/core/tool-naming.mjs"
+  if [ "$2" = ok ]; then
+    echo 'export const createRoutingBlock = () => "<context_window_protection>x</context_window_protection>";' > "$d/hooks/routing-block.mjs"
+  else
+    echo 'export const createRoutingBlock = () => "";' > "$d/hooks/routing-block.mjs"
+  fi
+  enable context-mode@context-mode
+}
+atelier_with_hooks() { # <both|strip-only|readd-only>
+  local strip='{"matcher":"Agent","hooks":[{"type":"command","command":"\"${CLAUDE_PLUGIN_ROOT}\"/hooks/strip-context-mode-agent-block.sh"}]}'
+  local readd='{"hooks":[{"type":"command","command":"\"${CLAUDE_PLUGIN_ROOT}\"/hooks/readd-context-mode-block.sh"}]}'
+  local pre="[$strip]" sub="[$readd]"
+  [ "$1" = readd-only ] && pre='[]'
+  [ "$1" = strip-only ] && sub='[]'
+  add_plugin atelier@akalab-tech 0.38.0 "{\"hooks\":{\"PreToolUse\":$pre,\"SubagentStart\":$sub}}"
+  enable atelier@akalab-tech
+}
+handling_of() { run_detect --json | jq -r '.[] | select(.name == "context-mode") | .handling + "/" + .reason'; }
+command -v node >/dev/null 2>&1 || { echo "  SKIP: node not on PATH (handling cases)"; [ "$fails" -eq 0 ] && exit 0 || exit 1; }
+
+reset; cm_with_render 1.0.169 ok; atelier_with_hooks both
+h="$(handling_of)"
+if [ "$h" = "neutralised/-" ]; then pass "H1 hooks registered + render ok + tested -> neutralised"; else fail "H1: [$h]"; fi
+out="$(run_detect)"
+if [ "$(awk -F'\t' '{print $7}' <<<"$out")" = neutralised ]; then pass "H1 TSV column 7 = neutralised"; else fail "H1 tsv: [$out]"; fi
+
+for v in strip-only readd-only; do
+  reset; cm_with_render 1.0.169 ok; atelier_with_hooks "$v"
+  h="$(handling_of)"
+  if [ "$h" = "unhandled/hooks-not-registered" ]; then pass "H2 $v -> hooks-not-registered"; else fail "H2 $v: [$h]"; fi
+done
+
+reset; cm_with_render 1.0.169 bad; atelier_with_hooks both
+h="$(handling_of)"
+if [ "$h" = "unhandled/render-failed" ]; then pass "H3 empty render -> render-failed"; else fail "H3: [$h]"; fi
+
+reset; cm_with_render 1.0.170 ok; atelier_with_hooks both
+h="$(handling_of)"
+if [ "$h" = "unhandled/untested-version" ]; then pass "H4 untested version -> untested-version"; else fail "H4: [$h]"; fi
+
+reset; add_plugin other@mkt 2.0.0 "$(hooks_for Agent)"; enable other@mkt; atelier_with_hooks both
+h="$(run_detect --json | jq -r '.[0].handling')"
+if [ "$h" = unhandled ]; then pass "H5 other plugin always unhandled"; else fail "H5: [$h]"; fi
+
+# H3b render-block non-zero exit (routing-block module missing)
+reset; cm_with_render 1.0.169 ok; atelier_with_hooks both
+rm -f "$TMP/plugins/context-mode-1.0.169/hooks/routing-block.mjs"
+h="$(handling_of)"
+if [ "$h" = "unhandled/render-failed" ]; then pass "H3b render-block non-zero exit -> render-failed"; else fail "H3b: [$h]"; fi
+
+# H3c render output lacking the <context_window_protection> tag
+reset; cm_with_render 1.0.169 ok; atelier_with_hooks both
+echo 'export const createRoutingBlock = () => "no tag here";' > "$TMP/plugins/context-mode-1.0.169/hooks/routing-block.mjs"
+h="$(handling_of)"
+if [ "$h" = "unhandled/render-failed" ]; then pass "H3c output without tag -> render-failed"; else fail "H3c: [$h]"; fi
+
+# H6 strip hook registered on the wrong matcher -> not registered
+reset; cm_with_render 1.0.169 ok
+add_plugin atelier@akalab-tech 0.38.0 '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"x/hooks/strip-context-mode-agent-block.sh"}]}],"SubagentStart":[{"hooks":[{"type":"command","command":"x/hooks/readd-context-mode-block.sh"}]}]}}'
+enable atelier@akalab-tech
+h="$(handling_of)"
+if [ "$h" = "unhandled/hooks-not-registered" ]; then pass "H6 strip on non-Agent matcher -> hooks-not-registered"; else fail "H6: [$h]"; fi
+
+# H7 atelier installed with both hooks but NOT enabled -> not registered
+reset; cm_with_render 1.0.169 ok
+add_plugin atelier@akalab-tech 0.38.0 '{"hooks":{"PreToolUse":[{"matcher":"Agent","hooks":[{"type":"command","command":"x/hooks/strip-context-mode-agent-block.sh"}]}],"SubagentStart":[{"hooks":[{"type":"command","command":"x/hooks/readd-context-mode-block.sh"}]}]}}'
+h="$(handling_of)"
+if [ "$h" = "unhandled/hooks-not-registered" ]; then pass "H7 disabled atelier -> hooks-not-registered"; else fail "H7: [$h]"; fi
+
+# H8 untested version wins over missing hooks (precedence)
+reset; cm_with_render 1.0.170 ok
+h="$(handling_of)"
+if [ "$h" = "unhandled/untested-version" ]; then pass "H8 untested version reported even without hooks"; else fail "H8: [$h]"; fi
 
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
 echo "$fails failed"; exit 1

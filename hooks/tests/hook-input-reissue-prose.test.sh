@@ -38,6 +38,8 @@ contains "not an attempt" "$NEXT" "not an attempt"
 contains "no selector on second refusal" "$NEXT" "no operator selector is shown for this refusal kind"
 contains "never a third call" "$NEXT" "never issued a third time"
 contains "record choice" "$NEXT" "--choice auto-reissue --reissue accepted|denied"
+contains "neutralised: as first issued (#729)" "$NEXT" "re-issue the call exactly as first issued (the block-free brief), never the hook-produced input"
+contains "other plugins: hook-produced input (#729)" "$NEXT" "(b) any other plugin hook: re-issue the hook-produced input verbatim"
 contains "brief never includes block" "$NEXT" "A brief never includes a block of the form the context-mode plugin appends"
 contains "regression: operator-answer rule" "$NEXT" "Only on the operator's own answer re-issue the identical brief, once"
 contains "regression: generic orchestrator held line" "$NEXT" "held: orchestrator dispatch denied (<tag verbatim>) — <id>"
@@ -59,7 +61,9 @@ n="$(grep -cF -- "$POINTER" "$C/release.md")"
 if [ "$n" -ge 3 ]; then ok "release.md pointer at steps 6, 7, 8b.3 ($n)"; else bad "release.md pointers (expected >=3, got $n)"; fi
 
 echo "== agents/task-orchestrator.md"
-contains "re-issue bullet" "$AGENT" "re-issue the call **once, verbatim**"
+contains "re-issue bullet" "$AGENT" "re-issue the call **once**"
+contains "neutralised: as first issued" "$AGENT" "exactly as first issued (the block-free brief), never the hook-produced input"
+contains "other plugins: hook-produced input" "$AGENT" "for any other plugin hook, the hook-produced input verbatim"
 contains "record auto-reissue" "$AGENT" "--choice auto-reissue --reissue accepted|denied"
 contains "record attempt 1 from orchestrator" "$AGENT" "--command task-orchestrator --agent <specialist> --task <id> --tag 'hook-changed-input' --hook '<plugin_key>' --attempt 1"
 contains "not an attempt" "$AGENT" "It is **not an attempt**"
@@ -72,6 +76,11 @@ echo "== operator-rules.md"
 contains "exception sentence" "$RULES" "Exception (approved #457 exception, product lead, 2026-11-03)"
 contains "no answer needed" "$RULES" "is the only case needing no"
 contains "briefs never pre-include block" "$RULES" "never pre-includes a \`context_window_protection\`"
+
+echo "== the 'appended twice' wording is gone (#729)"
+for f in "$NEXT" "$AGENT" "$RULES" "$REPO_ROOT/docs/troubleshooting.md"; do
+  if grep -qiE "arrives twice|block twice|including any context-window-protection block" "$f"; then bad "stale 'twice' wording in $(basename "$f")"; else ok "no 'twice' wording in $(basename "$f")"; fi
+done
 
 echo "== no literal appended block inside a command or agent file"
 if grep -ln -- "<context_window_protection>" "$C"/*.md "$A"/*.md >/dev/null 2>&1; then

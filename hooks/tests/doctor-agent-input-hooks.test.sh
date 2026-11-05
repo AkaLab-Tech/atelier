@@ -8,6 +8,8 @@
 #   C4 unknown plugin matching Agent      -> WARN naming plugin + matcher
 #   C5 MANUAL_OUT and the fix arrays stay empty in every scenario
 #   C6 helper not found                   -> SKIP
+#   C7 context-mode neutralised (#729)    -> OK line, no WARN
+#   C8 unhandled                          -> WARN with the reason
 #
 # Hermetic: function extracted from scripts/atelier-doctor, push_* stubbed,
 # the real helper reached through a PATH shim, scratch HOME/ATELIER_CONFIG_DIR.
@@ -119,6 +121,36 @@ NOHELPER_PATH="$TMP/empty-bin"; mkdir -p "$NOHELPER_PATH"
 PATH="$NOHELPER_PATH:/usr/bin:/bin" check_agent_input_hooks
 if [ "$(cat "$HOST_OUT")" = "SKIPMARK Agent-input hooks check (atelier-agent-input-hooks not found)" ] && no_fixes; then
   pass "C6 missing helper -> SKIP"; else fail "C6: $(cat "$HOST_OUT")"; fi
+
+# C7/C8 (#729): neutralised needs atelier's two hooks registered + a render self-check
+command -v node >/dev/null 2>&1 || { echo "  SKIP: node not on PATH (C7/C8)"; [ "$fails" -eq 0 ] && exit 0 || exit 1; }
+reset_cfg
+install_enabled context-mode@context-mode 1.0.169 'Agent'
+cmd="$TMP/plugins/context-mode-1.0.169"; mkdir -p "$cmd/hooks/core"
+echo 'export const createToolNamer = () => ({});' > "$cmd/hooks/core/tool-naming.mjs"
+echo 'export const createRoutingBlock = () => "<context_window_protection>x</context_window_protection>";' > "$cmd/hooks/routing-block.mjs"
+run_check
+if [ "$(grep -c WARNMARK "$HOST_OUT")" = 1 ] && grep -q 'hooks-not-registered' "$HOST_OUT" && no_fixes; then
+  pass "C8 unregistered hooks -> WARN with reason"; else fail "C8: $(cat "$HOST_OUT")"; fi
+
+reset_cfg
+install_enabled context-mode@context-mode 1.0.169 'Agent'
+mkdir -p "$cmd/hooks/core"
+echo 'export const createToolNamer = () => ({});' > "$cmd/hooks/core/tool-naming.mjs"
+echo 'export const createRoutingBlock = () => "<context_window_protection>x</context_window_protection>";' > "$cmd/hooks/routing-block.mjs"
+adir="$TMP/plugins/atelier-0.38.0"; mkdir -p "$adir/hooks"
+cat > "$adir/hooks/hooks.json" <<'JSON'
+{"hooks":{"PreToolUse":[{"matcher":"Agent","hooks":[{"type":"command","command":"x/hooks/strip-context-mode-agent-block.sh"}]}],
+"SubagentStart":[{"hooks":[{"type":"command","command":"x/hooks/readd-context-mode-block.sh"}]}]}}
+JSON
+f="$ATELIER_CONFIG_DIR/plugins/installed_plugins.json"
+jq --arg p "$adir" '.plugins["atelier@akalab-tech"] = [{scope:"user",installPath:$p,version:"0.38.0"}]' "$f" > "$f.new" && mv "$f.new" "$f"
+f="$ATELIER_CONFIG_DIR/settings.json"
+jq '.enabledPlugins["atelier@akalab-tech"] = true' "$f" > "$f.new" && mv "$f.new" "$f"
+run_check
+if [ "$(grep -c OKMARK "$HOST_OUT")" = 1 ] && ! grep -q WARNMARK "$HOST_OUT" \
+  && grep -q 'OKMARK context-mode 1.0.169: Agent rewrite neutralised by atelier' "$HOST_OUT" && no_fixes; then
+  pass "C7 neutralised -> OK line, no WARN, no fix"; else fail "C7: $(cat "$HOST_OUT")"; fi
 
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
 echo "$fails failed"; exit 1
