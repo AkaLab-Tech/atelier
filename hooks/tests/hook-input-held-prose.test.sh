@@ -61,8 +61,13 @@ echo "== agents/task-orchestrator.md"
 contains "trigger substring" "$AGENT" "$TRIGGER"
 contains "specialist held line" "$AGENT" "$SPEC_HELD"
 contains "budget-exempt" "$AGENT" "terminal held state** — budget-exempt, no \`retry-with-logs\`, no \`unblocker\`"
-contains "record command" "$AGENT" "atelier-dispatch-denial record --project <main_checkout_root> --command task-orchestrator --agent <specialist> --task <id> --tag 'hook-changed-input' --hook '<plugin_key>' --attempt <1|2> --prompt-file <path> --session-role unknown"
-contains "prompt scratch path" "$AGENT" "<wt>/.task-log/tmp/dispatch-<specialist>.md"
+contains "record command" "$AGENT" "atelier-dispatch-denial record --project <main_checkout_root> --command task-orchestrator --agent <specialist> --task <id> --tag 'hook-changed-input' --hook '<plugin_key>' --attempt <1|2> --prompt-file - --session-role unknown <<'ATELIER_DISPATCH_PROMPT_EOF'"
+contains "prompt on stdin (no scratch file)" "$AGENT" "verbatim, never a summary or paraphrase) on stdin through a quoted heredoc"
+n="$(grep -cF -- "--prompt-file - --session-role unknown <<'ATELIER_DISPATCH_PROMPT_EOF'\`" "$AGENT")"
+if [ "$n" -ge 2 ]; then ok "both step-8 bullets name --prompt-file - and the heredoc delimiter ($n)"; else bad "step-8 bullets stdin form (expected >=2, got $n)"; fi
+n="$(grep -cF -- "ATELIER_DISPATCH_PROMPT_EOF\`" "$AGENT")"
+if [ "$n" -ge 2 ]; then ok "closing delimiter named in both bullets ($n)"; else bad "closing delimiter (expected >=2, got $n)"; fi
+if grep -qF -- ".task-log/tmp/dispatch-" "$AGENT"; then bad "stale .task-log/tmp/dispatch- instruction remains in task-orchestrator.md"; else ok "no .task-log/tmp/dispatch- instruction in task-orchestrator.md"; fi
 n="$(grep -cF -- "\`held: <specialist> dispatch refused — plugin hook <plugin_key> rewrites Agent input (hook-changed-input) — <task-id>\`" "$AGENT")"
 if [ "$n" -ge 2 ]; then ok "held line listed in both handback Status lists (found on $n lines)"; else bad "held line in Status lists (expected >=2 lines, got $n)"; fi
 
