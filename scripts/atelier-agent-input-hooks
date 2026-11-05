@@ -20,7 +20,8 @@
 #   atelier-agent-input-hooks tested-range
 #     Prints the context-mode version range atelier has verified.
 #
-# Never modifies any plugin file. atelier's own hooks are never listed.
+# Never modifies any plugin file. atelier's own hooks are never listed (detect skips
+# the `atelier` plugin explicitly).
 
 set -euo pipefail
 
@@ -108,6 +109,7 @@ cmd_detect() {
     [ -n "$key" ] || continue
     path="$(jq -r --arg k "$key" '.plugins[$k][0].installPath // empty' "$installed" 2>/dev/null || true)"
     version="$(jq -r --arg k "$key" '.plugins[$k][0].version // empty' "$installed" 2>/dev/null || true)"
+    [ "${key%%@*}" = "atelier" ] && continue
     path="${path/#\~/$HOME}"
     [ -n "$path" ] && [ -d "$path" ] || continue
     if ! ms="$(plugin_matchers "$path" 2>/dev/null)"; then

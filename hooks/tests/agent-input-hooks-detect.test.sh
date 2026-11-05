@@ -141,6 +141,16 @@ enable atelier@akalab-tech
 out="$(run_detect)"; rc=$?
 if [ "$rc" = 0 ] && [ -z "$out" ]; then pass "D9 atelier's own hooks.json not listed"; else fail "D9: rc=$rc out=[$out]"; fi
 
+# D9b atelier's own key is never listed, even with an Agent matcher (#728), under any marketplace
+reset
+add_plugin atelier@akalab-tech 0.37.0 "$(hooks_for Agent)"
+add_plugin atelier@other-mkt 0.37.0 "$(hooks_for Agent)"
+add_plugin other@mkt 2.0.0 "$(hooks_for Agent)"
+enable atelier@akalab-tech atelier@other-mkt other@mkt
+out="$(run_detect)"; rc=$?
+if [ "$rc" = 0 ] && ! grep -q -- '^atelier@' <<<"$out" && grep -q -- '^other@mkt' <<<"$out"; then
+  pass "D9b atelier@* with Agent matcher never listed; other plugins still are"; else fail "D9b: rc=$rc out=[$out]"; fi
+
 # D10
 reset
 add_plugin context-mode@context-mode 1.0.169 "$(hooks_for Agent)"; enable context-mode@context-mode
