@@ -7,13 +7,14 @@
 #   atelier-dispatch-denial record --project <root>
 #       --command <next-task|resume-task|plan-task|release|babysit-prs|finish-task|abandon-task|task-orchestrator>
 #       --agent <task-orchestrator|planner|implementer|tester|e2e-runner|pr-author|pr-opener|reviewer>
-#       --task <id> --tag '<verbatim>' --attempt <1|2> --prompt-file <path>
+#       --task <id> --tag '<verbatim>' --attempt <1|2> --prompt-file <path|->
 #       [--session-role plan|worker|unknown] [--prior-denials-in-session <n>]
 #       [--hook <plugin_key[,plugin_key...]>]
 #     Appends one JSON line to dispatch-denials.jsonl and keeps a copy of the
 #     exact dispatch prompt (dir 0700, file 0600). Prints the ref (a timestamp)
 #     on stdout. --hook names the plugin hook behind a hook-changed-input
-#     refusal (stored as "hook", null when absent).
+#     refusal (stored as "hook", null when absent). `-` reads the exact prompt
+#     from stdin (for agents with no Write tool).
 #   atelier-dispatch-denial outcome --ref <ref> --choice <redispatch|held|abandon|auto-reissue>
 #       [--reissue accepted|denied]
 #     Records the operator's answer and the re-issue result.
@@ -62,7 +63,7 @@ cmd_record() {
   [ -n "$task" ] || die "record: --task is required"
   [ -n "$tag" ] || die "record: --tag is required"
   [ -n "$attempt" ] || die "record: --attempt is required"
-  [ -f "$pfile" ] || die "record: --prompt-file must be an existing file"
+  [ "$pfile" = "-" ] || [ -f "$pfile" ] || die "record: --prompt-file must be an existing file"
   case "$attempt" in 1|2) ;; *) die "record: --attempt must be 1 or 2" ;; esac
   case "$role" in plan|worker|unknown) ;; *) die "record: --session-role must be plan|worker|unknown" ;; esac
   [ -z "$prior" ] || case "$prior" in *[!0-9]*) die "record: --prior-denials-in-session must be a number" ;; esac
@@ -76,7 +77,15 @@ cmd_record() {
   local n=1
   while compgen -G "$COPIES/$ref-*" >/dev/null; do n=$((n + 1)); ref="$ts-$n"; done
   copy="$COPIES/$ref-$pname-${task#\#}.md"
-  (umask 077; cp "$pfile" "$copy")
+  if [ "$pfile" = "-" ]; then
+    (umask 077; cat > "$copy")
+    if [ ! -s "$copy" ]; then
+      rm -f "$copy"
+      die "record: --prompt-file - read an empty prompt from stdin"
+    fi
+  else
+    (umask 077; cp "$pfile" "$copy")
+  fi
   chmod 600 "$copy"
   sha=$(sha256_of "$copy")
   lines=$(wc -l < "$copy" | tr -d ' ')

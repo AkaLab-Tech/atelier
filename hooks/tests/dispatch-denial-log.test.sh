@@ -12,6 +12,8 @@
 #   D5 — report renders a table; filters by --since and --project
 #   D6 — prompt_form classification (file-pointer vs inline); refs are unique
 #   D8 — outcome --choice auto-reissue stored and reported; invalid choice still dies
+#   D9 — --prompt-file - reads the prompt from stdin (byte-identical 0600 copy, true
+#        sha256/lines/form); empty stdin exits 2 with no log line or copy
 #   D7 — optional --hook stored as "hook" (null when absent); report renders it
 #
 # Run:  hooks/tests/dispatch-denial-log.test.sh
@@ -170,6 +172,33 @@ REP8="$(bash "$HELPER" report)"
 case "$(printf '%s\n' "$REP8" | grep '| theta |')" in *"| auto-reissue | accepted |"*) pass "D8: report shows auto-reissue accepted";; *) fail "D8: report row wrong";; esac
 bash "$HELPER" outcome --ref "$REF8" --choice bogus >/dev/null 2>&1
 eq "D8: invalid choice still exits 2" "$?" "2"
+
+# --- D9 (#720): --prompt-file - reads stdin ---------------------------------
+printf 'Brief A\ngit commit -m "x"\nBrief C\nBrief D\n' > "$TMP/stdin-in.md"
+REF9="$(bash "$HELPER" record --project /w/iota --command task-orchestrator --agent implementer \
+  --task '#720' --tag hook-changed-input --attempt 1 --prompt-file - < "$TMP/stdin-in.md")"
+eq "D9: stdin record exits 0 with a valid ref" "$(printf '%s' "$REF9" | grep -Ec '^[0-9]{8}T[0-9]{6}Z(-[0-9]+)?$')" "1"
+COPY9="$(jq -r --arg r "$REF9" 'select(.ref==$r and .type=="denial") | .prompt_copy' "$LOG")"
+if cmp -s "$TMP/stdin-in.md" "$COPY9"; then pass "D9: copy is byte-identical"; else fail "D9: copy differs from stdin"; fi
+eq "D9: sha256 matches input" "$(jq -r --arg r "$REF9" 'select(.ref==$r and .type=="denial") | .prompt_sha256' "$LOG")" "$(sha256_of "$TMP/stdin-in.md")"
+eq "D9: prompt_lines" "$(jq -r --arg r "$REF9" 'select(.ref==$r and .type=="denial") | .prompt_lines' "$LOG")" "4"
+eq "D9: copy mode 0600" "$(mode_of "$COPY9")" "600"
+bash "$HELPER" outcome --ref "$REF9" --choice auto-reissue --reissue accepted >/dev/null 2>&1
+eq "D9: outcome on a stdin-recorded ref exits 0" "$?" "0"
+eq "D9: outcome choice stored" "$(jq -r --arg r "$REF9" 'select(.ref==$r and .type=="outcome") | .choice' "$LOG")" "auto-reissue"
+eq "D9: outcome reissue stored" "$(jq -r --arg r "$REF9" 'select(.ref==$r and .type=="outcome") | .reissue' "$LOG")" "accepted"
+REF9B="$(printf 'Read /tmp/brief.md and follow it\n' | bash "$HELPER" record --project /w/iota --command task-orchestrator \
+  --agent tester --task '#720' --tag hook-changed-input --attempt 1 --prompt-file -)"
+eq "D9: one-line pointer on stdin is file-pointer" "$(jq -r --arg r "$REF9B" 'select(.ref==$r and .type=="denial") | .prompt_form' "$LOG")" "file-pointer"
+LINES9="$(wc -l < "$LOG" | tr -d ' ')"; COPIES9="$(find "$COPIES" -type f | wc -l | tr -d ' ')"
+bash "$HELPER" record --project /w/iota --command task-orchestrator --agent tester --task '#720' \
+  --tag hook-changed-input --attempt 1 --prompt-file - </dev/null >/dev/null 2>&1
+eq "D9: empty stdin exits 2" "$?" "2"
+eq "D9: empty stdin writes no log line" "$(wc -l < "$LOG" | tr -d ' ')" "$LINES9"
+eq "D9: empty stdin leaves no copy" "$(find "$COPIES" -type f | wc -l | tr -d ' ')" "$COPIES9"
+bash "$HELPER" record --project /w/iota --command task-orchestrator --agent tester --task '#720' \
+  --tag hook-changed-input --attempt 1 --prompt-file "$TMP/does-not-exist" >/dev/null 2>&1
+eq "D9: non-existent path still exits 2" "$?" "2"
 
 echo ""
 if [ "$fails" -eq 0 ]; then
