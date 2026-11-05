@@ -109,6 +109,16 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/strip-context-mode-agent-block.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|Read",
         "hooks": [
           {
@@ -241,6 +251,17 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/subagent-ledger.sh"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/readd-context-mode-block.sh",
+            "timeout": 10
           }
         ]
       }

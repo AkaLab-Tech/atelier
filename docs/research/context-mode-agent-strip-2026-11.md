@@ -56,7 +56,7 @@ Harness of `docs/research/auto-mode-chain-2026-10-26.md` and `agent-input-hooks-
 | P4 interactive | interactive | as P4p | 5 | 0 | main-loop dispatch not refused in 5 of 5; subagent answers legible in 2 of 5 (P4-1, P4-5): nonce correct, tag seen, `CTXOK`; the other 3 garbled by the TUI |
 | P4s scoping | `-p` | `SubagentStart` matcher `atelier:.*` | 3 + 3 | 0 | fired for `atelier:tester` in 3 of 3 (nonce delivered), not for `general-purpose` in 3 of 3 |
 
-Totals: 61 `-p` runs and 44 interactive runs. Denial refs used: `20261105T183303Z` (and `-2` to `-6`), `20261105T183309Z`, `20261105T183309Z-2`. Before-baseline in the same file: 112 records with `hook = context-mode` from 2026-11-03T21:26Z to 2026-11-05T18:09Z, 109 with an accepted re-issue (118 after the 6 records of this spike).
+Totals: 61 `-p` runs and 44 interactive runs. Denial refs used: `20261105T183303Z` (and `-2` to `-6`), `20261105T183309Z`, `20261105T183309Z-2`. Before-baseline in the same file: 112 records with `hook = context-mode` from 2026-11-03T21:26Z to 2026-11-05T18:09Z, 109 with an accepted re-issue (120 after the 8 records of this spike).
 
 ## Answers to the verification questions
 
