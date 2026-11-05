@@ -309,8 +309,10 @@ session:
   once only on their answer, and it is never reworded or moved to another
   session. Exception (approved #457 exception, product lead, 2026-11-03): a
   dispatch refused with "a hook changed this call's input" is first re-issued
-  once automatically and verbatim, in the next response, with no rewording and
-  no appended block stripped or added; every other denial keeps the
+  once automatically, in the next response, with no rewording: exactly as first
+  issued (block-free) when context-mode is neutralised by atelier's strip and
+  SubagentStart hooks, the hook-produced input verbatim for any other plugin
+  hook; every other denial keeps the
   operator-answer rule. Refused again, it ends in
   the distinct held line naming the plugin hook (`held: <agent> dispatch
   refused — plugin hook <plugin_key> rewrites Agent input
@@ -323,8 +325,8 @@ session:
   enforcement lists (hooks and agent definitions already enforce them), no
   contract overrides (a departure from an atelier contract belongs in the
   approved plan; the brief points to it) and no task or session history, and never pre-includes a `context_window_protection`
-  block or any text a plugin hook appends (the hook is not idempotent; only the
-  verbatim re-issue carries a block).
+  block or any text a plugin hook appends (atelier's strip and SubagentStart hooks own
+  the block; only a re-issue of another plugin's hook-produced input carries a hook-appended block).
 - **Session context hygiene (#457).** A held dispatch stays in the session
   where it was denied: the session never compacts, restarts or clears itself
   to re-send it, and atelier never suggests `/clear` plus re-dispatch as a
@@ -332,7 +334,7 @@ session:
   moving it to another session). Independently of any denial, the standing
   practice is a fresh context per task: the operator runs `/clear` between
   tasks, before `/atelier:next-task`. Consent comes only from the held-path
-  `AskUserQuestion` answer; the one automatic verbatim re-issue of a dispatch
+  `AskUserQuestion` answer; the one automatic re-issue of a dispatch
   refused with "a hook changed this call's input" is the only case needing no
   such answer. Each denied dispatch is recorded locally by
   `atelier-dispatch-denial`.

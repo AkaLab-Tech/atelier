@@ -78,7 +78,7 @@ contains "record tag" "$RULES" "recorded with tag \`hook-changed-input\`"
 echo "== docs/troubleshooting.md"
 contains "held line" "$TROUBLE" "$HELD"
 contains "report tag" "$TROUBLE" "atelier-dispatch-denial report"
-contains "re-issue documented (#690)" "$TROUBLE" "re-issued once automatically and verbatim"
+contains "re-issue documented (#690)" "$TROUBLE" "re-issued once automatically: exactly as first issued"
 
 echo "== scripts/atelier-dispatch-denial"
 contains "--hook in usage" "$HELPER" "[--hook <plugin_key[,plugin_key...]>]"

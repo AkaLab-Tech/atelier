@@ -11,7 +11,13 @@
 #     by <project>/.claude/settings.json then settings.local.json (project =
 #     --project or $CLAUDE_PROJECT_DIR). Prints one TSV line per matching
 #     PreToolUse entry: plugin_key  name  version  matcher  known  tested
-#     (--json: the same as a JSON array). Nothing and exit 0 when none.
+#     handling  reason (--json: the same as a JSON array). handling is
+#     `neutralised` for context-mode only when the enabled atelier install
+#     registers both #728 hooks (strip on PreToolUse/Agent, re-add on
+#     SubagentStart), render-block self-checks and the version is tested;
+#     otherwise `unhandled` with reason hooks-not-registered | render-failed |
+#     untested-version (other plugins: other-plugin; neutralised: -).
+#     Nothing and exit 0 when none.
 #   atelier-agent-input-hooks render-block [--plugin-root <path>]
 #     Prints the context-mode subagent routing block, rendered from the
 #     installed copy of context-mode (never vendored). Exit 3 when
@@ -52,6 +58,35 @@ vercmp() {
 in_tested_range() {
   [ "$(vercmp "$1" "$CONTEXT_MODE_TESTED_MIN")" -ge 0 ] &&
     [ "$(vercmp "$1" "$CONTEXT_MODE_TESTED_MAX")" -le 0 ]
+}
+
+# True when hooks.json under $1 registers both #728 context-mode hooks.
+atelier_registers_cm_hooks() {
+  local f="$1/hooks/hooks.json"
+  [ -f "$f" ] || return 1
+  jq -e '
+    (if (.hooks | type) == "object" then .hooks else . end) as $h
+    | ([($h.PreToolUse // [])[] | select((.matcher // "") == "Agent" or ((.matcher // "") | test("(^|\\|)Agent(\\||$)")))
+        | .hooks[]?.command // empty | select(contains("strip-context-mode-agent-block.sh"))] | length) > 0
+      and ([($h.SubagentStart // [])[] | .hooks[]?.command // empty
+        | select(contains("readd-context-mode-block.sh"))] | length) > 0' "$f" >/dev/null 2>&1
+}
+
+# Prints "<handling>\t<reason>" for a context-mode install at $1, version $2.
+cm_handling() {
+  local root="$1" version="$2" out
+  if ! in_tested_range "$version"; then printf 'unhandled\tuntested-version'; return; fi
+  local ok=0 ap
+  for ap in "${ATELIER_PATHS[@]+"${ATELIER_PATHS[@]}"}"; do
+    atelier_registers_cm_hooks "$ap" && { ok=1; break; }
+  done
+  if [ "$ok" -eq 0 ]; then printf 'unhandled\thooks-not-registered'; return; fi
+  if out="$("$0" render-block --plugin-root "$root" 2>/dev/null)" && [ -n "$out" ] \
+    && [[ "$out" == *"<context_window_protection>"* ]]; then
+    printf 'neutralised\t-'
+  else
+    printf 'unhandled\trender-failed'
+  fi
 }
 
 # Emits PreToolUse entries (matcher per line) matching Agent/Task for a plugin.
@@ -104,7 +139,14 @@ cmd_detect() {
 
   TMP_INLINE="$(mktemp)"
   trap 'rm -f "$TMP_INLINE"' EXIT
-  local rows="" key path version name known tested m ms
+  local rows="" key path version name known tested m ms handling
+  ATELIER_PATHS=()
+  while IFS= read -r key; do
+    [ "${key%%@*}" = "atelier" ] || continue
+    path="$(jq -r --arg k "$key" '.plugins[$k][0].installPath // empty' "$installed" 2>/dev/null || true)"
+    path="${path/#\~/$HOME}"
+    [ -n "$path" ] && ATELIER_PATHS+=("$path")
+  done <<<"$keys"
   while IFS= read -r key; do
     [ -n "$key" ] || continue
     path="$(jq -r --arg k "$key" '.plugins[$k][0].installPath // empty' "$installed" 2>/dev/null || true)"
@@ -118,20 +160,21 @@ cmd_detect() {
     fi
     [ -n "$ms" ] || continue
     name="${key%%@*}"
-    known="unknown"; tested="no"
+    known="unknown"; tested="no"; handling=$'unhandled\tother-plugin'
     if [ "$name" = "context-mode" ]; then
       known="context-mode"
       in_tested_range "$version" && tested="yes"
+      handling="$(cm_handling "$path" "$version")"
     fi
     while IFS= read -r m; do
       [ "$m" = "@@EMPTY@@" ] && m=""
-      rows+="$key"$'\t'"$name"$'\t'"$version"$'\t'"$m"$'\t'"$known"$'\t'"$tested"$'\n'
+      rows+="$key"$'\t'"$name"$'\t'"$version"$'\t'"$m"$'\t'"$known"$'\t'"$tested"$'\t'"$handling"$'\n'
     done <<<"$ms"
   done <<<"$keys"
 
   if [ "$json" -eq 1 ]; then
     printf '%s' "$rows" | jq -R -s '[split("\n")[] | select(length > 0) | split("\t")
-      | {plugin: .[0], name: .[1], version: .[2], matcher: .[3], known: .[4], tested: .[5]}]'
+      | {plugin: .[0], name: .[1], version: .[2], matcher: .[3], known: .[4], tested: .[5], handling: .[6], reason: .[7]}]'
   else
     printf '%s' "$rows"
   fi

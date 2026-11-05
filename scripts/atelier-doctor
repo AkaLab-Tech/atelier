@@ -1837,8 +1837,8 @@ check_agent_input_hooks() {
     [ -n "$cc" ] && cc=" (CC $cc)"
   fi
 
-  local key name version matcher known tested
-  while IFS=$'\t' read -r key name version matcher known tested; do
+  local key name version matcher known tested handling reason
+  while IFS=$'\t' read -r key name version matcher known tested handling reason; do
     [ -n "$key" ] || continue
     if [ "$known" = "context-mode" ]; then
       local range; range="$("$helper" tested-range 2>/dev/null || echo "?–?")"
@@ -1846,7 +1846,11 @@ check_agent_input_hooks() {
       if [ "$tested" != "yes" ]; then
         tail_msg="version $version is outside atelier's tested range $range; behaviour unverified"
       fi
-      push_host "$WARN context-mode $version: PreToolUse hook appends <context_window_protection> to every Agent prompt — in auto mode a dispatch can be refused once with \"a hook changed this call's input\" (see docs/troubleshooting.md; $tail_msg)$cc"
+      if [ "$handling" = "neutralised" ]; then
+        push_host "$OK context-mode $version: Agent rewrite neutralised by atelier (strip + SubagentStart re-add; $tail_msg)$cc"
+        continue
+      fi
+      push_host "$WARN context-mode $version: PreToolUse hook appends <context_window_protection> to every Agent prompt and atelier does not neutralise it (${reason:-unknown}) — in auto mode a dispatch can be refused once with \"a hook changed this call's input\" (see docs/troubleshooting.md; $tail_msg)$cc"
     else
       push_host "$WARN $name $version: PreToolUse hook matches Agent/Task (matcher \"$matcher\") and may rewrite dispatch input — auto-mode dispatches may be refused$cc"
     fi
