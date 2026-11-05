@@ -18,6 +18,8 @@
 #     file finishes first
 #   - run-all.sh itself is not matched by the *.test.sh glob
 #   - bad -j value / unknown flag exit 2
+#   - -j / --only with no value or an empty value, -j abc, -jabc, -j 0: exit 2
+#     at once with usage on stderr and no test run (never loops; #717)
 #
 # Hermetic: temp dirs only, no network, HOME redirected.
 #
@@ -60,6 +62,27 @@ run() {
   shift
   OUTTXT="$(bash "$d/run-all.sh" "$@" 2>&1)"
   RC=$?
+}
+
+# run_bounded <dir> [args...] -> sets RC, OUTTXT, ERRTXT. Portable watchdog
+# (no timeout/gtimeout on macOS): kills the runner after ~10 s and sets RC=124.
+run_bounded() {
+  local d="$1" pid i=0
+  shift
+  bash "$d/run-all.sh" "$@" >"$TMP/rb.out" 2>"$TMP/rb.err" </dev/null &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+  if kill -0 "$pid" 2>/dev/null; then
+    pkill -P "$pid" 2>/dev/null
+    kill -9 "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    RC=124
+  else
+    wait "$pid" 2>/dev/null
+    RC=$?
+  fi
+  OUTTXT="$(cat "$TMP/rb.out")"
+  ERRTXT="$(cat "$TMP/rb.err")"
 }
 
 has() { grep -qF -e "$1" <<<"$OUTTXT"; }
@@ -144,10 +167,29 @@ case "$runner_name" in *.test.sh) m=1 ;; *) m=0 ;; esac
 chk "run-all.sh does not match *.test.sh" [ "$m" -eq 0 ]
 D="$(mkdir_suite args)"
 fake "$D" a 0
-run "$D" -j 0
+run_bounded "$D" -j 0
 chk "-j 0 exits 2 (got $RC)" [ "$RC" -eq 2 ]
-run "$D" --bogus
+run_bounded "$D" --bogus
 chk "unknown flag exits 2 (got $RC)" [ "$RC" -eq 2 ]
+
+# Group 8 — value flags fail fast (#717): never loop, never run, never fall back
+errhas() { grep -qF -e "$1" <<<"$ERRTXT"; }
+value_flag_rejected() { # <label> <args...>
+  local label="$1"
+  shift
+  run_bounded "$D" "$@"
+  chk "$label: no hang (got $RC)" [ "$RC" -ne 124 ]
+  chk "$label: exits 2 (got $RC)" [ "$RC" -eq 2 ]
+  chk "$label: usage on stderr" errhas "Usage:"
+  chk "$label: no test run" nothas "OUT-a"
+}
+value_flag_rejected "-j (no value)" -j
+value_flag_rejected "--only (no value)" --only
+value_flag_rejected "-j abc" -j abc
+value_flag_rejected "-jabc" -jabc
+value_flag_rejected "-j ''" -j ""
+value_flag_rejected "-j 0" -j 0
+value_flag_rejected "--only ''" --only ""
 
 echo ""
 if [ "$fails" -eq 0 ]; then

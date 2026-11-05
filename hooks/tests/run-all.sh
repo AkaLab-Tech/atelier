@@ -6,12 +6,14 @@
 # discovered.
 #
 # Usage: hooks/tests/run-all.sh [-j N] [--serial] [--only <glob>] [--timings]
-#   -j N         concurrent test files (default: $ATELIER_TEST_JOBS, else
-#                nproc, else sysctl -n hw.ncpu, else 4)
+#   -j N         concurrent test files, a positive integer (default:
+#                $ATELIER_TEST_JOBS, else nproc, else sysctl -n hw.ncpu, else 4)
 #   --serial     same as -j 1
 #   --only GLOB  only files whose basename matches GLOB (e.g. 'atelier-memory*')
 #   --timings    print the full duration table instead of the slowest 15
-# Exit: 0 = every test passed, 1 = a failure (or zero tests discovered).
+#   A value flag (-j, --only) with no value is a usage error.
+# Exit: 0 = every test passed, 1 = a failure (or zero tests discovered),
+#       2 = usage error.
 
 set -uo pipefail
 
@@ -21,24 +23,33 @@ SERIAL_ONLY=(
 )
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+usage() { sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage_error() { echo "run-all: $1" >&2; usage >&2; exit 2; }
+
 jobs_n="${ATELIER_TEST_JOBS:-}"
+jobs_set=0
 only=""
 full=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    -j) jobs_n="${2:-}"; shift 2 ;;
-    -j*) jobs_n="${1#-j}"; shift ;;
-    --serial) jobs_n=1; shift ;;
-    --only) only="${2:-}"; shift 2 ;;
+    -j)
+      [ $# -ge 2 ] || usage_error "-j needs a value"
+      jobs_n="$2"; jobs_set=1; shift 2 ;;
+    -j*) jobs_n="${1#-j}"; jobs_set=1; shift ;;
+    --serial) jobs_n=1; jobs_set=1; shift ;;
+    --only)
+      [ $# -ge 2 ] || usage_error "--only needs a value"
+      [ -n "$2" ] || usage_error "--only needs a non-empty glob"
+      only="$2"; shift 2 ;;
     --timings) full=1; shift ;;
-    -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "run-all: unknown argument: $1" >&2; exit 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage_error "unknown argument: $1" ;;
   esac
 done
-if [ -z "$jobs_n" ]; then
+if [ "$jobs_set" = 0 ] && [ -z "$jobs_n" ]; then
   jobs_n="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 fi
-case "$jobs_n" in ''|*[!0-9]*|0) echo "run-all: -j needs a positive integer" >&2; exit 2 ;; esac
+case "$jobs_n" in ''|*[!0-9]*|0) usage_error "-j needs a positive integer" ;; esac
 
 shopt -s nullglob
 tests=()
