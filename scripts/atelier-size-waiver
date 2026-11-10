@@ -5,7 +5,7 @@
 #
 # Usage: atelier-size-waiver [--kind size|protected-paths] <owner/repo> <NN> [--project <root>]
 #        atelier-size-waiver <owner/repo> <NN> --project <root>
-#        atelier-size-waiver --question <owner/repo> <NN> --project <root>
+#        atelier-size-waiver --question <owner/repo> <NN> --project <root> [--lang es|en]
 #        atelier-size-waiver --package-json-version-only <owner/repo> <NN>
 #
 # Output: exactly one line on stdout.
@@ -49,7 +49,8 @@
 # .task-log. --project is ignored for kind protected-paths (never reads selector records) and
 # for --package-json-version-only. A size-check error is never waivable.
 #
-# --question <owner/repo> <NN> --project <root>: prints the canonical AskUserQuestion JSON
+# --question <owner/repo> <NN> --project <root> [--lang es|en]: --lang picks the question language
+# (default en; any other value exits 2). Prints the canonical AskUserQuestion JSON
 # (marker with live head sha and counted size) and exits 0 when the PR is oversize; prints
 # `question=none (within size budget)` and exits 1 when within budget; size-check error -> 2.
 #
@@ -64,15 +65,16 @@
 set -u
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-  sed -n '2,62p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,63p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 fi
 
-usage="usage: atelier-size-waiver [--kind size|protected-paths] <owner/repo> <NN> [--project <root>] | --question <owner/repo> <NN> --project <root>"
+usage="usage: atelier-size-waiver [--kind size|protected-paths] <owner/repo> <NN> [--project <root>] | --question <owner/repo> <NN> --project <root> [--lang es|en]"
 mode="waiver"
 kind="size"
 project=""
 question=0
+lang="en"
 pos=()
 if [ "${1:-}" = "--package-json-version-only" ]; then
   mode="pkgver"; shift
@@ -81,6 +83,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --kind) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; kind="$2"; shift 2 ;;
     --project) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; project="$2"; shift 2 ;;
+    --lang) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; lang="$2"; shift 2 ;;
     --question) question=1; shift ;;
     *) pos+=("$1"); shift ;;
   esac
@@ -89,6 +92,7 @@ done
 if [ "$question" = 1 ] && { [ -z "$project" ] || [ "$kind" != size ] || [ "$mode" != waiver ]; }; then
   echo "$usage" >&2; exit 2
 fi
+case "$lang" in es|en) ;; *) echo "$usage" >&2; exit 2 ;; esac
 repo="${pos[0]}"; pr="${pos[1]}"
 case "$pr" in ''|*[!0-9]*) echo "atelier-size-waiver: <NN> must be a PR number" >&2; exit 2 ;; esac
 case "$repo" in */*) ;; *) echo "atelier-size-waiver: <owner/repo> expected" >&2; exit 2 ;; esac
@@ -182,7 +186,7 @@ if [ "$question" = 1 ]; then
   if [ "$sc_rc" = 0 ]; then
     echo "question=none (within size budget)"; exit 1
   fi
-  swr_question "$repo" "$pr" "$q_sha" "$sc_lines" "$sc_files" en || fail "cannot build question"
+  swr_question "$repo" "$pr" "$q_sha" "$sc_lines" "$sc_files" "$lang" || fail "cannot build question"
   exit 0
 fi
 

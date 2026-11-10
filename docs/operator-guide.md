@@ -548,7 +548,11 @@ Want to look without being asked to delete? Run `atelier-housekeeping --report` 
 
 ## Waiving the PR size limit
 
-atelier never merges an oversize pull request on its own (by default: more than 200 changed lines and more than 10 files). If you have looked at a big PR and are happy for it to merge automatically anyway, you can say so on the PR itself, with no command line:
+atelier never merges an oversize pull request on its own (by default: more than 200 changed lines and more than 10 files). If you have looked at a big PR and are happy for it to merge automatically anyway, there are two ways to say so.
+
+**Easiest: answer the selector.** In an interactive session, when `/atelier:babysit-prs` or `/atelier:next-task` finds a PR held only because of its size, atelier asks you in the chat: "Waive the size limit for <repo>#<PR> (N lines, M files)?" with a "Yes, waive the size limit" option and a "No" option. Only the affirmative options count; "No" or a typed "Other" answer waives nothing. The answer covers the PR as it is now: a new push, or a PR that grows, needs a new answer (atelier asks again on the next run). It only waives the size limit and never approves protected files. atelier never asks in unattended runs (`--yes`) or if you have set the oversize decision to `slice-task` or `abort`.
+
+**Alternative: a review on GitHub**, with no command line:
 
 1. Open the PR on GitHub and go to **Files changed**.
 2. Click **Review changes**, choose **Comment** (or **Approve**), and write a line that starts with the waiver phrase and gives a reason, for example: `waive size — mechanical rename, reviewed the diff`.
@@ -560,7 +564,7 @@ Things to know:
 
 - It must be a **review**. A plain comment in the PR conversation does **not** count, and it would hold the PR as a pending human comment.
 - The waiver covers the code as it is when you submit it. Any later push to the PR makes it stale and you need to waive again.
-- Only a repository admin or maintainer counts, and never the account atelier uses to author or review PRs (or a bot). Atelier reads this live from GitHub; nothing in a local file can grant a waiver. `atelier-size-waiver <owner/repo> <PR number>` shows how a PR is currently judged (`valid`, `none`, `stale` or `untrusted`).
+- Only a repository admin or maintainer counts, and never the account atelier uses to author or review PRs (or a bot). Atelier reads this live from GitHub; nothing in a local file can grant a waiver. `atelier-size-waiver --project . <owner/repo> <PR number>` shows how a PR is currently judged (`valid`, `none`, `stale` or `untrusted`); every line ends with `source=review` or `source=selector`, telling you which path produced the result.
 
 **Single-developer setups.** If the GitHub account you use is also the one atelier authors or reviews with, every waiver is `untrusted` and the fallback is to merge the PR manually.
 
