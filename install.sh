@@ -1437,6 +1437,12 @@ _runtime_copy_payload() {
     cp -p "$src/hooks/lib/size-waiver-record.sh" "$dest/hooks/lib/size-waiver-record.sh"
     cp -p "$src/hooks/lib/consent.sh" "$dest/hooks/lib/consent.sh"
   fi
+  # atelier-baseline-override sources the baseline-override record library (#748).
+  if [ -f "$src/hooks/lib/baseline-override-record.sh" ]; then
+    mkdir -p "$dest/hooks/lib"
+    cp -p "$src/hooks/lib/baseline-override-record.sh" "$dest/hooks/lib/baseline-override-record.sh"
+    cp -p "$src/hooks/lib/consent.sh" "$dest/hooks/lib/consent.sh"
+  fi
 }
 
 # Keep at most the 2 most recent version dirs under $ATELIER_RUNTIME_BASE
@@ -1711,6 +1717,8 @@ phase_c_1_setup_project_helper() {
   # auto-merge gate and /atelier:babysit-prs read verdicts through it.
   _phase_c_1_symlink_helper atelier-review-verdict
   _phase_c_1_symlink_helper atelier-size-waiver
+  # #748: operator baseline-override question builder/verifier.
+  _phase_c_1_symlink_helper atelier-baseline-override
   _phase_c_1_symlink_helper atelier-subagent-ledger
   # #618: persistent project memory (SQLite); read by the memory-brief SessionStart hook.
   _phase_c_1_symlink_helper atelier-memory

@@ -47,6 +47,7 @@ mkdir -p "$SRC/agents/decision-broker"
 printf '{ "categories": {} }\n' > "$SRC/agents/decision-broker/catalog.json"
 mkdir -p "$SRC/hooks/lib"
 printf '# fake size-waiver-record\n' > "$SRC/hooks/lib/size-waiver-record.sh"
+printf '# fake baseline-override-record\n' > "$SRC/hooks/lib/baseline-override-record.sh"
 printf '# fake consent\n' > "$SRC/hooks/lib/consent.sh"
 
 set_version() {
@@ -96,6 +97,9 @@ out1="$(run_phase)" || fail "first run exited non-zero: $out1"
 [ -f "$RT/0.0.1/hooks/lib/size-waiver-record.sh" ] && [ -f "$RT/0.0.1/hooks/lib/consent.sh" ] \
   && pass "size-waiver record library (+ consent.sh) rides along (atelier-size-waiver selector path)" \
   || fail "hooks/lib/size-waiver-record.sh or consent.sh missing from runtime dir"
+[ -f "$RT/0.0.1/hooks/lib/baseline-override-record.sh" ] && [ -f "$RT/0.0.1/hooks/lib/consent.sh" ] \
+  && pass "baseline-override record library (+ consent.sh) rides along (atelier-baseline-override, #748)" \
+  || fail "hooks/lib/baseline-override-record.sh or consent.sh missing from runtime dir"
 [ "$(readlink "$RT/current")" = "0.0.1" ] \
   && pass "current is a RELATIVE symlink to 0.0.1" \
   || fail "current target: expected '0.0.1', got '$(readlink "$RT/current" 2>/dev/null)'"
