@@ -53,6 +53,8 @@ set -uo pipefail
 
 # shellcheck source=lib/log-decision.sh
 source "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT must be set by Claude Code}/hooks/lib/log-decision.sh"
+# shellcheck source=lib/baseline-override-record.sh
+source "${CLAUDE_PLUGIN_ROOT}/hooks/lib/baseline-override-record.sh"
 
 HOOK_NAME="safe-commit"
 
@@ -1098,6 +1100,60 @@ resolve_test_scope() {
 }
 test_scope="$(resolve_test_scope)"
 
+# #747 (#744 part 2) — accept a red `test` step only when a signed baseline
+# override record (bor_lookup) covers every failing test. Re-runs the suite once
+# with a JSON reporter and compares identifiers byte-exact against record.waived.
+# Returns 0 to allow; otherwise sets bo_reason (and bo_detail) and returns 1.
+bo_reason=""; bo_detail=""
+try_baseline_override() {
+  local script="$1" remote slug branch rec cmd first rflags sep="" failed outside out n
+  remote="$(git -C "$target_dir" remote get-url origin 2>/dev/null || true)"
+  slug="$(printf '%s' "$remote" | sed -E 's#^(https?://[^/]+/|git@[^:]+:|ssh://[^/]+/)##; s#\.git$##')"
+  branch="$(git -C "$target_dir" symbolic-ref --short HEAD 2>/dev/null || true)"
+  case "$slug" in */*) ;; *) return 1 ;; esac
+  [ -n "$branch" ] || return 1
+  rec="$(bor_lookup "$slug" "$branch")" || return 1
+
+  cmd="$(jq -r --arg s "$script" '.scripts[$s] // ""' "$project_root/package.json" 2>/dev/null || true)"
+  first="${cmd%% *}"
+  case "$first" in
+    jest) rflags="--json --outputFile" ;;
+    vitest) rflags="--reporter=json --outputFile" ;;
+    *) bo_reason="runner-unsupported"; return 1 ;;
+  esac
+  # npm/pnpm need `--` to forward flags; yarn and bun forward them as-is.
+  case "$pm" in npm|pnpm) sep="--" ;; esac
+
+  out="$(mktemp)"
+  # shellcheck disable=SC2086
+  ( cd "$project_root" && "$pm" run "$script" $sep $rflags "$out" >/dev/null 2>&1 ) || true
+  if [ ! -s "$out" ]; then rm -f "$out"; bo_reason="reporter-missing"; return 1; fi
+  if ! jq -e 'type == "object" and (.testResults | type == "array")' "$out" >/dev/null 2>&1; then
+    rm -f "$out"; bo_reason="reporter-unparsable"; return 1
+  fi
+  if [ "$(jq -r '(.numRuntimeErrorTestSuites // 0)' "$out")" != "0" ]; then
+    rm -f "$out"; bo_reason="runtime-error"; return 1
+  fi
+  if jq -e '[.testResults[] | select(.status == "failed") | select(([.assertionResults[]? | select(.status == "failed")] | length) == 0)] | length > 0' "$out" >/dev/null 2>&1; then
+    rm -f "$out"; bo_reason="suite-error"; return 1
+  fi
+  failed="$(jq -r --arg root "$project_root/" '.testResults[] | (.name | ltrimstr($root)) as $f
+    | .assertionResults[]? | select(.status == "failed")
+    | ([$f] + .ancestorTitles + [.title]) | join(" › ")' "$out" 2>/dev/null)" || failed=""
+  rm -f "$out"
+  [ -n "$failed" ] || { bo_reason="empty-set"; return 1; }
+  failed="$(printf '%s\n' "$failed" | sort -u)"
+  outside="$(printf '%s\n' "$failed" | while IFS= read -r id; do
+    jq -e --arg id "$id" '.waived | index($id)' "$rec" >/dev/null 2>&1 || printf '%s\n' "$id"
+  done)"
+  if [ -n "$outside" ]; then
+    bo_reason="outside-set"; bo_detail="$(printf '%s' "$outside" | head -n 10)"; return 1
+  fi
+  n="$(printf '%s\n' "$failed" | wc -l | tr -d ' ')"
+  log_decision "$HOOK_NAME" "Bash" "test-red-waived" "allow" "$pm run $script red, $n failing test(s) all covered by signed baseline override captured_at=$(jq -r '.captured_at' "$rec")"
+  return 0
+}
+
 # Walk the three steps in order, stopping (blocking) on the first red.
 # A step is N/A if `scripts.<name>` doesn't exist in package.json — we
 # log it and continue, which mirrors the `safe-commit` skill. Under
@@ -1125,13 +1181,25 @@ for step in lint typecheck test; do
     exit_code="$(printf '%s' "$output" | tail -c 80 | grep -oE '__EXIT_[0-9]+__' | grep -oE '[0-9]+')"
     output="$(printf '%s' "$output" | sed -E 's/__EXIT_[0-9]+__$//')"
 
+    bo_line=""
+    if [ "$step" = "test" ]; then
+      bo_bor=0; try_baseline_override "$script" || bo_bor=$?
+      if [ "$bo_bor" -eq 0 ]; then continue; fi
+      if [ -n "$bo_reason" ]; then
+        bo_line="   Baseline override: not applied — $bo_reason"
+        [ -z "$bo_detail" ] || bo_line="$bo_line"$'\n'"   Not waived:"$'\n'"$(printf '%s' "$bo_detail" | sed 's/^/     - /')"
+        log_decision "$HOOK_NAME" "Bash" "baseline-override-$bo_reason" "block" "baseline override not applied: $bo_reason"
+      fi
+    fi
+
     cat >&2 <<MSG
 🚫 atelier:safe-commit BLOCKED
    Tool:   Bash(git commit)
    Reason: \`$pm run $script\` failed with exit $exit_code
    Output (last 30 lines):
 $(printf '%s' "$output" | tail -n 30)
-   Rule:   PLAN.md §6 push gate — lint + typecheck + tests must pass before commit.
+${bo_line:+$bo_line
+}   Rule:   PLAN.md §6 push gate — lint + typecheck + tests must pass before commit.
    Action: fix the failing $script, then commit again. The hook re-runs automatically.
    Override: set ATELIER_SKIP_SAFE_COMMIT=1 only when the operator confirms the gate has been validated another way.
 MSG
