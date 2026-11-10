@@ -4,7 +4,8 @@
 # narrowed in #651). Blocks Bash / Edit / Write / MultiEdit / NotebookEdit / Read
 # calls that address $ATELIER_CONFIG_DIR/state/consent as a PATH, so an agent
 # cannot read pending records, forge a grant, or rewrite the ledger. Not
-# consent-eligible itself.
+# consent-eligible itself. state/consent/size-waivers/ and state/consent/size-waiver.key
+# (#735) fall under the same root and get the same protection.
 #
 # What is inspected (free-text mentions are NOT blocked):
 #   - File tools: only .tool_input.file_path / .path / .notebook_path. `content`,
