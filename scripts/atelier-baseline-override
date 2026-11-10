@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+#
+# atelier-baseline-override — read-only question builder and verifier for the operator's
+# baseline-override confirmation (#744 part 3). Models scripts/atelier-size-waiver.
+#
+# Usage: atelier-baseline-override --question --worktree <wt> [--lang es|en]
+#        atelier-baseline-override --worktree <wt>
+#
+# --question: takes the newest line of <wt>/.task-log/decisions.jsonl with category
+#   "baseline-conflict", choice "override" and a non-empty evidence.waived (any mode: ask, or
+#   auto / rule:host-only), and prints the canonical AskUserQuestion JSON built by bor_question
+#   (marker with repo, branch, evidence.base_sha and the waived set). Exit 0. When no such line
+#   exists prints `question=none (no override decision with a waived set)` and exits 1.
+#   --lang picks the language (default en; any other value exits 2).
+# verify (no --question): prints one line.
+#   override=valid repo=<r> branch=<b> n=<N> base=<sha12> at=<captured_at>   exit 0
+#   override=none|invalid                                                    exit 1
+#   (valid only when bor_lookup accepts the record for the worktree's repo and branch)
+# Exit 2: error or usage problem, or hooks/lib/baseline-override-record.sh missing (fail closed).
+# Never writes a record, the signing key, or decisions.jsonl.
+
+set -u
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+usage="usage: atelier-baseline-override [--question] --worktree <wt> [--lang es|en]"
+fail() { echo "atelier-baseline-override: $1" >&2; exit 2; }
+
+question=0; wt=""; lang="en"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --worktree) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; wt="$2"; shift 2 ;;
+    --lang) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; lang="$2"; shift 2 ;;
+    --question) question=1; shift ;;
+    *) echo "$usage" >&2; exit 2 ;;
+  esac
+done
+[ -n "$wt" ] && [ -d "$wt" ] || { echo "$usage" >&2; exit 2; }
+case "$lang" in es|en) ;; *) echo "$usage" >&2; exit 2 ;; esac
+
+command -v jq >/dev/null 2>&1 || fail "jq not found"
+
+# Plugin root, as scripts/atelier-size-waiver resolves it: $ATELIER_PLUGIN_ROOT, then dirname(realpath(self))/..
+plugin_root_lib() {
+  local self="${BASH_SOURCE[0]}" d cand
+  while [ -L "$self" ]; do d="$(cd -P "$(dirname "$self")" && pwd)"; self="$(readlink "$self")"; case "$self" in /*) ;; *) self="$d/$self";; esac; done
+  d="$(cd -P "$(dirname "$self")" && pwd)"
+  for cand in "${ATELIER_PLUGIN_ROOT:-}" "$(dirname "$d")"; do
+    [ -n "$cand" ] || continue
+    [ -f "$cand/hooks/lib/baseline-override-record.sh" ] && { printf '%s' "$cand/hooks/lib/baseline-override-record.sh"; return 0; }
+  done
+  return 1
+}
+lib="$(plugin_root_lib)" || fail "baseline-override record library not found"
+# shellcheck source=/dev/null
+source "$lib" || fail "cannot load baseline-override record library"
+
+url="$(git -C "$wt" remote get-url origin 2>/dev/null)" || fail "cannot read origin remote of $wt"
+repo="$(printf '%s' "$url" | sed -E 's#^.*github\.com[:/]##; s#\.git$##')"
+case "$repo" in */*) ;; *) fail "cannot derive owner/repo from origin url" ;; esac
+branch="$(git -C "$wt" symbolic-ref --short -q HEAD 2>/dev/null)" || fail "cannot read branch of $wt"
+[ -n "$branch" ] || fail "worktree is not on a branch"
+
+if [ "$question" = 1 ]; then
+  log="$wt/.task-log/decisions.jsonl"
+  line=""
+  if [ -f "$log" ]; then
+    line="$(jq -s -c '[ .[] | select(.category == "baseline-conflict" and .choice == "override"
+        and ((.evidence.waived // []) | length > 0)) ] | last // empty' "$log" 2>/dev/null)" \
+      || fail "cannot parse $log"
+  fi
+  if [ -z "$line" ]; then
+    echo "question=none (no override decision with a waived set)"; exit 1
+  fi
+  base_sha="$(printf '%s' "$line" | jq -r '.evidence.base_sha // ""')"
+  [ -n "$base_sha" ] || fail "override decision has no evidence.base_sha"
+  ids=()
+  while IFS= read -r i; do ids+=("$i"); done < <(printf '%s' "$line" | jq -r '.evidence.waived[]')
+  bor_question "$repo" "$branch" "$base_sha" "$lang" "${ids[@]}" || fail "cannot build question"
+  exit 0
+fi
+
+rec="$(bor_record_path "$repo" "$branch")"
+if [ ! -e "$rec" ] && [ ! -L "$rec" ]; then
+  echo "override=none"; exit 1
+fi
+if ! rec="$(bor_lookup "$repo" "$branch")"; then
+  echo "override=invalid"; exit 1
+fi
+printf 'override=valid repo=%s branch=%s n=%s base=%s at=%s\n' "$repo" "$branch" \
+  "$(jq -r '.waived | length' "$rec")" "$(jq -r '.base_sha[0:12]' "$rec")" "$(jq -r '.captured_at' "$rec")"
+exit 0
