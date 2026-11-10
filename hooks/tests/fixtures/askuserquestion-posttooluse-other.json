@@ -1,0 +1,60 @@
+{
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "cwd": "/path/to/project",
+  "scratchpad_dir": "/path/to/scratchpad",
+  "prompt_id": "00000000-0000-0000-0000-000000000001",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "AskUserQuestion",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "[PRUEBA #735 — no tiene efecto] [atelier size-waiver AkaLab-Tech/atelier#9999 @0123456789abcdef0123456789abcdef01234567 300L/12F] No elijas ninguna de las dos opciones: usá \"Otro\" y escribí: prueba libre",
+        "header": "Prueba 4",
+        "options": [
+          {
+            "label": "Sí, dispenso el tamaño",
+            "description": "No elijas esta. Usá \"Otro\" (la opción de escribir)."
+          },
+          {
+            "label": "No",
+            "description": "No elijas esta. Usá \"Otro\" (la opción de escribir)."
+          }
+        ],
+        "multiSelect": false
+      }
+    ],
+    "answers": {
+      "[PRUEBA #735 — no tiene efecto] [atelier size-waiver AkaLab-Tech/atelier#9999 @0123456789abcdef0123456789abcdef01234567 300L/12F] No elijas ninguna de las dos opciones: usá \"Otro\" y escribí: prueba libre": "prueba libre"
+    },
+    "annotations": {}
+  },
+  "tool_response": {
+    "questions": [
+      {
+        "question": "[PRUEBA #735 — no tiene efecto] [atelier size-waiver AkaLab-Tech/atelier#9999 @0123456789abcdef0123456789abcdef01234567 300L/12F] No elijas ninguna de las dos opciones: usá \"Otro\" y escribí: prueba libre",
+        "header": "Prueba 4",
+        "options": [
+          {
+            "label": "Sí, dispenso el tamaño",
+            "description": "No elijas esta. Usá \"Otro\" (la opción de escribir)."
+          },
+          {
+            "label": "No",
+            "description": "No elijas esta. Usá \"Otro\" (la opción de escribir)."
+          }
+        ],
+        "multiSelect": false
+      }
+    ],
+    "answers": {
+      "[PRUEBA #735 — no tiene efecto] [atelier size-waiver AkaLab-Tech/atelier#9999 @0123456789abcdef0123456789abcdef01234567 300L/12F] No elijas ninguna de las dos opciones: usá \"Otro\" y escribí: prueba libre": "prueba libre"
+    },
+    "annotations": {}
+  },
+  "tool_use_id": "toolu_scrubbed",
+  "duration_ms": 1
+}
