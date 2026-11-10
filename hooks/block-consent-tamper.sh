@@ -6,6 +6,7 @@
 # cannot read pending records, forge a grant, or rewrite the ledger. Not
 # consent-eligible itself. state/consent/size-waivers/ and state/consent/size-waiver.key
 # (#735) fall under the same root and get the same protection.
+# Likewise state/consent/baseline-overrides/ and state/consent/baseline-override.key (#746).
 #
 # What is inspected (free-text mentions are NOT blocked):
 #   - File tools: only .tool_input.file_path / .path / .notebook_path. `content`,
