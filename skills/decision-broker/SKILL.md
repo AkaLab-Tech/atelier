@@ -165,7 +165,7 @@ After resolution, append to `<worktree>/.task-log/decisions.jsonl` (one JSON obj
 }
 ```
 
-`evidence` is optional: write it on every `baseline-conflict` line where `atelier-base-ci` ran, whoever decided (rule, broker or operator). `waived` is the failing-identifier set the caller supplied, meaningful when the choice is `override`.
+`evidence` is optional: write it on every `oversize-handling` line as `{ "lines": <N>, "files": <M>, "max_lines": <X>, "max_files": <Y> }` taken from `pr-author`'s `oversized` return (the counted size `pr-author` later checks a waiver against), whoever decided. Also write it on every `baseline-conflict` line where `atelier-base-ci` ran, whoever decided (rule, broker or operator). `waived` is the failing-identifier set the caller supplied, meaningful when the choice is `override`.
 
 The `pr-author` agent reads this file when composing the PR body — see the "Autonomous decisions taken" section there.
 
