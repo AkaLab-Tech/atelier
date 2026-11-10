@@ -266,6 +266,21 @@ allows "git commit -m multi-line" Bash "$(bash_in "git commit -m \"fix: x
 touches state/consent\"")"
 allows "echo into doc" Bash '{"command":"echo state/consent >> notes.md"}'
 
+echo "== baseline-override record and key (#746) =="
+BO='/x/state/consent/baseline-overrides/AkaLab-Tech__atelier__task__746-x.json'
+BK='/x/state/consent/baseline-override.key'
+blocks "baseline-override record Edit" Edit "{\"file_path\":\"$BO\",\"old_string\":\"a\",\"new_string\":\"b\"}"
+blocks "baseline-override record Write" Write "{\"file_path\":\"$BO\",\"content\":\"{}\"}"
+blocks "baseline-override record Read" Read "{\"file_path\":\"$BO\"}"
+blocks "baseline-override key Edit" Edit "{\"file_path\":\"$BK\",\"old_string\":\"a\",\"new_string\":\"b\"}"
+blocks "baseline-override key Write" Write "{\"file_path\":\"$BK\",\"content\":\"k\"}"
+blocks "baseline-override record Bash cat" Bash "$(bash_in "cat $C/baseline-overrides/AkaLab-Tech__atelier__b.json")"
+blocks "baseline-override record Bash rm" Bash "$(bash_in "rm $C/baseline-overrides/AkaLab-Tech__atelier__b.json")"
+blocks "baseline-override record Bash redirect" Bash "$(bash_in "echo '{}' > $C/baseline-overrides/AkaLab-Tech__atelier__b.json")"
+blocks "baseline-override key Bash cat" Bash "$(bash_in "cat $C/baseline-override.key")"
+blocks "baseline-override key Bash cp" Bash "$(bash_in "cp $C/baseline-override.key /tmp/k")"
+allows "free-text mention of baseline-override" Bash '{"command":"echo \"the baseline-override record\""}'
+
 echo
 if [ "$fails" -eq 0 ]; then echo "block-consent-tamper: all assertions passed"; exit 0; fi
 echo "block-consent-tamper: $fails assertion(s) FAILED"; exit 1

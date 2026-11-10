@@ -263,6 +263,11 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/size-waiver-capture.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/baseline-override-capture.sh",
+            "timeout": 10
           }
         ]
       }
