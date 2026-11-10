@@ -135,7 +135,7 @@ atelier-pr-size-check --pr <NN> --project <project-root>
 ```
 
 - Exit 0 → guardrail passes; continue to guardrail 6.
-- Exit 1 → run `atelier-size-waiver <owner/repo> <NN>`. `waiver=valid` (with its `sha` equal to the PR's current head sha) passes the guardrail; note `OVERSIZE <lines>/<files> WAIVED by @<login> (sha <7>)` in the per-PR row and continue to guardrail 6. Anything else → disposition: `held — OVERSIZE (<lines> lines / <files> files, limits <maxLines>/<maxFiles>)` (include the tool's stdout for slice hints), and the held line says how to waive: a repo admin/maintainer submits a PR review starting with `waive size` and a reason (covers only the current head). Terminal.
+- Exit 1 → run `atelier-size-waiver <owner/repo> <NN> --project <project root>`. `waiver=valid` (with its `sha` equal to the PR's current head sha) passes the guardrail; note `OVERSIZE <lines>/<files> WAIVED by @<login> (sha <7>, source=<source>)` in the per-PR row and continue to guardrail 6. Anything else → disposition: `held — OVERSIZE (<lines> lines / <files> files, limits <maxLines>/<maxFiles>)` (include the tool's stdout for slice hints), and the held line says how to waive: a repo admin/maintainer submits a PR review starting with `waive size` and a reason (covers only the current head). Terminal.
 - Exit 2 → treat conservatively: `held — size check error`. Terminal; never waivable.
 
 **Guardrail 6 — pending human comments.**

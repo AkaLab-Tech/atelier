@@ -45,6 +45,9 @@ printf 'template-x\n' > "$SRC/templates/x"
 printf '#!/usr/bin/env bash\necho fake-installer\n' > "$SRC/install.sh"
 mkdir -p "$SRC/agents/decision-broker"
 printf '{ "categories": {} }\n' > "$SRC/agents/decision-broker/catalog.json"
+mkdir -p "$SRC/hooks/lib"
+printf '# fake size-waiver-record\n' > "$SRC/hooks/lib/size-waiver-record.sh"
+printf '# fake consent\n' > "$SRC/hooks/lib/consent.sh"
 
 set_version() {
   printf '{\n  "name": "atelier",\n  "version": "%s"\n}\n' "$1" > "$SRC/.claude-plugin/plugin.json"
@@ -90,6 +93,9 @@ out1="$(run_phase)" || fail "first run exited non-zero: $out1"
 [ -f "$RT/0.0.1/agents/decision-broker/catalog.json" ] \
   && pass "decision-broker catalog rides along (setup-project policy prompts)" \
   || fail "agents/decision-broker/catalog.json missing from runtime dir"
+[ -f "$RT/0.0.1/hooks/lib/size-waiver-record.sh" ] && [ -f "$RT/0.0.1/hooks/lib/consent.sh" ] \
+  && pass "size-waiver record library (+ consent.sh) rides along (atelier-size-waiver selector path)" \
+  || fail "hooks/lib/size-waiver-record.sh or consent.sh missing from runtime dir"
 [ "$(readlink "$RT/current")" = "0.0.1" ] \
   && pass "current is a RELATIVE symlink to 0.0.1" \
   || fail "current target: expected '0.0.1', got '$(readlink "$RT/current" 2>/dev/null)'"

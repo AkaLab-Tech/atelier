@@ -1430,6 +1430,13 @@ _runtime_copy_payload() {
     mkdir -p "$dest/agents/decision-broker"
     cp -p "$src/agents/decision-broker/catalog.json" "$dest/agents/decision-broker/catalog.json"
   fi
+  # atelier-size-waiver sources the selector-record library (#736) from
+  # <plugin root>/hooks/lib/; it needs consent.sh (sourced by it) alongside.
+  if [ -f "$src/hooks/lib/size-waiver-record.sh" ]; then
+    mkdir -p "$dest/hooks/lib"
+    cp -p "$src/hooks/lib/size-waiver-record.sh" "$dest/hooks/lib/size-waiver-record.sh"
+    cp -p "$src/hooks/lib/consent.sh" "$dest/hooks/lib/consent.sh"
+  fi
 }
 
 # Keep at most the 2 most recent version dirs under $ATELIER_RUNTIME_BASE

@@ -3,17 +3,20 @@
 # atelier-size-waiver — read-only resolution of an operator PR-size waiver (#542, 538a) and of
 # an operator protected-paths approval (#545, guardrail 4), which share one trust model.
 #
-# Usage: atelier-size-waiver [--kind size|protected-paths] <owner/repo> <NN>
+# Usage: atelier-size-waiver [--kind size|protected-paths] <owner/repo> <NN> [--project <root>]
+#        atelier-size-waiver <owner/repo> <NN> --project <root>
+#        atelier-size-waiver --question <owner/repo> <NN> --project <root>
 #        atelier-size-waiver --package-json-version-only <owner/repo> <NN>
 #
 # Output: exactly one line on stdout.
-#   waiver=valid kind=<kind> sha=<40-hex> by=<login> at=<iso> review=<url> reason=<text>
+#   waiver=valid kind=<kind> source=review|selector sha=<40-hex> by=<login> at=<iso> review=<url> reason=<text>
 #   waiver=none                      no PR review carries a waiver phrase with a non-empty reason
 #   waiver=stale sha=<40-hex>        newest waiver review covered an older head; sha = that commit
 #   waiver=untrusted by=<login> (<why>)  newest waiver review is from an agent/PR author/bot,
 #                                    or from someone without admin/maintain on the repo
 #   waiver=ambiguous                 newest review carries phrases of more than one kind; it
 #                                    grants nothing for any kind
+# Every non-valid line ends with `source=review|selector` (which path produced the result).
 # Exit: 0 valid · 1 none/stale/untrusted/ambiguous · 2 error/usage (fail closed, never a pass).
 #
 # A waiver is a PR *review* (state COMMENTED or APPROVED; DISMISSED and CHANGES_REQUESTED do not
@@ -35,6 +38,21 @@
 # for each of those kinds and yields waiver=ambiguous (exit 1), never valid.
 # No local file or config value can grant a waiver. gh reads only; no state is modified.
 #
+# Selector path (kind size, --project given; evaluated only when the review path is not valid):
+# the record the capture hook wrote after the operator answered the size-waiver AskUserQuestion
+# (hooks/lib/size-waiver-record.sh). It is valid only when ALL hold: the canonical record path
+# for this repo/PR is the only file read (regular file, not a symlink, repo/PR fields match);
+# its HMAC verifies with state/consent/size-waiver.key (the helper never creates the key); its
+# sha equals the live headRefOid; and atelier-pr-size-check's own counted size is <= the
+# recorded lines AND files. A size-check exit 2 makes this helper exit 2; a missing library
+# fails the selector path closed with exit 2. It never reads decisions.jsonl, plan blocks or
+# .task-log. --project is ignored for kind protected-paths (never reads selector records) and
+# for --package-json-version-only. A size-check error is never waivable.
+#
+# --question <owner/repo> <NN> --project <root>: prints the canonical AskUserQuestion JSON
+# (marker with live head sha and counted size) and exits 0 when the PR is oversize; prints
+# `question=none (within size budget)` and exits 1 when within budget; size-check error -> 2.
+#
 # --kind selects the phrase set; sets in kind_phrases() must never overlap. An unknown kind
 # exits 2.
 #
@@ -46,21 +64,32 @@
 set -u
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-  sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,62p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 fi
 
-usage="usage: atelier-size-waiver [--kind size|protected-paths] <owner/repo> <NN>"
+usage="usage: atelier-size-waiver [--kind size|protected-paths] <owner/repo> <NN> [--project <root>] | --question <owner/repo> <NN> --project <root>"
 mode="waiver"
 kind="size"
+project=""
+question=0
+pos=()
 if [ "${1:-}" = "--package-json-version-only" ]; then
   mode="pkgver"; shift
-elif [ "${1:-}" = "--kind" ]; then
-  [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
-  kind="$2"; shift 2
 fi
-[ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }
-repo="$1"; pr="$2"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --kind) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; kind="$2"; shift 2 ;;
+    --project) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; project="$2"; shift 2 ;;
+    --question) question=1; shift ;;
+    *) pos+=("$1"); shift ;;
+  esac
+done
+[ "${#pos[@]}" -eq 2 ] || { echo "$usage" >&2; exit 2; }
+if [ "$question" = 1 ] && { [ -z "$project" ] || [ "$kind" != size ] || [ "$mode" != waiver ]; }; then
+  echo "$usage" >&2; exit 2
+fi
+repo="${pos[0]}"; pr="${pos[1]}"
 case "$pr" in ''|*[!0-9]*) echo "atelier-size-waiver: <NN> must be a PR number" >&2; exit 2 ;; esac
 case "$repo" in */*) ;; *) echo "atelier-size-waiver: <owner/repo> expected" >&2; exit 2 ;; esac
 
@@ -92,6 +121,35 @@ agent_login() {
   GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/$1" gh api user --jq .login
 }
 
+# Plugin root, as scripts/atelier-align resolves it: $ATELIER_PLUGIN_ROOT, then dirname(realpath(self))/..
+plugin_root_lib() {
+  local self="${BASH_SOURCE[0]}" d cand
+  while [ -L "$self" ]; do d="$(cd -P "$(dirname "$self")" && pwd)"; self="$(readlink "$self")"; case "$self" in /*) ;; *) self="$d/$self";; esac; done
+  d="$(cd -P "$(dirname "$self")" && pwd)"
+  for cand in "${ATELIER_PLUGIN_ROOT:-}" "$(dirname "$d")"; do
+    [ -n "$cand" ] || continue
+    [ -f "$cand/hooks/lib/size-waiver-record.sh" ] && { printf '%s' "$cand/hooks/lib/size-waiver-record.sh"; return 0; }
+  done
+  return 1
+}
+
+load_lib() {
+  local lib
+  lib="$(plugin_root_lib)" || fail "size-waiver record library not found (selector path fails closed)"
+  # shellcheck source=/dev/null
+  source "$lib" || fail "cannot load size-waiver record library"
+}
+
+# Runs atelier-pr-size-check; sets sc_rc, sc_lines, sc_files. Exit 2 / unparsable -> helper exit 2.
+run_size_check() {
+  local out
+  out="$(atelier-pr-size-check --pr "$pr" --repo "$repo" --project "$project" 2>/dev/null)"; sc_rc=$?
+  [ "$sc_rc" -le 1 ] || fail "size check failed (exit $sc_rc)"
+  sc_lines="$(printf '%s\n' "$out" | sed -n 's/^Counted: *\([0-9][0-9]*\) line(s) across \([0-9][0-9]*\) file(s).*/\1/p' | head -n1)"
+  sc_files="$(printf '%s\n' "$out" | sed -n 's/^Counted: *\([0-9][0-9]*\) line(s) across \([0-9][0-9]*\) file(s).*/\2/p' | head -n1)"
+  [ -n "$sc_lines" ] && [ -n "$sc_files" ] || fail "cannot parse size check output"
+}
+
 command -v jq >/dev/null 2>&1 || fail "jq not found"
 
 if [ "$mode" = "pkgver" ]; then
@@ -115,6 +173,19 @@ if [ "$mode" = "pkgver" ]; then
   echo "package-json=changed"; exit 1
 fi
 
+if [ "$question" = 1 ]; then
+  load_lib
+  q_json="$(gh pr view "$pr" --repo "$repo" --json headRefOid 2>/dev/null)" || fail "cannot read PR $repo#$pr"
+  q_sha="$(printf '%s' "$q_json" | jq -r '.headRefOid // ""')"
+  [ -n "$q_sha" ] || fail "PR has no head sha"
+  run_size_check
+  if [ "$sc_rc" = 0 ]; then
+    echo "question=none (within size budget)"; exit 1
+  fi
+  swr_question "$repo" "$pr" "$q_sha" "$sc_lines" "$sc_files" en || fail "cannot build question"
+  exit 0
+fi
+
 phrases="$(kind_phrases "$kind")" || fail "unknown kind: $kind"
 others="$(other_phrases "$kind")"
 author_agent="$(agent_login author 2>/dev/null)" || fail "cannot resolve author agent login"
@@ -123,6 +194,8 @@ reviewer_agent="$(agent_login reviewer 2>/dev/null)" || fail "cannot resolve rev
 pr_json="$(gh pr view "$pr" --repo "$repo" --json author,headRefOid,reviews,url 2>/dev/null)" \
   || fail "cannot read PR $repo#$pr"
 
+# Review path; run in a subshell by the driver below so its exits become a captured result.
+review_path() {
 # Newest phrase-bearing review, as one JSON object (or "null"); reason is whitespace-collapsed.
 cand="$(printf '%s' "$pr_json" | jq -c --arg re "($phrases)" --arg other "($others)" '
   [ .reviews[]?
@@ -139,13 +212,13 @@ cand="$(printf '%s' "$pr_json" | jq -c --arg re "($phrases)" --arg other "($othe
 [ -n "$cand" ] || fail "empty parse result"
 
 if [ "$cand" = "null" ]; then
-  echo "waiver=none"
+  echo "waiver=none source=review"
   exit 1
 fi
 
 f() { printf '%s' "$cand" | jq -r ".$1"; }
 if [ "$(f amb)" = "true" ]; then
-  echo "waiver=ambiguous"
+  echo "waiver=ambiguous source=review"
   exit 1
 fi
 by="$(f by)"; at="$(f at)"; sha="$(f sha)"; url="$(f url)"; reason="$(f reason)"
@@ -158,7 +231,7 @@ pr_url="$(printf '%s' "$pr_json" | jq -r '.url // ""')"
 lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 by_lc="$(lc "$by")"
 
-untrusted() { echo "waiver=untrusted by=$by ($1)"; exit 1; }
+untrusted() { echo "waiver=untrusted by=$by ($1) source=review"; exit 1; }
 
 [ -n "$by" ] || untrusted "unknown author"
 case "$by_lc" in
@@ -169,7 +242,7 @@ esac
 [ "$by_lc" != "$(lc "$pr_author")" ] || untrusted "PR author"
 
 if [ "$sha" != "$head_sha" ]; then
-  echo "waiver=stale sha=$sha"
+  echo "waiver=stale sha=$sha source=review"
   exit 1
 fi
 
@@ -188,5 +261,43 @@ else
   fail "cannot read permission for $by"
 fi
 
-printf 'waiver=valid kind=%s sha=%s by=%s at=%s review=%s reason=%s\n' "$kind" "$sha" "$by" "$at" "$url" "$reason"
+printf 'waiver=valid kind=%s source=review sha=%s by=%s at=%s review=%s reason=%s\n' "$kind" "$sha" "$by" "$at" "$url" "$reason"
+exit 0
+}
+
+rv="$(review_path)"; rv_rc=$?
+[ "$rv_rc" -le 1 ] || exit 2
+if [ "$rv_rc" = 0 ] || [ "$kind" != size ] || [ -z "$project" ]; then
+  printf '%s\n' "$rv"; exit "$rv_rc"
+fi
+
+# ---- Selector path (kind size, --project): the review path was not valid ----
+load_lib
+rec="$(swr_record_path "$repo" "$pr")"
+if [ ! -e "$rec" ] && [ ! -L "$rec" ]; then
+  printf '%s\n' "$rv"; exit 1
+fi
+sel_untrusted() { echo "waiver=untrusted by=selector ($1) source=selector"; exit 1; }
+{ [ -f "$rec" ] && [ ! -L "$rec" ]; } || sel_untrusted "record is not a regular file"
+rec_json="$(jq -c . "$rec" 2>/dev/null)" && [ -n "$rec_json" ] || sel_untrusted "malformed record"
+rf() { printf '%s' "$rec_json" | jq -r ".$1 // empty"; }
+[ "$(rf repo)" = "$repo" ] && [ "$(rf pr)" = "$pr" ] || sel_untrusted "record repo/PR mismatch"
+[ -s "$(_consent_root)/size-waiver.key" ] || sel_untrusted "signing key missing"
+[ -n "$(rf hmac)" ] || sel_untrusted "record has no MAC"
+swr_verify "$rec" || sel_untrusted "MAC does not verify"
+rec_sha="$(rf head_sha)"; rec_lines="$(rf lines)"; rec_files="$(rf files)"
+case "$rec_lines$rec_files" in ''|*[!0-9]*) sel_untrusted "record size fields invalid" ;; esac
+[ -n "$rec_lines" ] && [ -n "$rec_files" ] || sel_untrusted "record size fields invalid"
+live_sha="$(printf '%s' "$pr_json" | jq -r '.headRefOid // ""')"
+if [ "$rec_sha" != "$live_sha" ]; then
+  echo "waiver=stale sha=$rec_sha source=selector"; exit 1
+fi
+run_size_check
+if [ "$sc_lines" -gt "$rec_lines" ] || [ "$sc_files" -gt "$rec_files" ]; then
+  echo "waiver=stale sha=$rec_sha source=selector (size grew: counted ${sc_lines}L/${sc_files}F > recorded ${rec_lines}L/${rec_files}F)"
+  exit 1
+fi
+rec_by="$(rf session_id)"; rec_by="${rec_by:-operator}"
+printf 'waiver=valid kind=size source=selector sha=%s by=%s at=%s review=selector reason=%s\n' \
+  "$rec_sha" "$rec_by" "$(rf captured_at)" "$(rf answer)"
 exit 0
