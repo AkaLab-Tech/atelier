@@ -139,6 +139,10 @@ Next step:   Postgres on 5432 looks unreachable. Run `docker compose up -d` (see
 
 The `✓ / ✗` symbols and the `Result:` line (`GREEN`, `RED`, or `SERVICE-UNREACHABLE`) are the parser's anchors. Keep them stable. The `Next step:` line on a green report is mandatory: it exists to stop callers — `pr-author` especially — from reading `GREEN` as "done" and ending their turn at the gate. The `Next step:` line on a `SERVICE-UNREACHABLE` report is equally mandatory — it's what makes the outcome actionable instead of an opaque red.
 
+## Approved baseline override
+
+When a `baseline-conflict` `override` is in force, the deliberate gate lets a red test step through, logging a `test-red-waived` decision (`<pm> run test red, N failing test(s) all covered by signed baseline override captured_at=<ts>`), only when `atelier-baseline-override --worktree <wt>` prints `override=valid` and every failing test is inside the waived set. It covers jest and vitest only (the hook re-runs the suite with a JSON reporter). Lint and typecheck are never waived, a failure outside the set stays `BLOCKED: test failed`, a `decisions.jsonl` override (any mode, including `auto` and `rule:host-only`) waives `/validate` only, and `decisions.jsonl` alone never grants it: the record comes from the operator's main-session selector answer. Unattended runs hold.
+
 ## Decision rules
 
 - **Gate runs stay in the foreground.** Run every lint, typecheck or test command as a foreground Bash call with an explicit `timeout` sized to the suite, up to the 600000 ms tool maximum. Never set `run_in_background: true` on a gate command, and never end a turn while waiting on your own background work. If a gate run still goes to the background, do not stop to wait: report the gate as not run (`gate run left the foreground: <command>`) instead of waiting.

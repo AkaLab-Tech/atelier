@@ -126,7 +126,7 @@ mode: auto   choice: override   confidence: high   model: null   source: rule:ho
 rationale: "failures red locally, base sha <sha> CI green (<checks>) → host-only; PR CI remains the merge gate"
 ```
 
-only when ALL three hold: (1) the resolved policy is `auto` (byCategory `auto`, or missing and `ATELIER_POLICY_OVERRIDE` / `decisionPolicy.default` is `auto`); (2) `base_ci=green`; (3) the caller supplied a non-empty set of failing identifiers. Green base CI is approximate for projects whose CI skips suites; the PR's CI remains the merge gate.
+The rule's `override` (like any `override`, including `auto`) waives `/validate` only. It never lets a commit through: that needs the operator's signed selector answer in the main session, and unattended runs hold; v1 covers jest and vitest only, and lint and typecheck are never waived. It returns the choice above only when ALL three hold: (1) the resolved policy is `auto` (byCategory `auto`, or missing and `ATELIER_POLICY_OVERRIDE` / `decisionPolicy.default` is `auto`); (2) `base_ci=green`; (3) the caller supplied a non-empty set of failing identifiers. Green base CI is approximate for projects whose CI skips suites; the PR's CI remains the merge gate.
 
 Otherwise:
 
@@ -165,7 +165,7 @@ After resolution, append to `<worktree>/.task-log/decisions.jsonl` (one JSON obj
 }
 ```
 
-`evidence` is optional: write it on every `oversize-handling` line as `{ "lines": <N>, "files": <M>, "max_lines": <X>, "max_files": <Y> }` taken from `pr-author`'s `oversized` return (the counted size `pr-author` later checks a waiver against), whoever decided. Also write it on every `baseline-conflict` line where `atelier-base-ci` ran, whoever decided (rule, broker or operator). `waived` is the failing-identifier set the caller supplied, meaningful when the choice is `override`.
+`evidence` is optional: write it on every `oversize-handling` line as `{ "lines": <N>, "files": <M>, "max_lines": <X>, "max_files": <Y> }` taken from `pr-author`'s `oversized` return (the counted size `pr-author` later checks a waiver against), whoever decided. Also write it on every `baseline-conflict` line where `atelier-base-ci` ran, whoever decided (rule, broker or operator). `waived` is the failing-identifier set the caller supplied, meaningful when the choice is `override`. `decisions.jsonl` is an audit trail and never a commit-time grant: the `safe-commit` hook accepts a red test step only against the operator's signed override record.
 
 When an `oversize-handling` resolution is `ask` or `panic` and the operator then picks open-anyway, the broker's own line stays `choice: null`. The caller (`task-orchestrator`) appends a second line after the answer: same shape, `mode: "ask"`, `choice: "open-anyway"`, `source: "operator-answer"`, the same `evidence` size, a fresh `ts`. That ask-resolved line is the one `pr-author` accepts as a waiver, cited by `ts`.
 

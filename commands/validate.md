@@ -63,6 +63,10 @@ Detect the project's test command:
 
 If no tests are configured, record `tests: skipped (no test runner configured)` and **mark the overall validation as failed** — a project with no tests should not pass the validation gate. (Operator can override by explicitly setting a `test` script that is a no-op, like `echo 'no tests yet'`, with the understanding that this is a deliberate exemption.)
 
+### Waived baseline set
+
+If `<wt>/.task-log/decisions.jsonl` has a `baseline-conflict` line with `choice: "override"` and a non-empty `evidence.waived` (any mode: `ask`, `auto`, or `rule:host-only`), a test failure whose identifiers all lie inside that set is reported as waived and does not fail the layer; any failure outside the set fails it as usual. The waiver covers `/validate` only. A commit still needs the operator's signed override record (`atelier-baseline-override --worktree <wt>` printing `override=valid`, from the main-session selector answer); `decisions.jsonl` never grants it, and unattended runs hold. Lint and typecheck are never waived, and v1 covers jest and vitest only.
+
 ## Slow layer (only with `--full`)
 
 ### 4. Playwright e2e + screenshots
