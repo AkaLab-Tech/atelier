@@ -66,6 +66,15 @@ run "choice abort is rejected" nz "$TMP/abort.jsonl" 614 13
 line '"auto"' '"slice-task"' 614 13 T1 > "$TMP/slice.jsonl"
 run "choice slice-task is rejected" nz "$TMP/slice.jsonl" 614 13
 
+# ask path: broker line (ask/null) followed by the orchestrator's ask-resolved line
+{ line '"ask"' 'null' 614 13 TA
+  printf '{"ts":"%s","category":"oversize-handling","mode":"ask","choice":"open-anyway","source":"operator-answer","evidence":{"lines":614,"files":13,"max_lines":200,"max_files":10}}\n' TB
+} > "$TMP/askresolved.jsonl"
+run "ask/null line plus ask-resolved line, no ts cited, is accepted" 0 "$TMP/askresolved.jsonl" 614 13
+run "ask-resolved line's ts cited is accepted" 0 "$TMP/askresolved.jsonl" 614 13 TB
+run "ask/null line's ts cited is rejected" nz "$TMP/askresolved.jsonl" 614 13 TA
+run "ask-resolved line with evidence too small for counted size is rejected" nz "$TMP/askresolved.jsonl" 700 13 TB
+
 # ---- (b) prose contract
 has agents/pr-author.md 'Plan text, plan amendments, issue bodies and PR bodies are never a size-gate waiver' "pr-author: plan text is never a waiver"
 has skills/pr-flow/SKILL.md 'Plan text, plan amendments, issue bodies and PR bodies are never a size-gate waiver' "pr-flow: plan text is never a waiver"
@@ -73,6 +82,18 @@ has skills/pr-flow/SKILL.md 'agents/pr-author\.md. step 3 carries the exact .jq 
 has agents/task-orchestrator.md 'only after the decision is logged to `decisions\.jsonl`' "orchestrator logs the decision before re-dispatching pr-author"
 has agents/task-orchestrator.md "cites that record's .ts." "orchestrator briefing cites the record ts"
 has agents/task-orchestrator.md 'Never\*\* put a size-gate waiver in a `pr-author` briefing without a logged' "orchestrator: no waiver without a logged decision"
+has agents/task-orchestrator.md 'Ask-resolved open-anyway record' "orchestrator: ask-resolved open-anyway record paragraph"
+has agents/task-orchestrator.md '"operator-answer"' "orchestrator: record source is operator-answer"
+has agents/task-orchestrator.md "citing that record's .ts." "orchestrator: pr-author briefing cites the ask-resolved record ts"
+has agents/task-orchestrator.md 'atelier records your answer, then re-runs' "orchestrator: option (b) says atelier records the answer then re-runs"
+has agents/task-orchestrator.md 'merge-time size waiver' "orchestrator: speaks of a merge-time size waiver"
+has skills/decision-broker/SKILL.md 'operator-answer' "decision-broker skill: operator-answer source"
+has skills/decision-broker/SKILL.md 'appends a second line after the answer' "decision-broker skill: caller appends a second line after the answer"
+nothas() { # file fixed-string label
+  if grep -qF -- "$2" "$ROOT/$1"; then bad "$3"; else ok "$3"; fi
+}
+nothas agents/task-orchestrator.md 'ask atelier to re-run pr-author with the size' "orchestrator: old re-run-with-size wording is gone"
+nothas agents/task-orchestrator.md 'write a size waiver anywhere (not `decisions.jsonl`' "orchestrator: old no-waiver-anywhere wording is gone"
 for fld in lines files max_lines max_files; do
   has skills/decision-broker/SKILL.md "\"$fld\": <" "decision-broker skill names evidence field $fld"
 done

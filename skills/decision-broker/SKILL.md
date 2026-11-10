@@ -158,7 +158,7 @@ After resolution, append to `<worktree>/.task-log/decisions.jsonl` (one JSON obj
   "rationale": "<prose>",
   "confidence": "<high|medium|low or null>",
   "model": "<haiku|sonnet|opus or null>",
-  "source": "<policy:fixed | policy:auto | policy:ask | policy:missing | rule:host-only | panic | catalog:missing>",
+  "source": "<policy:fixed | policy:auto | policy:ask | policy:missing | rule:host-only | panic | catalog:missing | operator-answer>",
   "evidence": { "base_sha": "<sha>", "base_ci": "<green|red|pending|none|unknown>", "checks": "<name:conclusion,...>", "reason": "<prose>", "waived": ["<failing test/check identifier>"] },
   "duration_ms": <int>,
   "cost_usd_estimate": <float>
@@ -166,6 +166,8 @@ After resolution, append to `<worktree>/.task-log/decisions.jsonl` (one JSON obj
 ```
 
 `evidence` is optional: write it on every `oversize-handling` line as `{ "lines": <N>, "files": <M>, "max_lines": <X>, "max_files": <Y> }` taken from `pr-author`'s `oversized` return (the counted size `pr-author` later checks a waiver against), whoever decided. Also write it on every `baseline-conflict` line where `atelier-base-ci` ran, whoever decided (rule, broker or operator). `waived` is the failing-identifier set the caller supplied, meaningful when the choice is `override`.
+
+When an `oversize-handling` resolution is `ask` or `panic` and the operator then picks open-anyway, the broker's own line stays `choice: null`. The caller (`task-orchestrator`) appends a second line after the answer: same shape, `mode: "ask"`, `choice: "open-anyway"`, `source: "operator-answer"`, the same `evidence` size, a fresh `ts`. That ask-resolved line is the one `pr-author` accepts as a waiver, cited by `ts`.
 
 The `pr-author` agent reads this file when composing the PR body — see the "Autonomous decisions taken" section there.
 
