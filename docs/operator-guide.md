@@ -431,6 +431,7 @@ What to expect when it's on:
 Beyond *permission prompts*, atelier sometimes hits **strategic decisions** during a task — situations where multiple legitimate options exist and one must be chosen. Classic examples:
 
 - A pre-existing lint error on `main` (not caused by your task) blocks the gate. Options: pause and fix the baseline first, override the gate, scope the gate narrower, abort.
+  If an override applies, atelier asks you a second question in the chat before it commits: may the listed failing tests (red on your machine, green on the base) be carried into this task's commits? Your answer is what lets the commit through; the override recorded by the broker, even an automatic one, only waives those tests during `/validate`; the broker's log file (`decisions.jsonl`) never grants a commit. Unattended runs stop and wait for you. It covers jest and vitest tests only; lint and typecheck are never waived, and the PR's own CI still decides the merge.
 - The PR is about to be opened but `atelier-pr-size-check` reports it would trip the AND-gate. Options: slice the task, raise the budget, open as-is and accept human review, abort.
 - The implementer's diff touches files unrelated to the stated scope. Options: keep the wider change, narrow back to scope, split into two PRs, ask.
 

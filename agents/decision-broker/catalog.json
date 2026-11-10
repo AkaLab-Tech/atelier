@@ -15,7 +15,7 @@
         {
           "id": "override",
           "label": "Override the gate for this task only (carry baseline rojo into the PR)",
-          "when": "Only when the base sha's CI is green: the failures are then host-only (red locally, green on the base), the failing identifiers are waived for later /validate runs, and the PR's own CI remains the merge gate. If base CI is red, the baseline is genuinely broken — prefer fix-first."
+          "when": "Only when the base sha's CI is green: the failures are then host-only (red locally, green on the base), the failing identifiers are waived for later /validate runs, and the PR's own CI remains the merge gate. A commit additionally needs the operator's signed selector confirmation; unattended runs hold. If base CI is red, the baseline is genuinely broken — prefer fix-first."
         },
         {
           "id": "scope-package",

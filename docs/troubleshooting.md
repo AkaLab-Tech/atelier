@@ -553,6 +553,21 @@ If the flag is not in the worktree where the chain is running, re-run `/atelier:
 1. Resolve the immediate decision yourself, the same way you would pre-broker.
 2. Open an issue at https://github.com/AkaLab-Tech/atelier/issues describing the situation: what the agent was about to ask, what the legitimate options were, and what you ended up choosing. The maintainer adds the category in a future version.
 
+### `BLOCKED: test failed` although a baseline override exists
+
+**Symptom:** `/validate` accepted the failing tests as waived, but the commit is blocked with `🚫 atelier:safe-commit BLOCKED` and ``Reason: `$pm run test` failed with exit N`` (`$pm` is your package manager, e.g. `pnpm`). An `override` in `decisions.jsonl` only waives `/validate`; a commit needs your signed answer to the baseline-override question, which only the main session can ask. Unattended runs hold with `held: baseline override needs operator confirmation (<N> tests)`.
+
+**Check:** run `atelier-baseline-override --worktree <wt>`. `override=valid ...` means the record is fine; read the hook's `Baseline override: not applied — <reason>` line:
+
+1. `runner-unsupported` — the `test` script is not jest or vitest (v1 covers only those).
+2. `reporter-missing` / `reporter-unparsable` — the JSON reporter wrote no file or unreadable output.
+3. `runtime-error` — a suite crashed instead of failing a test.
+4. `suite-error` — a suite failed with no individual failing test (import or setup error).
+5. `empty-set` — no failing test could be read from the report.
+6. `outside-set` — a failing test is not in the waived set; the lines under `Not waived:` are the new failures.
+
+With no `Baseline override:` line, no valid record exists (`override=none|invalid`): re-run `/atelier:next-task` or `/atelier:resume-task` to be asked. Lint and typecheck are never waived.
+
 ### Selector waiver not honoured
 
 **Symptom:** you answered the size-waiver question ("Waive the size limit for ...?") but the PR is still `held — OVERSIZE`.
