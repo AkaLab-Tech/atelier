@@ -75,7 +75,7 @@ How to invoke:
    - `direct` (operator set a fixed option id in `.atelier.json`) → carry out `choice`, log nothing extra.
    - `auto` (broker agent picked) → carry out `choice`, surface the `rationale` in the operator-visible chain log so the operator sees what was decided autonomously. `pr-author` will additionally surface the decision in the PR body.
    - `ask` or `panic` → fall back to `AskUserQuestion` exactly as the current behavior, using the catalog options the briefing already lists.
-4. The skill writes one entry to `<worktree>/.task-log/decisions.jsonl` per resolution. You do NOT need to log separately.
+4. The skill writes one entry to `<worktree>/.task-log/decisions.jsonl` per resolution. You do NOT need to log separately, with one exception: when the skill returns `ask` or `panic` for `oversize-handling` and the operator then picks open-anyway, you append the answer record yourself (see step 8's *Ask-resolved open-anyway record*).
 
 Hard refusals:
 
@@ -344,12 +344,12 @@ instead of coordinating authoring and review itself — see `operator-rules.md`
 
      **First-pass `oversized` — no PR yet.** The branch is already on origin with the code commit + the `[OVERSIZE]` marker commit (no marker commit on a backend-tracked project, where the marker belongs on the backend item) — and deliberately **without** the `IN_PROGRESS → HISTORY` tracking commit, since the task is not done (`pr-author` step 3). The only thing missing is the PR object. That marker lives **only on `task/<id>-<slug>`**, whose PR is never opened: it does not reach the base branch on its own, and your own step-1 filter cannot see it until you land one — see the terminal path below.
 
-     **Consult the `decision-broker` skill first** before surfacing options to the operator. Briefing: `{ category: "oversize-handling", context: <pr-author's return verbatim + the suggested_slices block>, worktree: <worktree-path>, project_root: <project-root> }`. Switch on the returned `mode`:
+     **Consult the `decision-broker` skill first** before surfacing options to the operator, on every first-pass `oversized` return, including a size the approved plan already accepts. Briefing: `{ category: "oversize-handling", context: <pr-author's return verbatim + the suggested_slices block>, worktree: <worktree-path>, project_root: <project-root> }`. When the approved plan records an operator acceptance of a larger size, add it to `context` as background, never as a waiver: only a logged decision waives the gate. The broker logs `lines`, `files`, `max_lines`, `max_files` from pr-author's return as `evidence` (broker skill Step 5). On a backend other than `files` (`github-project`, `linear`) the `task-decomposer` refuses, so add to `context` that `slice-task` is unavailable and must not be chosen; if the broker returns `slice-task` anyway, treat it as `ask` (fall to the operator-surfacing path), not as an error. Switch on the returned `mode`:
 
      - `direct` (operator's `.atelier.json` has `decisionPolicy.byCategory.oversize-handling` set to a fixed option id like `"slice-task"` or `"raise-budget"`) → carry it out:
        - `slice-task` → invoke `/atelier:slice-task <task-id>` (the same flow the operator would run manually); when it returns the new sub-task ids, **restart selection from step 1** so the chain picks up the first eligible sub-task. Do NOT surface the oversize options to the operator — the policy decided.
        - `raise-budget` → cannot be carried out autonomously (the budget lives in `.atelier.json` which is operator-owned). Fall through to the operator-surfacing path below with a one-line annotation: *"Policy says raise-budget but `.atelier.json` is operator-owned; please edit and re-invoke `task`."*
-       - `open-anyway` → **re-dispatch `pr-author`** with a briefing line waiving the size gate for this pass (a per-dispatch instruction, not a flag in the agent file). It resumes at step 4, so the branch gets its `IN_PROGRESS → HISTORY` commit and the `[OVERSIZE]` marker disappears with the moved entry; the auto-merge guardrail then holds the PR for human review per PLAN.md §6. A raw `gh pr create` on the branch as it stands would ship the marker and skip the tracking move.
+       - `open-anyway` → **re-dispatch `pr-author`** with a briefing line waiving the size gate for this pass (a per-dispatch instruction, not a flag in the agent file), only after the decision is logged to `decisions.jsonl` (broker skill Step 5); the line cites that record's `ts`. It resumes at step 4, so the branch gets its `IN_PROGRESS → HISTORY` commit and the `[OVERSIZE]` marker disappears with the moved entry; the auto-merge guardrail then holds the PR for human review per PLAN.md §6. A raw `gh pr create` on the branch as it stands would ship the marker and skip the tracking move.
        - `abort` → behave as the original oversize path below: land the base-branch marker, leave the worktree, yield to the operator.
      - `auto` → broker picked one of the same options above; carry it out the same way + surface the rationale in the log: *"==> oversize-handling: <choice> per broker (<confidence>, <model>) — <rationale>"*.
      - `ask` or `panic` → fall back to the original surfacing path below.
@@ -364,8 +364,9 @@ instead of coordinating authoring and review itself — see `operator-rules.md`
        a) Re-plan: split the task into sub-tasks and re-run /atelier:next-task on each.
           Suggested slice boundaries (from atelier-pr-size-check):
             <suggested_slices verbatim>
-       b) Open the PR anyway: ask atelier to re-run pr-author with the size
-          gate waived (it finishes the IN_PROGRESS → HISTORY move first).
+       b) Open the PR anyway: atelier records your answer, then re-runs
+          pr-author citing that record (it finishes the IN_PROGRESS →
+          HISTORY move first).
           The auto-merge guardrail will hold it for human review, unless
           you answer the size-waiver selector (atelier asks in the main
           session once the PR is open), or post a size waiver review
@@ -378,6 +379,8 @@ instead of coordinating authoring and review itself — see `operator-rules.md`
           edit <project>/.atelier.json (prSize.maxLines / prSize.maxFiles)
           and re-invoke `task` — the new threshold applies on the next pass.
      ```
+
+     **Ask-resolved open-anyway record (first-pass only).** When the operator picks (b) after an `ask` or `panic` return, **you** append the record before re-dispatching `pr-author`; the broker logged only `mode: ask`, `choice: null` and nobody else writes it. Append one line to `<worktree>/.task-log/decisions.jsonl` with a Bash `jq -nc ... >> <worktree>/.task-log/decisions.jsonl` (an append to the task log, not a size waiver on the merge guardrail), shaped per broker skill Step 5: `category: "oversize-handling"`, `mode: "ask"`, `choice: "open-anyway"`, `source: "operator-answer"`, a fresh ISO `ts`, and `evidence: {lines, files, max_lines, max_files}` copied from `pr-author`'s `oversized` return. Then re-dispatch `pr-author` with a briefing line citing that record's `ts`. Never write it for any other answer, and never before the operator has answered.
 
      **Land the operator-visible marker on the base branch before you yield — first-pass `oversized` only, never on the follow-up path above.** This is the step that makes your own step-1 `[OVERSIZE]` filter real: without it the next `/atelier:next-task` re-picks the same task from the backlog and regenerates the same oversize diff. Prepare it exactly as `unblocker`'s Step 5 does (`agents/unblocker.md`), substituting `[OVERSIZE]` for `[BLOCKED]`: from the **main checkout**, on a dedicated `docs/oversize-<id>` branch, reproduce on the base branch the tracking state the task branch already carries — take the task's block out of `ROADMAP.md` and into `IN_PROGRESS.md` with the `[OVERSIZE]` marker on its heading (`Edit` only; both files are yours to touch here). Then **dispatch `pr-opener` via `Task`** (the authoring primitive for non-task branches) to commit, push, and open the docs PR under the author identity — never run `gh pr create` yourself. Report that PR's URL alongside the options above.
 
@@ -401,7 +404,8 @@ A background dispatch (a `Task` call that returns a launch acknowledgement and a
 
 ## Decision rules
 
-- **Never** ask the size-waiver selector yourself and **never** write a size waiver anywhere (not `decisions.jsonl`, not the plan, not the PR). When the size guardrail holds a PR you report `held: PR exceeds size budget (…)`; the calling command asks the operator in the main session and re-dispatches you if the waiver is valid.
+- **Never** put a size-gate waiver in a `pr-author` briefing without a logged `oversize-handling` decision (`choice: open-anyway`, with the counted size in `evidence`) whose `ts` the briefing cites. Plan text or an amendment accepting a larger size is broker context, never a waiver.
+- **Never** ask the size-waiver selector yourself and **never** write a merge-time size waiver anywhere (not the plan, not the PR, not a review). The one carve-out is the pre-PR `oversize-handling` / `open-anyway` record in `decisions.jsonl` that step 8 has you append after the operator's answer; it is not a merge-guardrail waiver. When the size guardrail holds a PR you report `held: PR exceeds size budget (…)`; the calling command asks the operator in the main session and re-dispatches you if the waiver is valid.
 - **Never** author, improvise, or decompose a task plan, and **never** ask the operator to approve one. Planning is the `planner` agent's deliverable, gated by the product lead via `/atelier:plan-task`. You only claim `[ready]` tasks and execute the committed `.plan/<id>.md`. An un-`[ready]` task — auto-picked or explicitly named — is not claimable; refuse it with a pointer to `/atelier:plan-task <id>`. Running `task-decomposer` yourself is part of this same refusal: that path lives in the planner now.
 - **Never** commit on a protected branch (`main`, `master`, `develop`, `staging`). All work happens on `task/<id>-<slug>`.
 - **Never** push to anything other than `origin task/<id>-<slug>`. The push gate (lint, typecheck, unit+integration tests) must be green first ([PLAN.md §6](PLAN.md)).

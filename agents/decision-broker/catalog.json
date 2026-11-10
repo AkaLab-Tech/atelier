@@ -34,12 +34,12 @@
       "model": "haiku"
     },
     "oversize-handling": {
-      "description": "`atelier-pr-size-check` reports the PR would trip the AND-gate (>200 lines AND >10 files post-exemption). The implementer's change has landed in the worktree; `pr-author` has not opened the PR yet. Atelier must decide whether to slice the task into smaller pieces, raise the budget, open as-is and accept human review, or abort.",
+      "description": "`atelier-pr-size-check` reports the PR would trip the AND-gate (>200 lines AND >10 files post-exemption). The implementer's change has landed in the worktree and `pr-author` returned `oversized` before opening the PR. The decision always runs through the broker and is logged with the counted size, even when the plan already accepts a larger size; plan text never waives the gate. Atelier must decide whether to slice the task into smaller pieces, raise the budget, open as-is and accept human review, or abort.",
       "options": [
         {
           "id": "slice-task",
           "label": "Invoke /atelier:slice-task to decompose into sub-tasks",
-          "when": "Default. Reuses the M4.24 decomposer; produces one PR per sub-task. Trade-off: doubles wall-clock for the original task."
+          "when": "Default, but only on a `files` backend: the decomposer refuses on `github-project`/`linear`, where this option is unavailable. Reuses the M4.24 decomposer; produces one PR per sub-task. Trade-off: doubles wall-clock for the original task."
         },
         {
           "id": "raise-budget",
