@@ -36,6 +36,22 @@ for f in PLAN.md operator-rules.md CLAUDE.md; do
   has "$f" 'size waiver' "$f carries the waiver wording"
   has "$f" 'never waivable' "$f: size-check error never waivable"
 done
+has commands/babysit-prs.md 'allowed-tools:.*AskUserQuestion' "babysit-prs allows AskUserQuestion"
+has commands/babysit-prs.md 'atelier-size-waiver --question' "babysit-prs builds the selector from --question"
+has commands/babysit-prs.md '--project <project root>' "babysit-prs passes --project"
+has commands/babysit-prs.md 'fixed to `slice-task` or `abort`' "babysit-prs: oversize-handling exclusion"
+has commands/babysit-prs.md 'source=selector' "babysit-prs: source=selector"
+has commands/next-task.md 'Bash\(atelier-size-waiver:\*\)' "next-task allows the helper"
+has commands/next-task.md 'held: PR exceeds size budget' "next-task: asks after the size hold"
+has agents/task-orchestrator.md 'answer the size-waiver selector' "orchestrator: option b names the selector"
+has agents/task-orchestrator.md 'Never\*\* ask the size-waiver selector yourself' "orchestrator never asks itself"
+for f in operator-rules.md CLAUDE.md PLAN.md; do
+  has "$f" 'size-waiver selector' "$f names the selector waiver"
+done
+has PLAN.md 'Residual gap, size-waiver selector' "PLAN: selector residual gap"
+has docs/operator-guide.md 'Easiest: answer the selector' "operator guide: selector path"
+has docs/operator-guide.md 'source=selector' "operator guide: source field"
+has docs/troubleshooting.md 'Selector waiver not honoured' "troubleshooting entry"
 echo
 echo "Results: $PASS passed, $FAILN failed"
 [ "$FAILN" = 0 ]

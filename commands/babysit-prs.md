@@ -1,7 +1,7 @@
 ---
 description: One idempotent pass — enumerate every open `task/*` PR, triage each against the `auto-merge` six guardrails (read-only), drive eligible PRs to merge via `task-orchestrator` `pr-open` dispatch, and report per-PR status. Run unattended via `/loop <interval> /atelier:babysit-prs`.
 argument-hint: "[--workspace] [--yes|-y]"
-allowed-tools: Read, Glob, Bash(env:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(git worktree list:*), Bash(git remote:*), Bash(atelier-pr-size-check:*), Bash(atelier-size-waiver:*), Bash(atelier-ci-coverage:*), Bash(atelier-setup-workspace:*), Task
+allowed-tools: Read, Glob, Bash(env:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(git worktree list:*), Bash(git remote:*), Bash(atelier-pr-size-check:*), Bash(atelier-size-waiver:*), Bash(atelier-ci-coverage:*), Bash(atelier-setup-workspace:*), Task, AskUserQuestion
 ---
 
 You are running the `/atelier:babysit-prs` slash command. Your job is one **idempotent, convergent pass**: enumerate every open `task/*` PR in scope, triage each against the `auto-merge` six guardrails (read-only first), dispatch eligible PRs to `task-orchestrator` in `pr-open` resume mode, and report the outcome.
@@ -58,6 +58,7 @@ On success the command prints the workspace slug. Read `$ATELIER_CONFIG_DIR/work
 Read `.atelier.json` from the current project root. Extract:
 
 - `babysitPrs.maxPrsPerPass` (default `10`) — upper bound on how many PRs are dispatched to the orchestrator in this pass. PRs beyond the cap are reported as `deferred (pass cap)` and picked up on the next pass.
+- `decisionPolicy.byCategory["oversize-handling"]` (default unset) — when fixed to `slice-task` or `abort` the size-waiver ask in step 4 never runs; any other value, or none, allows it.
 - `reviewFix.enabled` (default `true`) — whether `CHANGES_REQUESTED` PRs are actionable (dispatch for review-fix loop) or terminal (surface as `needs fix`).
 
 For workspace scope the cap applies to the **total** dispatches across all member repos in this pass, not per-member.
@@ -135,7 +136,7 @@ atelier-pr-size-check --pr <NN> --project <project-root>
 ```
 
 - Exit 0 → guardrail passes; continue to guardrail 6.
-- Exit 1 → run `atelier-size-waiver <owner/repo> <NN> --project <project root>`. `waiver=valid` (with its `sha` equal to the PR's current head sha) passes the guardrail; note `OVERSIZE <lines>/<files> WAIVED by @<login> (sha <7>, source=<source>)` in the per-PR row and continue to guardrail 6. Anything else → disposition: `held — OVERSIZE (<lines> lines / <files> files, limits <maxLines>/<maxFiles>)` (include the tool's stdout for slice hints), and the held line says how to waive: a repo admin/maintainer submits a PR review starting with `waive size` and a reason (covers only the current head). Terminal.
+- Exit 1 → run `atelier-size-waiver <owner/repo> <NN> --project <project root>`. `waiver=valid` (with its `sha` equal to the PR's current head sha; `source=review` or `source=selector`) passes the guardrail; note `OVERSIZE <lines>/<files> WAIVED by @<login> (sha <7>, source=<source>)` in the per-PR row (for `source=selector` write `WAIVED (selector)`) and continue to guardrail 6. Anything else → mark the PR `oversize-unwaived` (keep the tool's stdout for slice hints) and continue to guardrail 6; the disposition is settled by the Size-waiver ask below.
 - Exit 2 → treat conservatively: `held — size check error`. Terminal; never waivable.
 
 **Guardrail 6 — pending human comments.**
@@ -151,6 +152,15 @@ gh pr view <NN> --repo <owner/repo> --json comments \
 ```
 
 Count > 0 → disposition: `held — <N> pending human comment(s)`. Terminal.
+
+**Size-waiver ask** (shared rule; `/atelier:next-task` §8 points here). Runs only when `oversize-unwaived` is the only failing guardrail (guardrails 1–4 and 6 pass) and `reviewDecision == "APPROVED"`, so the operator is never asked about a PR that would still be held on something else. All of these must hold:
+
+- the session is interactive (no `--yes`/`-y`/`ATELIER_AUTO`);
+- the size-check exit was 1 (never on exit 2, never for `--kind protected-paths`);
+- `decisionPolicy.byCategory["oversize-handling"]` is not fixed to `slice-task` or `abort`;
+- you are the main session, not a subagent (`task-orchestrator` and every chain agent never ask).
+
+Asking: run `atelier-size-waiver --question <owner/repo> <NN> --project <project root> --lang <es|en>` (`es` when the project's chat language is Spanish, else `en`) and pass its payload to `AskUserQuestion` verbatim. Never reword the question, drop the `[atelier size-waiver ...]` marker, translate the option labels or add options. Afterwards run `atelier-size-waiver --project <project root> <owner/repo> <NN>` once. `waiver=valid source=selector` with `sha` equal to the PR's current head sha passes the guardrail: re-triage the PR as `mergeable-now` and note `WAIVED (selector)`. Any other result (an "Other" answer, a negative answer, a stale sha, no record) keeps the PR terminal: `held — OVERSIZE (<lines> lines / <files> files, limits <maxLines>/<maxFiles>)`, and the held line names both ways to waive: answer the size-waiver selector by re-running `/atelier:babysit-prs`, or have a repo admin/maintainer submit a PR review starting with `waive size` and a reason (either covers only the current head). When the ask does not apply, the PR is `held — OVERSIZE …` with the same held line. Never write a waiver anywhere (not `decisions.jsonl`, not the plan).
 
 **Final disposition after all guardrails pass:**
 

@@ -405,6 +405,14 @@ else fail "--question oversize — got '$OUT' rc=$RC"; fi
   && pass "--question payload: first option is the affirmative label" || fail "--question options: $OUT"
 [ "$OUT" = "$(swr_question o/r 7 "$H" 450 15 en)" ] && pass "--question payload equals the library's canonical JSON" || fail "--question payload differs from swr_question"
 
+run --question o/r 7 --project "$P" --lang es
+[ "$RC" = 0 ] && [ "$(printf '%s' "$OUT" | jq -r '.[0].options[0].label' 2>/dev/null)" = "Sí, dispenso el tamaño" ] \
+  && [ "$OUT" = "$(swr_question o/r 7 "$H" 450 15 es)" ] \
+  && pass "--question --lang es -> Spanish affirmative label first" || fail "--question --lang es — got '$OUT' rc=$RC"
+run --question o/r 7 --project "$P" --lang en
+[ "$RC" = 0 ] && [ "$OUT" = "$(swr_question o/r 7 "$H" 450 15 en)" ] && pass "--question --lang en stays English" || fail "--question --lang en rc=$RC"
+run --question o/r 7 --project "$P" --lang fr
+[ "$RC" = 2 ] && pass "--question --lang fr -> exit 2" || fail "--question --lang fr rc=$RC"
 size 0 50 3
 run --question o/r 7 --project "$P"
 if [ "$RC" = 1 ] && [ "$OUT" = "question=none (within size budget)" ]; then pass "--question within budget -> question=none, exit 1"; else fail "--question within budget — got '$OUT' rc=$RC"; fi

@@ -552,3 +552,16 @@ If the flag is not in the worktree where the chain is running, re-run `/atelier:
 
 1. Resolve the immediate decision yourself, the same way you would pre-broker.
 2. Open an issue at https://github.com/AkaLab-Tech/atelier/issues describing the situation: what the agent was about to ask, what the legitimate options were, and what you ended up choosing. The maintainer adds the category in a future version.
+
+### Selector waiver not honoured
+
+**Symptom:** you answered the size-waiver question ("Waive the size limit for ...?") but the PR is still `held — OVERSIZE`.
+
+**Check:** run `atelier-size-waiver --project . <owner/repo> <NN>` and read the result.
+
+**Causes and fix** (in every case, re-run `/atelier:babysit-prs` to be asked again):
+
+1. **Stale sha** — the PR got a new push after you answered; the answer covered the old commit.
+2. **Grown size** — the PR now counts more lines or files than when you answered; run `atelier-pr-size-check --pr <NN>` to compare.
+3. **An "Other" free-text answer** — only the affirmative options ("Yes, waive the size limit" and its variants) count; "No" and typed text record nothing.
+4. **A missing record** — the question was answered in a subagent, in a non-interactive session (`--yes`), or before the selector shipped, so no record exists.
