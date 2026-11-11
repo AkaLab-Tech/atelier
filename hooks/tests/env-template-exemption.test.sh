@@ -336,6 +336,32 @@ write_file "$R" ".env.example" "$PLACEHOLDER_BODY"
 git -C "$R" add .env.example
 expect_code "block-env-commit: placeholder template staged, git commit -m wip -> allow" 0 "$COMMIT_HOOK" "$R" "git commit -m wip"
 
+# ---- review-fix cycle 3: unresolved raw git add/commit occurrences ----------
+# A safe-looking first segment must not mask a nested-shell `git add|commit`
+# later in the same command line.
+R="$(make_repo "nested-unresolved-add")"
+git -C "$R" config core.excludesFile /dev/null
+write_file "$R" ".env.prod" "$SECRET_BODY_COMMIT"
+expect_code "block-env-commit: untracked .env.prod, git add README.md && sh -c 'git add -A' -> block" 2 "$COMMIT_HOOK" "$R" "git add README.md && sh -c 'git add -A'"
+expect_code "block-env-commit: untracked .env.prod, git add README.md && eval \"git add -A\" -> block" 2 "$COMMIT_HOOK" "$R" 'git add README.md && eval "git add -A"'
+expect_code "block-env-commit: untracked .env.prod, git add README.md && bash -c \"git add .\" -> block" 2 "$COMMIT_HOOK" "$R" 'git add README.md && bash -c "git add ."'
+expect_code "block-env-commit: untracked .env.prod, git add README.md && sh -c 'git add -f .env.prod' -> block" 2 "$COMMIT_HOOK" "$R" "git add README.md && sh -c 'git add -f .env.prod'"
+expect_code "block-env-commit: untracked .env.prod, plain git add README.md -> allow" 0 "$COMMIT_HOOK" "$R" "git add README.md"
+
+R="$(make_repo "nested-unresolved-commit")"
+git -C "$R" config core.excludesFile /dev/null
+write_file "$R" ".env.live" "$SECRET_BODY_COMMIT"
+git -C "$R" add -f .env.live
+git -C "$R" commit -qm "track env"
+write_file "$R" ".env.live" "$(printf 'DB_PASSWORD=%s\n' "changed-real-prod-pw-1b2c")"
+expect_code "block-env-commit: tracked env modified, git commit -m x && sh -c 'git commit -am y' -> block" 2 "$COMMIT_HOOK" "$R" "git commit -m x && sh -c 'git commit -am y'"
+
+R="$(make_repo "commit-message-mention")"
+git -C "$R" config core.excludesFile /dev/null
+printf 'change\n' >> "$R/README.md"
+git -C "$R" add README.md
+expect_code "block-env-commit: only README staged, git commit -m \"mention .env.prod only\" -> allow" 0 "$COMMIT_HOOK" "$R" 'git commit -m "mention .env.prod only"'
+
 # ============================================================================
 echo
 echo "cases: $cases, failures: $fails"

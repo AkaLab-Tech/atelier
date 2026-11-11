@@ -182,7 +182,7 @@ while IFS= read -r seg; do
   i=$((i + 1))
   case "$sub_cmd" in
     add)
-      add_parsed=1
+      add_parsed=$((add_parsed + 1))
       for (( ; i < n; i++ )); do
         tok="${words[i]}"
         while case "$tok" in *')'|*'`'|*'}') true ;; *) false ;; esac; do tok="${tok%[)\`\}]}"; done
@@ -211,7 +211,7 @@ while IFS= read -r seg; do
       ;;
     commit)
       commit_seen=1
-      commit_parsed=1
+      commit_parsed=$((commit_parsed + 1))
       for (( ; i < n; i++ )); do
         tok="${words[i]}"
         case "$tok" in
@@ -228,11 +228,16 @@ while IFS= read -r seg; do
   esac
 done < <(printf '%s\n' "$masked_cmd" | awk '{ gsub(/&&|\|\||[;|&]/, "\n"); print }')
 
-# The raw text names an add/commit that no parsed segment produced (a decoy
-# earlier `git` segment, the real one inside `sh -c '...'`/`eval "..."`, or an
-# exotic wrapper): fall back, per sub-command, to the conservative reading.
-[ "$is_git_add" -eq 1 ] && [ "$add_parsed" -eq 0 ] && wildcard_add=1
-if [ "$is_git_commit" -eq 1 ] && [ "$commit_parsed" -eq 0 ]; then commit_seen=1; commit_all=1; fi
+# Per occurrence: every raw `git [opts] add|commit` in the full text (quoted
+# words, `sh -c '...'`, `eval "..."` included) must be matched by a segment the
+# parser resolved. Any surplus is an add/commit the parser never saw (a decoy
+# earlier `git` segment, a wrapped one, an exotic wrapper): fall back to the
+# conservative reading for that sub-command.
+raw_git_re='(^|[^[:alnum:]_-])git([[:space:]]+(-C|-c|--git-dir|--work-tree|--namespace|--exec-path)[[:space:]]+[^[:space:]]+|[[:space:]]+-[^[:space:]]+)*[[:space:]]+'
+raw_adds="$(printf '%s\n' "$command_str" | grep -oE "${raw_git_re}add([^[:alnum:]_-]|\$)" | wc -l)"
+raw_commits="$(printf '%s\n' "$command_str" | grep -oE "${raw_git_re}commit([^[:alnum:]_-]|\$)" | wc -l)"
+[ "$((raw_adds + 0))" -gt "$add_parsed" ] && wildcard_add=1
+if [ "$((raw_commits + 0))" -gt "$commit_parsed" ]; then commit_seen=1; commit_all=1; fi
 
 if [ "$wildcard_add" -eq 1 ]; then
   cands+="$(
