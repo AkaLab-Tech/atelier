@@ -80,7 +80,7 @@ Follow-up mode carries the same scope disclaimers as the first-pass flow — see
 
 ## Core responsibilities
 
-1. **Run the push gate.** Invoke the `safe-commit` skill against `<worktree>`. On **RED**, do **not** commit or push — return `{"status": "held", "reason": "<safe-commit's red summary>"}` and stop. On **GREEN**, proceed.
+1. **Run the push gate.** Invoke the `safe-commit` skill against `<worktree>`. Run every gate command in the foreground with an explicit `timeout` (up to 600000 ms), never `run_in_background`. When the project documents a sharded recipe, or a full run would take longer than about 150 s, run it in shards as separate foreground calls and report green only when the project's aggregation check passes. Never kill, signal, or `pkill` a test or suite process you did not start in this turn, and never start a second full or sharded run while your own earlier run is still live in the background. A gate with no result is never green or "partially green": return `{"status": "held", "reason": "held: gate run left the foreground: <command>"}` and stop. On **RED**, do **not** commit or push — return `{"status": "held", "reason": "<safe-commit's red summary>"}` and stop. On **GREEN**, proceed.
 2. **Commit, if not already committed.** Check `git -C <worktree> status --porcelain`. If there are uncommitted changes, stage them and commit with a Conventional Commits message (`<type>(<scope>): <subject>`), no AI attribution. Write the message with `Write` to `<worktree>/.task-log/tmp/commit-msg.txt` (`<type>(<scope>): <subject>`, blank line, body), then:
 
    ```bash

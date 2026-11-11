@@ -20,6 +20,10 @@
 #   - bad -j value / unknown flag exit 2
 #   - -j / --only with no value or an empty value, -j abc, -jabc, -j 0: exit 2
 #     at once with usage on stderr and no test run (never loops; #717)
+#   - --shard K/N (#755): shards cover every file exactly once, carry
+#     `shard: K/N discovered: T`, files: counts sum to T, a failure fails only
+#     its own shard, --only filters before sharding, an empty shard exits 0,
+#     malformed K/N exits 2, discovery order holds inside a shard
 #
 # Hermetic: temp dirs only, no network, HOME redirected.
 #
@@ -190,6 +194,99 @@ value_flag_rejected "-jabc" -jabc
 value_flag_rejected "-j ''" -j ""
 value_flag_rejected "-j 0" -j 0
 value_flag_rejected "--only ''" --only ""
+
+# Group 9 — --shard K/N (#755)
+# shard_files: the "files: N" count from the summary line.
+shard_files() { printf '%s\n' "$OUTTXT" | sed -n 's/^files: \([0-9]*\) .*/\1/p' | head -1; }
+# outs: the sorted OUT-<x> markers present in OUTTXT, space-joined.
+outs() { printf '%s\n' "$OUTTXT" | grep -o '^OUT-[a-z0-9]*' | sort | tr '\n' ' '; }
+
+# shard_cover <dir> <N> <total> <expected-all-outs> — runs shards 1..N and
+# checks exact-once coverage, shard/discovered tags and the files: sum.
+shard_cover() {
+  local d="$1" n="$2" total="$3" want="$4" k sum=0 seen="" ok=1 f o
+  for k in $(seq 1 "$n"); do
+    run "$d" -j 4 --shard "$k/$n"
+    [ "$RC" -eq 0 ] || ok=0
+    has "shard: $k/$n discovered: $total" || ok=0
+    has 'ALL PASS' || ok=0
+    f="$(shard_files)"
+    sum=$((sum + ${f:-0}))
+    o="$(outs)"
+    seen="$seen$o"
+  done
+  seen="$(printf '%s' "$seen" | tr ' ' '\n' | grep -v '^$' | sort | tr '\n' ' ')"
+  [ "$ok" -eq 1 ] && [ "$sum" -eq "$total" ] && [ "$seen" = "$want" ]
+}
+
+D="$(mkdir_suite shard)"
+for n in a b c d e f g; do fake "$D" "$n" 0; done
+want7="OUT-a OUT-b OUT-c OUT-d OUT-e OUT-f OUT-g "
+chk "--shard 1/2 + 2/2 cover all 7 files exactly once" shard_cover "$D" 2 7 "$want7"
+chk "--shard 1/3 + 2/3 + 3/3 cover all 7 files exactly once" shard_cover "$D" 3 7 "$want7"
+
+run "$D" -j 4 --shard 1/2
+chk "shard 1/2 runs indices 0,2,4,6 (a c e g)" [ "$(outs)" = "OUT-a OUT-c OUT-e OUT-g " ]
+chk "shard 1/2 summary: files 4, shard 1/2, discovered 7" has 'files: 4  passed: 4  failed: 0'
+run "$D" -j 4 --shard 2/2
+chk "shard 2/2 runs indices 1,3,5 (b d f)" [ "$(outs)" = "OUT-b OUT-d OUT-f " ]
+chk "shard 2/2 summary carries shard: 2/2 discovered: 7" has 'shard: 2/2 discovered: 7'
+run "$D" --serial --shard 3/3
+chk "--serial --shard 3/3 runs indices 2,5 (c f)" [ "$(outs)" = "OUT-c OUT-f " ]
+
+# A failing file fails only its own shard
+D="$(mkdir_suite shardfail)"
+fake "$D" a 0; fake "$D" b 0; fake "$D" c 3; fake "$D" d 0
+run "$D" -j 4 --shard 1/2
+chk "failing shard 1/2 exits 1 (got $RC)" [ "$RC" -eq 1 ]
+chk "failing shard FAILED line names c.test.sh" has 'FAILED: c.test.sh'
+chk "failing shard emits ::error for c" has "::error file=$D/c.test.sh::regression failed"
+chk "failing shard summary: 2 files, 1 failed, shard 1/2 discovered 4" has 'failed: 1'
+chk "failing shard tag present" has 'shard: 1/2 discovered: 4'
+run "$D" -j 4 --shard 2/2
+chk "sibling shard 2/2 exits 0 (got $RC)" [ "$RC" -eq 0 ]
+chk "sibling shard has no ::error" nothas '::error'
+chk "sibling shard does not run c" nothas 'OUT-c'
+
+# --shard with --only shards the filtered list
+D="$(mkdir_suite shardonly)"
+fake "$D" alpha1 0; fake "$D" alpha2 0; fake "$D" alpha3 0; fake "$D" beta1 0
+run "$D" -j 4 --only 'alpha*' --shard 2/2
+chk "--only alpha* --shard 2/2 exits 0 (got $RC)" [ "$RC" -eq 0 ]
+chk "--only + --shard runs just alpha2" [ "$(outs)" = "OUT-alpha2 " ]
+chk "--only + --shard discovered reflects the filter (3)" has 'shard: 2/2 discovered: 3'
+chk "--only + --shard never runs beta1" nothas 'OUT-beta1'
+run "$D" -j 4 --only 'alpha*' --shard 1/2
+chk "--only alpha* --shard 1/2 runs alpha1 and alpha3" [ "$(outs)" = "OUT-alpha1 OUT-alpha3 " ]
+
+# Empty shard exits 0
+D="$(mkdir_suite shardempty)"
+fake "$D" a 0; fake "$D" b 0; fake "$D" c 0
+run "$D" -j 4 --shard 5/5
+chk "empty shard 5/5 over 3 files exits 0 (got $RC)" [ "$RC" -eq 0 ]
+chk "empty shard prints ALL PASS (empty shard)" has 'ALL PASS (empty shard)'
+chk "empty shard reports files: 0 and discovered: 3" has 'files: 0  shard: 5/5 discovered: 3'
+chk "empty shard runs no test" nothas 'OUT-'
+
+# Discovery order and whole-output printing hold inside a shard
+D="$(mkdir_suite shardorder)"
+fake "$D" a 0 1; fake "$D" b 0; fake "$D" c 0; fake "$D" d 0; fake "$D" e 0
+run "$D" -j 4 --shard 1/2
+pa="$(pos 'OUT-a')"; pc="$(pos 'OUT-c')"; pe="$(pos 'OUT-e')"
+chk "shard keeps discovery order though slow a finishes last (lines $pa/$pc/$pe)" ordered "$pa" "$pc" "$pe"
+chk "shard skips b and d" [ "$(printf '%s' "$OUTTXT" | grep -cE '^OUT-(b|d)$')" -eq 0 ]
+
+# Bad --shard values fail fast: exit 2, usage on stderr, nothing runs
+D="$(mkdir_suite shardargs)"
+fake "$D" a 0; fake "$D" b 0
+value_flag_rejected "--shard (no value)" --shard
+value_flag_rejected "--shard ''" --shard ""
+value_flag_rejected "--shard 0/2" --shard 0/2
+value_flag_rejected "--shard 3/2" --shard 3/2
+value_flag_rejected "--shard 2/0" --shard 2/0
+value_flag_rejected "--shard a/b" --shard a/b
+value_flag_rejected "--shard 2" --shard 2
+value_flag_rejected "--shard 1/2/3" --shard 1/2/3
 
 echo ""
 if [ "$fails" -eq 0 ]; then
