@@ -179,6 +179,27 @@ for hook in "$COMMIT_HOOK" "$SCAN_HOOK"; do
 done
 
 # ============================================================================
+echo "wildcard add shapes with an untracked .env are blocked (#762 review-fix 1)"
+for hook in "$COMMIT_HOOK" "$SCAN_HOOK"; do
+  h="$(hook_label "$hook")"
+  R="$(make_repo "wild-$h")"
+  write_file "$R" ".env" "$PLACEHOLDER_BODY"
+  write_file "$R" "a.txt" $'x\n'
+  expect_code "$h: git add -Af with untracked .env -> block" 2 "$hook" "$R" "git add -Af"
+  expect_code "$h: git add -Af && git commit -m wip -> block" 2 "$hook" "$R" "git add -Af && git commit -m wip"
+  expect_code "$h: git add a.txt && (git add -A) -> block" 2 "$hook" "$R" "git add a.txt && (git add -A)"
+  expect_code "$h: git add -vA -> block" 2 "$hook" "$R" "git add -vA"
+  expect_code "$h: git add a.txt -> allow" 0 "$hook" "$R" "git add a.txt"
+
+  U="$(make_repo "upd-$h")"
+  write_file "$U" ".env.prod" "$PLACEHOLDER_BODY"
+  git -C "$U" add -f .env.prod
+  git -C "$U" commit -qm "track env"
+  write_file "$U" ".env.prod" $'CHANGED=1\n'
+  expect_code "$h: git add -u with modified tracked env file -> block" 2 "$hook" "$U" "git add -u"
+done
+
+# ============================================================================
 echo "a template carrying a real-looking secret is still blocked"
 for t in "${TEMPLATES[@]}"; do
   R="$(make_repo "tsec-commit-$(basename "$t")")"

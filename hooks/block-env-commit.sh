@@ -128,6 +128,7 @@ fi
 cands=""
 env_path_re='(^|/)\.env([^/]*)?$'
 wildcard_add=0
+git_seg_seen=0
 commit_all=0
 commit_seen=0
 
@@ -157,8 +158,17 @@ while IFS= read -r seg; do
   while IFS= read -r w; do words+=("$w"); done < <(cmd_words "$seg")
   n=${#words[@]}
   i=0
-  while [ "$i" -lt "$n" ] && [ "${words[i]##*/}" != git ]; do i=$((i + 1)); done
+  # A leading `(`, `{`, backtick or `$(` glued to `git` (subshell/group) is not part of the word.
+  while [ "$i" -lt "$n" ]; do
+    gw="${words[i]}"
+    while case "$gw" in '('*|'{'*|'`'*|'$('*) true ;; *) false ;; esac; do
+      gw="${gw#\$}"; gw="${gw#[({\`]}"
+    done
+    [ "${gw##*/}" = git ] && break
+    i=$((i + 1))
+  done
   [ "$i" -lt "$n" ] || continue
+  git_seg_seen=1
   i=$((i + 1))
   while [ "$i" -lt "$n" ]; do
     case "${words[i]}" in
@@ -174,8 +184,12 @@ while IFS= read -r seg; do
     add)
       for (( ; i < n; i++ )); do
         tok="${words[i]}"
+        while case "$tok" in *')'|*'`'|*'}') true ;; *) false ;; esac; do tok="${tok%[)\`\}]}"; done
         case "$tok" in
-          .|./|-A|--all|:/|"*") wildcard_add=1; continue ;;
+          .|./|--all|--update|:/|"*") wildcard_add=1; continue ;;
+          # A short-flag cluster with A or u (`-Af`, `-vA`, `-u`) stages every change.
+          --*) continue ;;
+          -*[Au]*) wildcard_add=1; continue ;;
           -*|'') continue ;;
         esac
         env_is_env_name "$tok" || continue
@@ -211,6 +225,13 @@ while IFS= read -r seg; do
       ;;
   esac
 done < <(printf '%s\n' "$masked_cmd" | awk '{ gsub(/&&|\|\||[;|&]/, "\n"); print }')
+
+# The parse found no `git` word although the raw text names an add/commit
+# (exotic wrapper): fall back to the conservative reading of the whole tree.
+if [ "$git_seg_seen" -eq 0 ]; then
+  [ "$is_git_add" -eq 1 ] && wildcard_add=1
+  if [ "$is_git_commit" -eq 1 ]; then commit_seen=1; commit_all=1; fi
+fi
 
 if [ "$wildcard_add" -eq 1 ]; then
   cands+="$(

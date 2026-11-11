@@ -121,7 +121,7 @@ fi
 # token to be word-bounded: either followed by whitespace / chain
 # operator, or sitting at end-of-string. Anchored at `add_expr` (which
 # starts at `add`) so `git -C <path> add .` is detected too (#258).
-if [[ "$add_expr" =~ ^add[[:space:]]+(\.|-A|--all|:/|\*)([[:space:]]|;|\&|\||$) ]]; then
+if [[ "$add_expr" =~ ^add[[:space:]]+(\.|-[A-Za-z]*[Au][A-Za-z]*|--all|--update|:/|\*)([[:space:]]|;|\&|\||\)|\}|\`|$) ]]; then
   is_wildcard=1
 else
   is_wildcard=0

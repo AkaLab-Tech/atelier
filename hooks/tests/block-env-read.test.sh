@@ -527,6 +527,29 @@ expect_allow 'cat .env.example'
 expect_allow 'cat scripts/.env.catalog.example'
 expect_allow 'cat .env.dist'
 
+echo "block-env-read — quoted / piped / redirected env names (#762 review-fix 1)"
+expect_block 'echo ".env" | xargs cat'
+expect_block 'printf "%s" ".env" | xargs cat'
+expect_block 'echo x > ./".env"'
+expect_block 'echo x >> ./".env.prod"'
+expect_block 'echo $(echo ".env")'
+expect_block 'cat $(echo ".env")'
+expect_allow 'echo "see .env for details"'
+expect_allow 'echo "usage .env" > notes.txt'
+
+echo "block-env-read — sed script text vs. file operands (#762 review-fix 1)"
+expect_block "sed -i '' 'r .env' f"
+expect_block "sed -i '' -e 's|a|b|w .env.prod' f"
+expect_block "sed -f .env f"
+expect_block "sed -n -e 's|a|b|' -e 'R .env' f"
+expect_block "sed -i '' 's|a|b|' .env"
+expect_allow "sed -i '' 's|usage: x|usage: ../../.env.marketarte-bff.prod|' scripts/foo.sh"
+expect_allow "sed -i.bak 's|usage: x|usage: ../../.env.marketarte-bff.prod|' f"
+expect_allow "sed -i 's|usage: x|usage: ../../.env.marketarte-bff.prod|' f"
+expect_allow "sed -i '' -e 's|a|see .env.prod|' -e 's|c|d|' f"
+expect_allow "sed --expression='s|a|see .env.prod|' f"
+expect_allow "sed -Ei '' 's|a|see .env.prod|' f"
+
 echo "block-env-read — malformed / missing input fails open"
 for raw in '' 'not json' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \
            '{"tool_name":"Bash","tool_input":{"command":""}}' \

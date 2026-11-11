@@ -761,7 +761,7 @@ mask_text_only() {
   case "$SEG_CMD" in
     echo|printf)
       printf '%s\n' "$seg" | awk '{
-        n = length($0); out = ""; q = ""; keep = 0; last = ""
+        n = length($0); out = ""; q = ""; keep = 0; word = ""
         for (i = 1; i <= n; i++) {
           c = substr($0, i, 1)
           if (q != "") {
@@ -770,12 +770,12 @@ mask_text_only() {
             continue
           }
           if (c == "\"" || c == "\047") {
-            q = c; keep = (last == "<" || last == ">")
+            q = c; keep = (index(word, "<") > 0 || index(word, ">") > 0 || prev ~ /[<>]$/)
             if (keep) out = out c; else out = out " "
             continue
           }
           out = out c
-          if (c != " " && c != "\t") last = c
+          if (c == " " || c == "\t") { if (word != "") prev = word; word = "" } else word = word c
         }
         print out
       }'
@@ -811,7 +811,13 @@ mask_text_only() {
                     if [ $((j + 1)) -lt "${#w}" ]; then scripts+=("${w:$((j + 1))}")
                     elif [ "$i" -lt "$n" ]; then scripts+=("${ws[$i]}"); i=$((i + 1)); fi
                     break ;;
-                  i|l) break ;;
+                  i)
+                    # BSD sed: `-i ''` takes the empty backup suffix as a separate word.
+                    if [ $((j + 1)) -ge "${#w}" ] && [ "$i" -lt "$n" ] && [ -z "${ws[$i]}" ]; then
+                      i=$((i + 1))
+                    fi
+                    break ;;
+                  l) break ;;
                 esac
                 j=$((j + 1))
               done
@@ -941,6 +947,15 @@ while IFS= read -r seg; do
 
   seg_piped="$piped"
   tokens="$(protected_tokens "$(mask_text_only "$seg")")"
+  # A quoted echo/printf argument is text only while nothing consumes it: treat
+  # the masked name as a listing so a later pipe stage (`| xargs cat`) blocks.
+  masked_listing=""
+  if [ -z "$tokens" ]; then
+    seg_command "$seg"
+    case "$SEG_CMD" in
+      echo|printf) masked_listing="$(protected_tokens "$seg" | head -n1)" ;;
+    esac
+  fi
 
   # Inside `$(`, backticks or `<(`/`>(`: the output is consumed by something
   # else, so naming a protected file there is never a plain name-only check.
@@ -958,6 +973,15 @@ while IFS= read -r seg; do
     else
       blocked_token="$(printf '%s' "$tokens" | head -n1)"
       break
+    fi
+  elif [ -n "$masked_listing" ]; then
+    if [ "$nested" = 1 ]; then
+      blocked_token="$masked_listing"
+      break
+    fi
+    prev_listing_token="$masked_listing"
+    if [ "$block_depth" -gt 0 ]; then
+      block_listing[block_depth]="$masked_listing"
     fi
   fi
 
