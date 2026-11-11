@@ -17,12 +17,16 @@
 # Layered defence: this is the second runtime check on `git add` (the
 # first is block-env-commit, sub-PR 1, also matched on Bash). Both fire
 # for every `git add`; this one looks at content + recognised secret
-# shapes, the other looks at .env* path semantics.
+# shapes, the other looks at .env* path semantics. The path-level
+# `env-file-added` pattern exempts committed templates (`exempt: env-template`,
+# list in hooks/lib/env-names.sh); deleted paths are never scanned.
 
 set -uo pipefail
 
 # shellcheck source=lib/log-decision.sh
 source "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT must be set by Claude Code}/hooks/lib/log-decision.sh"
+# shellcheck source=lib/env-names.sh
+source "${CLAUDE_PLUGIN_ROOT}/hooks/lib/env-names.sh"
 
 HOOK_NAME="scan-git-add"
 PATTERNS_FILE="${CLAUDE_PLUGIN_ROOT}/hooks/patterns/scan-git-add.json"
@@ -126,7 +130,7 @@ fi
 if [ "$is_wildcard" -eq 1 ]; then
   {
     git -C "$target_dir" ls-files --others --exclude-standard 2>/dev/null || true
-    git -C "$target_dir" diff --name-only 2>/dev/null || true
+    git -C "$target_dir" diff --name-only --diff-filter=d 2>/dev/null || true
   } | sort -u > "$TO_STAGE_FILE"
 else
     # Extract tokens after `git add` up to the next chained operator
@@ -152,7 +156,7 @@ else
         if [ -d "$full_tok" ]; then
           {
             git -C "$full_tok" ls-files --others --exclude-standard 2>/dev/null
-            git -C "$full_tok" diff --name-only 2>/dev/null
+            git -C "$full_tok" diff --name-only --diff-filter=d 2>/dev/null
           } | sed "s|^|${tok%/}/|"
         else
           printf '%s\n' "$tok"
@@ -184,6 +188,9 @@ edit_write_patterns() {
 is_skipped_path() {
   local path="$1"
   local subs
+  # A real env file (`.env.example.local`, `.env.prod`) is never path-skipped,
+  # even when its name contains a skipped template substring.
+  env_is_protected_name "$path" && return 1
   subs="$(own_skip_subs)"
   if [ -n "$subs" ]; then
     while IFS= read -r sub; do
@@ -345,11 +352,12 @@ scan_path_level() {
 
   while IFS= read -r pat_json; do
     [ -z "$pat_json" ] && continue
-    local name match_type action rationale matched=0 matched_text=""
+    local name match_type action rationale exempt matched=0 matched_text=""
     name="$(printf '%s' "$pat_json" | jq -r '.name // empty')"
     match_type="$(printf '%s' "$pat_json" | jq -r '.match_type // empty')"
     action="$(printf '%s' "$pat_json" | jq -r '.action // empty')"
     rationale="$(printf '%s' "$pat_json" | jq -r '.rationale // empty')"
+    exempt="$(printf '%s' "$pat_json" | jq -r '.exempt // empty')"
 
     case "$match_type" in
       path_basename_glob)
@@ -380,6 +388,12 @@ scan_path_level() {
     esac
 
     [ "$matched" -eq 0 ] && continue
+
+    # Catalogue `exempt: env-template` — committed placeholder templates
+    # (list in hooks/lib/env-names.sh). Content scanning still runs on them.
+    if [ "$exempt" = "env-template" ] && env_is_template_name "$path"; then
+      continue
+    fi
 
     if [ "$action" = "block" ]; then
       block_now "$name" "$path" "$matched_text" "$rationale"

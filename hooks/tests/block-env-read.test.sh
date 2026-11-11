@@ -441,6 +441,92 @@ expect_block 'NODE_OPTIONS=--require=./d.js; export NODE_OPTIONS; node --env-fil
 expect_block 'flock /tmp/l grep -r -c X .'
 HOOK_CWD=""
 
+echo "block-env-read — #762: name-only listings, bare and piped into stdin text filters"
+expect_allow "find . -name '.env*'"
+expect_allow "find . -name '.env*' -type f"
+expect_allow "find . -name '.env*' | head -n 5"
+expect_allow "find . -name '.env*' | tail -n 3"
+expect_allow "find . -name '.env*' | sort"
+expect_allow "find . -name '.env*' | sort | uniq"
+expect_allow "find . -name '.env*' | wc -l"
+expect_allow "find . -name '.env*' | cut -d/ -f2"
+expect_allow "find . -name '.env*' | tr '/' ' '"
+expect_allow "find . -name '.env*' | grep -v node_modules"
+expect_allow "find . -name '.env*' | egrep -v 'node_modules|dist'"
+expect_allow "find . -name '.env*' | grep -v node_modules | sort | head -n 20"
+expect_allow 'ls -la'
+expect_allow 'ls -a | head -n 5'
+expect_allow 'ls -a | grep -v node_modules'
+
+echo "block-env-read — #762: name-only listings piped into a consumer that opens the files are still blocked"
+expect_block "find . -name '.env*' | xargs cat"
+expect_block "find . -name '.env*' | xargs -n1 head"
+expect_block "find . -name '.env*' | while read f; do cat \"\$f\"; done"
+expect_block "find . -name '.env*' | sh"
+expect_block "find . -name '.env*' | bash"
+expect_block "find . -name '.env*' | head -n 1 | xargs cat"
+expect_block "find . -name '.env*' | sort | sh"
+expect_block "cat \$(find . -name '.env*')"
+expect_block "cat \$(find . -name '.env*' | head -n 1)"
+expect_block "echo \$(find . -name '.env*' | xargs cat)"
+expect_block "find . -name '.env*' | grep -r SECRET"
+expect_block "find . -name '.env*' | grep -f patterns.txt"
+expect_block "find . -name '.env*' | grep SECRET .env"
+expect_block "find . -name '.env*' | xargs head"
+expect_block "find . -name '.env*' | xargs tail -n 2"
+expect_block "find . -name '.env*' | sort | xargs head -n 1"
+expect_block "ls .env.prod | xargs cat"
+expect_block "find . -name '.env*' -exec cat {} \\;"
+
+echo "block-env-read — #762: text-only mentions of an env path are not reads"
+expect_allow $'cat > notes.md <<\'EOF\'\nsee ../../.env.marketarte-bff.prod for the real values\nEOF'
+expect_allow $'cat > notes.md <<EOF\nthe file .env.prod holds them\nEOF'
+expect_allow $'tee notes.md <<\'EOF\'\nsee .env.local\nEOF'
+expect_allow $'cat >> notes.md <<\'EOF\'\nsource .env.prod\nEOF'
+expect_allow 'echo "copy it to .env.prod first"'
+expect_allow "echo 'see .env.local'"
+expect_allow "printf '%s\\n' 'use .env.production here'"
+expect_allow 'printf "Usage: set X in .env.prod\n"'
+expect_allow "sed 's|X|../../.env.marketarte-bff.prod|' script.sh"
+expect_allow "sed 's/X/.env.prod/g' script.sh"
+expect_allow "sed -e 's|^# usage: .*|# usage: cp .env.example .env.local|' script.sh"
+expect_allow 'git commit -m "fix .env.prod handling"'
+expect_allow "git commit -m 'document .env.local usage'"
+
+echo "block-env-read — #762: text-only look-alikes that DO read or write are still blocked"
+expect_block $'bash <<\'EOF\'\ncat .env\nEOF'
+expect_block $'sh <<EOF\ncat .env.prod\nEOF'
+expect_block $'python3 <<\'EOF\'\nprint(open(".env").read())\nEOF'
+expect_block $'node <<\'EOF\'\nconsole.log(require("fs").readFileSync(".env","utf8"))\nEOF'
+expect_block $'cat <<\'EOF\' | sh\ncat .env\nEOF'
+expect_block "sed 'r .env' script.sh"
+expect_block "sed 'r .env.prod' script.sh"
+expect_block "sed 'w .env.out' script.sh"
+expect_block "sed '1e cat .env' script.sh"
+expect_block "sed 's/X/Y/w .env.prod' script.sh"
+expect_block "sed 's/X/Y/e' .env"
+expect_block "sed 's|X|Y|' .env"
+expect_block "sed 's|X|Y|' .env.prod"
+expect_block 'echo x > .env'
+expect_block 'echo x >> .env.prod'
+expect_block 'echo x > ./sub/.env.local'
+expect_block "printf 'x' | tee .env"
+expect_block "printf 'x' > .env.local"
+expect_block 'echo "$(cat .env)"'
+expect_block 'echo "$(cat .env.prod)" > out.txt'
+
+echo "block-env-read — #762: real secret files are still blocked, templates still allowed"
+expect_block 'cat .env'
+expect_block 'cat .env.prod'
+expect_block 'cat .env.local'
+expect_block 'cat .env.example.local'
+expect_block 'cat .envrc'
+expect_block 'cp .env.example.local /tmp/x'
+expect_block 'grep KEY .env.x.example .env.prod'
+expect_allow 'cat .env.example'
+expect_allow 'cat scripts/.env.catalog.example'
+expect_allow 'cat .env.dist'
+
 echo "block-env-read — malformed / missing input fails open"
 for raw in '' 'not json' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \
            '{"tool_name":"Bash","tool_input":{"command":""}}' \

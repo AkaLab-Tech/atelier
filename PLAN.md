@@ -241,7 +241,7 @@ Reuses every pattern from `scan-edit-write` (a `git add` of a file the agent alr
 
 | Pattern (description) | Match heuristic | Action |
 |---|---|---|
-| Added `.env*` file (any path) | filename match `**/.env*` in the staged paths | **Block** (same outcome as the existing `block-env-commit` hook; this duplicate is intentional defence-in-depth) |
+| Added `.env*` file (any path), except committed templates `*.example\|*.sample\|*.template\|*.dist` (shared list `hooks/lib/env-names.sh`; template content is still secret-scanned); staged deletions are never blocked | filename match `**/.env*` in the staged paths | **Block** (same outcome as the existing `block-env-commit` hook; this duplicate is intentional defence-in-depth) |
 | Added file under `**/secrets/**` or `**/credentials/**` | filename glob match | **Block** |
 | AWS access key in an added line | regex on added lines: `\b(AKIA\|ASIA)[0-9A-Z]{16}\b` | **Block** |
 | GitHub fine-grained PAT in an added line | regex: `\bgithub_pat_[0-9a-zA-Z_]{82}\b` | **Block** |
@@ -585,7 +585,7 @@ Apply? [y/N]
 
 - Project secrets live in `.env` files **inside each project** (never committed).
 - `install.sh` adds `.env*` to git's global excludes.
-- `PreToolUse` hook blocks any `git add` / `git commit` that touches `.env*`, even if `.gitignore` is missing.
+- `PreToolUse` hook blocks any `git add` / `git commit` that touches `.env*`, even if `.gitignore` is missing. Committed templates (`*.example`, `*.sample`, `*.template`, `*.dist`, list shared in `hooks/lib/env-names.sh`) are exempt when their content is placeholder-only, and staged deletions of env files are never blocked.
 - Revisit if more complex secret management is needed (1Password CLI, keychain, etc.).
 
 ---

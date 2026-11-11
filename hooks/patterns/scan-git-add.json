@@ -26,9 +26,10 @@
   "patterns": [
     {
       "name": "env-file-added",
-      "description": "Adding a .env* file under any path",
+      "description": "Adding a .env* file under any path, except committed templates (exempt: env-template; final suffix from the shared list in hooks/lib/env-names.sh; their content is still scanned)",
       "match_type": "path_basename_glob",
       "patterns": [".env", ".env.*"],
+      "exempt": "env-template",
       "action": "block",
       "rationale": "Environment files contain secrets and must never enter version control. This duplicates block-env-commit (the hook that intercepts the Bash command directly) as defence-in-depth: even if the operator confirms past that hook somehow, this one re-checks at the index boundary."
     },
