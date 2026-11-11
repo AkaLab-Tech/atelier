@@ -705,7 +705,7 @@ is_text_filter_segment() {
 # body inspected. Lines with more than one `<<` are left alone.
 strip_heredoc_bodies() {
   local line chk delim="" dash=0 strip=0 inh=0 quoted=0 buf="" out="" nl pairs t
-  local re='^(.*[^<])<<(-?)[[:space:]]*('"'"'[A-Za-z_][A-Za-z0-9_]*'"'"'|"[A-Za-z_][A-Za-z0-9_]*"|\\?[A-Za-z_][A-Za-z0-9_]*)([^<].*)?$'
+  local re='^(.*[^<])<<(-?)[[:space:]]*('"'"'[A-Za-z_][A-Za-z0-9_]*'"'"'|"[A-Za-z_][A-Za-z0-9_]*"|\\?[A-Za-z_][A-Za-z0-9_]*)([[:space:];\&|)<>].*)?$'
   local cmdre='^[[:space:]]*((cd|mkdir)[[:space:]][^;&|]*&&[[:space:]]*)*(cat|tee)([[:space:]]|$)'
   nl=$'\n'
   while IFS= read -r line || [ -n "$line" ]; do

@@ -479,6 +479,13 @@ expect_block "ls .env.prod | xargs cat"
 expect_block "find . -name '.env*' -exec cat {} \\;"
 
 echo "block-env-read — #762: text-only mentions of an env path are not reads"
+expect_allow $'cat > out <<\'EOF\'\nhello .env\nEOF'
+expect_allow $'cat > out <<-EOF\nx .env\nEOF'
+expect_allow $'cat > out <<"EOF"\nx .env\nEOF'
+# Delimiter mismatches: bash does not end the heredoc where a naive parser
+# would, so the later lines run as commands and must be scanned.
+expect_block $'cat > /tmp/x <<EOF-X\nEOF-X\ncat .env\nEOF'
+expect_block $'cat > /tmp/x <<\'E\'OF\nEOF\ncat .env\nE'
 expect_allow $'cat > notes.md <<\'EOF\'\nsee ../../.env.marketarte-bff.prod for the real values\nEOF'
 expect_allow $'cat > notes.md <<EOF\nthe file .env.prod holds them\nEOF'
 expect_allow $'tee notes.md <<\'EOF\'\nsee .env.local\nEOF'

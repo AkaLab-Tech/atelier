@@ -318,6 +318,24 @@ for hook in "$COMMIT_HOOK" "$SCAN_HOOK"; do
   expect_code "$(hook_label "$hook"): .env.zzcustom with the real lib -> block" 2 "$hook" "$R" "git add .env.zzcustom"
 done
 
+# ---- review-fix cycle 2: nested-shell wrappers ------------------------------
+# `sh -c '...'` / `eval "..."` hide the git verb inside a quoted string; the
+# hook must still see it. core.excludesFile is pinned to /dev/null per repo so
+# the untracked env file is not hidden by any global exclude.
+R="$(make_repo "nested-shell")"
+git -C "$R" config core.excludesFile /dev/null
+write_file "$R" ".env.prod" "$SECRET_BODY_COMMIT"
+expect_code "block-env-commit: untracked .env.prod, git status; sh -c 'git add -A' -> block" 2 "$COMMIT_HOOK" "$R" "git status; sh -c 'git add -A'"
+expect_code "block-env-commit: untracked .env.prod, git status && eval \"git add .\" -> block" 2 "$COMMIT_HOOK" "$R" 'git status && eval "git add ."'
+expect_code "block-env-commit: untracked .env.prod, git add a.txt -> allow" 0 "$COMMIT_HOOK" "$R" "git add a.txt"
+git -C "$R" add -f .env.prod
+expect_code "block-env-commit: .env.prod staged, git status; sh -c 'git commit -m x' -> block" 2 "$COMMIT_HOOK" "$R" "git status; sh -c 'git commit -m x'"
+R="$(make_repo "nested-shell-template")"
+git -C "$R" config core.excludesFile /dev/null
+write_file "$R" ".env.example" "$PLACEHOLDER_BODY"
+git -C "$R" add .env.example
+expect_code "block-env-commit: placeholder template staged, git commit -m wip -> allow" 0 "$COMMIT_HOOK" "$R" "git commit -m wip"
+
 # ============================================================================
 echo
 echo "cases: $cases, failures: $fails"

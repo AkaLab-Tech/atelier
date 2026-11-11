@@ -128,7 +128,8 @@ fi
 cands=""
 env_path_re='(^|/)\.env([^/]*)?$'
 wildcard_add=0
-git_seg_seen=0
+add_parsed=0
+commit_parsed=0
 commit_all=0
 commit_seen=0
 
@@ -168,7 +169,6 @@ while IFS= read -r seg; do
     i=$((i + 1))
   done
   [ "$i" -lt "$n" ] || continue
-  git_seg_seen=1
   i=$((i + 1))
   while [ "$i" -lt "$n" ]; do
     case "${words[i]}" in
@@ -182,6 +182,7 @@ while IFS= read -r seg; do
   i=$((i + 1))
   case "$sub_cmd" in
     add)
+      add_parsed=1
       for (( ; i < n; i++ )); do
         tok="${words[i]}"
         while case "$tok" in *')'|*'`'|*'}') true ;; *) false ;; esac; do tok="${tok%[)\`\}]}"; done
@@ -210,6 +211,7 @@ while IFS= read -r seg; do
       ;;
     commit)
       commit_seen=1
+      commit_parsed=1
       for (( ; i < n; i++ )); do
         tok="${words[i]}"
         case "$tok" in
@@ -226,12 +228,11 @@ while IFS= read -r seg; do
   esac
 done < <(printf '%s\n' "$masked_cmd" | awk '{ gsub(/&&|\|\||[;|&]/, "\n"); print }')
 
-# The parse found no `git` word although the raw text names an add/commit
-# (exotic wrapper): fall back to the conservative reading of the whole tree.
-if [ "$git_seg_seen" -eq 0 ]; then
-  [ "$is_git_add" -eq 1 ] && wildcard_add=1
-  if [ "$is_git_commit" -eq 1 ]; then commit_seen=1; commit_all=1; fi
-fi
+# The raw text names an add/commit that no parsed segment produced (a decoy
+# earlier `git` segment, the real one inside `sh -c '...'`/`eval "..."`, or an
+# exotic wrapper): fall back, per sub-command, to the conservative reading.
+[ "$is_git_add" -eq 1 ] && [ "$add_parsed" -eq 0 ] && wildcard_add=1
+if [ "$is_git_commit" -eq 1 ] && [ "$commit_parsed" -eq 0 ]; then commit_seen=1; commit_all=1; fi
 
 if [ "$wildcard_add" -eq 1 ]; then
   cands+="$(
