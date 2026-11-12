@@ -2,7 +2,8 @@
 #
 # Hermetic regression test for Obsidian vault rendering (#620, #610c).
 # Sourced by scripts/atelier-memory via scripts/lib/atelier-memory-render.sh.
-# Verifies all acceptance criteria:
+# Verifies these acceptance criteria (the rest live in sibling files, split in #764
+# so no single file nears the foreground limit of its shard):
 #   1. render --full produces Home.md, Projects/, Records/, Issues/, PRs/ with
 #      wikilinks between records, projects, issues, PRs, and two-way supersede chains.
 #   2. Folder and note names follow operator.json chatLanguage (English and Spanish,
@@ -12,66 +13,27 @@
 #      read-only banner on every generated note.
 #   4. Regeneration never modifies Inbox/ or .obsidian/ and never deletes operator
 #      files outside the inbox. Running render twice gives byte-identical output.
-#   5. Writes (add, supersede, close, import) trigger incremental re-renders;
-#      vault render failures do not fail the write or corrupt the DB.
 #   6. Rendering can be disabled via ATELIER_MEMORY_VAULT=off and operator.json (.memory.vault: false).
 #   7. block-subagent-memory-write.sh allows render subcommands for subagents.
+# Siblings:
+#   atelier-memory-render-writes.test.sh  criterion 5 (incremental renders, failure resilience)
+#   atelier-memory-render-swap.test.sh    #684 swap safety, ingest/import, symlink, language move
+#   atelier-memory-render-refs.test.sh    #684 7c refs and SQL injection
+#   atelier-memory-render-lock.test.sh    #684 7d-7g concurrency, stale lock, unsafe vault, spellings
 #
 # Run:  bash hooks/tests/atelier-memory-render.test.sh
 # Exit: 0 = all pass (or skipped), 1 = at least one failure.
 
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-MEM="$REPO_ROOT/scripts/atelier-memory"
+# shellcheck source=hooks/tests/memory-render-fixture.sh
+. "$(dirname "${BASH_SOURCE[0]}")/memory-render-fixture.sh"
 HOOK="$REPO_ROOT/hooks/block-subagent-memory-write.sh"
-RENDER_LIB="$REPO_ROOT/scripts/lib/atelier-memory-render.sh"
-
-command -v sqlite3 >/dev/null 2>&1 || { echo "  SKIP: sqlite3 not on PATH"; exit 0; }
-if ! printf 'CREATE VIRTUAL TABLE t USING fts5(a);' | sqlite3 :memory: >/dev/null 2>&1; then
-  echo "  SKIP: sqlite3 lacks FTS5"; exit 0
-fi
-command -v jq >/dev/null 2>&1 || { echo "  SKIP: jq not on PATH"; exit 0; }
-command -v git >/dev/null 2>&1 || { echo "  SKIP: git not on PATH"; exit 0; }
-
-TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
-
-fails=0
-pass() { printf '  PASS: %s\n' "$1"; }
-fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
-
-# shellcheck source=hooks/tests/memory-test-isolation.sh
-. "$REPO_ROOT/hooks/tests/memory-test-isolation.sh"
-export CLAUDE_PLUGIN_ROOT="$REPO_ROOT"
-
-# Vault assertion: ensure vault is hermetic and strictly under $TMP
-vault_assert_isolated() {
-  local v="${1:-}"
-  [ -n "$v" ] || { echo "vault_assert_isolated: empty vault path" >&2; exit 1; }
-  case "$v" in
-    "$TMP"/*) ;;
-    *) echo "vault_assert_isolated: vault '$v' not under temp dir '$TMP'" >&2; exit 1 ;;
-  esac
-  case "$v" in
-    "$MEMTEST_REAL_HOME"/*|"$MEMTEST_REAL_CFG"/*|"/Users/mike/Atelier"|"/Users/mike/Atelier"/*)
-      echo "vault_assert_isolated: vault '$v' touches real user directories" >&2; exit 1 ;;
-  esac
-}
-
-rc() { "$@" >/dev/null 2>&1; echo $?; }
-grepq() { local d; d="$(cat)"; grep -q "$@" <<<"$d"; }
 
 # Explicit isolated test vault directory
 TEST_VAULT="$TMP/vault"
 export ATELIER_MEMORY_VAULT="$TEST_VAULT"
 vault_assert_isolated "$TEST_VAULT"
-
-PROJ="$TMP/proj"
-mkdir -p "$PROJ"
-echo "console.log('hello');" > "$PROJ/app.js"
-
-PROJ_SLUG="$(basename "$PROJ")"
 
 # ==============================================================================
 # 1. Vault Directory Resolution & Default Placement (Criterion 3)
@@ -405,130 +367,6 @@ snap2="$(snap_vault)"
   || fail "render is not idempotent; diff: $(diff -u <(echo "$snap1") <(echo "$snap2"))"
 
 # ==============================================================================
-# 5. Acceptance Criterion 5: Incremental Re-render on Writes & Failure Resilience
-# ==============================================================================
-
-# 5a. add triggers incremental re-render
-id_f_inc="$(mem add fact --project "$PROJ" --source agent-inferred --title "Incremental fact title")"
-[ -f "$TEST_VAULT/Records/$id_f_inc.md" ] \
-  && grep -q "$id_f_inc" "$TEST_VAULT/Home.md" \
-  && grep -q "Incremental fact title" "$TEST_VAULT/Projects/$PROJ_SLUG.md" \
-  && pass "add triggers incremental render updating record note, index, and project note" \
-  || fail "add incremental render failed for $id_f_inc"
-
-# 5b. close triggers incremental re-render
-mem close "$id_r1" --by "operator closing request"
-# Check frontmatter in record note has closed timestamp (not null)
-grep -q '^closed: 20' "$TEST_VAULT/Records/$id_r1.md" \
-  && pass "close updates record frontmatter with closed timestamp" \
-  || fail "close did not update frontmatter in $TEST_VAULT/Records/$id_r1.md"
-
-# Check project note has removed R-1 from Open requests
-if grep -q "\- \[\[$id_r1\]\]" "$TEST_VAULT/Projects/$PROJ_SLUG.md"; then
-  fail "closed request $id_r1 still listed in Open requests of project note"
-else
-  pass "close updates project note to remove closed item from Open requests"
-fi
-
-# 5c. supersede triggers incremental re-render
-id_d4="$(mem supersede "$id_d3" --source agent-inferred --title "Decision v4: latest increment")"
-# Verify new record note exists and has complete supersede chain
-case "$(cat "$TEST_VAULT/Records/$id_d4.md")" in
-  *"## Supersede chain"*"- [[$id_d1]] -> [[$id_d2]] -> [[$id_d3]] -> [[$id_d4]]"*)
-    pass "supersede renders new record note with full chain"
-    ;;
-  *)
-    fail "supersede new note chain mismatch"
-    ;;
-esac
-
-# Verify old record note was incrementally updated with new superseded_by and extended chain
-case "$(cat "$TEST_VAULT/Records/$id_d1.md")" in
-  *"## Supersede chain"*"- [[$id_d1]] -> [[$id_d2]] -> [[$id_d3]] -> [[$id_d4]]"*)
-    pass "supersede incrementally updates predecessor notes in supersede chain"
-    ;;
-  *)
-    fail "supersede did not update predecessor chain in $id_d1"
-    ;;
-esac
-
-# 5d. import triggers re-render
-enc_path() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
-MEM_IMPORT_DIR="$ATELIER_CONFIG_DIR/projects/$(enc_path "$PROJ")/memory"
-mkdir -p "$MEM_IMPORT_DIR"
-cat <<'EOF' > "$MEM_IMPORT_DIR/imported-fact.md"
----
-name: Obsidian rendering verified
-type: fact
----
-Learned that obsidian rendering works cleanly.
-EOF
-
-# Register project in projects.json so import maps directory to $PROJ
-jq -n --arg p "$PROJ" '{projects: {($p): {name: "proj"}}}' > "$ATELIER_CONFIG_DIR/projects.json"
-
-mem import --project "$PROJ" >/dev/null 2>&1
-# Check that an imported fact note now exists in Records
-imported_id="$(printf "SELECT id FROM records WHERE body LIKE '%%Learned that obsidian rendering works%%';" | sqlite3 "$ATELIER_CONFIG_DIR/atelier/memory.db")"
-[ -n "$imported_id" ] && [ -f "$TEST_VAULT/Records/$imported_id.md" ] \
-  && pass "import triggers re-render and imported record note is rendered in vault" \
-  || fail "import did not render note for $imported_id"
-
-# 5e. Render failure resilience: a failing vault render does NOT fail write or corrupt DB
-RO_PARENT="$TMP/ro-parent"
-mkdir -p "$RO_PARENT"
-chmod 500 "$RO_PARENT"
-
-# Point ATELIER_MEMORY_VAULT to a path inside read-only directory
-out_id=""
-err_out="$TMP/add-fail-err.txt"
-out_id="$(ATELIER_MEMORY_VAULT="$RO_PARENT/vault" mem add fact --project "$PROJ" --source agent-inferred --title "Fact during vault failure" 2>"$err_out")"
-add_rc=$?
-
-# Restore permissions for cleanup
-chmod 700 "$RO_PARENT"
-
-[ "$add_rc" = 0 ] && [ -n "$out_id" ] \
-  && pass "add succeeds (exit 0) even when vault render fails" \
-  || fail "add failed when vault render failed (rc=$add_rc, out=$out_id)"
-
-grep -q "atelier-memory: vault render warning" "$err_out" \
-  && pass "add prints warning to stderr on vault render failure" \
-  || fail "missing vault render warning on stderr: $(cat "$err_out")"
-
-# Verify record is in database and DB is not corrupted
-db_row="$(printf "SELECT title FROM records WHERE id=%s;" "'$out_id'" | sqlite3 "$ATELIER_CONFIG_DIR/atelier/memory.db")"
-[ "$db_row" = "Fact during vault failure" ] \
-  && pass "record successfully stored in DB during vault render failure" \
-  || fail "record not found in DB: $db_row"
-
-db_integrity="$(printf 'PRAGMA integrity_check;' | sqlite3 "$ATELIER_CONFIG_DIR/atelier/memory.db")"
-[ "$db_integrity" = "ok" ] \
-  && pass "DB integrity is 'ok' after vault render failure" \
-  || fail "DB corrupted after vault failure: $db_integrity"
-
-# Also test close under vault render failure
-chmod 500 "$RO_PARENT"
-err_close="$TMP/close-fail-err.txt"
-close_out="$(ATELIER_MEMORY_VAULT="$RO_PARENT/vault" mem close "$out_id" --by "test" 2>"$err_close")"
-close_rc=$?
-chmod 700 "$RO_PARENT"
-
-[ "$close_rc" = 0 ] \
-  && pass "close succeeds (exit 0) when vault render fails" \
-  || fail "close failed during vault render failure (rc=$close_rc)"
-
-grep -q "atelier-memory: vault render warning" "$err_close" \
-  && pass "close prints warning to stderr on vault render failure" \
-  || fail "close missing vault render warning"
-
-# Re-run full render to bring vault back into sync
-mem render --full >/dev/null 2>&1
-[ -f "$TEST_VAULT/Records/$out_id.md" ] \
-  && pass "subsequent full render reconciles previously missed records" \
-  || fail "full render did not reconcile $out_id"
-
-# ==============================================================================
 # 6. Acceptance Criterion 6: Disabling Rendering
 # ==============================================================================
 
@@ -601,160 +439,4 @@ test_hook_allow 'scripts/atelier-memory render --vault /tmp/v' \
   && pass "block-subagent-memory-write.sh allows 'scripts/atelier-memory render --vault' for subagents" \
   || fail "block-subagent-memory-write.sh blocked scripts/atelier-memory render --vault"
 
-# ==============================================================================
-# 7. #684: render safety (non-destructive swap, no SQL injection, lock, vault location)
-# ==============================================================================
-
-V684="$TMP/vault684"
-export ATELIER_MEMORY_VAULT="$V684"
-vault_assert_isolated "$V684"
-DBF="$ATELIER_CONFIG_DIR/atelier/memory.db"
-
-mem render --full >/dev/null 2>&1
-mkdir -p "$V684/Records/mynotes" "$V684/Projects/sub" "$V684/Issues/sub" "$V684/PRs/sub"
-printf 'operator note\n' > "$V684/Records/mynotes/a.md"
-printf 'hidden note\n' > "$V684/Records/.hidden.md"
-printf 'plain note\n' > "$V684/Records/plain.md"
-printf 'p\n' > "$V684/Projects/sub/x.md"
-printf 'i\n' > "$V684/Issues/sub/y.md"
-printf 'r\n' > "$V684/PRs/sub/z.md"
-printf '%s\n\nstale\n' "<!-- Generated by atelier — edits here are overwritten; write to Inbox/ -->" > "$V684/Records/R-999.md"
-
-err684="$(mem render --full 2>&1 >/dev/null)"
-[ "$(cat "$V684/Records/mynotes/a.md" 2>/dev/null)" = "operator note" ] \
-  && [ "$(cat "$V684/Records/.hidden.md" 2>/dev/null)" = "hidden note" ] \
-  && [ "$(cat "$V684/Records/plain.md" 2>/dev/null)" = "plain note" ] \
-  && [ -f "$V684/Projects/sub/x.md" ] && [ -f "$V684/Issues/sub/y.md" ] && [ -f "$V684/PRs/sub/z.md" ] \
-  && pass "render --full keeps operator subfolders, dotfiles and un-bannered files byte-for-byte" \
-  || fail "render --full destroyed operator content"
-case "$err684" in *"is a directory"*) fail "render --full reported 'is a directory': $err684" ;; *) pass "no 'is a directory' complaint" ;; esac
-[ ! -e "$V684/Records/R-999.md" ] && pass "stale generated note removed" || fail "stale generated note kept"
-[ -f "$V684/Records/$id_r1.md" ] && pass "current generated notes still rendered" || fail "generated note missing after reconcile"
-
-# ingest / import / verify --apply all run the same full render
-printf 'x\n' > "$V684/Records/mynotes/b.md"
-mem ingest >/dev/null 2>&1
-[ -f "$V684/Records/mynotes/b.md" ] && [ -f "$V684/Records/mynotes/a.md" ] \
-  && pass "ingest's full render keeps operator subfolders" || fail "ingest destroyed operator subfolder"
-
-# import's full render keeps operator subfolders
-cat <<'EOF2' > "$MEM_IMPORT_DIR/imported-684.md"
----
-name: Import 684 keeps operator folders
-type: fact
----
-Second imported fact for the #684 render-safety check.
-EOF2
-mem import --project "$PROJ" >/dev/null 2>&1
-[ "$(cat "$V684/Records/mynotes/a.md" 2>/dev/null)" = "operator note" ] && [ "$(cat "$V684/Records/.hidden.md" 2>/dev/null)" = "hidden note" ] \
-  && pass "import's full render keeps operator subfolders and dotfiles" || fail "import destroyed operator content"
-
-# symlink and operator directory at a staged note's destination are left alone, with a warning
-mkdir -p "$TMP/linktarget684"; printf 'keep\n' > "$TMP/linktarget684/f.md"
-ln -s "$TMP/linktarget684" "$V684/Records/linkdir"
-rm -f "$V684/Records/$id_r1.md"; mkdir -p "$V684/Records/$id_r1.md"; printf 'opdir\n' > "$V684/Records/$id_r1.md/inner.txt"
-swap_err="$(mem render --full 2>&1 >/dev/null)"
-[ -L "$V684/Records/linkdir" ] && [ "$(cat "$TMP/linktarget684/f.md")" = "keep" ] \
-  && [ "$(cat "$V684/Records/$id_r1.md/inner.txt" 2>/dev/null)" = "opdir" ] \
-  && pass "symlink and operator directory at a note destination are preserved" || fail "symlink/dir at destination clobbered"
-[ -n "$swap_err" ] && pass "skipped destination produced a warning" || fail "no warning for directory at note destination"
-rm -r "$V684/Records/$id_r1.md"; rm -f "$V684/Records/linkdir"
-mem render --full >/dev/null 2>&1
-
-# 7b. language change moves operator subfolders and dotfiles, never deletes them
-printf '{"chatLanguage":"es"}\n' > "$ATELIER_CONFIG_DIR/operator.json"
-mem render --full >/dev/null 2>&1
-if [ -f "$V684/Registros/mynotes/a.md" ] && [ -f "$V684/Registros/.hidden.md" ] && [ -f "$V684/Registros/plain.md" ] \
-   && [ ! -e "$V684/Records" ]; then
-  pass "language change moves operator subfolders/dotfiles into the new folder"
-else
-  fail "language change lost or left operator content: $(find "$V684" -maxdepth 2 | sort | tr '\n' ' ')"
-fi
-rm -f "$ATELIER_CONFIG_DIR/operator.json"
-mem render --full >/dev/null 2>&1
-[ -f "$V684/Records/mynotes/a.md" ] && pass "switching back keeps operator content" || fail "operator content lost switching back"
-
-# 7c. refs never reach SQL as raw text
-n684="$(printf 'SELECT count(*) FROM records;' | sqlite3 "$DBF")"
-inj="issue:o/r#1' UNION SELECT 'X-9', hex('INJECTED') --"
-[ "$(rc mem add fact --project "$PROJ" --source agent-inferred --title inj --ref "$inj")" = 2 ] \
-  && pass "UNION-shaped ref rejected at the CLI" || fail "UNION-shaped ref accepted"
-[ "$(printf 'SELECT count(*) FROM records;' | sqlite3 "$DBF")" = "$n684" ] && pass "rejected ref wrote nothing" || fail "rejected ref wrote a row"
-
-id_w1="$(mem add fact --project "$PROJ" --source agent-inferred --title "wild one" --ref "issue:o_r/x#1")"
-id_w2="$(mem add fact --project "$PROJ" --source agent-inferred --title "wild two" --ref "issue:oar/x#1")"
-id_w3="$(mem add fact --project "$PROJ" --source agent-inferred --title "wild three" --ref "pr:o_r/x#1")"
-mem render --full >/dev/null 2>&1
-stub="$V684/Issues/o_r-x#1.md"
-if [ -f "$stub" ] && grep -q "\[\[$id_w1\]\]" "$stub" && ! grep -q "\[\[$id_w2\]\]" "$stub" && ! grep -q "\[\[$id_w3\]\]" "$stub"; then
-  pass "issue stub matches the exact ref ('_' is not a wildcard, pr: refs excluded)"
-else
-  fail "issue stub widened by LIKE wildcard: $(cat "$stub" 2>/dev/null)"
-fi
-
-# a malformed ref planted in the DB is skipped and never injected
-printf "INSERT INTO records (id,type,project,source,title,body,quote,refs,created_at,created_by) SELECT 'F-900','fact',project,'agent-inferred','planted','b',NULL,json_array('issue:o/r#1'' UNION SELECT ''X-9'', hex(''INJECTED'') --', 'pr:a/b#2'),strftime('%%Y-%%m-%%dT%%H:%%M:%%SZ','now'),'test' FROM records WHERE id='%s';\n" "$id_w1" | sqlite3 "$DBF"
-bad_err="$(mem render --full 2>&1 >/dev/null)"
-if ! grep -rqF -e '[[X-9]]' "$V684" 2>/dev/null && [ ! -e "$V684/Records/X-9.md" ] && [ -f "$V684/PRs/a-b#2.md" ]; then
-  pass "planted malformed stored ref is not injected; valid sibling ref still rendered"
-else
-  fail "malformed stored ref leaked into notes"
-fi
-case "$bad_err" in *"skipping malformed stored ref"*) pass "malformed stored ref skipped with a warning" ;; *) fail "no warning for malformed stored ref: $bad_err" ;; esac
-mem close F-900 --by "$id_w1" >/dev/null 2>&1
-if ! grep -rqF -e '[[X-9]]' "$V684" 2>/dev/null; then pass "incremental render does not inject a planted ref"; else fail "incremental render injected"; fi
-
-# 7d. concurrent renders are serialised
-for round in 1 2 3; do
-  ( mem render --full >/dev/null 2>"$TMP/conc-a" ) &
-  ( mem render --full >/dev/null 2>"$TMP/conc-b" ) &
-  wait
-  skipped="$(cat "$TMP/conc-a" "$TMP/conc-b" | grep -c 'vault render skipped')"
-  if [ -e "$V684/Records/Records" ] || [ -e "$V684/Projects/Projects" ] || [ "$skipped" -gt 1 ]; then
-    fail "concurrent render round $round: nested folder or skipped=$skipped"; break
-  fi
-  [ "$round" = 3 ] && pass "concurrent render --full runs never nest folders and at most one skips"
-done
-[ ! -e "$V684/.atelier-render.lock" ] && pass "render lock released after runs" || fail "render lock left behind"
-
-# 7e. a stale lock (dead owner) is taken over
-mkdir -p "$V684/.atelier-render.lock"
-( exit 0 ) & dead_pid=$!; wait "$dead_pid"
-printf '%s' "$dead_pid" > "$V684/.atelier-render.lock/pid"
-if [ "$(rc mem render --full)" = 0 ] && [ ! -e "$V684/.atelier-render.lock" ]; then
-  pass "stale render lock is taken over"
-else
-  fail "stale render lock blocked the render"
-fi
-
-# 7f. a vault resolving to \$HOME or / is refused
-err_home="$(mem render --vault "$HOME" 2>&1 >/dev/null)"; rc_home=$?
-[ "$rc_home" -ne 0 ] && case "$err_home" in *refusing*) true ;; *) false ;; esac \
-  && pass "render into \$HOME is refused with a warning" || fail "render into \$HOME not refused (rc=$rc_home)"
-[ ! -e "$HOME/Records" ] && [ ! -e "$HOME/Home.md" ] || fail "render wrote into \$HOME"
-( . "$RENDER_LIB"; HOME="$TMP/home"; vault_refuse_unsafe "/" 2>/dev/null ) \
-  && fail "vault_refuse_unsafe accepted /" || pass "vault_refuse_unsafe refuses /"
-( . "$RENDER_LIB"; HOME="$TMP/home"; vault_refuse_unsafe "$TMP/home/" 2>/dev/null ) \
-  && fail "vault_refuse_unsafe accepted \$HOME with trailing slash" || pass "vault_refuse_unsafe refuses \$HOME spelled with a trailing slash"
-
-# 7g. default vault location is robust to spelling of ~/.claude-work
-mkdir -p "$TMP/home/.claude-work"
-ln -sfn "$TMP/home/.claude-work" "$TMP/cfg-link"
-for spelling in "$TMP/home/.claude-work/" "$TMP/home/.claude-work//" "$TMP/cfg-link" "$TMP/cfg-link/"; do
-  res="$(unset ATELIER_MEMORY_VAULT; ATELIER_CONFIG_DIR="$spelling" HOME="$TMP/home" vault_dir_resolve "")"
-  [ "$res" = "$TMP/home/Atelier" ] && pass "config dir spelled '$spelling' resolves to \$HOME/Atelier" || fail "spelling '$spelling' -> $res"
-done
-res="$(unset ATELIER_MEMORY_VAULT; ATELIER_CONFIG_DIR="$TMP/cfg2/" HOME="$TMP/home" vault_dir_resolve "")"
-[ "$res" = "$TMP/cfg2//vault" ] || [ "$res" = "$TMP/cfg2/vault" ] \
-  && pass "a different config dir keeps \$ATELIER_CONFIG_DIR/vault" || fail "different config dir -> $res"
-res="$(ATELIER_MEMORY_VAULT="$TMP/ov" ATELIER_CONFIG_DIR="$TMP/home/.claude-work/" HOME="$TMP/home" vault_dir_resolve "")"
-[ "$res" = "$TMP/ov" ] && pass "ATELIER_MEMORY_VAULT keeps precedence over a trailing-slash config dir" || fail "override lost: $res"
-export ATELIER_MEMORY_VAULT="$TEST_VAULT"
-
-echo ""
-if [ "$fails" -eq 0 ]; then
-  echo "atelier-memory-render: all tests passed"
-  exit 0
-fi
-echo "atelier-memory-render: $fails test(s) failed"
-exit 1
+finish "atelier-memory-render"
