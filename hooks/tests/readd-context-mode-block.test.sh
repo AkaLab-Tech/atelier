@@ -5,7 +5,7 @@
 #   A1  context-mode usable -> additionalContext is exactly the rendered block
 #   A2  output shape: only hookSpecificOutput{hookEventName:SubagentStart,additionalContext};
 #       no permissionDecision / decision keys
-#   A3  no hold: finishes in less than the strip hook's 400 ms threshold
+#   A3  no hold: the perl Time::HiRes=sleep hold path is not invoked (probe, not wall clock)
 #   A4  fail open, no output: not installed / module missing / module throws /
 #       block without <context_window_protection> / node missing
 #
@@ -19,7 +19,6 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOK="$REPO_ROOT/hooks/readd-context-mode-block.sh"
-HOLD_MS=400
 
 command -v jq >/dev/null 2>&1 || { echo "  SKIP: jq not on PATH"; exit 0; }
 command -v node >/dev/null 2>&1 || { echo "  SKIP: node not on PATH"; exit 0; }
@@ -60,23 +59,38 @@ uninstall_cm() {
   echo '{}' > "$ATELIER_CONFIG_DIR/settings.json"
 }
 
+# Hold probe: logs any `perl -MTime::HiRes=sleep` call (the strip hook's hold
+# mechanism), then runs the real perl (absolute path baked in).
+REAL_PERL="$(command -v perl)"
+HOLD_LOG="$TMP/hold.log"
+mkdir -p "$TMP/shim"
+cat > "$TMP/shim/perl" <<SHIM
+#!/bin/sh
+case "\$*" in *Time::HiRes=sleep*) echo hold >> "$HOLD_LOG" ;; esac
+exec "$REAL_PERL" "\$@"
+SHIM
+chmod +x "$TMP/shim/perl"
+
 NONODE="$TMP/nonode"; mkdir -p "$NONODE"
-for t in bash env jq perl cat dirname sed tr grep; do
+for t in bash env jq cat dirname sed tr grep; do
   p="$(command -v "$t" 2>/dev/null)" && [ -x "$p" ] && ln -s "$p" "$NONODE/$t"
 done
+ln -s "$TMP/shim/perl" "$NONODE/perl"
 
 IN='{"hook_event_name":"SubagentStart","agent_type":"general-purpose"}'
 
-# run_hook [PATH override] -> sets out, rc, elapsed
+# run_hook [PATH override] -> sets out, rc, elapsed, held
 run_hook() {
   local s e
+  : > "$HOLD_LOG"
   s="$(now_ms)"
   if [ -n "${1:-}" ]; then
     out="$(printf '%s' "$IN" | PATH="$1" "$NONODE/bash" "$HOOK" 2>/dev/null)"; rc=$?
   else
-    out="$(printf '%s' "$IN" | bash "$HOOK" 2>/dev/null)"; rc=$?
+    out="$(printf '%s' "$IN" | PATH="$TMP/shim:$PATH" bash "$HOOK" 2>/dev/null)"; rc=$?
   fi
   e="$(now_ms)"; elapsed=$((e - s))
+  if [ -s "$HOLD_LOG" ]; then held=yes; else held=no; fi
 }
 
 echo "readd-context-mode-block (#728)"
@@ -95,7 +109,7 @@ if [ "$(printf '%s' "$out" | jq -c '[keys, (.hookSpecificOutput|keys), .hookSpec
   pass "A2 shape: hookSpecificOutput{hookEventName,additionalContext}, no decision keys"; else fail "A2: [$out]"; fi
 
 # A3
-if [ "$elapsed" -lt "$HOLD_MS" ]; then pass "A3 no hold (${elapsed}ms < ${HOLD_MS}ms)"; else fail "A3: ${elapsed}ms"; fi
+if [ "$held" = no ] && [ "$elapsed" -lt 10000 ]; then pass "A3 no hold (hold path not invoked, ${elapsed}ms)"; else fail "A3: held=$held ${elapsed}ms"; fi
 
 # A4
 check_open() {

@@ -8,8 +8,10 @@
 #   S4  subagent_type "Bash" (and other fields) unchanged
 #   S5  output shape: only hookSpecificOutput{hookEventName,updatedInput}; no permissionDecision
 #   S6  context-mode usable -> elapsed >= hold threshold (400 ms)
-#   S7  fail open, no output, faster than the hold: not installed / module missing /
-#       module throws / block without <context_window_protection> / node missing
+#   S7  fail open, no output, hold path not taken (perl sleep probe, not wall clock):
+#       not installed / module missing / module throws / block without
+#       <context_window_protection> / node missing
+#   S8  probe self-check: a hook copy forced to hold is seen by the probe (held=yes)
 #
 # Hermetic: scratch HOME + ATELIER_CONFIG_DIR, fake context-mode tree. The real
 # context-mode cache is never read. No network.
@@ -63,11 +65,24 @@ uninstall_cm() {
   echo '{}' > "$ATELIER_CONFIG_DIR/settings.json"
 }
 
+# Hold probe: the hook's only hold is `perl -MTime::HiRes=sleep`. The shim logs
+# that call to hold.log, then runs the real perl (absolute path baked in).
+REAL_PERL="$(command -v perl)"
+HOLD_LOG="$TMP/hold.log"
+mkdir -p "$TMP/shim"
+cat > "$TMP/shim/perl" <<SHIM
+#!/bin/sh
+case "\$*" in *Time::HiRes=sleep*) echo hold >> "$HOLD_LOG" ;; esac
+exec "$REAL_PERL" "\$@"
+SHIM
+chmod +x "$TMP/shim/perl"
+
 # PATH without node: symlinks to the few tools the hook + helper need.
 NONODE="$TMP/nonode"; mkdir -p "$NONODE"
-for t in bash env jq perl cat dirname sed tr grep; do
+for t in bash env jq cat dirname sed tr grep; do
   p="$(command -v "$t" 2>/dev/null)" && [ -x "$p" ] && ln -s "$p" "$NONODE/$t"
 done
+ln -s "$TMP/shim/perl" "$NONODE/perl"
 
 # input_for <prompt> [subagent_type] -> hook stdin JSON
 input_for() {
@@ -75,16 +90,18 @@ input_for() {
     '{hook_event_name:"PreToolUse",tool_name:"Agent",tool_input:{description:"d",prompt:$p,subagent_type:$t}}'
 }
 
-# run_hook <stdin-json> [PATH override] -> sets out, rc, elapsed
+# run_hook <stdin-json> [PATH override] -> sets out, rc, elapsed, held
 run_hook() {
   local s e
+  : > "$HOLD_LOG"
   s="$(now_ms)"
   if [ -n "${2:-}" ]; then
     out="$(printf '%s' "$1" | PATH="$2" "$NONODE/bash" "$HOOK" 2>/dev/null)"; rc=$?
   else
-    out="$(printf '%s' "$1" | bash "$HOOK" 2>/dev/null)"; rc=$?
+    out="$(printf '%s' "$1" | PATH="$TMP/shim:$PATH" bash "$HOOK" 2>/dev/null)"; rc=$?
   fi
   e="$(now_ms)"; elapsed=$((e - s))
+  if [ -s "$HOLD_LOG" ]; then held=yes; else held=no; fi
 }
 
 echo "strip-context-mode-agent-block (#728)"
@@ -124,10 +141,10 @@ if [ "$(printf '%s' "$out" | jq -c '[keys, (.hookSpecificOutput|keys), .hookSpec
 run_hook "$(input_for "$PRE$BLOCK")"
 if [ -n "$out" ] && [ "$elapsed" -ge "$HOLD_MS" ]; then pass "S6 elapsed ${elapsed}ms >= ${HOLD_MS}ms"; else fail "S6: elapsed=${elapsed}ms out=[$out]"; fi
 
-# S7: fail open, no hold
+# S7: fail open, no hold (hold path not invoked; 10 s is only a hang guard)
 check_open() { # <label>
-  if [ "$rc" = 0 ] && [ -z "$out" ] && [ "$elapsed" -lt "$HOLD_MS" ]; then
-    pass "S7 $1 -> exit 0, no output, ${elapsed}ms < ${HOLD_MS}ms"; else fail "S7 $1: rc=$rc elapsed=${elapsed}ms out=[$out]"; fi
+  if [ "$rc" = 0 ] && [ -z "$out" ] && [ "$held" = no ] && [ "$elapsed" -lt 10000 ]; then
+    pass "S7 $1 -> exit 0, no output, no hold (${elapsed}ms)"; else fail "S7 $1: rc=$rc held=$held elapsed=${elapsed}ms out=[$out]"; fi
 }
 IN="$(input_for "$PRE$BLOCK")"
 
@@ -145,6 +162,20 @@ if PATH="$NONODE" command -v node >/dev/null 2>&1; then
 else
   run_hook "$IN" "$NONODE"; check_open "node missing"
 fi
+
+# S8: probe self-check. Hook copy with HOLD_MS=600000 always takes the hold
+# branch; a stub perl logs and returns at once so nothing waits.
+sed 's/HOLD_MS=400/HOLD_MS=600000/' "$HOOK" > "$TMP/hold-hook.sh"
+mkdir -p "$TMP/stub"
+printf '#!/bin/sh\necho hold >> "%s"\nexit 0\n' "$HOLD_LOG" > "$TMP/stub/perl"
+chmod +x "$TMP/stub/perl"
+write_cm; install_cm
+: > "$HOLD_LOG"
+out="$(printf '%s' "$IN" | PATH="$TMP/stub:$PATH" bash "$TMP/hold-hook.sh" 2>/dev/null)"; rc=$?
+if ! grep -q 'HOLD_MS=600000' "$TMP/hold-hook.sh"; then
+  fail "S8 could not rewrite HOLD_MS in the hook copy"
+elif [ "$rc" = 0 ] && [ -s "$HOLD_LOG" ] && [ -n "$out" ]; then
+  pass "S8 probe sees the perl Time::HiRes=sleep call when the hook holds"; else fail "S8: rc=$rc held-log=$(wc -c < "$HOLD_LOG") out=[$out]"; fi
 
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
 echo "$fails failed"; exit 1
