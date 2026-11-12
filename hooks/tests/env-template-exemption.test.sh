@@ -347,6 +347,23 @@ expect_code "block-env-commit: untracked .env.prod, git add README.md && eval \"
 expect_code "block-env-commit: untracked .env.prod, git add README.md && bash -c \"git add .\" -> block" 2 "$COMMIT_HOOK" "$R" 'git add README.md && bash -c "git add ."'
 expect_code "block-env-commit: untracked .env.prod, git add README.md && sh -c 'git add -f .env.prod' -> block" 2 "$COMMIT_HOOK" "$R" "git add README.md && sh -c 'git add -f .env.prod'"
 expect_code "block-env-commit: untracked .env.prod, plain git add README.md -> allow" 0 "$COMMIT_HOOK" "$R" "git add README.md"
+# Same wrappers with the real-install global exclude (env globs ignored): the
+# untracked-file listing cannot show .env.prod, so the raw text must.
+printf '.env*\n' > "$TMP/global-excludes"
+git -C "$R" config core.excludesFile "$TMP/global-excludes"
+expect_code "excluded: git add README.md && sh -c 'git add -f .env.prod' -> block" 2 "$COMMIT_HOOK" "$R" "git add README.md && sh -c 'git add -f .env.prod'"
+expect_code "excluded: bash -c \"git add -f .env.prod\" -> block" 2 "$COMMIT_HOOK" "$R" 'bash -c "git add -f .env.prod"'
+expect_code "excluded: eval 'git add -f .env.prod' -> block" 2 "$COMMIT_HOOK" "$R" "eval 'git add -f .env.prod'"
+expect_code "excluded: echo \"\$(git add -f .env.prod)\" -> block" 2 "$COMMIT_HOOK" "$R" 'echo "$(git add -f .env.prod)"'
+expect_code "excluded: git add -f backslash-newline .env.prod -> block" 2 "$COMMIT_HOOK" "$R" $'git add -f \\\n.env.prod'
+expect_code "excluded: plain git add README.md -> allow" 0 "$COMMIT_HOOK" "$R" "git add README.md"
+R="$(make_repo "excluded-template")"
+git -C "$R" config core.excludesFile "$TMP/global-excludes"
+write_file "$R" ".env.example" "$(printf 'API_KEY=%s%s\n' "sk_li""ve_" "abcdefghijklmnopqrstuvwx")"
+expect_code "excluded: secret template, sh -c 'git add -f .env.example' -> block" 2 "$COMMIT_HOOK" "$R" "sh -c 'git add -f .env.example'"
+expect_code "excluded: secret template, backslash-newline continuation -> block" 2 "$COMMIT_HOOK" "$R" $'git add -f \\\n.env.example'
+write_file "$R" ".env.example" "$PLACEHOLDER_BODY"
+expect_code "excluded: placeholder template, sh -c 'git add -f .env.example' -> allow" 0 "$COMMIT_HOOK" "$R" "sh -c 'git add -f .env.example'"
 
 R="$(make_repo "nested-unresolved-commit")"
 git -C "$R" config core.excludesFile /dev/null

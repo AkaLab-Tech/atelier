@@ -149,6 +149,8 @@ cmd_words() {
 }
 
 # Separators inside quoted text (a commit message) must not split the command.
+# A backslash-newline continuation is one logical line: join it first.
+command_str="${command_str//\\$'\n'/ }"
 masked_cmd="$(env_mask_quoted_separators "$command_str")"
 amp='&'
 while IFS= read -r seg; do
@@ -236,8 +238,20 @@ done < <(printf '%s\n' "$masked_cmd" | awk '{ gsub(/&&|\|\||[;|&]/, "\n"); print
 raw_git_re='(^|[^[:alnum:]_-])git([[:space:]]+(-C|-c|--git-dir|--work-tree|--namespace|--exec-path)[[:space:]]+[^[:space:]]+|[[:space:]]+-[^[:space:]]+)*[[:space:]]+'
 raw_adds="$(printf '%s\n' "$command_str" | grep -oE "${raw_git_re}add([^[:alnum:]_-]|\$)" | wc -l)"
 raw_commits="$(printf '%s\n' "$command_str" | grep -oE "${raw_git_re}commit([^[:alnum:]_-]|\$)" | wc -l)"
-[ "$((raw_adds + 0))" -gt "$add_parsed" ] && wildcard_add=1
-if [ "$((raw_commits + 0))" -gt "$commit_parsed" ]; then commit_seen=1; commit_all=1; fi
+raw_surplus=0
+[ "$((raw_adds + 0))" -gt "$add_parsed" ] && { wildcard_add=1; raw_surplus=1; }
+if [ "$((raw_commits + 0))" -gt "$commit_parsed" ]; then commit_seen=1; commit_all=1; raw_surplus=1; fi
+
+# Surplus: some add/commit was never parsed, so the raw text is the only
+# evidence of its pathspec (the listing below cannot show an untracked env file
+# when the env globs are in the global excludes). Every env-named word in the
+# raw text, quoted words and `sh -c`/`eval` payloads included, becomes a
+# candidate (templates still go through scan_env_template, anything else blocks).
+if [ "$raw_surplus" -eq 1 ]; then
+  while IFS= read -r tok; do
+    env_is_env_name "$tok" && cands+="$tok"$'\n'
+  done < <(printf '%s\n' "$command_str" | tr -s '[:space:]"`;|&(){}<>$,=\\' '\n' | tr -s "'" '\n')
+fi
 
 if [ "$wildcard_add" -eq 1 ]; then
   cands+="$(
