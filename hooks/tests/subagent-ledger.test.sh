@@ -5,7 +5,12 @@
 # PreToolUse/SubagentHandback guard for task-orchestrator).
 #
 # Hermetic: temp dirs, its own ATELIER_CONFIG_DIR, no network, no sleeps.
-# Age is simulated by rewriting ledger timestamps, never by waiting.
+# Age is simulated by rewriting ledger timestamps, never by waiting. The clock
+# is also frozen through a PATH `date` shim ($TMP/clockbin): the helper's
+# now_epoch (`date -u +%s`) and the age_* fixtures below all read the same
+# FROZEN_EPOCH, so "N seconds ago" is exactly N when `live` runs. Without it,
+# the 599 s case (default pausedMaxSeconds 600) had 1 s of headroom between
+# two separate `date` reads and flipped to wait-exceeded on slow runners (#739).
 #
 # Run:  hooks/tests/subagent-ledger.test.sh
 # Exit: 0 = all assertions pass, 1 = at least one failed.
@@ -32,6 +37,27 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1 (missing '$3' in: $2)" ;; esa
 hasnt() { case "$2" in *"$3"*) bad "$1 (unexpected '$3' in: $2)" ;; *) ok "$1" ;; esac; }
 
 new_wt() { local d="$TMP/wt-$1"; mkdir -p "$d"; (cd "$d" && pwd -P); }
+
+REAL_DATE="$(command -v date)"
+mkdir -p "$TMP/clockbin"
+cat > "$TMP/clockbin/date" <<SHIM
+#!/bin/sh
+if [ -n "\${FROZEN_EPOCH:-}" ] && [ "\$*" = "-u +%s" ]; then
+  echo "\$FROZEN_EPOCH"
+  exit 0
+fi
+exec "$REAL_DATE" "\$@"
+SHIM
+chmod +x "$TMP/clockbin/date"
+export FROZEN_EPOCH=1900000000
+export PATH="$TMP/clockbin:$PATH"
+
+echo "== frozen clock self-check (#739)"
+WT="$(new_wt clock)"
+"$LEDGER" start --worktree "$WT" --agent-id ck1 --type implementer >/dev/null 2>&1
+eq "ledger start ts equals the frozen epoch" "$(jq -rs '[.[]|select(.event=="start")][0].ts' "$WT/.task-log/subagents.jsonl")" "$FROZEN_EPOCH"
+eq "shim freezes only date -u +%s" "$(date -u +%s)" "$FROZEN_EPOCH"
+case "$(date -u +%Y)" in [0-9][0-9][0-9][0-9]) ok "shim passes other date calls through to the real date" ;; *) bad "shim pass-through broken: $(date -u +%Y)" ;; esac
 
 # Rewrite every start ts in the worktree ledger to "$2 seconds ago".
 age_entry() {
@@ -280,7 +306,7 @@ age_stop "$WT" 599
 out="$("$LEDGER" live --worktree "$WT")"
 eq "paused under the default bound is wait-ok" "$(printf '%s' "$out" | cut -f7)" "wait-ok"
 eq "columns 1-5 unchanged for a paused entry" "$(printf '%s' "$out" | awk -F'\t' '{print $1"|"$2"|"$3"|"$5}')" "pw1|implementer|5|fresh"
-case "$(printf '%s' "$out" | cut -f6)" in paused:59[0-9]|paused:600) ok "column 6 stays paused:<secs>" ;; *) bad "column 6 unexpected: $(printf '%s' "$out" | cut -f6)" ;; esac
+case "$(printf '%s' "$out" | cut -f6)" in paused:599) ok "column 6 is exactly paused:599 under the frozen clock" ;; *) bad "column 6 unexpected: $(printf '%s' "$out" | cut -f6)" ;; esac
 eq "live output has exactly 7 columns" "$(printf '%s' "$out" | awk -F'\t' '{print NF}')" "7"
 age_stop "$WT" 601
 eq "paused over the default bound (no .atelier.json) is wait-exceeded" "$(col7 "$WT")" "wait-exceeded"
