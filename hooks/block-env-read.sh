@@ -13,7 +13,8 @@
 #   - Protected token: a name starting with `.env` (`.env`, `.env.local`,
 #     `.env*`, `.env.*`, `.envrc`) whose preceding char is start/space/`/`/
 #     quote/`<`/`>`/`=`/`(`/`:`. `process.env`, `import.meta.env` do not match.
-#   - Exempt templates: names ending `.example`, `.sample`, `.template`, `.dist`.
+#   - Exempt templates: names whose final suffix is `.example`, `.sample`, `.template`
+#     or `.dist` (shared list: hooks/lib/env-names.sh), e.g. `.env.catalog.example`.
 #   - A segment naming a protected file is ALLOWED only when its command is
 #     name-only: `ls`, `test`, `[`, `[[`, `find` (no -exec/-execdir/-ok/
 #     -delete/-fprint*), `git status`, `git check-ignore`.
@@ -25,8 +26,18 @@
 #     Exception: a commit message/template FILE option (-F/--file/-t/--template)
 #     naming a protected file is blocked.
 #   - Everything else is BLOCKED: cat/head/tail/grep/awk/sed/source/`.`/cp/mv/
-#     rm, `< .env` redirection, interpreter one-liners, even `echo ".env"`.
+#     rm, `< .env` redirection, interpreter one-liners.
 #     Blocking rm/mv is deliberate: deleting these files is an operator action.
+#   - Name-only listing piped into a pure stdin text filter stays allowed: every
+#     later stage is `head`/`tail`/`sort`/`uniq`/`wc`/`cut`/`tr` or `grep`/`egrep`
+#     with no file operand and no `-r`/`-R`/`-f` (`find . -name '.env*' | sort`).
+#     `xargs`, `while read`, shells, `tee`, interpreters etc. stay blocked.
+#   - Text that only MENTIONS a name is not a read: a heredoc body written by
+#     `cat > file <<'EOF'`/`tee` (a heredoc fed to a shell/interpreter, or one
+#     expanding `$(`, is still inspected and the redirect target is always
+#     checked), a quoted `echo`/`printf` argument (not after `<`/`>`), and the
+#     script of a pure `sed s<d>..<d>..<d>` (flags g/I/i/p/digits; `r/R/w/W/e`
+#     scripts and `-f` stay blocked).
 #   - Command prefixes are skipped before the command word is read: `\cmd`,
 #     `VAR=val`, `sudo`/`command`/`builtin`/`exec`/`nohup`/`time`, `env [-i|-u X]
 #     [VAR=val]`, `timeout [opts] <dur>`, `nice [-n N]`, `xargs [opts]`, `stdbuf`, `ionice`,
@@ -72,6 +83,8 @@ set -uo pipefail
 
 # shellcheck source=lib/log-decision.sh
 source "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT must be set by Claude Code}/hooks/lib/log-decision.sh"
+# shellcheck source=lib/env-names.sh
+source "${CLAUDE_PLUGIN_ROOT}/hooks/lib/env-names.sh"
 
 HOOK_NAME="block-env-read"
 
@@ -305,7 +318,7 @@ is_grep_env_excluded() {
     [ -n "$pat" ] || continue
     case "$pat" in
       *'{'*|*'['*) return 1 ;;
-      .env*) case "$pat" in *.example|*.sample|*.template|*.dist) ;; *) return 1 ;; esac ;;
+      .env*) env_is_template_name "$pat" || return 1 ;;
     esac
     for name in .env .env.local .env.production .env.development .env.test .env.staging .envrc; do
       # shellcheck disable=SC2254
@@ -441,7 +454,10 @@ recursive_grep_paths_safe() {
     [[ "$op" =~ ^[A-Za-z0-9_./+,@:%=-]+$ ]] || return 1
     found=1
     (cd "$hook_cwd" 2>/dev/null && [ -e "$op" ]) || return 1
-    out="$(cd "$hook_cwd" && find -L "$op" -iname '.env*' ! -iname '*.example' ! -iname '*.sample' ! -iname '*.template' ! -iname '*.dist' -print -quit 2>/dev/null)" || return 1
+    local -a tmpl_excl=()
+    local sfx
+    for sfx in $ENV_TEMPLATE_SUFFIXES; do tmpl_excl+=('!' -iname "*.$sfx"); done
+    out="$(cd "$hook_cwd" && find -L "$op" -iname '.env*' "${tmpl_excl[@]}" -print -quit 2>/dev/null)" || return 1
     [ -z "$out" ] || return 1
   done < <(grep_path_operands "$1")
   [ "$found" = 1 ]
@@ -524,14 +540,14 @@ protected_tokens() {
   printf '%s\n' "$seg" \
     | grep -Eoi "(^|[[:space:]/'\"<>=(:{,])\\.env[^[:space:]/'\"<>;|&)\`{},]*" \
     | sed -E 's/^[^.]*//' \
-    | grep -Evi '\.(example|sample|template|dist)$' || true
+    | grep -Evi "$ENV_TEMPLATE_SUFFIX_ERE" || true
   # Attached short option on a commit (`git commit -F.env`, `-aF.env`).
   case "$seg" in
     *commit*)
       printf '%s\n' "$seg" \
         | grep -Eoi "(^|[[:space:]])-[A-Za-z]*[Ft]\\.env[^[:space:]'\"<>;|&)\`]*" \
         | sed -E 's/^[^.]*//' \
-        | grep -Evi '\.(example|sample|template|dist)$' || true ;;
+        | grep -Evi "$ENV_TEMPLATE_SUFFIX_ERE" || true ;;
   esac
 
   # Recursive grep detection: if recursive and .env* is not explicitly excluded
@@ -593,7 +609,7 @@ segment_is_name_only() {
         src="${positional[$i]}"
         src="${src#[\'\"]}"
         src="${src%[\'\"]}"
-        if ! printf '%s' "$src" | grep -Eiq '\.(example|sample|template|dist)$'; then
+        if ! printf '%s' "$src" | grep -Eiq "$ENV_TEMPLATE_SUFFIX_ERE"; then
           return 1
         fi
       done
@@ -635,7 +651,7 @@ segment_is_name_only() {
           # FILE that is a protected env file puts its contents in history.
           printf '%s' "$seg" \
             | grep -Eoi "(^|[[:space:]])(-[A-Za-z]*[Ft]|--file|--template)(=|[[:space:]]+)?['\"]?([^[:space:]'\"]*/)?\.env[^[:space:]'\"<>;|&)\`]*" \
-            | grep -Eviq '\.(example|sample|template|dist)$' && return 1
+            | grep -Eviq "$ENV_TEMPLATE_SUFFIX_ERE" && return 1
           return 0 ;;
       esac
       return 1 ;;
@@ -643,6 +659,216 @@ segment_is_name_only() {
   return 1
 }
 
+# 0 when the segment is a pure stdin text filter: it only reshapes the lines
+# it is fed and cannot turn them into file reads. `grep`/`egrep` qualify only
+# with no file operand and no -r/-R/-f/--file.
+is_text_filter_segment() {
+  local seg="$1" w lit
+  # Classify by the stage's own literal first word: a wrapper (`xargs head`,
+  # `env sort`) makes the inner command open files, so it never qualifies.
+  lit="${seg#"${seg%%[![:space:]]*}"}"
+  lit="${lit%%[[:space:]]*}"
+  lit="${lit##*/}"
+  seg_command "$seg"
+  [ "$lit" = "$SEG_CMD" ] || return 1
+  case "$SEG_CMD" in
+    head|tail|uniq|cut|tr)
+      return 0 ;;
+    sort|wc)
+      # `sort -o`/`--output` writes, `--files0-from=-` turns stdin into file names.
+      while IFS= read -r w; do
+        case "$w" in
+          --output|--output=*|--files0-from|--files0-from=*|--compress-program|--compress-program=*) return 1 ;;
+          --*) ;;
+          -*o*) [ "$SEG_CMD" = sort ] && return 1 ;;
+        esac
+      done < <(shell_words "$SEG_REST")
+      return 0 ;;
+    grep|egrep)
+      is_recursive_grep "$seg" && return 1
+      while IFS= read -r w; do
+        case "$w" in
+          --file|--file=*) return 1 ;;
+          --*) ;;
+          -*f*) return 1 ;;
+        esac
+      done < <(shell_words "$SEG_REST")
+      [ -z "$(grep_path_operands "$seg")" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# Prints $1 with heredoc bodies removed when the heredoc only feeds `cat`
+# (writing to a redirect target) or `tee` and nothing consumes it: the body is
+# text. A heredoc fed to a shell/interpreter/ssh/eval, any pipeline on the
+# line, or an unquoted delimiter whose body expands `$(`/backticks keeps its
+# body inspected. Lines with more than one `<<` are left alone.
+strip_heredoc_bodies() {
+  local line chk delim="" dash=0 strip=0 inh=0 quoted=0 buf="" out="" nl pairs t
+  local re='^(.*[^<])<<(-?)[[:space:]]*('"'"'[A-Za-z_][A-Za-z0-9_]*'"'"'|"[A-Za-z_][A-Za-z0-9_]*"|\\?[A-Za-z_][A-Za-z0-9_]*)([[:space:];\&|)<>].*)?$'
+  local cmdre='^[[:space:]]*((cd|mkdir)[[:space:]][^;&|]*&&[[:space:]]*)*(cat|tee)([[:space:]]|$)'
+  nl=$'\n'
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$inh" = 1 ]; then
+      chk="$line"
+      [ "$dash" = 1 ] && chk="${line#"${line%%[!$'\t']*}"}"
+      if [ "$chk" = "$delim" ]; then
+        inh=0
+        if [ "$strip" = 1 ] && [ "$quoted" = 0 ]; then
+          case "$buf" in *'$('*|*'`'*) strip=0 ;; esac
+        fi
+        if [ "$strip" = 1 ]; then out+="$line$nl"; else out+="$buf$line$nl"; fi
+        buf=""
+      else
+        buf+="$line$nl"
+      fi
+      continue
+    fi
+    out+="$line$nl"
+    t="${line//<<}"
+    pairs=$(( (${#line} - ${#t}) / 2 ))
+    [ "$pairs" = 1 ] || continue
+    [[ "$line" =~ $re ]] || continue
+    delim="${BASH_REMATCH[3]}"
+    dash=0
+    [ -n "${BASH_REMATCH[2]}" ] && dash=1
+    strip=0
+    if [[ "$line" =~ $cmdre ]] && [[ "$line" != *'|'* ]]; then
+      case "${BASH_REMATCH[3]}" in
+        cat) case "$line" in *'>'*) strip=1 ;; esac ;;
+        tee) strip=1 ;;
+      esac
+    fi
+    quoted=0
+    case "$delim" in
+      \'*|\"*|\\*) quoted=1; delim="${delim#[\'\"\\]}"; delim="${delim%[\'\"]}" ;;
+    esac
+    inh=1
+    buf=""
+  done < <(printf '%s\n' "$1")
+  if [ "$inh" = 1 ]; then out+="$buf"; fi
+  printf '%s' "$out"
+}
+
+# Prints the segment with text-only mentions of an env path removed, for the
+# protected-token scan only:
+#   - echo/printf: quoted arguments, except a quote that follows `<`/`>`;
+#   - sed: the script words of a pure substitution (s<d>..<d>..<d>[gIip0-9]*);
+#     any -f/--file, r/R/w/W/e command or other script keeps the segment as is.
+mask_text_only() {
+  local seg="$1" w prefix rest
+  seg_command "$seg"
+  case "$SEG_CMD" in
+    echo|printf)
+      printf '%s\n' "$seg" | awk '{
+        n = length($0); out = ""; q = ""; keep = 0; word = ""
+        for (i = 1; i <= n; i++) {
+          c = substr($0, i, 1)
+          if (q != "") {
+            if (c == q) { q = ""; if (keep) out = out c; continue }
+            if (keep) out = out c
+            continue
+          }
+          if (c == "\"" || c == "\047") {
+            q = c; keep = (index(word, "<") > 0 || index(word, ">") > 0 || prev ~ /[<>]$/)
+            if (keep) out = out c; else out = out " "
+            continue
+          }
+          out = out c
+          if (c == " " || c == "\t") { if (word != "") prev = word; word = "" } else word = word c
+        }
+        print out
+      }'
+      return 0 ;;
+    sed)
+      case "$seg" in *"$SEG_REST") prefix="${seg%"$SEG_REST"}" ;; *) printf '%s\n' "$seg"; return 0 ;; esac
+      local -a ws=() keep=()
+      local i=0 n j ch have_e=0 noscript=0 pure=1
+      while IFS= read -r w; do ws+=("$w"); done < <(shell_words "$SEG_REST")
+      n=${#ws[@]}
+      keep+=("${ws[0]}")
+      i=1
+      local scripts=()
+      local eoo=0
+      while [ "$i" -lt "$n" ]; do
+        w="${ws[$i]}"
+        i=$((i + 1))
+        if [ "$eoo" = 0 ]; then
+          case "$w" in
+            --) eoo=1; keep+=("$w"); continue ;;
+            --file|--file=*) pure=0; break ;;
+            --expression) have_e=1; [ "$i" -lt "$n" ] && { scripts+=("${ws[$i]}"); i=$((i + 1)); }; continue ;;
+            --expression=*) have_e=1; scripts+=("${w#--expression=}"); continue ;;
+            --*) keep+=("$w"); continue ;;
+            -?*)
+              j=1
+              while [ "$j" -lt "${#w}" ]; do
+                ch="${w:$j:1}"
+                case "$ch" in
+                  f) pure=0; break 2 ;;
+                  e)
+                    have_e=1
+                    if [ $((j + 1)) -lt "${#w}" ]; then scripts+=("${w:$((j + 1))}")
+                    elif [ "$i" -lt "$n" ]; then scripts+=("${ws[$i]}"); i=$((i + 1)); fi
+                    break ;;
+                  i)
+                    # BSD sed: `-i ''` takes the empty backup suffix as a separate word.
+                    if [ $((j + 1)) -ge "${#w}" ] && [ "$i" -lt "$n" ] && [ -z "${ws[$i]}" ]; then
+                      i=$((i + 1))
+                    fi
+                    break ;;
+                  l) break ;;
+                esac
+                j=$((j + 1))
+              done
+              continue ;;
+          esac
+        fi
+        if [ "$have_e" = 0 ] && [ "$noscript" = 0 ]; then
+          scripts+=("$w"); noscript=1
+        else
+          keep+=("$w")
+        fi
+      done
+      if [ "$pure" = 1 ] && [ "${#scripts[@]}" -gt 0 ]; then
+        for w in "${scripts[@]}"; do
+          sed_script_is_pure_subst "$w" || { pure=0; break; }
+        done
+      else
+        pure=0
+      fi
+      if [ "$pure" = 0 ]; then printf '%s\n' "$seg"; return 0; fi
+      rest="${keep[*]}"
+      printf '%s%s\n' "$prefix" "$rest"
+      return 0 ;;
+  esac
+  printf '%s\n' "$seg"
+}
+
+# 0 when $1 is exactly one substitution command `s<d>re<d>repl<d>flags` with
+# flags limited to g/I/i/p/digits (no `w`/`e` flag, no second command).
+sed_script_is_pure_subst() {
+  printf '%s' "$1" | awk '{
+    if (NR > 1) exit 1
+    n = length($0)
+    if (n < 4 || substr($0, 1, 1) != "s") exit 1
+    d = substr($0, 2, 1)
+    if (d ~ /[A-Za-z0-9 \t\\;]/) exit 1
+    cnt = 0
+    for (i = 3; i <= n; i++) {
+      c = substr($0, i, 1)
+      if (c == "\\") { i++; continue }
+      if (c == d) { cnt++; if (cnt == 2) break }
+    }
+    if (cnt != 2) exit 1
+    flags = substr($0, i + 1)
+    if (flags !~ /^[gIip0-9]*$/) exit 1
+    exit 0
+  }' 2>/dev/null
+}
+
+scan_str="$(strip_heredoc_bodies "$command_str")"
+scan_str="$(env_mask_quoted_separators "$scan_str")"
 PIPE_MARK="@@PIPE@@"
 SUB_MARK="@@SUB@@"
 BT_MARK="@@BT@@"
@@ -655,6 +881,10 @@ last_closed_listing=""
 block_depth=0
 block_listing=()
 while IFS= read -r seg; do
+  seg="${seg//$'\001'/;}"
+  seg="${seg//$'\002'/|}"
+  amp='&'
+  seg="${seg//$'\003'/"$amp"}"
   # A name-only listing step whose output feeds a pipe is a read in disguise
   # (`ls .env | xargs cat`, `find . -name .env -print0 | xargs -0 cat`).
   piped=0
@@ -664,17 +894,24 @@ while IFS= read -r seg; do
     "$SUB_MARK"*) nested=1; sub_depth=$((sub_depth + 1)); seg="${seg#"$SUB_MARK"}" ;;
     "$BT_MARK"*) nested=1; seg="${seg#"$BT_MARK"}" ;;
   esac
+  # Exception: a stage that is a pure stdin text filter (head/sort/wc/grep -v
+  # without file operands...) cannot turn the names into reads; the listing
+  # stays "unconsumed" for any later stage.
+  keep_listing=""
   if [ "$piped" = 1 ]; then
-    if [ -n "$prev_listing_token" ]; then
-      blocked_token="$prev_listing_token"
-      break
-    fi
-    if [ -n "$last_closed_listing" ]; then
-      blocked_token="$last_closed_listing"
-      break
+    if [ -n "$prev_listing_token" ] || [ -n "$last_closed_listing" ]; then
+      if [ "$nested" = 0 ] && is_text_filter_segment "$seg"; then
+        keep_listing="$prev_listing_token"
+      elif [ -n "$prev_listing_token" ]; then
+        blocked_token="$prev_listing_token"
+        break
+      else
+        blocked_token="$last_closed_listing"
+        break
+      fi
     fi
   fi
-  [ "$nested" = 1 ] || prev_listing_token=""
+  [ "$nested" = 1 ] || prev_listing_token="$keep_listing"
   if [ "$piped" = 0 ]; then
     last_closed_listing=""
   fi
@@ -709,7 +946,16 @@ while IFS= read -r seg; do
   done
 
   seg_piped="$piped"
-  tokens="$(protected_tokens "$seg")"
+  tokens="$(protected_tokens "$(mask_text_only "$seg")")"
+  # A quoted echo/printf argument is text only while nothing consumes it: treat
+  # the masked name as a listing so a later pipe stage (`| xargs cat`) blocks.
+  masked_listing=""
+  if [ -z "$tokens" ]; then
+    seg_command "$seg"
+    case "$SEG_CMD" in
+      echo|printf) masked_listing="$(protected_tokens "$seg" | head -n1)" ;;
+    esac
+  fi
 
   # Inside `$(`, backticks or `<(`/`>(`: the output is consumed by something
   # else, so naming a protected file there is never a plain name-only check.
@@ -727,6 +973,15 @@ while IFS= read -r seg; do
     else
       blocked_token="$(printf '%s' "$tokens" | head -n1)"
       break
+    fi
+  elif [ -n "$masked_listing" ]; then
+    if [ "$nested" = 1 ]; then
+      blocked_token="$masked_listing"
+      break
+    fi
+    prev_listing_token="$masked_listing"
+    if [ "$block_depth" -gt 0 ]; then
+      block_listing[block_depth]="$masked_listing"
     fi
   fi
 
@@ -748,7 +1003,7 @@ while IFS= read -r seg; do
     fi
     closes=$((closes - 1))
   done
-done < <(printf '%s\n' "$command_str" \
+done < <(printf '%s\n' "$scan_str" \
   | sed -E -e 's/&&|\|\||;/\
 /g' \
         -e 's/(^|[^|<>&])&($|[^>&])/\1\
@@ -773,7 +1028,7 @@ if [ "$blocked_reason" = "recursive_grep" ]; then
    Tool:    Bash
    Reason:  recursive grep reads all directory files including .env*; use 'rg' (which ignores hidden/gitignored files by default) or add --exclude='.env*'
    Rule:    PLAN.md §3 — .env* contents are operator-only; agents must not read, copy, move or delete them.
-   Action:  ask the operator for the specific variable names you need. Name-only checks (ls, test -f, find -name) and .env.example/.sample/.template/.dist templates are allowed.
+   Action:  ask the operator for the specific variable names you need. Name-only checks (ls, test -f, find -name) and .env.example/.sample/.template/.dist templates are allowed. To edit a file that merely mentions an env path, use the Edit tool.
 MSG
   log_decision "$HOOK_NAME" "Bash" ".env-read" "block" "blocked recursive grep reading $blocked_token"
 else
@@ -782,7 +1037,7 @@ else
    Tool:    Bash
    Reason:  the command names a protected env file: $blocked_token
    Rule:    PLAN.md §3 — .env* contents are operator-only; agents must not read, copy, move or delete them.
-   Action:  ask the operator for the specific variable names you need. Name-only checks (ls, test -f, find -name) and .env.example/.sample/.template/.dist templates are allowed.
+   Action:  ask the operator for the specific variable names you need. Name-only checks (ls, test -f, find -name) and .env.example/.sample/.template/.dist templates are allowed. To edit a file that merely mentions an env path, use the Edit tool.
 MSG
   log_decision "$HOOK_NAME" "Bash" ".env-read" "block" "blocked command naming $blocked_token"
 fi

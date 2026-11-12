@@ -3,6 +3,11 @@
 # atelier — PreToolUse hook on Bash. Blocks any `git add` or `git commit`
 # that would put a `.env*` file under version control.
 #
+# Committed templates (`.env.example`, `.env.sample`, `.env.template`,
+# `.env.dist`, `.env.catalog.example`: final suffix from the shared list in
+# hooks/lib/env-names.sh) are allowed when their content is placeholder-only.
+# Staged deletions of env files are never blocked.
+#
 # Layered defence (PLAN.md §3 "Defense-in-depth"):
 #   - Static permissions matrix denies `Edit(.env*)` writes outside the
 #     worktree allowlist.
@@ -26,6 +31,8 @@ set -uo pipefail
 
 # shellcheck source=lib/log-decision.sh
 source "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT must be set by Claude Code}/hooks/lib/log-decision.sh"
+# shellcheck source=lib/env-names.sh
+source "${CLAUDE_PLUGIN_ROOT}/hooks/lib/env-names.sh"
 
 HOOK_NAME="block-env-commit"
 
@@ -107,67 +114,164 @@ else
   target_dir="$PWD"
 fi
 
-# Path-based scan for `.env` in the literal command. Catches the common
-# explicit-path cases: `git add .env`, `git add app/.env.local`, etc.
-# Pattern: any token in the command whose basename matches .env*.
-#
-# `git add .` / `git add -A` / `git add :*` don't list paths literally —
-# for those we fall through to a working-tree scan below.
-matched_path=""
-if printf '%s' "$command_str" | grep -Eq '(^|[[:space:]/])\.env([^/[:space:]]*)?'; then
-  # Pull out the first .env* token for the message. (Best-effort; we
-  # don't need the complete list to justify the block.)
-  matched_path="$(printf '%s' "$command_str" | grep -Eo '(^|[[:space:]/])\.env[^[:space:]]*' | head -n1 | sed -E 's/^[[:space:]/]*//')"
-fi
+# Candidate `.env*` paths this command would add or commit. Templates
+# (`.env.example`, `.env.catalog.example`, ...) are allowed through the
+# secret-scan below; every other env name blocks. Names come from:
+#   - the pathspec tokens of each `git add` (text inside a commit message is
+#     never a path: only `git add` args and unquoted `git commit` args count);
+#   - wildcard adds (`git add .`, `-A`, `--all`, `:/`, `*`): what git itself
+#     would pick up (untracked + modified, NEVER deleted paths);
+#   - `git commit`: the index (additions/modifications only), plus tracked
+#     modifications for `-a`/`--all`.
+# Staged or about-to-be-staged DELETIONS of env files are never blocked: removing
+# a secret from version control is the fix, not the problem.
+cands=""
+env_path_re='(^|/)\.env([^/]*)?$'
+wildcard_add=0
+add_parsed=0
+commit_parsed=0
+commit_all=0
+commit_seen=0
 
-# Wildcard-style adds (`git add .`, `git add -A`, `git add --all`,
-# `git add :/`). Resolve what they would stage by asking git itself,
-# scoped to the cwd of the hook (which is the worktree Claude is in).
-if [ -z "$matched_path" ] && [ "$is_git_add" -eq 1 ]; then
-  case "$command_str" in
-    *"git add ."*|*"git add -A"*|*"git add --all"*|*"git add :/"*|*"git add *"*|\
-    *"git -C "*"add ."*|*"git -C "*"add -A"*|*"git -C "*"add --all"*|*"git -C "*"add :/"*|*"git -C "*"add *"*)
-      # Untracked + modified .env* files that this wildcard add would pick up.
-      # Both `git ls-files --others --exclude-standard` and `git diff --name-only`
-      # are read-only and don't change repo state, so this is safe in a hook.
-      candidates="$(
-        {
-          git -C "$target_dir" ls-files --others --exclude-standard 2>/dev/null || true
-          git -C "$target_dir" diff --name-only 2>/dev/null || true
-        } | grep -E '(^|/)\.env([^/]*)?$' | head -n5
-      )"
-      if [ -n "$candidates" ]; then
-        matched_path="$(printf '%s' "$candidates" | head -n1)"
-      fi
+# Quote-aware word split of one simple command, one word per line, quotes removed.
+cmd_words() {
+  printf '%s\n' "$1" | awk '{
+    n = length($0); w = ""; inw = 0; q = ""
+    for (i = 1; i <= n; i++) {
+      c = substr($0, i, 1)
+      if (q != "") { if (c == q) { q = "" } else { w = w c }; continue }
+      if (c == "\"" || c == "\047") { q = c; inw = 1; continue }
+      if (c == " " || c == "\t") { if (inw) { print w; w = ""; inw = 0 }; continue }
+      w = w c; inw = 1
+    }
+    if (inw) print w
+  }'
+}
+
+# Separators inside quoted text (a commit message) must not split the command.
+# A backslash-newline continuation is one logical line: join it first.
+command_str="${command_str//\\$'\n'/ }"
+masked_cmd="$(env_mask_quoted_separators "$command_str")"
+amp='&'
+while IFS= read -r seg; do
+  seg="${seg//$'\001'/;}"
+  seg="${seg//$'\002'/|}"
+  seg="${seg//$'\003'/"$amp"}"
+  words=()
+  while IFS= read -r w; do words+=("$w"); done < <(cmd_words "$seg")
+  n=${#words[@]}
+  i=0
+  # A leading `(`, `{`, backtick or `$(` glued to `git` (subshell/group) is not part of the word.
+  while [ "$i" -lt "$n" ]; do
+    gw="${words[i]}"
+    while case "$gw" in '('*|'{'*|'`'*|'$('*) true ;; *) false ;; esac; do
+      gw="${gw#\$}"; gw="${gw#[({\`]}"
+    done
+    [ "${gw##*/}" = git ] && break
+    i=$((i + 1))
+  done
+  [ "$i" -lt "$n" ] || continue
+  i=$((i + 1))
+  while [ "$i" -lt "$n" ]; do
+    case "${words[i]}" in
+      -C|-c|--git-dir|--work-tree|--namespace|--exec-path) i=$((i + 2)) ;;
+      -*) i=$((i + 1)) ;;
+      *) break ;;
+    esac
+  done
+  [ "$i" -lt "$n" ] || continue
+  sub_cmd="${words[i]}"
+  i=$((i + 1))
+  case "$sub_cmd" in
+    add)
+      add_parsed=$((add_parsed + 1))
+      for (( ; i < n; i++ )); do
+        tok="${words[i]}"
+        while case "$tok" in *')'|*'`'|*'}') true ;; *) false ;; esac; do tok="${tok%[)\`\}]}"; done
+        case "$tok" in
+          .|./|--all|--update|:/|"*") wildcard_add=1; continue ;;
+          # A short-flag cluster with A or u (`-Af`, `-vA`, `-u`) stages every change.
+          --*) continue ;;
+          -*[Au]*) wildcard_add=1; continue ;;
+          -*|'') continue ;;
+        esac
+        env_is_env_name "$tok" || continue
+        case "$tok" in
+          *[\*\?\[]*) ;;
+          *)
+            # Explicit path already gone from the worktree but known to git
+            # (index or HEAD): `git add <path>` records a deletion.
+            case "$tok" in /*) full_tok="$tok" ;; *) full_tok="$target_dir/$tok" ;; esac
+            if [ ! -e "$full_tok" ] && [ ! -L "$full_tok" ] \
+               && { [ -n "$(git -C "$target_dir" ls-files --deleted -- "$tok" 2>/dev/null)" ] \
+                    || [ -n "$(git -C "$target_dir" ls-tree -r --name-only HEAD -- "$tok" 2>/dev/null)" ]; }; then
+              continue
+            fi ;;
+        esac
+        cands+="$tok"$'\n'
+      done
+      ;;
+    commit)
+      commit_seen=1
+      commit_parsed=$((commit_parsed + 1))
+      for (( ; i < n; i++ )); do
+        tok="${words[i]}"
+        case "$tok" in
+          --all|-a*|-[!-mFCctSu]*a*) commit_all=1 ;;
+        esac
+        case "$tok" in
+          # The argument of -m/--message is text, never a path.
+          --message|-m|-[!-]*m) i=$((i + 1)); continue ;;
+          --message=*|-m*) continue ;;
+        esac
+        env_is_env_name "$tok" && cands+="$tok"$'\n'
+      done
       ;;
   esac
+done < <(printf '%s\n' "$masked_cmd" | awk '{ gsub(/&&|\|\||[;|&]/, "\n"); print }')
+
+# Per occurrence: every raw `git [opts] add|commit` in the full text (quoted
+# words, `sh -c '...'`, `eval "..."` included) must be matched by a segment the
+# parser resolved. Any surplus is an add/commit the parser never saw (a decoy
+# earlier `git` segment, a wrapped one, an exotic wrapper): fall back to the
+# conservative reading for that sub-command.
+raw_git_re='(^|[^[:alnum:]_-])git([[:space:]]+(-C|-c|--git-dir|--work-tree|--namespace|--exec-path)[[:space:]]+[^[:space:]]+|[[:space:]]+-[^[:space:]]+)*[[:space:]]+'
+raw_adds="$(printf '%s\n' "$command_str" | grep -oE "${raw_git_re}add([^[:alnum:]_-]|\$)" | wc -l)"
+raw_commits="$(printf '%s\n' "$command_str" | grep -oE "${raw_git_re}commit([^[:alnum:]_-]|\$)" | wc -l)"
+raw_surplus=0
+[ "$((raw_adds + 0))" -gt "$add_parsed" ] && { wildcard_add=1; raw_surplus=1; }
+if [ "$((raw_commits + 0))" -gt "$commit_parsed" ]; then commit_seen=1; commit_all=1; raw_surplus=1; fi
+
+# Surplus: some add/commit was never parsed, so the raw text is the only
+# evidence of its pathspec (the listing below cannot show an untracked env file
+# when the env globs are in the global excludes). Every env-named word in the
+# raw text, quoted words and `sh -c`/`eval` payloads included, becomes a
+# candidate (templates still go through scan_env_template, anything else blocks).
+if [ "$raw_surplus" -eq 1 ]; then
+  while IFS= read -r tok; do
+    env_is_env_name "$tok" && cands+="$tok"$'\n'
+  done < <(printf '%s\n' "$command_str" | tr -s '[:space:]"`;|&(){}<>$,=\\' '\n' | tr -s "'" '\n')
 fi
 
-# `git commit` without prior staged .env*: inspect the index directly.
-# This catches `git commit -a` (auto-stages tracked changes) and the
-# rare case where an earlier add-with-path slipped past us.
-if [ -z "$matched_path" ] && [ "$is_git_commit" -eq 1 ]; then
-  staged_env="$(git -C "$target_dir" diff --cached --name-only 2>/dev/null | grep -E '(^|/)\.env([^/]*)?$' | head -n1 || true)"
-  if [ -n "$staged_env" ]; then
-    matched_path="$staged_env"
+if [ "$wildcard_add" -eq 1 ]; then
+  cands+="$(
+    {
+      git -C "$target_dir" ls-files --others --exclude-standard 2>/dev/null || true
+      git -C "$target_dir" diff --name-only --diff-filter=d 2>/dev/null || true
+    } | grep -E "$env_path_re" || true
+  )"$'\n'
+fi
+
+if [ "$commit_seen" -eq 1 ]; then
+  cands+="$(git -C "$target_dir" diff --cached --name-only --diff-filter=d 2>/dev/null | grep -E "$env_path_re" || true)"$'\n'
+  if [ "$commit_all" -eq 1 ]; then
+    cands+="$(git -C "$target_dir" diff --name-only --diff-filter=d 2>/dev/null | grep -E "$env_path_re" || true)"$'\n'
   fi
-  # `git commit -a` (and its variants -am, --all, etc.) re-stages tracked
-  # .env* files at commit time. The single `-a` substring match covers
-  # all of those variants since they all contain it.
-  case "$command_str" in
-    *"git commit -a"*|*"git commit --all"*|\
-    *"git -C "*"commit -a"*|*"git -C "*"commit --all"*)
-      if [ -z "$matched_path" ]; then
-        modified_env="$(git -C "$target_dir" diff --name-only 2>/dev/null | grep -E '(^|/)\.env([^/]*)?$' | head -n1 || true)"
-        if [ -n "$modified_env" ]; then
-          matched_path="$modified_env"
-        fi
-      fi
-      ;;
-  esac
 fi
 
-# Allowlist + secret-scan: .env.example / .env.sample / .env.template are
+matched_path=""
+
+# Allowlist + secret-scan: template names (see hooks/lib/env-names.sh) are
 # placeholder templates that are legitimately version-controlled — BUT only
 # when their content is genuinely placeholder. If the template carries what
 # looks like a real secret (named like one, prefixed like one, or high-entropy
@@ -286,34 +390,38 @@ scan_env_template() {
   ' "$file" 2>/dev/null
 }
 
-if [ -n "$matched_path" ]; then
-  case "$(basename "$matched_path")" in
-    .env.example|.env.sample|.env.template)
-      template_path="$matched_path"
-      [ -f "$template_path" ] || template_path="$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null)/$matched_path"
-      if [ -f "$template_path" ]; then
-        findings="$(scan_env_template "$template_path")"
-        if [ -n "$findings" ]; then
-          cat >&2 <<MSG
+# Resolve each candidate: a template is blocked only when its content carries a
+# real-looking secret; any other env name blocks outright.
+while IFS= read -r cand; do
+  [ -n "$cand" ] || continue
+  if env_is_template_name "$cand"; then
+    template_path=""
+    for try in "$cand" "$target_dir/$cand" "$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null)/$cand"; do
+      if [ -f "$try" ]; then template_path="$try"; break; fi
+    done
+    [ -n "$template_path" ] || continue
+    findings="$(scan_env_template "$template_path")"
+    if [ -n "$findings" ]; then
+      cat >&2 <<MSG
 🚫 atelier:block-env-commit BLOCKED (template carries what looks like a real secret)
    Tool:     Bash(git add/commit)
-   Template: $matched_path
+   Template: $cand
    Findings (first 5):
 $(printf '%s\n' "$findings" | sed 's/^/     - /')
-   Rule:     templates ($(basename "$matched_path")) must hold placeholders, not real secrets.
+   Rule:     templates ($(basename "$cand")) must hold placeholders, not real secrets.
    Action:   replace the offending values with placeholders (your_*, <key>, changeme, xxx, etc.)
              and re-stage. Real secrets go in your local .env which is already gitignored.
    Override: if a value is a genuine non-secret (e.g. a public anon key) and the heuristic is wrong,
              commit manually with --no-verify after the operator confirms.
 MSG
-          log_decision "$HOOK_NAME" "Bash" ".env-template-secret" "block" "blocked template $matched_path with $(printf '%s\n' "$findings" | wc -l | tr -d ' ') finding(s)"
-          exit 2
-        fi
-      fi
-      matched_path=""
-      ;;
-  esac
-fi
+      log_decision "$HOOK_NAME" "Bash" ".env-template-secret" "block" "blocked template $cand with $(printf '%s\n' "$findings" | wc -l | tr -d ' ') finding(s)"
+      exit 2
+    fi
+  else
+    matched_path="$cand"
+    break
+  fi
+done <<< "$cands"
 
 if [ -z "$matched_path" ]; then
   # Nothing matched — allow the tool call and log the allow decision
