@@ -20,6 +20,11 @@
 # shapes, the other looks at .env* path semantics. The path-level
 # `env-file-added` pattern exempts committed templates (`exempt: env-template`,
 # list in hooks/lib/env-names.sh); deleted paths are never scanned.
+#
+# `git add --pathspec-from-file=F` (any spelling, --pathspec-file-nul): the
+# entries of a readable F are scanned like command-line pathspecs; stdin or an
+# unreadable F switches to the wildcard listing plus every dirty env file
+# (ignored ones included), so a force-added ignored env file is still scanned.
 
 set -uo pipefail
 
@@ -138,7 +143,51 @@ else
     # We don't try to perfectly emulate git's CLI; a few false positives
     # in token extraction at worst over-scan, never under-scan.
     add_args="$(printf '%s' "$add_expr" | sed -E 's/^add[[:space:]]+//' | sed -E 's/[[:space:]]*(;|&&|\|\||\|).*//' )"
-    for tok in $add_args; do
+    # Quote-aware word split (one word per line, quotes removed) so a quoted
+    # `--pathspec-from-file` value is read like git reads it.
+    add_words=()
+    while IFS= read -r w; do add_words+=("$w"); done < <(
+      printf '%s\n' "$add_args" | awk '{
+        n = length($0); w = ""; inw = 0; q = ""
+        for (i = 1; i <= n; i++) {
+          c = substr($0, i, 1)
+          if (q != "") { if (c == q) { q = "" } else { w = w c }; continue }
+          if (c == "\"" || c == "\047") { q = c; inw = 1; continue }
+          if (c == " " || c == "\t") { if (inw) { print w; w = ""; inw = 0 }; continue }
+          w = w c; inw = 1
+        }
+        if (inw) print w
+      }')
+    add_toks=(); ps_seen=0; ps_file=""; ps_nul=0; ps_unresolved=0
+    for (( k = 0; k < ${#add_words[@]}; k++ )); do
+      tok="${add_words[k]}"
+      if env_pathspec_nul_opt "$tok"; then ps_nul=1; continue; fi
+      ps_val="$(env_pathspec_file_opt "$tok" "${add_words[k+1]-}")"; ps_rc=$?
+      if [ "$ps_rc" -ne 1 ]; then
+        ps_seen=1; ps_file="$ps_val"
+        [ "$ps_rc" -eq 2 ] && k=$((k + 1))
+        continue
+      fi
+      add_toks+=("$tok")
+    done
+    # `--pathspec-from-file`: a readable file's entries are scanned like
+    # command-line pathspecs; an unreadable one (stdin, process substitution,
+    # missing file) falls back to every file git could stage, ignored env
+    # files included (the path-level env-file-added pattern then decides).
+    if [ "$ps_seen" -eq 1 ]; then
+      if ps_entries="$(env_pathspec_entries "$target_dir" "$ps_file" "$ps_nul")"; then
+        while IFS= read -r w; do [ -n "$w" ] && add_toks+=("$w"); done <<< "$ps_entries"
+      else
+        ps_unresolved=1
+      fi
+    fi
+    {
+    if [ "$ps_unresolved" -eq 1 ]; then
+      git -C "$target_dir" ls-files --others --exclude-standard 2>/dev/null || true
+      git -C "$target_dir" diff --name-only --diff-filter=d 2>/dev/null || true
+      env_dirty_env_files "$target_dir"
+    fi
+    for tok in ${add_toks[@]+"${add_toks[@]}"}; do
       case "$tok" in
         -*) continue ;;  # flag, skip
         '') continue ;;
@@ -162,7 +211,8 @@ else
           printf '%s\n' "$tok"
         fi
       fi
-    done | sort -u > "$TO_STAGE_FILE"
+    done
+    } | sort -u > "$TO_STAGE_FILE"
 fi
 
 # If we found nothing concrete to scan, allow. Git itself will surface

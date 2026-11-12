@@ -38,6 +38,17 @@
 #     checked), a quoted `echo`/`printf` argument (not after `<`/`>`), and the
 #     script of a pure `sed s<d>..<d>..<d>` (flags g/I/i/p/digits; `r/R/w/W/e`
 #     scripts and `-f` stay blocked).
+#   - Exception: a heredoc script written by `cat > F`/`cat >> F`/`tee [-a] F`
+#     and RUN in the same command (`bash F`, `./F`, `source F`, `python3 F`,
+#     `cat F | sh`, `sh < F`, `cp F y && bash y`, ...) is not text: its body
+#     must not name any non-template env file (a name-only `test -f <env file>`
+#     counts) and keeps the regular per-segment inspection. Detection fails
+#     closed: a later segment naming F is a run unless its command word is
+#     `git`/`ls`/`test`/`[`/`stat`/`wc`/`chmod`/`rm`/`diff`/`cmp`/`file`/
+#     `shellcheck` and it is neither piped onward nor nested; a target that is
+#     not a plain word (`$`, glob, backtick) counts as run by any later
+#     shell/interpreter; a target under `.git/hooks/` (or `hooks/` with a
+#     `git commit`/`git push` in the command) is always run by git.
 #   - Command prefixes are skipped before the command word is read: `\cmd`,
 #     `VAR=val`, `sudo`/`command`/`builtin`/`exec`/`nohup`/`time`, `env [-i|-u X]
 #     [VAR=val]`, `timeout [opts] <dur>`, `nice [-n N]`, `xargs [opts]`, `stdbuf`, `ionice`,
@@ -75,6 +86,9 @@
 # false positives; use `--body-file`. `.envrc` (direnv) is blocked too.
 # Uncovered wrappers: `find -exec`, `parallel`, `watch`, `script -c`, and a
 # `-c` string nested inside another `-c` string (one level is inspected).
+# A script written with the Write tool and run in a separate Bash call, an
+# indirect run (package.json scripts, Makefiles, .envrc, a custom
+# core.hooksPath) and an obfuscated heredoc target are not caught.
 #
 # Contract (PreToolUse): stdin JSON; exit 0 allow; exit 2 block (stderr to
 # Claude). Unparseable or missing input exits 0 (fail open).
@@ -703,8 +717,48 @@ is_text_filter_segment() {
 # text. A heredoc fed to a shell/interpreter/ssh/eval, any pipeline on the
 # line, or an unquoted delimiter whose body expands `$(`/backticks keeps its
 # body inspected. Lines with more than one `<<` are left alone.
+#
+# Side effects (the caller must not run it in a command substitution): HD_OUT
+# holds the same text, and HD_TARGETS[]/HD_BODIES[] hold, per write target of a
+# `cat >`/`cat >>`/`tee` heredoc, the target word and the raw body, so the
+# caller can tell whether the written file is run later in the same command.
+HD_OUT=""
+HD_TARGETS=()
+HD_BODIES=()
+
+# Prints the files a `cat >F`/`cat >>F`/`tee [-a] F` line writes (rest = the
+# line without its heredoc operator), one per line; `$?` when none is found.
+heredoc_write_targets() {
+  local cmd="$1" rest="$2" w w2 want=0 seen=0 found=0
+  while IFS= read -r w; do
+    if [ "$cmd" = cat ]; then
+      if [ "$want" = 1 ]; then printf '%s\n' "$w"; found=1; want=0; continue; fi
+      w2="${w#[0-9]}"
+      case "$w2" in
+        '>'|'>>') want=1 ;;
+        '>&'*) ;;
+        '>>'?*) printf '%s\n' "${w2#>>}"; found=1 ;;
+        '>'?*) printf '%s\n' "${w2#>}"; found=1 ;;
+      esac
+    else
+      if [ "$seen" = 0 ]; then
+        [ "${w##*/}" = tee ] && seen=1
+        continue
+      fi
+      case "${w#[0-9]}" in
+        -*) ;;
+        '&&'|'||'|';'|'<'*|'>'*|'&'*) seen=2 ;;
+        *) [ "$seen" = 1 ] && { printf '%s\n' "$w"; found=1; } ;;
+      esac
+    fi
+  done < <(shell_words "$rest")
+  [ "$found" = 1 ] || printf '%s\n' '$?'
+}
+
 strip_heredoc_bodies() {
   local line chk delim="" dash=0 strip=0 inh=0 quoted=0 buf="" out="" nl pairs t
+  local hd_rest="" hd_cmd="" hd_targets="" tg
+  HD_TARGETS=(); HD_BODIES=()
   local re='^(.*[^<])<<(-?)[[:space:]]*('"'"'[A-Za-z_][A-Za-z0-9_]*'"'"'|"[A-Za-z_][A-Za-z0-9_]*"|\\?[A-Za-z_][A-Za-z0-9_]*)([[:space:];\&|)<>].*)?$'
   local cmdre='^[[:space:]]*((cd|mkdir)[[:space:]][^;&|]*&&[[:space:]]*)*(cat|tee)([[:space:]]|$)'
   nl=$'\n'
@@ -714,6 +768,9 @@ strip_heredoc_bodies() {
       [ "$dash" = 1 ] && chk="${line#"${line%%[!$'\t']*}"}"
       if [ "$chk" = "$delim" ]; then
         inh=0
+        if [ -n "$hd_targets" ]; then
+          while IFS= read -r tg; do HD_TARGETS+=("$tg"); HD_BODIES+=("$buf"); done <<< "$hd_targets"
+        fi
         if [ "$strip" = 1 ] && [ "$quoted" = 0 ]; then
           case "$buf" in *'$('*|*'`'*) strip=0 ;; esac
         fi
@@ -732,12 +789,16 @@ strip_heredoc_bodies() {
     delim="${BASH_REMATCH[3]}"
     dash=0
     [ -n "${BASH_REMATCH[2]}" ] && dash=1
+    hd_rest="${BASH_REMATCH[1]} ${BASH_REMATCH[4]}"
     strip=0
+    hd_targets=""
     if [[ "$line" =~ $cmdre ]] && [[ "$line" != *'|'* ]]; then
-      case "${BASH_REMATCH[3]}" in
+      hd_cmd="${BASH_REMATCH[3]}"
+      case "$hd_cmd" in
         cat) case "$line" in *'>'*) strip=1 ;; esac ;;
         tee) strip=1 ;;
       esac
+      [ "$strip" = 1 ] && hd_targets="$(heredoc_write_targets "$hd_cmd" "$hd_rest")"
     fi
     quoted=0
     case "$delim" in
@@ -747,7 +808,105 @@ strip_heredoc_bodies() {
     buf=""
   done < <(printf '%s\n' "$1")
   if [ "$inh" = 1 ]; then out+="$buf"; fi
+  # Same as a command substitution would return: no trailing newlines (the
+  # quoted-separator masking treats any newline as a multi-line command).
+  while [ "${out%$'\n'}" != "$out" ]; do out="${out%$'\n'}"; done
+  HD_OUT="$out"
   printf '%s' "$out"
+}
+
+# Splits a command into the segments the main loop inspects (`;`, `&&`, `||`,
+# `|`, newline, `$(`, backtick), the later stage of a pipe prefixed PIPE_MARK
+# and a nested one SUB_MARK/BT_MARK.
+split_segments() {
+  printf '%s\n' "$1" \
+    | sed -E -e 's/&&|\|\||;/\
+/g' \
+          -e 's/(^|[^|<>&])&($|[^>&])/\1\
+\2/g' \
+          -e 's/\$\(|<\(|>\(/\
+'"$SUB_MARK"'/g' \
+          -e 's/`/\
+'"$BT_MARK"'/g' \
+    | sed -E 's/\|&?/\
+'"$PIPE_MARK"'/g'
+}
+
+# 0 when the interpreter/shell word $1 can run a script file.
+is_script_runner() {
+  case "$1" in
+    bash|sh|zsh|dash|ksh|source|.|python*|node|perl|ruby|php|deno|bun|tsx|ts-node|awk|gawk|mawk|nawk|make|xargs|eval) return 0 ;;
+  esac
+  return 1
+}
+
+# 0 when the file a heredoc wrote ($1) is run by the rest of the command ($2,
+# the text with heredoc bodies removed). Fails closed: a segment naming the
+# file counts as a run unless its command word is on a short inert list and its
+# output is neither piped onward nor nested in `$(`/backticks/`<(`. A target
+# that is not a plain word, or one under .git/hooks (git runs it itself), needs
+# no later mention.
+heredoc_target_is_run() {
+  local t="$1" str="$2" tb seg i n nested onward w wb plain=1 amp='&'
+  local -a segs=()
+  tb="${t##*/}"
+  case "$t" in *'$'*|*'`'*|*[\*\?\[]*) plain=0 ;; esac
+  case "$t" in *.git/hooks/*) return 0 ;; esac
+  case "$t" in
+    */hooks/*|hooks/*)
+      printf '%s' "$command_str" | grep -Eq 'git[[:space:]]+([^;&|]*[[:space:]])?(commit|push)([[:space:]]|$)' && return 0 ;;
+  esac
+  while IFS= read -r seg; do segs+=("$seg"); done < <(split_segments "$str")
+  n=${#segs[@]}
+  for (( i = 0; i < n; i++ )); do
+    seg="${segs[i]}"
+    seg="${seg//$'\001'/;}"
+    seg="${seg//$'\002'/|}"
+    seg="${seg//$'\003'/"$amp"}"
+    nested=0
+    case "$seg" in "$PIPE_MARK"*) seg="${seg#"$PIPE_MARK"}" ;; esac
+    case "$seg" in
+      "$SUB_MARK"*) nested=1; seg="${seg#"$SUB_MARK"}" ;;
+      "$BT_MARK"*) nested=1; seg="${seg#"$BT_MARK"}" ;;
+    esac
+    onward=0
+    if [ $((i + 1)) -lt "$n" ]; then
+      case "${segs[i+1]}" in "$PIPE_MARK"*) onward=1 ;; esac
+    fi
+    seg_command "$seg"
+    case "$seg" in
+      *'<<'*) case "$SEG_CMD" in cat|tee) continue ;; esac ;;
+    esac
+    if [ "$plain" = 0 ]; then
+      is_script_runner "$SEG_CMD" && return 0
+      continue
+    fi
+    while IFS= read -r w; do
+      w="${w#[<>]}"
+      w="${w%%[)\`\}]*}"
+      wb="${w##*/}"
+      [ "$wb" = "$tb" ] || continue
+      if [ "$nested" = 0 ] && [ "$onward" = 0 ]; then
+        case "$SEG_CMD" in
+          git|ls|test|"["|"[["|stat|wc|chmod|rm|diff|cmp|file|shellcheck) continue 2 ;;
+        esac
+      fi
+      return 0
+    done < <(shell_words "$seg")
+  done
+  return 1
+}
+
+# Prints the first protected env token a heredoc body names (templates stay
+# allowed), by the same token rule as protected_tokens; a name-only use counts.
+heredoc_body_protected_token() {
+  local tk
+  while IFS= read -r tk; do
+    if env_is_protected_name "$tk"; then printf '%s\n' "$tk"; return 0; fi
+  done < <(printf '%s\n' "$1" \
+    | grep -Eoi "(^|[[:space:]/'\"<>=(:{,])\\.env[^[:space:]/'\"<>;|&)\`{},]*" \
+    | sed -E 's/^[^.]*//')
+  return 0
 }
 
 # Prints the segment with text-only mentions of an env path removed, for the
@@ -867,11 +1026,26 @@ sed_script_is_pure_subst() {
   }' 2>/dev/null
 }
 
-scan_str="$(strip_heredoc_bodies "$command_str")"
-scan_str="$(env_mask_quoted_separators "$scan_str")"
 PIPE_MARK="@@PIPE@@"
 SUB_MARK="@@SUB@@"
 BT_MARK="@@BT@@"
+strip_heredoc_bodies "$command_str" >/dev/null
+scan_str="$HD_OUT"
+scan_str="$(env_mask_quoted_separators "$scan_str")"
+# A script written by a heredoc and run in the same command is no longer text:
+# its body must not name a protected env file, and it gets the regular
+# per-segment inspection like a heredoc fed straight to a shell.
+hd_blocked=""
+hd_any_run=0
+for (( hi = 0; hi < ${#HD_TARGETS[@]}; hi++ )); do
+  heredoc_target_is_run "${HD_TARGETS[hi]}" "$scan_str" || continue
+  hd_any_run=1
+  hd_blocked="$(heredoc_body_protected_token "${HD_BODIES[hi]}")"
+  [ -n "$hd_blocked" ] && break
+done
+if [ "$hd_any_run" = 1 ]; then
+  scan_str="$(env_mask_quoted_separators "$command_str")"
+fi
 sub_depth=0
 blocked_token=""
 blocked_reason=""
@@ -1003,17 +1177,12 @@ while IFS= read -r seg; do
     fi
     closes=$((closes - 1))
   done
-done < <(printf '%s\n' "$scan_str" \
-  | sed -E -e 's/&&|\|\||;/\
-/g' \
-        -e 's/(^|[^|<>&])&($|[^>&])/\1\
-\2/g' \
-        -e 's/\$\(|<\(|>\(/\
-'"$SUB_MARK"'/g' \
-        -e 's/`/\
-'"$BT_MARK"'/g' \
-  | sed -E 's/\|&?/\
-'"$PIPE_MARK"'/g')
+done < <(split_segments "$scan_str")
+
+if [ -n "$hd_blocked" ]; then
+  blocked_token="$hd_blocked"
+  blocked_reason="heredoc_script_run"
+fi
 
 if [ -z "$blocked_token" ]; then
   if [ -n "$allowed_token" ]; then
@@ -1031,6 +1200,15 @@ if [ "$blocked_reason" = "recursive_grep" ]; then
    Action:  ask the operator for the specific variable names you need. Name-only checks (ls, test -f, find -name) and .env.example/.sample/.template/.dist templates are allowed. To edit a file that merely mentions an env path, use the Edit tool.
 MSG
   log_decision "$HOOK_NAME" "Bash" ".env-read" "block" "blocked recursive grep reading $blocked_token"
+elif [ "$blocked_reason" = "heredoc_script_run" ]; then
+  cat >&2 <<MSG
+🚫 atelier:block-env-read BLOCKED
+   Tool:    Bash
+   Reason:  a heredoc script written and run in the same command names $blocked_token
+   Rule:    PLAN.md §3 — .env* contents are operator-only; a script that is run can read them, so it may not name a protected env file (templates such as .env.example are fine).
+   Action:  ask the operator for the specific variable names you need, or drop the env path from the script.
+MSG
+  log_decision "$HOOK_NAME" "Bash" ".env-read" "block" "blocked heredoc script run in the same command naming $blocked_token"
 else
   cat >&2 <<MSG
 🚫 atelier:block-env-read BLOCKED

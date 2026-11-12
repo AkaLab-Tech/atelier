@@ -8,6 +8,13 @@
 # hooks/lib/env-names.sh) are allowed when their content is placeholder-only.
 # Staged deletions of env files are never blocked.
 #
+# `git add|commit --pathspec-from-file=F` (any spelling git accepts, incl.
+# abbreviations and --pathspec-file-nul): a readable F contributes its entries
+# like command-line pathspecs; stdin (`-`, a pipe), process substitution, or a
+# missing/unreadable F cannot be inspected, so every env file git could stage
+# (untracked incl. ignored, modified, staged; not deletions) counts as a
+# candidate and blocks unless it is a template.
+#
 # Layered defence (PLAN.md §3 "Defense-in-depth"):
 #   - Static permissions matrix denies `Edit(.env*)` writes outside the
 #     worktree allowlist.
@@ -148,6 +155,36 @@ cmd_words() {
   }'
 }
 
+# True when a path is already gone from the worktree but known to git (index
+# or HEAD): staging it records a deletion, which is never blocked.
+path_is_deleted() {
+  local full
+  case "$1" in /*) full="$1" ;; *) full="$target_dir/$1" ;; esac
+  [ ! -e "$full" ] && [ ! -L "$full" ] \
+    && { [ -n "$(git -C "$target_dir" ls-files --deleted -- "$1" 2>/dev/null)" ] \
+         || [ -n "$(git -C "$target_dir" ls-tree -r --name-only HEAD -- "$1" 2>/dev/null)" ]; }
+}
+
+# `--pathspec-from-file`: $1 = file value, $2 = NUL mode (0|1), $3 = add|commit.
+# A readable file contributes its entries like command-line pathspecs; stdin,
+# process substitution, a missing or unreadable file cannot be inspected, so
+# every env file git could stage or commit counts (fail closed).
+pathspec_file_cands() {
+  local entries e
+  if entries="$(env_pathspec_entries "$target_dir" "$1" "$2")"; then
+    while IFS= read -r e; do
+      case "$e" in
+        .|./|:/|"*") if [ "$3" = add ]; then wildcard_add=1; else commit_all=1; fi; continue ;;
+      esac
+      env_is_env_name "$e" || continue
+      path_is_deleted "$e" && continue
+      cands+="$e"$'\n'
+    done <<< "$entries"
+  else
+    cands+="$(env_dirty_env_files "$target_dir")"$'\n'
+  fi
+}
+
 # Separators inside quoted text (a commit message) must not split the command.
 # A backslash-newline continuation is one logical line: join it first.
 command_str="${command_str//\\$'\n'/ }"
@@ -185,9 +222,17 @@ while IFS= read -r seg; do
   case "$sub_cmd" in
     add)
       add_parsed=$((add_parsed + 1))
+      ps_file=""; ps_nul=0; ps_seen=0
       for (( ; i < n; i++ )); do
         tok="${words[i]}"
         while case "$tok" in *')'|*'`'|*'}') true ;; *) false ;; esac; do tok="${tok%[)\`\}]}"; done
+        if env_pathspec_nul_opt "$tok"; then ps_nul=1; continue; fi
+        ps_val="$(env_pathspec_file_opt "$tok" "${words[i+1]-}")"; ps_rc=$?
+        if [ "$ps_rc" -ne 1 ]; then
+          ps_seen=1; ps_file="$ps_val"
+          [ "$ps_rc" -eq 2 ] && i=$((i + 1))
+          continue
+        fi
         case "$tok" in
           .|./|--all|--update|:/|"*") wildcard_add=1; continue ;;
           # A short-flag cluster with A or u (`-Af`, `-vA`, `-u`) stages every change.
@@ -201,21 +246,27 @@ while IFS= read -r seg; do
           *)
             # Explicit path already gone from the worktree but known to git
             # (index or HEAD): `git add <path>` records a deletion.
-            case "$tok" in /*) full_tok="$tok" ;; *) full_tok="$target_dir/$tok" ;; esac
-            if [ ! -e "$full_tok" ] && [ ! -L "$full_tok" ] \
-               && { [ -n "$(git -C "$target_dir" ls-files --deleted -- "$tok" 2>/dev/null)" ] \
-                    || [ -n "$(git -C "$target_dir" ls-tree -r --name-only HEAD -- "$tok" 2>/dev/null)" ]; }; then
-              continue
-            fi ;;
+            path_is_deleted "$tok" && continue ;;
         esac
         cands+="$tok"$'\n'
       done
+      [ "$ps_seen" -eq 1 ] && pathspec_file_cands "$ps_file" "$ps_nul" add
       ;;
     commit)
       commit_seen=1
       commit_parsed=$((commit_parsed + 1))
+      ps_file=""; ps_nul=0; ps_seen=0
       for (( ; i < n; i++ )); do
         tok="${words[i]}"
+        # `git commit --pathspec-from-file` commits the working-tree contents
+        # of the listed tracked paths, like -a for them.
+        if env_pathspec_nul_opt "$tok"; then ps_nul=1; continue; fi
+        ps_val="$(env_pathspec_file_opt "$tok" "${words[i+1]-}")"; ps_rc=$?
+        if [ "$ps_rc" -ne 1 ]; then
+          ps_seen=1; commit_all=1; ps_file="$ps_val"
+          [ "$ps_rc" -eq 2 ] && i=$((i + 1))
+          continue
+        fi
         case "$tok" in
           --all|-a*|-[!-mFCctSu]*a*) commit_all=1 ;;
         esac
@@ -226,6 +277,7 @@ while IFS= read -r seg; do
         esac
         env_is_env_name "$tok" && cands+="$tok"$'\n'
       done
+      [ "$ps_seen" -eq 1 ] && pathspec_file_cands "$ps_file" "$ps_nul" commit
       ;;
   esac
 done < <(printf '%s\n' "$masked_cmd" | awk '{ gsub(/&&|\|\||[;|&]/, "\n"); print }')
@@ -251,6 +303,14 @@ if [ "$raw_surplus" -eq 1 ]; then
   while IFS= read -r tok; do
     env_is_env_name "$tok" && cands+="$tok"$'\n'
   done < <(printf '%s\n' "$command_str" | tr -s '[:space:]"`;|&(){}<>$,=\\' '\n' | tr -s "'" '\n')
+fi
+
+# A wrapped `--pathspec-from-file` (stdin, a file the parser never saw): the raw
+# words name no env file, so every dirty env file counts.
+if [ "$raw_surplus" -eq 1 ]; then
+  case "$command_str" in
+    *--pathspec-f*) cands+="$(env_dirty_env_files "$target_dir")"$'\n' ;;
+  esac
 fi
 
 if [ "$wildcard_add" -eq 1 ]; then
