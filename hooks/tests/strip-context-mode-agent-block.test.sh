@@ -69,13 +69,23 @@ uninstall_cm() {
 # that call to hold.log, then runs the real perl (absolute path baked in).
 REAL_PERL="$(command -v perl)"
 HOLD_LOG="$TMP/hold.log"
-mkdir -p "$TMP/shim"
-cat > "$TMP/shim/perl" <<SHIM
+# make_perl_shim <dir> <skip-sleep:0|1>: one generator for the probe shim and the
+# S8 stub, so both match the sleep call with the same pattern. Only the sleep
+# call is logged (and, when skip-sleep=1, not run); every other call, including
+# now_ms's, goes to the real perl.
+make_perl_shim() {
+  mkdir -p "$1"
+  cat > "$1/perl" <<SHIM
 #!/bin/sh
-case "\$*" in *Time::HiRes=sleep*) echo hold >> "$HOLD_LOG" ;; esac
+case "\$*" in *Time::HiRes=sleep*)
+  echo hold >> "$HOLD_LOG"
+  [ "$2" = 1 ] && exit 0 ;;
+esac
 exec "$REAL_PERL" "\$@"
 SHIM
-chmod +x "$TMP/shim/perl"
+  chmod +x "$1/perl"
+}
+make_perl_shim "$TMP/shim" 0
 
 # PATH without node: symlinks to the few tools the hook + helper need.
 NONODE="$TMP/nonode"; mkdir -p "$NONODE"
@@ -164,11 +174,10 @@ else
 fi
 
 # S8: probe self-check. Hook copy with HOLD_MS=600000 always takes the hold
-# branch; a stub perl logs and returns at once so nothing waits.
+# branch; the stub (same pattern as the shim) logs the sleep call and returns
+# at once so nothing waits, and runs real perl for everything else.
 sed 's/HOLD_MS=400/HOLD_MS=600000/' "$HOOK" > "$TMP/hold-hook.sh"
-mkdir -p "$TMP/stub"
-printf '#!/bin/sh\necho hold >> "%s"\nexit 0\n' "$HOLD_LOG" > "$TMP/stub/perl"
-chmod +x "$TMP/stub/perl"
+make_perl_shim "$TMP/stub" 1
 write_cm; install_cm
 : > "$HOLD_LOG"
 out="$(printf '%s' "$IN" | PATH="$TMP/stub:$PATH" bash "$TMP/hold-hook.sh" 2>/dev/null)"; rc=$?
