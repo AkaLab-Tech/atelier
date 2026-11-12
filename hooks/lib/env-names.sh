@@ -70,3 +70,79 @@ env_mask_quoted_separators() {
     if (q != "") print $0; else print out
   }'
 }
+
+# ---- `git add|commit --pathspec-from-file` helpers -----------------------
+
+# Recognises git's `--pathspec-from-file` in every spelling parse-options
+# accepts: the full name or an unambiguous abbreviation (`--pathspec-fr` ..
+# `--pathspec-from-file`), with `=value` or the value as the next word.
+# `--pathspec-f`/`--pathspec-fi..` are ambiguous or the NUL flag: not this option.
+#   $1 = word, $2 = next word (optional)
+#   prints the value ("-" = stdin); exit 0 value inline, exit 2 value taken
+#   from $2 (the caller skips it), exit 1 not this option.
+env_pathspec_file_opt() {
+  local w="$1" next="${2-}" name full="--pathspec-from-file"
+  case "$w" in --pathspec-fr*) ;; *) return 1 ;; esac
+  name="${w%%=*}"
+  case "$full" in "$name"*) ;; *) return 1 ;; esac
+  case "$w" in
+    *=*) printf '%s\n' "${w#*=}"; return 0 ;;
+    *) printf '%s\n' "$next"; return 2 ;;
+  esac
+}
+
+# 0 when $1 is `--pathspec-file-nul` or an abbreviation of it (`--pathspec-fi`..).
+env_pathspec_nul_opt() {
+  local name="${1%%=*}" full="--pathspec-file-nul"
+  case "$1" in --pathspec-fi*) ;; *) return 1 ;; esac
+  case "$full" in "$name"*) return 0 ;; esac
+  return 1
+}
+
+# Prints the entries of the pathspec file $2, resolved against dir $1 (git
+# resolves the file after -C), splitting on NUL ($3 = 1) or newline and
+# removing the C-style quotes git accepts in newline mode. Returns 1
+# (unresolvable, callers fail closed) for stdin, /dev/fd, process
+# substitution, a value with `$`, a glob or a backtick, an env-named file, a
+# missing or unreadable file, or a FIFO or other non-regular file.
+env_pathspec_entries() {
+  local dir="$1" f="$2" nul="${3:-0}" full line
+  case "$f" in
+    ''|-|/dev/stdin|/dev/fd/*|/proc/*|*'<('*|*'>('*|*\$*|*\`*|*[\*\?\[]*) return 1 ;;
+  esac
+  env_is_env_name "$f" && return 1
+  case "$f" in /*) full="$f" ;; *) full="$dir/$f" ;; esac
+  [ -f "$full" ] && [ -r "$full" ] || return 1
+  if [ "$nul" = 1 ]; then
+    tr '\0' '\n' < "$full"
+    return 0
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    [ -n "$line" ] || continue
+    case "$line" in
+      \"*\")
+        line="${line#\"}"; line="${line%\"}"
+        line="$(printf '%s' "$line" | sed -E 's/\\([0-7]{3})/\\0\1/g')"
+        line="$(printf '%b' "$line")"
+        ;;
+    esac
+    printf '%s\n' "$line"
+  done < "$full"
+}
+
+# Prints every env-named path git could stage or commit in dir $1, deletions
+# left out: untracked INCLUDING ignored files (no --exclude-standard: install.sh
+# puts the env globs in the global excludes, which would hide exactly these),
+# plus modified and staged ones.
+env_dirty_env_files() {
+  local d="$1" p
+  {
+    git -C "$d" ls-files --others -- ':(glob,icase)**/.env*' 2>/dev/null || true
+    git -C "$d" diff --name-only --diff-filter=d 2>/dev/null || true
+    git -C "$d" diff --cached --name-only --diff-filter=d 2>/dev/null || true
+  } | while IFS= read -r p; do
+    env_is_env_name "$p" && printf '%s\n' "$p"
+  done
+  return 0
+}
