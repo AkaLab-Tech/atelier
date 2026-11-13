@@ -8,6 +8,12 @@
 #   - Local task/* BRANCHES that are merged into the project's base branch (or whose PR is
 #     merged/closed) and are not checked out.
 #   - Remote origin/task/* BRANCHES whose PR is merged/closed.
+#   - Release branches (task/release-<semver>, no board item by design) and
+#     catalog pin branches (chore/pin-<plugin>-v<semver>), as worktree, local
+#     and remote. These classes are classified by PR state with head-sha
+#     binding (MERGED and headRefOid == branch tip), never by board claim.
+#     A pin worktree with uncommitted changes, no PR and a version older than
+#     the base catalog's current pin goes to "needs review", never removed.
 #
 # It NEVER deletes anything without an explicit operator authorization
 # (interactive confirm, or --yes in non-interactive contexts). The default
@@ -69,8 +75,11 @@ usage() {
 ${SCRIPT_NAME} ${VERSION}
 
 Operator-authorized cleanup of orphan worktrees and merged/closed task
-branches (local + remote) across atelier-registered projects. Always asks
-before deleting; --report / --dry-run only enumerate.
+branches (local + remote) across atelier-registered projects. Also covers
+release branches (task/release-<semver>) and catalog pin branches
+(chore/pin-<plugin>-v<semver>), classified by PR state bound to the branch
+tip (head sha), never by board claim. Always asks before deleting;
+--report / --dry-run only enumerate.
 
 USAGE:
   ${SCRIPT_NAME} [--report|--dry-run] [--project PATH] [OPTIONS]
@@ -188,6 +197,71 @@ pr_state() {
     MERGED|CLOSED|OPEN|NONE) printf '%s' "$out" ;;
     *)                       printf 'UNKNOWN' ;;
   esac
+}
+
+# pr_info <slug> <branch> — sets PR_ST (MERGED|CLOSED|OPEN|NONE|UNKNOWN),
+# PR_SHA (headRefOid) and PR_NUM for the most recent PR with that head branch.
+# Same author identity and fail-closed UNKNOWN as pr_state.
+PR_ST=""; PR_SHA=""; PR_NUM=""
+pr_info() {
+  local slug="$1" branch="$2" out
+  PR_ST="UNKNOWN"; PR_SHA=""; PR_NUM=""
+  $HAVE_GH || return 0
+  [ -n "$slug" ] || return 0
+  out="$(env GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh pr list \
+           --repo "$slug" --head "$branch" --state all \
+           --json state,headRefOid,number \
+           --jq 'if length == 0 then "NONE\t\t" else .[0] | "\(.state)\t\(.headRefOid)\t\(.number)" end' 2>/dev/null || true)"
+  case "${out%%$'\t'*}" in
+    MERGED|CLOSED|OPEN|NONE)
+      PR_ST="${out%%$'\t'*}"
+      out="${out#*$'\t'}"
+      PR_SHA="${out%%$'\t'*}"
+      PR_NUM="${out#*$'\t'}" ;;
+  esac
+  return 0
+}
+
+# Release branches (cut by /atelier:release) carry no board item by design.
+is_release_branch() { [[ "$1" =~ ^task/release-[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+
+# Catalog pin branches: chore/pin-<plugin>-v<semver>. Sets PIN_PLUGIN, PIN_VER.
+PIN_PLUGIN=""; PIN_VER=""
+is_pin_branch() {
+  local re='^chore/pin-(.+)-v([0-9]+\.[0-9]+\.[0-9]+)$'
+  [[ "$1" =~ $re ]] || return 1
+  PIN_PLUGIN="${BASH_REMATCH[1]}"; PIN_VER="${BASH_REMATCH[2]}"
+}
+
+# version_cmp <a> <b> — three-way numeric compare (-1/0/1); verbatim copy of
+# the one in atelier-release / atelier-doctor (macOS bash 3.2, no `sort -V`).
+version_cmp() {
+  local a="${1%%-*}" b="${2%%-*}"
+  a="${a%%+*}"; b="${b%%+*}"
+  local -a av bv
+  IFS=. read -ra av <<<"$a"
+  IFS=. read -ra bv <<<"$b"
+  local n=${#av[@]} i x y
+  [ "${#bv[@]}" -gt "$n" ] && n=${#bv[@]}
+  for ((i = 0; i < n; i++)); do
+    x=${av[i]:-0}; y=${bv[i]:-0}
+    x=${x//[!0-9]/}; y=${y//[!0-9]/}
+    x=$((10#${x:-0})); y=$((10#${y:-0}))
+    if [ "$x" -gt "$y" ]; then printf '1';  return; fi
+    if [ "$x" -lt "$y" ]; then printf -- '-1'; return; fi
+  done
+  printf '0'
+}
+
+# pin_current <proj> <base_ref> <plugin> — echoes the version the catalog on
+# the base branch currently pins for <plugin> (.source.ref, "v" stripped), or
+# nothing when it cannot be read (callers treat that as "not superseded").
+pin_current() {
+  local proj="$1" ref="$2" plugin="$3" v
+  [ -n "$ref" ] || return 0
+  v="$(git -C "$proj" show "$ref:.claude-plugin/marketplace.json" 2>/dev/null \
+        | jq -r --arg n "$plugin" '[.plugins[]? | select(.name == $n) | .source.ref][0] // empty' 2>/dev/null || true)"
+  printf '%s' "${v#v}"
 }
 
 # resolve_base <proj> — sets BASE, BASE_SRC, BASE_REASON via atelier-resolve-base
@@ -470,6 +544,32 @@ enumerate_project() {
     [ -n "$base_ref" ] || add_skip "$proj" "project" "$proj" "base branch $base has no local or origin ref — merged-branch deletion skipped"
   fi
 
+  # classify_rp <kind> <target> <branch> <tip> <label> — PR-state classification
+  # (head-sha bound) for release and pin branches; never a board claim. A MERGED
+  # PR proves removal only when its head sha equals the branch tip (squash
+  # merges leave the branch unmerged by ancestry).
+  classify_rp() {
+    local kind="$1" target="$2" branch="$3" tip="$4" label="$5" why
+    pr_info "$slug" "$branch"
+    case "$PR_ST" in
+      MERGED)
+        if [ -n "$tip" ] && [ "$PR_SHA" = "$tip" ]; then
+          why="$label PR #$PR_NUM merged (squash, head sha matches)"
+          case "$kind" in
+            worktree)      DEL_WORKTREES+=("$proj"$'\t'"worktree"$'\t'"$target"$'\t'"$why"$'\t'"$branch") ;;
+            local-branch)  DEL_LBRANCHES+=("$proj"$'\t'"local-branch"$'\t'"$branch"$'\t'"$why"$'\t'"-D") ;;
+            remote-branch) DEL_RBRANCHES+=("$proj"$'\t'"remote-branch"$'\t'"$branch"$'\t'"$why"$'\t'"$branch") ;;
+          esac
+        else
+          add_review "$proj" "$kind" "$target" "$label PR #$PR_NUM merged but branch tip differs from the PR head (commits added after the merge) — $branch"
+        fi ;;
+      OPEN)   add_skip "$proj" "$kind" "$target" "open $label PR #$PR_NUM" ;;
+      CLOSED) add_review "$proj" "$kind" "$target" "$label PR #$PR_NUM closed without merging (unmerged) — $branch" ;;
+      NONE)   add_review "$proj" "$kind" "$target" "$label branch without a PR — $branch" ;;
+      *)      add_review "$proj" "$kind" "$target" "$label PR state unknown — $branch" ;;
+    esac
+  }
+
   # ----- worktrees -----
   # Parse `git worktree list --porcelain`: blocks separated by blank lines,
   # each with `worktree <path>` and (optionally) `branch refs/heads/<name>`.
@@ -481,8 +581,30 @@ enumerate_project() {
     # Skip the main worktree itself.
     [ "$path" = "$main_root" ] && return 0
     # Only manage task/* worktrees; leave anything else alone.
-    case "$branch" in task/*) ;; *) return 0 ;; esac
+    case "$branch" in task/*|chore/pin-*) ;; *) return 0 ;; esac
     is_protected_branch "$branch" && return 0
+
+    local rp_label=""
+    if is_release_branch "$branch"; then rp_label="release"
+    elif is_pin_branch "$branch"; then rp_label="pin"; fi
+    case "$branch" in chore/*) [ -n "$rp_label" ] || return 0 ;; esac
+    if [ -n "$rp_label" ]; then
+      if [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
+        local cur=""
+        if [ "$rp_label" = "pin" ]; then
+          cur="$(pin_current "$proj" "$base_ref" "$PIN_PLUGIN")"
+          pr_info "$slug" "$branch"
+          if [ "$PR_ST" = "NONE" ] && [ -n "$cur" ] && [ "$(version_cmp "$PIN_VER" "$cur")" = "-1" ]; then
+            add_review "$proj" "worktree" "$path" "superseded pin v$PIN_VER (catalog pins v$cur), uncommitted changes, no PR — never auto-removed"
+            return 0
+          fi
+        fi
+        add_skip "$proj" "worktree" "$path" "uncommitted changes — left untouched"
+        return 0
+      fi
+      classify_rp "worktree" "$path" "$branch" "$(git -C "$proj" rev-parse "refs/heads/$branch" 2>/dev/null || true)" "$rp_label"
+      return 0
+    fi
 
     local id; id="$(branch_task_id "$branch")"
     claim_gate "$proj" "worktree" "$path" "$id" "$branch" "$path" && return 0
@@ -533,7 +655,10 @@ enumerate_project() {
   while IFS= read -r b; do
     b="${b#refs/heads/}"
     [ -n "$b" ] || continue
-    case "$b" in task/*) ;; *) continue ;; esac
+    local rp_label=""
+    if is_release_branch "$b"; then rp_label="release"
+    elif is_pin_branch "$b"; then rp_label="pin"; fi
+    case "$b" in task/*) ;; *) [ -n "$rp_label" ] || continue ;; esac
     is_protected_branch "$b" && continue
     # Checked out / backing a worktree we keep → never touch.
     [ "$b" = "$current_branch" ] && { add_skip "$proj" "local-branch" "$b" "currently checked out"; continue; }
@@ -544,6 +669,19 @@ enumerate_project() {
       esac
       continue ;;
     esac
+
+    if [ -n "$rp_label" ]; then
+      local rp_merged=false rp_tip
+      [ -n "$base_ref" ] && git -C "$proj" branch --merged "$base_ref" 2>/dev/null | sed 's/^[+* ]*//' | grep -qxF "$b" && rp_merged=true
+      rp_tip="$(git -C "$proj" rev-parse "refs/heads/$b" 2>/dev/null || true)"
+      pr_info "$slug" "$b"
+      if $rp_merged && [ "$PR_ST" != "OPEN" ]; then
+        DEL_LBRANCHES+=("$proj"$'\t'"local-branch"$'\t'"$b"$'\t'"merged into $base"$'\t'"-D")
+      else
+        classify_rp "local-branch" "$b" "$b" "$rp_tip" "$rp_label"
+      fi
+      continue
+    fi
 
     local id; id="$(branch_task_id "$b")"
     claim_gate "$proj" "local-branch" "$b" "$id" "$b" && continue
@@ -561,11 +699,11 @@ enumerate_project() {
     else
       add_review "$proj" "local-branch" "$b" "not merged into ${base:-the base branch}"
     fi
-  done < <(git -C "$proj" for-each-ref --format='%(refname)' refs/heads/task 2>/dev/null)
+  done < <(git -C "$proj" for-each-ref --format='%(refname)' refs/heads/task refs/heads/chore 2>/dev/null)
 
   # ----- remote origin/task/* branches -----
   local live="" live_ok=false
-  if live="$(GIT_TERMINAL_PROMPT=0 git -C "$proj" ls-remote --heads "$(push_url "$proj")" 'refs/heads/task/*' 2>/dev/null)"; then
+  if live="$(GIT_TERMINAL_PROMPT=0 git -C "$proj" ls-remote --heads "$(push_url "$proj")" 'refs/heads/task/*' 'refs/heads/chore/pin-*' 2>/dev/null)"; then
     live_ok=true
   else
     warn "$proj: could not list origin heads; stale tracking refs not detected"
@@ -573,11 +711,21 @@ enumerate_project() {
   while IFS= read -r b; do
     b="${b#refs/remotes/origin/}"
     [ -n "$b" ] || continue
-    case "$b" in task/*) ;; *) continue ;; esac
+    local rp_label=""
+    if is_release_branch "$b"; then rp_label="release"
+    elif is_pin_branch "$b"; then rp_label="pin"; fi
+    case "$b" in task/*) ;; *) [ -n "$rp_label" ] || continue ;; esac
     is_protected_branch "$b" && continue
     if $live_ok && ! printf '%s\n' "$live" | grep -qE "[[:space:]]refs/heads/${b}\$"; then
       add_skip "$proj" "remote-branch" "origin/$b" "already gone on origin (stale local tracking ref)"
       PRUNE_REFS+=("$proj"$'\t'"$b")
+      continue
+    fi
+    if [ -n "$rp_label" ]; then
+      local rp_tip=""
+      $live_ok && rp_tip="$(printf '%s\n' "$live" | awk -v r="refs/heads/$b" '$2 == r { print $1; exit }')"
+      [ -n "$rp_tip" ] || rp_tip="$(git -C "$proj" rev-parse "refs/remotes/origin/$b" 2>/dev/null || true)"
+      classify_rp "remote-branch" "origin/$b" "$b" "$rp_tip" "$rp_label"
       continue
     fi
     local id; id="$(branch_task_id "$b")"
@@ -592,7 +740,7 @@ enumerate_project() {
     else
       add_review "$proj" "remote-branch" "origin/$b" "no PR / state unknown ($st)"
     fi
-  done < <(git -C "$proj" for-each-ref --format='%(refname)' refs/remotes/origin/task 2>/dev/null)
+  done < <(git -C "$proj" for-each-ref --format='%(refname)' refs/remotes/origin/task refs/remotes/origin/chore 2>/dev/null)
 }
 
 for proj in ${PROJECTS[@]+"${PROJECTS[@]}"}; do
