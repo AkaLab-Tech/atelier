@@ -4,6 +4,10 @@
 # to the real project memory store ($ATELIER_CONFIG_DIR/atelier/memory.db or
 # ~/.claude-work/atelier/memory.db). Top-level sessions own real-store writes;
 # subagents may run read-only subcommands or write to an isolated config dir.
+# The only discriminator is the payload's agent_id / agent_type (present in a
+# subagent's PreToolUse payload, absent at top level; verified in
+# docs/research/subagent-pretooluse-payload-2026-11.md). CLAUDE_CODE_CHILD_SESSION
+# is not a signal: it is 1 in the top-level session and in subagents alike (#710).
 
 # shellcheck disable=SC2016,SC2088,SC1003
 set -uo pipefail
@@ -27,7 +31,8 @@ case "$command_str" in *atelier-memory*) ;; *) exit 0 ;; esac
 
 agent_id="$(printf '%s' "$input" | jq -r '.agent_id // empty' 2>/dev/null || true)"
 agent_type="$(printf '%s' "$input" | jq -r '.agent_type // empty' 2>/dev/null || true)"
-[ -z "$agent_id" ] && [ -z "$agent_type" ] && [ "${CLAUDE_CODE_CHILD_SESSION:-}" != "1" ] && exit 0
+[ -z "$agent_id" ] && [ -z "$agent_type" ] && exit 0
+SIGNAL="agent_id=${agent_id:-<none>} agent_type=${agent_type:-<none>}"
 
 HOME_DIR="${HOME:-}"
 DEF_ACD="$HOME_DIR/.claude-work"
@@ -85,11 +90,11 @@ block() { # reason detail
    Tool:    Bash
    Command: ${CUR_SEG_TEXT:0:300}
    Reason:  $1
-   Detail:  $2
+   Detail:  $2 [signal: $SIGNAL]
    Rule:    PLAN.md §3 & §17 / operator-rules.md — chain subagents never write to the real project memory store; top-level sessions own real-store writes (add, supersede, close, import, ingest, verify --apply).
-   Action:  For tests, pass an isolated ATELIER_CONFIG_DIR (e.g. ATELIER_CONFIG_DIR="\$(mktemp -d)" or /tmp/...). For real memory capture, report the item in your hand-back so the top-level session records it.
+   Action:  Subagent: report the item in your hand-back and the top-level session runs atelier-memory add. Tests: pass an isolated ATELIER_CONFIG_DIR="\$(mktemp -d)". Top-level session that sees this block: it was misclassified; report the block with the agent_id / agent_type shown above and do not work around it.
 MSG
-  log_decision "$HOOK_NAME" "Bash" "$1" "block" "$2"
+  log_decision "$HOOK_NAME" "Bash" "$1" "block" "$2 [signal: $SIGNAL]"
   exit 2
 }
 
@@ -202,7 +207,7 @@ analyze_memory() { # args after atelier-memory
     if [ "$end_opts" = 0 ]; then
       case "$a" in
         --) end_opts=1; continue ;;
-        -h|--help) return 0 ;;
+        -h|--help|--version) return 0 ;;
         --dry-run) has_dry=1 ;;
         --apply) has_apply=1 ;;
         --vault) take_vault=1; continue ;;
@@ -218,7 +223,7 @@ analyze_memory() { # args after atelier-memory
   [ -z "$sub" ] && return 0
   case "$sub" in *'$'*) expand_cfg "$sub"; sub="$EXP_CFG" ;; esac
   case "$sub" in
-    list|show|search|brief|path|-h|--help) return 0 ;;
+    list|show|search|brief|path|-h|--help|--version) return 0 ;;
     render) vault_target_check "atelier-memory render" "$vault_arg" ;;
     verify) [ "$has_apply" = 1 ] || return 0; check_write "atelier-memory verify --apply"; vault_target_check "atelier-memory verify --apply" "$vault_arg" ;;
     import) [ "$has_dry" = 1 ] && return 0; check_write "atelier-memory import"; vault_target_check "atelier-memory import" "$vault_arg" ;;
