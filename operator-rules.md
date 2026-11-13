@@ -408,7 +408,7 @@ Capture each item **when it comes up**, not at the end of the session:
   payload, absent at top level); `CLAUDE_CODE_CHILD_SESSION` is `1` in both and is not used, so
   a top-level session is never blocked (#710). If a top-level session is blocked anyway, the
   block message shows the `agent_id` / `agent_type` that fired: report them, do not work around it.
-  `--version` is read-only and stays allowed.
+  `--version` is read-only and stays allowed, except when it is the value of another option (`add fact --title --help` still writes) (#780).
 - To load Claude Code's own per-project memory files, run
   `atelier-memory import --dry-run`, then `atelier-memory import`.
 - **Inbox drop workflow.** The Obsidian vault at `~/Atelier/` is a regenerated read-only render of

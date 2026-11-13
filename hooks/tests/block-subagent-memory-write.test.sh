@@ -288,6 +288,62 @@ assert_allow "isolated config dir + isolated vault + add" "sub-1" "implementer" 
 assert_allow "ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 bypasses the vault check" "sub-1" "implementer" \
   'ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 atelier-memory render --vault ~/Atelier'
 
+# --- 10. #780: --help/-h/--version as an option VALUE is not a read-only flag ----
+VALUE_OPTS="--project --source --title --body --quote --ref --supersedes --by --type --vault"
+for opt in $VALUE_OPTS; do
+  for flag in --help -h --version; do
+    assert_block "add fact $opt $flag (value, not a read-only flag)" "sub-1" "implementer" \
+      "atelier-memory add fact $opt $flag"
+  done
+done
+assert_block "supersede --title --help" "sub-1" "implementer" 'atelier-memory supersede F-1 --title --help'
+assert_block "close --by --version" "sub-1" "implementer" 'atelier-memory close Q-1 --by --version'
+assert_block "import --title --help" "sub-1" "implementer" 'atelier-memory import --title --help'
+assert_block "import --title --dry-run (value, not the dry-run flag)" "sub-1" "implementer" \
+  'atelier-memory import --title --dry-run'
+assert_block "ingest --source -h" "sub-1" "implementer" 'atelier-memory ingest --source -h'
+assert_block "verify --apply with --title --help value" "sub-1" "implementer" \
+  'atelier-memory verify --apply --title --help'
+assert_block "render --title --help into the real vault" "sub-1" "implementer" \
+  'atelier-memory render --title --help --vault ~/Atelier'
+assert_block "render --title --vault \$TMP/iso keeps --vault as a value, inherited real vault" "sub-1" "implementer" \
+  "atelier-memory render --title --vault $TMP/iso" ATELIER_MEMORY_VAULT="$T_HOME/Atelier"
+assert_allow "verify --title --apply is a read-only verify (--apply is the value)" "sub-1" "implementer" \
+  'atelier-memory verify --title --apply'
+
+# Genuine read-only help/version still allowed, for subagents and the top-level session
+for who in "sub-1 implementer" ""; do
+  # shellcheck disable=SC2086
+  set -- $who
+  aid="${1:-}"; atype="${2:-}"; label="${aid:-top-level}"
+  for f in --help -h --version; do
+    assert_allow "$label atelier-memory $f" "$aid" "$atype" "atelier-memory $f"
+  done
+  for r in list show search brief; do
+    assert_allow "$label atelier-memory $r --help" "$aid" "$atype" "atelier-memory $r --help"
+  done
+done
+
+# Drift guard: every parse_opts value option of scripts/atelier-memory is in the hook's MEM_VALUE_OPTS
+parse_names="$TMP/parse-value-opts.txt"
+hook_line="$TMP/hook-mem-value-opts.txt"
+awk '/^parse_opts\(\)/{f=1;next} f&&/^}/{f=0} f&&/needs a value/{ if (match($0,/--[a-z-]+\)/)) print substr($0,RSTART,RLENGTH-1) }' \
+  "$REPO_ROOT/scripts/atelier-memory" >"$parse_names"
+grep '^MEM_VALUE_OPTS=' "$HOOK" >"$hook_line"
+# shellcheck disable=SC2086
+if [ "$(wc -l <"$parse_names" | tr -d ' ')" = "$(printf '%s\n' $VALUE_OPTS | wc -l | tr -d ' ')" ]; then
+  pass "parse_opts value-option count matches the test list ($(wc -l <"$parse_names" | tr -d ' '))"
+else
+  fail "parse_opts value options drifted from the test list: $(tr '\n' ' ' <"$parse_names")"
+fi
+hook_opts_val="$(cat "$hook_line")"
+while IFS= read -r o; do
+  case "$hook_opts_val" in
+    *" $o "*) pass "MEM_VALUE_OPTS lists $o" ;;
+    *) fail "MEM_VALUE_OPTS in the hook is missing parse_opts value option $o" ;;
+  esac
+done <"$parse_names"
+
 echo ""
 if [ "$fails" -eq 0 ]; then
   echo "block-subagent-memory-write: all checks passed"

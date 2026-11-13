@@ -197,11 +197,16 @@ vault_target_check() { # label vault-arg
   return 0
 }
 
+# Options of scripts/atelier-memory parse_opts that consume the next token (#780). Keep in sync; a test diffs it.
+MEM_VALUE_OPTS=" --project --source --title --body --quote --ref --supersedes --by --type --vault "
+
 analyze_memory() { # args after atelier-memory
-  local a sub="" has_dry=0 has_apply=0 end_opts=0 skip_redir=0 take_vault=0 vault_arg=""
+  local a sub="" has_dry=0 has_apply=0 end_opts=0 skip_redir=0 take_vault=0 take_val=0 vault_arg=""
   for a in "$@"; do
     [ "$skip_redir" = 1 ] && { skip_redir=0; continue; }
     [ "$take_vault" = 1 ] && { take_vault=0; vault_arg="$a"; continue; }
+    # The token after a value option is that option's value, never -h/--help/--version, --dry-run, --apply, --vault or -- (#780).
+    [ "$take_val" = 1 ] && { take_val=0; continue; }
     [[ "$a" =~ ^([0-9]*>>?|[0-9]*<<?|&>>?)$ ]] && { skip_redir=1; continue; }
     [[ "$a" =~ $REDIR_RE ]] && continue
     if [ "$end_opts" = 0 ]; then
@@ -212,6 +217,7 @@ analyze_memory() { # args after atelier-memory
         --apply) has_apply=1 ;;
         --vault) take_vault=1; continue ;;
         --vault=*) vault_arg="${a#--vault=}"; continue ;;
+        -*) [ -n "$sub" ] && [[ "$MEM_VALUE_OPTS" == *" $a "* ]] && { take_val=1; continue; } ;;
       esac
     fi
     [ -z "$sub" ] && sub="$a"
