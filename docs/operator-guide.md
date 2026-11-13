@@ -533,7 +533,7 @@ Run it whenever you see that (or anytime you like):
 /atelier:housekeeping
 ```
 
-It first **shows you a categorized list** of what it *could* remove across all your projects — orphan worktrees, merged/closed local branches, merged/closed remote branches — and **why each one is removable**. Nothing is deleted until you explicitly say yes. You can narrow it to one project with `--project <path>`.
+It first **shows you a categorized list** of what it *could* remove across all your projects — orphan worktrees, merged/closed local branches, merged/closed remote branches, plus leftover release (`task/release-<version>`) and catalog pin (`chore/pin-*`) branches and worktrees — and **why each one is removable**. Nothing is deleted until you explicitly say yes. You can narrow it to one project with `--project <path>`.
 
 What it **never** touches, no matter what:
 
@@ -541,6 +541,7 @@ What it **never** touches, no matter what:
 - A branch or worktree with an **open pull request**.
 - A worktree with **unsaved (uncommitted) changes**.
 - The protected branches (`main`, `master`, `develop`, `staging`).
+- A release or pin branch whose merged PR no longer matches the branch tip, one with no PR, or a superseded pin worktree with uncommitted changes — these go under "needs review".
 - **Unmerged** work with no merged PR — these are listed under "needs review" and left alone unless you opt in with `--include-unmerged`.
 
 Want to look without being asked to delete? Run `atelier-housekeeping --report` from a terminal — it only enumerates.

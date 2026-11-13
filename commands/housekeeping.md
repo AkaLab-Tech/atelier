@@ -1,5 +1,5 @@
 ---
-description: Review and clean up the task-cycle debris that auto-merge's per-task cleanup leaves behind — orphan worktrees, merged/closed local `task/*` branches, and merged/closed `origin/task/*` remotes — across every atelier-registered project. Always enumerates first and requires your explicit authorization before deleting anything; never touches claimed tasks (board Status In Progress, or an `IN_PROGRESS.md` entry), open PRs, dirty worktrees, or protected branches.
+description: Review and clean up the task-cycle debris that auto-merge's per-task cleanup leaves behind — orphan worktrees, merged/closed local `task/*` branches, merged/closed `origin/task/*` remotes, and leftover release (`task/release-<v>`) and catalog pin (`chore/pin-<plugin>-v<v>`) branches and worktrees — across every atelier-registered project. Always enumerates first and requires your explicit authorization before deleting anything; never touches claimed tasks (board Status In Progress, or an `IN_PROGRESS.md` entry), open PRs, dirty worktrees, or protected branches.
 argument-hint: "[--project PATH] [--include-unmerged]"
 allowed-tools: Bash(atelier-housekeeping:*)
 ---
@@ -8,6 +8,10 @@ You are running the `/atelier:housekeeping` slash command — the operator-facin
 entry point to atelier's daily worktree/branch cleanup. It wraps the
 `atelier-housekeeping` bash binary, which enumerates removable items across the
 operator's registered projects and deletes them only on authorization.
+Release and pin branches (local, remote, worktree) are classified by PR state
+bound to the branch tip (head sha), never by board claim; a pin worktree with
+uncommitted changes, no PR and an older version than the catalog's current pin
+is listed under needs review and never auto-removed.
 
 The operator authorizes deletion **in this conversation**, not via a TTY prompt
 the binary cannot reach. So this command always runs the read-only report

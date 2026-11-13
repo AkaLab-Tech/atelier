@@ -258,7 +258,7 @@ Absent block or absent key → treat as `true`. Setting a key to `false` disable
 
    Note: this step always targets the **main worktree** (`<project_root>`), never the task worktree — which `auto-merge` has already removed in step 1.
 
-5. **Orphan `task/*` sweep** (when `postMergeCleanup.sweepOrphans` is `true`). Delegates entirely to the existing `atelier-housekeeping` binary — do not hand-roll the enumeration, classification, or deletion:
+5. **Orphan `task/*` sweep** (when `postMergeCleanup.sweepOrphans` is `true`). Also mops up release (`task/release-<v>`) and catalog pin (`chore/pin-*`) leftovers, classified by PR state with head-sha binding. Delegates entirely to the existing `atelier-housekeeping` binary — do not hand-roll the enumeration, classification, or deletion:
 
    ```bash
    atelier-housekeeping --project <project_root> --yes --no-stamp
