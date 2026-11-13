@@ -404,6 +404,11 @@ Capture each item **when it comes up**, not at the end of the session:
   as `$(mktemp -d)` or `/tmp/...`). The hook also blocks a subagent `render` (or any rendering
   subcommand) into an explicit non-isolated vault (`--vault` / `ATELIER_MEMORY_VAULT` pointing at
   `~/Atelier`, the real config dir, `$HOME` or `/`) and refuses a relative `ATELIER_CONFIG_DIR`.
+  The discriminator is the hook payload's `agent_id` / `agent_type` (present in a subagent's
+  payload, absent at top level); `CLAUDE_CODE_CHILD_SESSION` is `1` in both and is not used, so
+  a top-level session is never blocked (#710). If a top-level session is blocked anyway, the
+  block message shows the `agent_id` / `agent_type` that fired: report them, do not work around it.
+  `--version` is read-only and stays allowed.
 - To load Claude Code's own per-project memory files, run
   `atelier-memory import --dry-run`, then `atelier-memory import`.
 - **Inbox drop workflow.** The Obsidian vault at `~/Atelier/` is a regenerated read-only render of

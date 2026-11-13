@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Hermetic regression test for hooks/block-subagent-memory-write.sh (#666).
-# Verifies that chain subagents (.agent_id / .agent_type / CLAUDE_CODE_CHILD_SESSION=1)
+# Verifies that chain subagents (non-empty .agent_id / .agent_type in the payload;
+# CLAUDE_CODE_CHILD_SESSION=1 is NOT a signal, #710)
 # cannot write (add, supersede, close, import) to the real project memory store,
 # while top-level sessions, read-only subcommands, isolated ATELIER_CONFIG_DIR
 # targets, and ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 overrides are allowed.
@@ -92,8 +93,56 @@ assert_block "agent_id set: add" \
   "sub-1" "" 'atelier-memory add fact --project . --source agent-inferred --title x'
 assert_block "agent_type set: add" \
   "" "atelier:implementer" 'atelier-memory add fact --project . --source agent-inferred --title x'
-assert_block "CLAUDE_CODE_CHILD_SESSION=1: add" \
-  "" "" 'atelier-memory add fact --project . --source agent-inferred --title x' CLAUDE_CODE_CHILD_SESSION=1
+
+# #710: CLAUDE_CODE_CHILD_SESSION=1 is set in top-level sessions too; a payload
+# without agent_id/agent_type must stay allowed for every write.
+CCS=CLAUDE_CODE_CHILD_SESSION=1
+assert_allow "top-level + CLAUDE_CODE_CHILD_SESSION=1: add" "" "" \
+  'atelier-memory add fact --project . --source agent-inferred --title x' "$CCS"
+assert_allow "top-level + CLAUDE_CODE_CHILD_SESSION=1: supersede" "" "" \
+  'atelier-memory supersede F-1 --source agent-inferred --title y' "$CCS"
+assert_allow "top-level + CLAUDE_CODE_CHILD_SESSION=1: close" "" "" \
+  'atelier-memory close Q-1 --by D-1' "$CCS"
+assert_allow "top-level + CLAUDE_CODE_CHILD_SESSION=1: import" "" "" \
+  'atelier-memory import --project .' "$CCS"
+assert_allow "top-level + CLAUDE_CODE_CHILD_SESSION=1: ingest" "" "" \
+  'atelier-memory ingest' "$CCS"
+assert_allow "top-level + CLAUDE_CODE_CHILD_SESSION=1: verify --apply" "" "" \
+  'atelier-memory verify --project . --apply' "$CCS"
+assert_allow "top-level + CLAUDE_CODE_CHILD_SESSION=1: render (no vault override)" "" "" \
+  'atelier-memory render' "$CCS"
+
+# The subagent block still holds when the env var is present.
+assert_block "agent_id + CLAUDE_CODE_CHILD_SESSION=1: add" \
+  "sub-1" "" 'atelier-memory add fact --project . --source agent-inferred --title x' "$CCS"
+assert_block "agent_type alone + CLAUDE_CODE_CHILD_SESSION=1: add" \
+  "" "atelier:implementer" 'atelier-memory add fact --project . --source agent-inferred --title x' "$CCS"
+assert_block "agent_id + CLAUDE_CODE_CHILD_SESSION=1: render --vault ~/Atelier" \
+  "sub-1" "" 'atelier-memory render --vault ~/Atelier' "$CCS"
+
+# Block message names the triggering signal and the top-level route.
+run_hook "sub-1" "" 'atelier-memory add fact --project . --source agent-inferred --title x' >/dev/null
+if grep -q 'agent_id=sub-1' "$TMP/stderr"; then
+  pass "block message names the signal (agent_id=sub-1)"
+else
+  fail "block message missing 'agent_id=sub-1' (stderr=$(tr '\n' ' ' <"$TMP/stderr"))"
+fi
+if grep -q 'top-level session runs atelier-memory add' "$TMP/stderr"; then
+  pass "block message gives the top-level route"
+else
+  fail "block message missing the top-level route (stderr=$(tr '\n' ' ' <"$TMP/stderr"))"
+fi
+run_hook "" "atelier:implementer" 'atelier-memory add fact --project . --source agent-inferred --title x' >/dev/null
+if grep -q 'agent_type=atelier:implementer' "$TMP/stderr"; then
+  pass "block message names the signal (agent_type=atelier:implementer)"
+else
+  fail "block message missing 'agent_type=atelier:implementer' (stderr=$(tr '\n' ' ' <"$TMP/stderr"))"
+fi
+
+# #710: --version is read-only for everyone.
+assert_allow "top-level --version" "" "" 'atelier-memory --version'
+assert_allow "subagent --version" "sub-1" "implementer" 'atelier-memory --version'
+assert_allow "subagent --version 2>/dev/null" "sub-1" "implementer" 'atelier-memory --version 2>/dev/null'
 
 # --- 4. Subagent blocked across all write subcommands & path variants ------
 assert_block "subagent supersede" "sub-1" "implementer" \
