@@ -565,7 +565,7 @@ Things to know:
 
 - It must be a **review**. A plain comment in the PR conversation does **not** count, and it would hold the PR as a pending human comment.
 - The waiver covers the code as it is when you submit it. Any later push to the PR makes it stale and you need to waive again.
-- Only a repository admin or maintainer counts, and never the account atelier uses to author or review PRs (or a bot). Atelier reads this live from GitHub; nothing in a local file can grant a waiver. `atelier-size-waiver --project . <owner/repo> <PR number>` shows how a PR is currently judged (`valid`, `none`, `stale` or `untrusted`); every line ends with `source=review` or `source=selector`, telling you which path produced the result.
+- Only a repository admin or maintainer counts, and never the account atelier uses to author or review PRs (or a bot). Atelier reads this live from GitHub; nothing in a local file can grant a waiver. `atelier-size-waiver --project . <owner/repo> <PR number>` shows how a PR is currently judged (`valid`, `none`, `stale` or `untrusted`); every line ends with `source=review` or `source=selector`, telling you which path produced the result. A phrase written by an atelier agent or a bot is ignored and cannot hide your own review; the output counts such reviews as `skipped_agent=<N>`.
 
 **Single-developer setups.** If the GitHub account you use is also the one atelier authors or reviews with, every waiver is `untrusted` and the fallback is to merge the PR manually.
 
@@ -585,7 +585,7 @@ Things to know:
 
 - It must be a **review**. A plain comment in the PR conversation does **not** count, and it would hold the PR as a pending human comment.
 - One approval covers one head commit. Any later push to the PR voids it and you need to approve again.
-- Only a repository admin or maintainer counts, never the account atelier uses to author or review PRs (or a bot). Atelier reads this live from GitHub. `atelier-size-waiver --kind protected-paths <owner/repo> <PR number>` shows how a PR is currently judged (`valid`, `none`, `stale`, `untrusted` or `ambiguous`).
+- Only a repository admin or maintainer counts, never the account atelier uses to author or review PRs (or a bot). Atelier reads this live from GitHub. `atelier-size-waiver --kind protected-paths <owner/repo> <PR number>` shows how a PR is currently judged (`valid`, `none`, `stale`, `untrusted` or `ambiguous`). A phrase written by an atelier agent or a bot is ignored and cannot hide your own approval; the output counts such reviews as `skipped_agent=<N>`.
 - This approval and the size waiver are separate. Approving protected files never waives the size limit, and a size waiver never approves protected files. A single review that contains both kinds of phrase is rejected as ambiguous and counts for neither.
 
 **Residual risk.** Same as for the size waiver: the guarantee rests on atelier's agents not holding your personal GitHub credentials. An agent that pointed `gh` at your personal config (for example `~/.config/gh`) or drove your logged-in Chrome could forge an approval in your name.

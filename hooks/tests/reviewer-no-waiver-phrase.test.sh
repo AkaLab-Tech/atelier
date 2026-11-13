@@ -34,6 +34,17 @@ while IFS= read -r p; do
   if grep -qiF -- "$p" "$REV"; then ok "parity: reviewer.md lists a script phrase ($p)"; else ko "parity: reviewer.md misses script phrase ($p)"; fi
 done <<< "$PHRASES"
 
+# Exact-membership guard (#733 parity gap): pull the pre-post grep -iE pattern out of reviewer.md.
+RE="$(sed -n "s/^grep -iE '\\([^']*\\)' .*review-body\\.md.*/\\1/p" "$REV")"
+NRE=$(printf '%s\n' "$RE" | sed '/^$/d' | wc -l | tr -d ' ')
+if [ "$NRE" = 1 ] && [ -n "$RE" ]; then ok "pattern: exactly one non-empty grep -iE pattern extracted"; else ko "pattern: extracted $NRE patterns (need exactly 1 non-empty)"; fi
+RE_SET="$(tr '|' '\n' <<<"$RE")"
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  if grep -qxF -- "$p" <<<"$RE_SET"; then ok "pattern: exact member ($p)"; else ko "pattern: not an exact member of the grep -iE pattern ($p)"; fi
+  if grep -iqE -- "$RE" <<<"$p"; then ok "pattern: matches phrase case-insensitively ($p)"; else ko "pattern: does not match phrase ($p)"; fi
+done <<< "$PHRASES"
+
 # Negative guard: templates carry no phrase.
 BODY_TPL="$(awk '/^````markdown$/{f=1;next} /^````$/{f=0} f' "$REV")"
 SIZE_TPL="$(awk '/^### Size finding template/{s=1} s&&/^```markdown$/{f=1;next} f&&/^```$/{exit} f' "$REV")"
