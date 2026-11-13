@@ -344,6 +344,54 @@ while IFS= read -r o; do
   esac
 done <"$parse_names"
 
+# --- 11. #782: arguments the hook cannot see (xargs / parallel / find -exec / expansions)
+block_and_top() {
+  assert_block "#782 $1" "sub-1" "implementer" "$2"
+  assert_allow "#782 top-level: $1" "" "" "$2"
+}
+block_and_top "xargs verify" 'printf -- '"'--apply\\n'"' | xargs atelier-memory verify'
+block_and_top "xargs -I{} verify {}" 'printf -- '"'--apply\\n'"' | xargs -I{} atelier-memory verify {}'
+block_and_top "xargs --max-args 1 add" 'xargs --max-args 1 atelier-memory add'
+block_and_top "xargs -J % verify %" 'xargs -J % atelier-memory verify %'
+block_and_top "xargs unknown subcommand" 'printf x | xargs atelier-memory frobnicate'
+block_and_top "xargs sh -c wrapper" "xargs sh -c 'atelier-memory verify \"\$@\"' _"
+block_and_top "parallel verify ::: --apply" 'parallel atelier-memory verify ::: --apply'
+block_and_top "parallel -j 2 verify ::: --apply" 'parallel -j 2 atelier-memory verify ::: --apply'
+block_and_top "parallel add x" 'parallel atelier-memory add x'
+block_and_top "find -exec verify" 'find . -name x -exec atelier-memory verify {} \;'
+block_and_top "find -exec add +" 'find . -exec atelier-memory add x {} +'
+block_and_top "verify with command substitution" 'atelier-memory verify $(printf -- --apply)'
+block_and_top "verify with unset variable" 'atelier-memory verify "$UNSET_VAR"'
+block_and_top "verify with variable holding --apply" 'X=--apply; atelier-memory verify $X'
+block_and_top "xargs render, no visible vault" 'printf x | xargs atelier-memory render'
+block_and_top "xargs render with visible isolated vault" "printf x | xargs atelier-memory render --vault \"$TMP/iso-vault\""
+
+assert_allow "#782 xargs verify with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "printf -- '--apply\\n' | ATELIER_CONFIG_DIR=$ISO xargs atelier-memory verify"
+assert_allow "#782 parallel verify with isolated mktemp ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  'ATELIER_CONFIG_DIR="$(mktemp -d)" parallel atelier-memory verify ::: --apply'
+assert_allow "#782 find -exec add with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "ATELIER_CONFIG_DIR=$ISO find . -exec atelier-memory add {} \\;"
+assert_allow "#782 xargs render with isolated config dir and isolated vault" "sub-1" "implementer" \
+  "printf x | ATELIER_CONFIG_DIR=$ISO xargs atelier-memory render --vault $TMP/iso-vault"
+assert_allow "#782 ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 with xargs verify" "sub-1" "implementer" \
+  "printf -- '--apply\\n' | ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 xargs atelier-memory verify"
+
+assert_allow "#782 xargs -n 1 show (read-only)" "sub-1" "implementer" \
+  'printf x | xargs -n 1 atelier-memory show'
+assert_allow "#782 parallel show ::: Q-1 (read-only)" "sub-1" "implementer" \
+  'parallel atelier-memory show ::: Q-1'
+assert_allow "#782 xargs import --dry-run" "sub-1" "implementer" \
+  'printf x | xargs atelier-memory import --dry-run'
+assert_allow "#782 show with variable id (read-only)" "sub-1" "implementer" \
+  'atelier-memory show "$ID"'
+assert_allow "#782 verify --project with variable (no --apply)" "sub-1" "implementer" \
+  'atelier-memory verify --project "$P"'
+assert_allow "#782 add with command-substitution body and isolated config dir" "sub-1" "implementer" \
+  "ATELIER_CONFIG_DIR=$ISO atelier-memory add fact --project . --source agent-inferred --title x --body \"\$(cat f)\""
+assert_allow "#782 fully visible render with visible isolated vault" "sub-1" "implementer" \
+  "atelier-memory render --vault $TMP/iso-vault"
+
 echo ""
 if [ "$fails" -eq 0 ]; then
   echo "block-subagent-memory-write: all checks passed"

@@ -4,6 +4,9 @@
 # to the real project memory store ($ATELIER_CONFIG_DIR/atelier/memory.db or
 # ~/.claude-work/atelier/memory.db). Top-level sessions own real-store writes;
 # subagents may run read-only subcommands or write to an isolated config dir.
+# When the argument list is not fully visible (xargs, parallel, find -exec, or an
+# unresolved $-expansion) only the read-only subcommands pass; anything else is a
+# write, because the hidden arguments may carry --apply or a different vault (#782).
 # The only discriminator is the payload's agent_id / agent_type (present in a
 # subagent's PreToolUse payload, absent at top level; verified in
 # docs/research/subagent-pretooluse-payload-2026-11.md). CLAUDE_CODE_CHILD_SESSION
@@ -201,7 +204,7 @@ vault_target_check() { # label vault-arg
 MEM_VALUE_OPTS=" --project --source --title --body --quote --ref --supersedes --by --type --vault "
 
 analyze_memory() { # args after atelier-memory
-  local a sub="" has_dry=0 has_apply=0 end_opts=0 skip_redir=0 take_vault=0 take_val=0 vault_arg=""
+  local a sub="" has_dry=0 has_apply=0 end_opts=0 skip_redir=0 take_vault=0 take_val=0 vault_arg="" opaque="${ARGS_OPAQUE:-0}"
   for a in "$@"; do
     [ "$skip_redir" = 1 ] && { skip_redir=0; continue; }
     [ "$take_vault" = 1 ] && { take_vault=0; vault_arg="$a"; continue; }
@@ -209,6 +212,17 @@ analyze_memory() { # args after atelier-memory
     [ "$take_val" = 1 ] && { take_val=0; continue; }
     [[ "$a" =~ ^([0-9]*>>?|[0-9]*<<?|&>>?)$ ]] && { skip_redir=1; continue; }
     [[ "$a" =~ $REDIR_RE ]] && continue
+    # A $-token after the subcommand either resolves cleanly (classify the value, so --apply is seen) or leaves arguments we cannot see (#782).
+    if [ -n "$sub" ]; then
+      case "$a" in
+        *'$'*|*'`'*)
+          expand_cfg "$a"
+          case "$EXP_CFG" in
+            *'$'*|*'`'*|*[[:space:]]*) opaque=1 ;;
+            *) a="$EXP_CFG" ;;
+          esac ;;
+      esac
+    fi
     if [ "$end_opts" = 0 ]; then
       case "$a" in
         --) end_opts=1; continue ;;
@@ -222,12 +236,19 @@ analyze_memory() { # args after atelier-memory
     fi
     [ -z "$sub" ] && sub="$a"
   done
-  # Under xargs the subcommand arrives on stdin, so an absent or placeholder one is a write.
-  if [ "${IN_XARGS:-0}" = 1 ]; then
-    case "$sub" in ''|'{}') sub="xargs-supplied" ;; esac
+  # Under xargs/parallel/find -exec the tail of the command line arrives from elsewhere, so an absent or placeholder subcommand is a write.
+  if [ "$opaque" = 1 ]; then
+    case "$sub" in ''|'{}') sub="opaque-supplied" ;; esac
   fi
   [ -z "$sub" ] && return 0
   case "$sub" in *'$'*) expand_cfg "$sub"; sub="$EXP_CFG" ;; esac
+  if [ "$opaque" = 1 ]; then
+    case "$sub" in
+      list|show|search|brief|path|-h|--help|--version) return 0 ;;
+      import) [ "$has_dry" = 1 ] && return 0 ;;
+    esac
+    check_write "atelier-memory $sub (arguments not fully visible)"; vault_target_check "atelier-memory $sub (arguments not fully visible)" "$vault_arg"; return 0
+  fi
   case "$sub" in
     list|show|search|brief|path|-h|--help|--version) return 0 ;;
     render) vault_target_check "atelier-memory render" "$vault_arg" ;;
@@ -255,7 +276,7 @@ scan_subst() { # token depth
 }
 
 process_script() { # script depth
-  local script="$1" depth="$2" out seg nt i j k c rest t base sub do_split env_split E_UNK xflag has_c IN_XARGS=0
+  local script="$1" depth="$2" out seg nt i j k c rest t base sub do_split env_split E_UNK xflag has_c ARGS_OPAQUE=0
   [ "$depth" -gt 4 ] && return 0
   local -a toks
   lex "$script"; out="$LEX_OUT"
@@ -267,7 +288,7 @@ process_script() { # script depth
     CUR_SEG_TEXT="${toks[*]}"
     E_UNK="$ENV_UNK_IN"; ENV_UNK_IN=""
     E_CFG_STATE="$S_CFG_STATE"; E_CFG_VAL="$S_CFG_VAL"; E_ALLOW="$S_ALLOW"
-    E_MV_SET="$S_MV_SET"; E_MV_VAL="$S_MV_VAL"; IN_XARGS=0
+    E_MV_SET="$S_MV_SET"; E_MV_VAL="$S_MV_VAL"; ARGS_OPAQUE=0
     for t in "${toks[@]}"; do case "$t" in *'$('*|*'`'*) scan_subst "$t" "$depth" ;; esac; done
     i=0
     while [ "$i" -lt "$nt" ]; do
@@ -317,13 +338,27 @@ process_script() { # script depth
           continue ;;
         function) i=$((i + 2)); continue ;;
         xargs)
-          IN_XARGS=1; i=$((i + 1))
+          ARGS_OPAQUE=1; i=$((i + 1))
           while [ "$i" -lt "$nt" ]; do
             case "${toks[$i]}" in
-              -I|-L|-n|-P|-d|-E|-s|-a) i=$((i + 2)) ;;
+              -I|-L|-n|-P|-d|-E|-s|-a|-J|-R|-S|--arg-file|--delimiter|--max-args|--max-procs|--max-chars|--process-slot-var) i=$((i + 2)) ;;
               -*) i=$((i + 1)) ;;
               *) break ;;
             esac
+          done
+          continue ;;
+        parallel)
+          ARGS_OPAQUE=1; i=$((i + 1))
+          while [ "$i" -lt "$nt" ]; do
+            case "${toks[$i]}" in
+              -j|-P|-S|-n|-N|-L|-I|-E|-a|-C|-d|--jobs|--sshlogin|--max-args|--max-replace-args|--arg-file|--colsep|--delimiter) i=$((i + 2)) ;;
+              -*) i=$((i + 1)) ;;
+              *) break ;;
+            esac
+          done
+          # Tokens from the first ::: onward are input values, not command words.
+          for ((j = i; j < nt; j++)); do
+            case "${toks[$j]}" in ':::'*) nt=$j; toks=("${toks[@]:0:$j}"); break ;; esac
           done
           continue ;;
         command|exec|nohup|time|builtin|sudo|nice|stdbuf|timeout|setsid|caffeinate|ionice|coproc)
@@ -357,6 +392,16 @@ process_script() { # script depth
         done ;;
       unset) for ((j = i + 1; j < nt; j++)); do t="${toks[$j]}"; [ "${t:0:1}" = "-" ] || apply_unset S "$t"; done ;;
       atelier-memory) analyze_memory "${toks[@]:$((i + 1))}" ;;
+      find)
+        for ((j = i + 1; j < nt; j++)); do
+          case "${toks[$j]}" in
+            -exec|-execdir|-ok|-okdir)
+              k=$((j + 2)); [ "${toks[$((j + 1))]:-}" = "" ] && continue
+              [ "${toks[$((j + 1))]##*/}" = "atelier-memory" ] || continue
+              for ((c = k; c < nt; c++)); do [ "${toks[$c]}" = ";" ] || [ "${toks[$c]}" = "+" ] && break; done
+              ARGS_OPAQUE=1; analyze_memory "${toks[@]:$k:$((c - k))}"; ARGS_OPAQUE=0 ;;
+          esac
+        done ;;
       bash|sh|zsh|dash|ksh)
         for ((j = i + 1; j < nt; j++)); do
           if [[ "${toks[$j]}" =~ ^-[A-Za-z]*c[A-Za-z]*$ ]] && [ $((j + 1)) -lt "$nt" ]; then
