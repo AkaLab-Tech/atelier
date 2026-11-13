@@ -181,7 +181,7 @@ These words must not appear even in descriptive or negated form (for example "no
 
 An oversize PR is reported only as an auto-merge **blocker for the operator**: the `size` finding plus `Auto-merge: no — oversize`. Whether to slice the PR or override the limit is the operator's decision. Never suggest, draft or pre-fill the override text.
 
-Why: an agent-written phrase is discarded as `waiver=untrusted`. Worse, the resolver takes only the **newest** waiver-bearing review (`scripts/atelier-size-waiver` header steps 2-3), so a reviewer phrase posted after a genuine operator waiver masks it and the PR stays held.
+Why: an agent-written phrase is discarded as `waiver=untrusted`. Worse, the resolver takes only the **newest** waiver-bearing review (`scripts/atelier-size-waiver` header steps 2-3), so a reviewer phrase posted after a genuine operator waiver used to mask it and hold the PR. The resolver now sets agent-authored phrase-bearing reviews aside and counts them in `skipped_agent=<N>`, but the rule stays absolute: an agent phrase is still noise, never a waiver, and is the only result (`untrusted`) when no operator review exists.
 
 ## Confidence-based filtering
 

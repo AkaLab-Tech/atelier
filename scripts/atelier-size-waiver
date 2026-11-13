@@ -9,7 +9,7 @@
 #        atelier-size-waiver --package-json-version-only <owner/repo> <NN>
 #
 # Output: exactly one line on stdout.
-#   waiver=valid kind=<kind> source=review|selector sha=<40-hex> by=<login> at=<iso> review=<url> reason=<text>
+#   waiver=valid kind=<kind> [skipped_agent=<N>] source=review|selector sha=<40-hex> by=<login> at=<iso> review=<url> reason=<text>
 #   waiver=none                      no PR review carries a waiver phrase with a non-empty reason
 #   waiver=stale sha=<40-hex>        newest waiver review covered an older head; sha = that commit
 #   waiver=untrusted by=<login> (<why>)  newest waiver review is from an agent/PR author/bot,
@@ -17,6 +17,8 @@
 #   waiver=ambiguous                 newest review carries phrases of more than one kind; it
 #                                    grants nothing for any kind
 # Every non-valid line ends with `source=review|selector` (which path produced the result).
+# On the review path, `skipped_agent=<N>` (N >= 1) appears right before `source=review` when N
+# agent-authored phrase-bearing reviews were set aside (see decision order step 2); absent when 0.
 # Exit: 0 valid · 1 none/stale/untrusted/ambiguous · 2 error/usage (fail closed, never a pass).
 #
 # A waiver is a PR *review* (state COMMENTED or APPROVED; DISMISSED and CHANGES_REQUESTED do not
@@ -27,9 +29,12 @@
 #
 # Decision order (deterministic):
 #   1. Keep reviews with state COMMENTED/APPROVED, a phrase, and a non-empty reason.
-#   2. Take the NEWEST by submittedAt; none -> waiver=none. Older ones are never consulted.
-#   3. Author is an atelier agent login (gh/author, gh/reviewer, both resolved live), the PR
-#      author, or a bot ([bot] suffix / app/ prefix) -> untrusted.
+#   2. Agent-authored reviews (atelier author/reviewer agent login, resolved live, or a bot:
+#      [bot] suffix / app/ prefix) are set aside first, so an agent-written phrase, even one with
+#      several kinds, cannot mask an older operator review. Of the rest take the NEWEST by
+#      submittedAt; none -> waiver=none. Older ones are never consulted. When ONLY agent reviews
+#      exist, the newest of them is kept and judged in step 3 (untrusted / ambiguous), as before.
+#   3. Author is an agent (the one check from step 2), the PR author, or unknown -> untrusted.
 #   4. commit.oid != current headRefOid -> stale.
 #   5. Author lacks admin/maintain, read live from collaborators/<login>/permission
 #      (HTTP 404 = not a collaborator) -> untrusted. Any other API failure -> exit 2.
@@ -65,7 +70,7 @@
 set -u
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-  sed -n '2,63p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,68p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 fi
 
@@ -200,9 +205,15 @@ pr_json="$(gh pr view "$pr" --repo "$repo" --json author,headRefOid,reviews,url 
 
 # Review path; run in a subshell by the driver below so its exits become a captured result.
 review_path() {
-# Newest phrase-bearing review, as one JSON object (or "null"); reason is whitespace-collapsed.
-cand="$(printf '%s' "$pr_json" | jq -c --arg re "($phrases)" --arg other "($others)" '
-  [ .reviews[]?
+# Chosen phrase-bearing review plus the agent-skip count, as one JSON object; reason is
+# whitespace-collapsed. Agent identity (bot account / author agent / reviewer agent) is decided here,
+# once, before the newest review is chosen: agent-authored reviews are set aside while any non-agent
+# phrase-bearing review exists, so they cannot mask an older operator waiver. With no non-agent
+# review the newest agent one is kept and later judged untrusted, exactly as before.
+sel="$(printf '%s' "$pr_json" | jq -c --arg re "($phrases)" --arg other "($others)" \
+    --arg aa "$author_agent" --arg ra "$reviewer_agent" '
+  ($aa | ascii_downcase) as $aal | ($ra | ascii_downcase) as $ral
+  | [ .reviews[]?
     | select(.state == "COMMENTED" or .state == "APPROVED")
     | . as $r
     | ((.body // "") | capture("(?:" + $re + ")[\\s:—–-]*(?<reason>.*)"; "is")?) as $m
@@ -210,9 +221,23 @@ cand="$(printf '%s' "$pr_json" | jq -c --arg re "($phrases)" --arg other "($othe
     | ((.body // "") | test($other; "i")) as $amb
     | ($m.reason | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "")) as $reason
     | select($amb or $reason != "")
+    | (($r.author.login // "") | ascii_downcase) as $l
     | { amb: $amb, by: ($r.author.login // ""), at: ($r.submittedAt // ""), sha: ($r.commit.oid // ""),
-        url: ($r.url // ""), reason: $reason }
-  ] | sort_by(.at) | last' 2>/dev/null)" || fail "cannot parse PR JSON"
+        url: ($r.url // ""), reason: $reason,
+        agent: (if ($l | endswith("[bot]")) or ($l | startswith("app/")) then "bot account"
+                elif $l == $aal then "atelier author agent"
+                elif $l == $ral then "atelier reviewer agent"
+                else "" end) }
+  ] as $all
+  | ($all | map(select(.agent == ""))) as $human
+  | if ($human | length) > 0
+    then { cand: ($human | sort_by(.at) | last), skipped: (($all | length) - ($human | length)) }
+    else { cand: ($all | sort_by(.at) | last), skipped: 0 } end' 2>/dev/null)" || fail "cannot parse PR JSON"
+[ -n "$sel" ] || fail "empty parse result"
+cand="$(printf '%s' "$sel" | jq -c '.cand')" || fail "cannot parse PR JSON"
+skipped="$(printf '%s' "$sel" | jq -r '.skipped')" || fail "cannot parse PR JSON"
+sk=""
+[ "$skipped" -gt 0 ] && sk=" skipped_agent=$skipped"
 [ -n "$cand" ] || fail "empty parse result"
 
 if [ "$cand" = "null" ]; then
@@ -222,7 +247,7 @@ fi
 
 f() { printf '%s' "$cand" | jq -r ".$1"; }
 if [ "$(f amb)" = "true" ]; then
-  echo "waiver=ambiguous source=review"
+  echo "waiver=ambiguous$sk source=review"
   exit 1
 fi
 by="$(f by)"; at="$(f at)"; sha="$(f sha)"; url="$(f url)"; reason="$(f reason)"
@@ -233,20 +258,16 @@ pr_url="$(printf '%s' "$pr_json" | jq -r '.url // ""')"
 [ -n "$url" ] || url="$pr_url"
 
 lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
-by_lc="$(lc "$by")"
 
-untrusted() { echo "waiver=untrusted by=$by ($1) source=review"; exit 1; }
+untrusted() { echo "waiver=untrusted by=$by ($1)$sk source=review"; exit 1; }
 
 [ -n "$by" ] || untrusted "unknown author"
-case "$by_lc" in
-  *"[bot]"|app/*) untrusted "bot account" ;;
-esac
-[ "$by_lc" != "$(lc "$author_agent")" ] || untrusted "atelier author agent"
-[ "$by_lc" != "$(lc "$reviewer_agent")" ] || untrusted "atelier reviewer agent"
-[ "$by_lc" != "$(lc "$pr_author")" ] || untrusted "PR author"
+agent="$(f agent)"
+[ -z "$agent" ] || untrusted "$agent"
+[ "$(lc "$by")" != "$(lc "$pr_author")" ] || untrusted "PR author"
 
 if [ "$sha" != "$head_sha" ]; then
-  echo "waiver=stale sha=$sha source=review"
+  echo "waiver=stale sha=$sha$sk source=review"
   exit 1
 fi
 
@@ -265,7 +286,7 @@ else
   fail "cannot read permission for $by"
 fi
 
-printf 'waiver=valid kind=%s source=review sha=%s by=%s at=%s review=%s reason=%s\n' "$kind" "$sha" "$by" "$at" "$url" "$reason"
+printf 'waiver=valid kind=%s%s source=review sha=%s by=%s at=%s review=%s reason=%s\n' "$kind" "$sk" "$sha" "$by" "$at" "$url" "$reason"
 exit 0
 }
 

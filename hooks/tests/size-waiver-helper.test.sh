@@ -165,6 +165,50 @@ perm alice admin admin; perm bob write write
 expect "newest untrusted is not rescued by older valid one" \
   "waiver=untrusted by=bob (lacks admin/maintain permission) source=review" 1
 
+echo "== agent reviews skipped (#773) =="
+# A newer agent-authored phrase-bearing review must not mask an operator review (either kind).
+WV="waiver=valid kind=size skipped_agent=1 source=review sha=$H by=alice at=$T1 review=$URL reason=ok"
+setup author "[$(review alice COMMENTED $H $T1 'size waiver: ok'),$(review reviewer-bot COMMENTED $H $T2 'size waiver: agent wrote this')]"
+perm alice admin admin; perm reviewer-bot admin admin
+expect "newer reviewer-agent size phrase skipped -> operator waiver valid" "$WV" 0
+setup author "[$(review alice COMMENTED $H $T1 'size waiver: ok'),$(review author-bot COMMENTED $H $T2 'size waiver: agent wrote this')]"
+perm alice admin admin; perm author-bot admin admin
+expect "newer author-agent size phrase skipped -> operator waiver valid" "$WV" 0
+setup author "[$(review alice COMMENTED $H $T1 'size waiver: ok'),$(review 'dependabot[bot]' COMMENTED $H $T2 'size waiver: bot wrote this')]"
+perm alice admin admin
+expect "newer [bot] size phrase skipped -> operator waiver valid" "$WV" 0
+setup author "[$(review alice COMMENTED $H $T1 'size waiver: ok'),$(review reviewer-bot COMMENTED $H $T2 'size waiver: a'),$(review author-bot COMMENTED $H $T2 'size waiver: b')]"
+perm alice admin admin
+expect "two agent reviews skipped -> skipped_agent=2" \
+  "waiver=valid kind=size skipped_agent=2 source=review sha=$H by=alice at=$T1 review=$URL reason=ok" 0
+
+setup author "[$(review alice COMMENTED $H $T1 'approve protected paths: release reviewed'),$(review reviewer-bot COMMENTED $H $T2 'approve protected paths: agent wrote this')]"
+perm alice admin admin
+expect "protected-paths: newer agent phrase skipped -> operator approval valid" \
+  "waiver=valid kind=protected-paths skipped_agent=1 source=review sha=$H by=alice at=$T1 review=$URL reason=release reviewed" 0 --kind protected-paths o/r 7
+
+setup author "[$(review alice COMMENTED $H $T1 'size waiver: ok'),$(review reviewer-bot COMMENTED $H $T2 'approve protected paths: ok. size waiver: also')]"
+perm alice admin admin
+expect "newer agent review with both kinds skipped -> valid, not ambiguous" "$WV" 0
+
+# Trust is not widened: skipping never upgrades a stale or under-privileged human review.
+setup author "[$(review alice COMMENTED $OLD $T1 'size waiver: ok'),$(review reviewer-bot COMMENTED $H $T2 'size waiver: agent')]"
+perm alice admin admin
+expect "skip does not rescue a stale human waiver" "waiver=stale sha=$OLD skipped_agent=1 source=review" 1
+setup author "[$(review bob COMMENTED $H $T1 'size waiver: ok'),$(review reviewer-bot COMMENTED $H $T2 'size waiver: agent')]"
+perm bob write write
+expect "skip does not rescue an under-privileged human waiver" \
+  "waiver=untrusted by=bob (lacks admin/maintain permission) skipped_agent=1 source=review" 1
+setup carol "[$(review carol COMMENTED $H $T1 'size waiver: mine'),$(review reviewer-bot COMMENTED $H $T2 'size waiver: agent')]"
+perm carol admin admin
+expect "skip does not rescue a PR-author waiver" "waiver=untrusted by=carol (PR author) skipped_agent=1 source=review" 1
+
+# Only agent reviews: unchanged behaviour, newest agent judged untrusted, no token.
+setup author "[$(review author-bot COMMENTED $H $T1 'size waiver: a'),$(review reviewer-bot COMMENTED $H $T2 'size waiver: b')]"
+perm author-bot admin admin; perm reviewer-bot admin admin
+expect "only agent reviews -> newest agent untrusted, no skipped_agent token" \
+  "waiver=untrusted by=reviewer-bot (atelier reviewer agent) source=review" 1
+
 echo "== protected-paths kind =="
 PP() { run --kind protected-paths o/r 7; }
 ppexpect() { # label out rc
@@ -392,6 +436,14 @@ selexpect "untrusted review + valid record -> valid via selector" "$SELOK" 0 "${
 clear_recs
 selexpect "untrusted review + no record -> review result is reported" \
   "waiver=untrusted by=bob (lacks admin/maintain permission) source=review" 1 "${SEL[@]}"
+
+# A newer agent review over a non-valid human review: the record still validates via the selector.
+setup author "[$(review bob COMMENTED $H $T1 'size waiver: please'),$(review reviewer-bot COMMENTED $H $T2 'size waiver: agent')]"
+perm bob write write
+size 1 300 12
+rec "$H" 300 12
+selexpect "agent review over untrusted human review + valid record -> valid via selector (line unchanged)" "$SELOK" 0 "${SEL[@]}"
+clear_recs
 
 echo "== --question (#736) =="
 setup author "[]"
