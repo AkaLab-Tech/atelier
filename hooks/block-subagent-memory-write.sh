@@ -7,7 +7,8 @@
 # When the argument list is not fully visible (xargs, parallel, find -exec, or an
 # unresolved $-expansion) only the read-only subcommands pass; anything else is a
 # write, because the hidden arguments may carry --apply or a different vault (#782).
-# Unlisted xargs/parallel options no longer hide the command word (#786).
+# An unlisted xargs/parallel option followed by a value no longer hides the command
+# word (#786); the forward search runs only right after such an option (#788).
 # The only discriminator is the payload's agent_id / agent_type (present in a
 # subagent's PreToolUse payload, absent at top level; verified in
 # docs/research/subagent-pretooluse-payload-2026-11.md). CLAUDE_CODE_CHILD_SESSION
@@ -279,6 +280,11 @@ scan_subst() { # token depth
 # #786: an option the skip lists above do not know leaves its value at i, which the
 # dispatcher would read as the command. Advance i to the first later token that is
 # atelier-memory or a wrapper/shell the dispatcher handles; with none, leave i alone.
+# #788: callers run this only when the token before toks[i] was an unconsumed option
+# without '=' (so toks[i] may be its value). Known no-value options and attached-value
+# short options (-n1, -I{}) are consumed without it, so `xargs grep atelier-memory`
+# keeps grep as the command. Residual over-block (fails closed): an unknown boolean
+# option followed by a search command, e.g. `xargs --someflag grep atelier-memory`.
 # Reads toks/nt/i from the caller (dynamic scope).
 fwd_opaque_cmd() {
   local j b
@@ -293,7 +299,8 @@ fwd_opaque_cmd() {
 }
 
 process_script() { # script depth
-  local script="$1" depth="$2" out seg nt i j k c rest t base sub do_split env_split E_UNK xflag has_c ARGS_OPAQUE=0
+  local script="$1" depth="$2" out seg nt i j k c rest t base sub do_split env_split E_UNK xflag has_c fwd P_OPAQUE="${OPAQUE_IN:-0}" ARGS_OPAQUE
+  ARGS_OPAQUE="$P_OPAQUE"; OPAQUE_IN=0
   [ "$depth" -gt 4 ] && return 0
   local -a toks
   lex "$script"; out="$LEX_OUT"
@@ -305,7 +312,7 @@ process_script() { # script depth
     CUR_SEG_TEXT="${toks[*]}"
     E_UNK="$ENV_UNK_IN"; ENV_UNK_IN=""
     E_CFG_STATE="$S_CFG_STATE"; E_CFG_VAL="$S_CFG_VAL"; E_ALLOW="$S_ALLOW"
-    E_MV_SET="$S_MV_SET"; E_MV_VAL="$S_MV_VAL"; ARGS_OPAQUE=0
+    E_MV_SET="$S_MV_SET"; E_MV_VAL="$S_MV_VAL"; ARGS_OPAQUE="$P_OPAQUE"
     for t in "${toks[@]}"; do case "$t" in *'$('*|*'`'*) scan_subst "$t" "$depth" ;; esac; done
     i=0
     while [ "$i" -lt "$nt" ]; do
@@ -355,22 +362,26 @@ process_script() { # script depth
           continue ;;
         function) i=$((i + 2)); continue ;;
         xargs)
-          ARGS_OPAQUE=1; i=$((i + 1))
+          ARGS_OPAQUE=1; i=$((i + 1)); fwd=0
           while [ "$i" -lt "$nt" ]; do
             case "${toks[$i]}" in
-              -I|-L|-n|-P|-d|-E|-s|-a|-J|-R|-S|--arg-file|--delimiter|--max-args|--max-procs|--max-chars|--process-slot-var) i=$((i + 2)) ;;
-              -*) i=$((i + 1)) ;;
+              -I|-L|-n|-P|-d|-E|-s|-a|-J|-R|-S|--arg-file|--delimiter|--max-args|--max-procs|--max-chars|--process-slot-var) i=$((i + 2)); fwd=0 ;;
+              -0|-r|-t|-p|-x|-o|--null|--no-run-if-empty|--verbose|--interactive|--exit|--open-tty) i=$((i + 1)); fwd=0 ;;
+              -[ILnPdEsaJRS]?*) i=$((i + 1)); fwd=0 ;;
+              -*) fwd=0; case "${toks[$i]}" in *=*|--) ;; *) fwd=1 ;; esac; i=$((i + 1)) ;;
               *) break ;;
             esac
           done
-          fwd_opaque_cmd
+          [ "$fwd" -eq 1 ] && fwd_opaque_cmd
           continue ;;
         parallel)
-          ARGS_OPAQUE=1; i=$((i + 1))
+          ARGS_OPAQUE=1; i=$((i + 1)); fwd=0
           while [ "$i" -lt "$nt" ]; do
             case "${toks[$i]}" in
-              -j|-P|-S|-n|-N|-L|-I|-E|-a|-C|-d|--jobs|--sshlogin|--max-args|--max-replace-args|--arg-file|--colsep|--delimiter) i=$((i + 2)) ;;
-              -*) i=$((i + 1)) ;;
+              -j|-P|-S|-n|-N|-L|-I|-E|-a|-C|-d|--jobs|--sshlogin|--max-args|--max-replace-args|--arg-file|--colsep|--delimiter) i=$((i + 2)); fwd=0 ;;
+              -0|-k|-q|-u|-v|-r|-X|-m|--null|--keep-order|--quote|--ungroup|--group|--line-buffer|--tag|--dry-run|--bar|--progress|--eta|--xargs|--pipe|--will-cite|--no-notice) i=$((i + 1)); fwd=0 ;;
+              -[jPSnNLIEaCd]?*) i=$((i + 1)); fwd=0 ;;
+              -*) fwd=0; case "${toks[$i]}" in *=*|--) ;; *) fwd=1 ;; esac; i=$((i + 1)) ;;
               *) break ;;
             esac
           done
@@ -378,7 +389,7 @@ process_script() { # script depth
           for ((j = i; j < nt; j++)); do
             case "${toks[$j]}" in ':::'*) nt=$j; toks=("${toks[@]:0:$j}"); break ;; esac
           done
-          fwd_opaque_cmd
+          [ "$fwd" -eq 1 ] && fwd_opaque_cmd
           continue ;;
         command|exec|nohup|time|builtin|sudo|nice|stdbuf|timeout|setsid|caffeinate|ionice|coproc)
           i=$((i + 1)); while [ "$i" -lt "$nt" ]; do case "${toks[$i]}" in -*|[0-9]*) i=$((i + 1)) ;; *) break ;; esac; done; continue ;;
@@ -431,8 +442,8 @@ process_script() { # script depth
       eval)
         sub="${toks[*]:$((i + 1))}"
         if [ -n "$sub" ]; then
-          if [ "$i" -gt 0 ]; then ( S_CFG_STATE="$E_CFG_STATE"; S_CFG_VAL="$E_CFG_VAL"; S_ALLOW="$E_ALLOW"; S_MV_SET="$E_MV_SET"; S_MV_VAL="$E_MV_VAL"; ENV_UNK_IN="$E_UNK"; process_script "$sub" $((depth + 1)) ) || exit $?
-          else process_script "$sub" $((depth + 1)); fi
+          if [ "$i" -gt 0 ]; then ( S_CFG_STATE="$E_CFG_STATE"; S_CFG_VAL="$E_CFG_VAL"; S_ALLOW="$E_ALLOW"; S_MV_SET="$E_MV_SET"; S_MV_VAL="$E_MV_VAL"; ENV_UNK_IN="$E_UNK"; OPAQUE_IN="$ARGS_OPAQUE"; process_script "$sub" $((depth + 1)) ) || exit $?
+          else OPAQUE_IN="$ARGS_OPAQUE"; process_script "$sub" $((depth + 1)); fi
         fi ;;
     esac
   done
