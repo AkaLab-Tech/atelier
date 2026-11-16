@@ -1,0 +1,389 @@
+#!/usr/bin/env bash
+#
+# atelier-project-item — targeted single-item reads and writes against a
+# `github-project` board, so a claim / status move / plan read costs a handful
+# of GraphQL points instead of a board sweep (see atelier-project-cache for why
+# the sweep is expensive). It never lists the board.
+#
+# Usage:
+#   atelier-project-item get <id>        [<project>]
+#   atelier-project-item body <id>       [<project>]
+#   atelier-project-item fields          [<project>] [--force]
+#   atelier-project-item set-status <id> <label> [--from <bucket>] [<project>]
+#   atelier-project-item set-ready <id> true|false [<project>]
+#
+# <project> defaults to $PWD. Ids are given with or without the leading `#`.
+#
+# get      Prints {id, itemId, contentType, issueNumber, status, ready,
+#          priority, estimate}. Resolution order:
+#            1. a numeric id is tried as an issue number in the project's repo
+#               (one repository.issue(number){projectItems} query, keeping the
+#               entry whose project.number matches this board);
+#            2. otherwise (draft items) the itemId cached by
+#               `atelier-project-cache get <id> --no-refresh`, plus one
+#               node(id:) read;
+#            3. otherwise it fails and says to run `atelier-project-cache refresh`.
+#          The repo is `.githubProject.repo` (owner/name) in .roadmap.json, else
+#          derived from the project's `origin` remote.
+# body     Prints the item body (the plan under planStorage: resident); one read.
+# fields   Prints {projectId, fields:[{id,name,options}]} for the single-select
+#          fields, cached on disk for 24h ($ATELIER_PROJECT_ITEM_FIELDS_TTL
+#          seconds). --force refetches.
+# set-status  Sets Status to <label> (a Status option name, or a stateMap bucket
+#          name such as inProgress -> its first mapped status). One
+#          `gh project item-edit`, then `atelier-project-cache patch`. With
+#          --from <bucket> the item is re-read first and the move is refused with
+#          `task-not-in-from-bucket` unless its Status is in that bucket.
+# set-ready   true sets Ready to its option, false clears the field. One
+#          item-edit, then a cache patch.
+#
+# Rate limits: a primary or secondary GraphQL rate limit (including one reported
+# on the item-edit mutation) prints one line with the kind and the retry-after
+# time, exits 4, and is never retried and never falls back to REST.
+#
+# Exit: 0 ok · 1 usage/config/not-found/refused · 2 backend unavailable · 4 rate limited
+# shellcheck disable=SC2016,SC2015 # jq programs and GraphQL documents are literal, not shell
+set -uo pipefail
+
+usage() { sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+die() { printf 'atelier-project-item: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+case "${1:-}" in --help|-h|'') usage; exit 0 ;; esac
+CMD="$1"; shift
+
+# ---------------------------------------------------------------- args
+PROJECT="" ; FORCE=0 ; ID_ARG="" ; LABEL="" ; READY_ARG="" ; FROM=""
+case "$CMD" in
+  get|body|set-status|set-ready) ID_ARG="${1:-}"; [ -n "$ID_ARG" ] || die "$CMD needs a task id"; shift ;;
+  fields) ;;
+  *) die "unknown subcommand: $CMD (try --help)" ;;
+esac
+case "$CMD" in
+  set-status) LABEL="${1:-}"; [ -n "$LABEL" ] || die "set-status needs a status label"; shift ;;
+  set-ready) READY_ARG="${1:-}"; case "$READY_ARG" in true|false) shift ;; *) die "set-ready needs true or false" ;; esac ;;
+esac
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --force) FORCE=1 ;;
+    --from) [ $# -ge 2 ] || die "--from needs a bucket"; FROM="$2"; shift ;;
+    -*) die "unknown flag: $1" ;;
+    *) PROJECT="$1" ;;
+  esac
+  shift
+done
+[ -z "$FROM" ] || [ "$CMD" = set-status ] || die "--from only applies to set-status"
+PROJECT="${PROJECT:-$PWD}"
+PROJECT="$(cd "$PROJECT" 2>/dev/null && pwd -P)" || die "no such directory"
+
+command -v jq >/dev/null 2>&1 || die "jq is required"
+command -v gh >/dev/null 2>&1 || die "gh is required" 2
+
+# ---------------------------------------------------------------- config
+RC="$PROJECT/.roadmap.json"
+[ -f "$RC" ] || die "no .roadmap.json in $PROJECT"
+BACKEND="$(jq -r '.backend // "files"' "$RC")"
+[ "$BACKEND" = "github-project" ] || die "backend is '$BACKEND'; this helper only serves github-project"
+OWNER="$(jq -r '.githubProject.owner // empty' "$RC")"
+NUMBER="$(jq -r '.githubProject.projectNumber // empty' "$RC")"
+[ -n "$OWNER" ] && [ -n "$NUMBER" ] || die "'.githubProject.owner' / '.projectNumber' missing from .roadmap.json"
+PROJECT_ID="$(jq -r '.githubProject.projectId // empty' "$RC")"
+case "$OWNER" in *[!A-Za-z0-9._-]*|''|.|..) die "refusing unsafe githubProject.owner: '$OWNER'" ;; esac
+case "$NUMBER" in *[!0-9]*|'') die "refusing non-numeric githubProject.projectNumber: '$NUMBER'" ;; esac
+
+CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+DIR="$CONFIG_DIR/cache/project-$OWNER-$NUMBER"
+FIELDS_FILE="$DIR/fields.json"
+FIELDS_TTL="${ATELIER_PROJECT_ITEM_FIELDS_TTL:-86400}"
+CACHE_BIN="${ATELIER_PROJECT_CACHE_BIN:-$(dirname "${BASH_SOURCE[0]}")/atelier-project-cache}"
+
+norm_id() { case "$1" in \#*) printf '%s' "$1" ;; *) printf '#%s' "$1" ;; esac; }
+WANT=""
+if [ "$CMD" != fields ]; then
+  WANT="$(norm_id "$ID_ARG")"
+  printf '%s' "$WANT" | grep -Eq '^#[0-9]+[a-z]?$' || die "not a task id: $ID_ARG"
+fi
+
+# ---------------------------------------------------------------- rate limit
+# Same wrapper, wording and semantics as atelier-project-cache (#528): one
+# attempt per call, a limit is a stop signal, exit 4.
+_epoch_hhmm() { date -d "@$1" +%H:%M 2>/dev/null || date -r "$1" +%H:%M 2>/dev/null || printf '??:??'; }
+
+_rate_limit_stop() {
+  local kind="$1" hdr="$2" body="$3" now wait="" reset="" ra rl
+  now="$(date +%s)"
+  ra="$(awk 'tolower($1)=="retry-after:" {print $2; exit}' "$hdr" 2>/dev/null | tr -d '\r ')"
+  rl="$(awk 'tolower($1)=="x-ratelimit-reset:" {print $2; exit}' "$hdr" 2>/dev/null | tr -d '\r ')"
+  case "$ra" in ''|*[!0-9]*) ra="" ;; esac
+  case "$rl" in ''|*[!0-9]*) rl="" ;; esac
+  if [ -n "$ra" ]; then wait="$ra"
+  elif [ -n "$rl" ]; then wait=$(( rl - now ))
+  else
+    reset="$(jq -r '.data.rateLimit.resetAt // empty | fromdateiso8601? // empty' "$body" 2>/dev/null)"
+    if [ -n "$reset" ]; then wait=$(( reset - now ))
+    else
+      # Diagnostic read only: when the window resets, not a fallback for the work.
+      reset="$(gh api rate_limit --jq '.resources.graphql.reset' 2>/dev/null)"
+      case "$reset" in ''|*[!0-9]*) ;; *) wait=$(( reset - now )) ;; esac
+    fi
+  fi
+  if [ -n "$wait" ]; then
+    [ "$wait" -lt 0 ] && wait=0
+    printf 'atelier: GitHub GraphQL rate limit hit (%s) — retry after %ss (~%s local). Stopping; nothing was retried.\n' \
+      "$kind" "$wait" "$(_epoch_hhmm $(( now + wait )))" >&2
+  else
+    printf 'atelier: GitHub GraphQL rate limit hit (%s) — retry after unknown (~??:?? local). Stopping; nothing was retried.\n' "$kind" >&2
+  fi
+  exit 4
+}
+
+# Wording patterns are only trusted on a failed call; on a clean response the
+# only signal is a parsed errors[].type == RATE_LIMITED.
+_detect_rate_limit() {
+  local rc="$1" status="$2" err="$3" hdr="$4" body="$5" kind="" text
+  if [ "$rc" -ne 0 ] || [ "$status" = 403 ] || [ "$status" = 429 ]; then
+    text="$(cat "$err"; head -c 4096 "$body")"
+    if printf '%s' "$text" | grep -Eqi 'secondary rate limit'; then kind=secondary
+    elif printf '%s' "$text" | grep -Eqi 'API rate limit (already )?exceeded'; then kind=primary
+    fi
+  fi
+  if [ -z "$kind" ]; then
+    if jq -e '(.errors? | if type == "array" then any(.[]; type == "object" and .type == "RATE_LIMITED") else false end)' "$body" >/dev/null 2>&1; then kind=primary
+    elif { [ "$status" = 403 ] || [ "$status" = 429 ]; } && grep -qi '^retry-after:' "$hdr"; then kind=secondary
+    fi
+  fi
+  [ -z "$kind" ] || _rate_limit_stop "$kind" "$hdr" "$body"
+}
+
+# gh_graphql <out> [--tolerate-not-found] <gh args...>
+# A response whose every error is NOT_FOUND is still written to <out> when
+# tolerated (an id that is not an issue in this repo is a normal miss).
+gh_graphql() {
+  local out="$1"; shift
+  local tolerate=0
+  if [ "${1:-}" = --tolerate-not-found ]; then tolerate=1; shift; fi
+  local resp err hdr body rc status
+  resp="$(mktemp)"; err="$(mktemp)"; hdr="$(mktemp)"; body="$(mktemp)"
+  gh api graphql -i "$@" > "$resp" 2> "$err"; rc=$?
+  if head -n1 "$resp" | grep -q '^HTTP/'; then
+    awk -v h="$hdr" -v b="$body" '{ sub(/\r$/,"") } !inb { if ($0 == "") { inb=1; next } print > h; next } { print > b }' "$resp"
+  else
+    cp "$resp" "$body"; : > "$hdr"
+  fi
+  [ -e "$body" ] || : > "$body"
+  status="$(head -n1 "$hdr" | awk '{print $2}')"
+  _detect_rate_limit "$rc" "$status" "$err" "$hdr" "$body"
+  if [ "$tolerate" -eq 1 ] && jq -e '(.errors // []) | length > 0 and all(.[]; .type == "NOT_FOUND")' "$body" >/dev/null 2>&1; then
+    cat "$body" > "$out"; rm -f "$resp" "$err" "$hdr" "$body"; return 0
+  fi
+  if [ "$rc" -ne 0 ]; then
+    local msg; msg="$(head -n1 "$err")"
+    rm -f "$resp" "$err" "$hdr" "$body"
+    die "gh api graphql failed${msg:+: $msg} (auth, missing 'project' scope, or network)" 2
+  fi
+  if jq -e '(.errors // []) | length > 0' "$body" >/dev/null 2>&1; then
+    local emsg; emsg="$(jq -r '.errors[0].message // "unknown error"' "$body")"
+    rm -f "$resp" "$err" "$hdr" "$body"
+    die "graphql error: $emsg" 2
+  fi
+  cat "$body" > "$out"
+  rm -f "$resp" "$err" "$hdr" "$body"
+}
+
+# ---------------------------------------------------------------- repo
+repo_slug() {
+  local r
+  r="${ATELIER_PROJECT_ITEM_REPO:-$(jq -r '.githubProject.repo // empty' "$RC")}"
+  if [ -z "$r" ]; then
+    r="$(git -C "$PROJECT" remote get-url origin 2>/dev/null | sed -E 's#^(https?://[^/]+/|git@[^:]+:|ssh://[^/]+/)##; s#\.git$##')"
+  fi
+  printf '%s' "$r" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' || return 1
+  printf '%s' "$r"
+}
+
+# ---------------------------------------------------------------- reads
+_FV='fragment FV on ProjectV2ItemFieldValue { ... on ProjectV2ItemFieldSingleSelectValue { name } ... on ProjectV2ItemFieldTextValue { text } ... on ProjectV2ItemFieldNumberValue { number } }'
+_ITEM_FIELDS='id st: fieldValueByName(name: "Status") { ...FV } rd: fieldValueByName(name: "Ready") { ...FV } pr: fieldValueByName(name: "Priority") { ...FV } es: fieldValueByName(name: "Estimate") { ...FV }'
+
+# Normalises one ProjectV2Item node (jq input) into the get shape.
+_ITEM_JQ='def fv: if . == null then null else (.name // .text // .number) end;
+  def item: { id: $id, itemId: .id, contentType: (.content.__typename // null),
+    issueNumber: (if .content.__typename == "Issue" then .content.number else null end),
+    status: (.st | fv), ready: (.rd | fv), priority: (.pr | fv), estimate: (.es | fv) };'
+
+# $1: with-body (0|1). Sets ITEM_JSON (normalised, plus .body when asked) or returns 1.
+ITEM_JSON=""
+_resolve_via_issue() {
+  local withbody="$1" slug owner name num resp sel
+  case "$WANT" in \#*[a-z]) return 1 ;; esac
+  num="${WANT#\#}"
+  slug="$(repo_slug)" || return 1
+  owner="${slug%%/*}"; name="${slug#*/}"
+  resp="$(mktemp)"
+  sel='content { __typename ... on Issue { number } }'
+  gh_graphql "$resp" --tolerate-not-found \
+    -f "query=query(\$owner: String!, \$name: String!, \$num: Int!) { rateLimit { cost remaining resetAt } repository(owner: \$owner, name: \$name) { issue(number: \$num) { $( [ "$withbody" = 1 ] && printf 'body ') projectItems(first: 10) { nodes { project { number } $sel $_ITEM_FIELDS } } } } } $_FV" \
+    -f "owner=$owner" -f "name=$name" -F "num=$num"
+  ITEM_JSON="$(jq -c --arg id "$WANT" --argjson pn "$NUMBER" --argjson wb "$withbody" "$_ITEM_JQ"'
+    def pick: (first(.projectItems.nodes[]? | select(.project.number == $pn)) // null);
+    (.data.repository.issue // null) as $i
+    | if $i == null then empty
+      else ($i | pick) as $n
+        | if $n == null then empty
+          else ($n | item) + (if $wb == 1 then {body: ($i.body // "")} else {} end) end
+      end' "$resp" 2>/dev/null | head -n1)"
+  rm -f "$resp"
+  [ -n "$ITEM_JSON" ]
+}
+
+# itemId (and content type) of a draft from the offline cache. Prints the row.
+_cached_row() {
+  "$CACHE_BIN" get "$WANT" "$PROJECT" --no-refresh 2>/dev/null
+}
+
+_read_node() {
+  local iid="$1" withbody="$2" resp sel
+  resp="$(mktemp)"
+  sel='content { __typename ... on Issue { number } }'
+  [ "$withbody" = 1 ] && sel='content { __typename ... on Issue { number body } ... on DraftIssue { body } }'
+  gh_graphql "$resp" \
+    -f "query=query(\$itemId: ID!) { rateLimit { cost remaining resetAt } node(id: \$itemId) { ... on ProjectV2Item { $sel $_ITEM_FIELDS } } } $_FV" \
+    -f "itemId=$iid"
+  ITEM_JSON="$(jq -c --arg id "$WANT" --argjson wb "$withbody" "$_ITEM_JQ"'
+    (.data.node // null) as $n
+    | if $n == null or $n.id == null then empty
+      else ($n | item) + (if $wb == 1 then {body: ($n.content.body // "")} else {} end) end' "$resp" 2>/dev/null | head -n1)"
+  rm -f "$resp"
+  [ -n "$ITEM_JSON" ]
+}
+
+resolve_item() {
+  local withbody="${1:-0}" row iid
+  _resolve_via_issue "$withbody" && return 0
+  if row="$(_cached_row)" && [ -n "$row" ]; then
+    iid="$(printf '%s' "$row" | jq -r '.itemId // empty')"
+    if [ -n "$iid" ] && _read_node "$iid" "$withbody"; then return 0; fi
+  fi
+  die "cannot resolve $WANT without sweeping the board (not an issue on this project, and no cached itemId); run: atelier-project-cache refresh"
+}
+
+# Item id for a write. A draft's itemId is stable, so the free offline cache
+# comes first; only then is the issue query spent.
+resolve_item_id() {
+  local row iid
+  if row="$(_cached_row)" && [ -n "$row" ]; then
+    iid="$(printf '%s' "$row" | jq -r '.itemId // empty')"
+    [ -z "$iid" ] || { printf '%s' "$iid"; return 0; }
+  fi
+  if _resolve_via_issue 0; then printf '%s' "$ITEM_JSON" | jq -r '.itemId'; return 0; fi
+  die "cannot resolve $WANT without sweeping the board (not an issue on this project, and no cached itemId); run: atelier-project-cache refresh"
+}
+
+# ---------------------------------------------------------------- fields
+_fields_fresh() {
+  [ "$FORCE" -eq 0 ] && [ -f "$FIELDS_FILE" ] || return 1
+  jq -e '.projectId and (.fields | type == "array")' "$FIELDS_FILE" >/dev/null 2>&1 || return 1
+  local m now
+  m="$(stat -c %Y "$FIELDS_FILE" 2>/dev/null || stat -f %m "$FIELDS_FILE" 2>/dev/null)" || return 1
+  case "$m" in ''|*[!0-9]*) return 1 ;; esac
+  now="$(date +%s)"
+  [ $(( now - m )) -lt "$FIELDS_TTL" ]
+}
+
+load_fields() {
+  _fields_fresh && return 0
+  local resp sel
+  resp="$(mktemp)"
+  sel='id fields(first: 50) { nodes { ... on ProjectV2SingleSelectField { id name options { id name } } } }'
+  if [ -n "$PROJECT_ID" ]; then
+    gh_graphql "$resp" -f "query=query(\$pid: ID!) { rateLimit { cost remaining resetAt } node(id: \$pid) { ... on ProjectV2 { $sel } } }" -f "pid=$PROJECT_ID"
+  else
+    gh_graphql "$resp" -f "query=query(\$owner: String!, \$number: Int!) { rateLimit { cost remaining resetAt } repositoryOwner(login: \$owner) { ... on ProjectV2Owner { projectV2(number: \$number) { $sel } } } }" \
+      -f "owner=$OWNER" -F "number=$NUMBER"
+  fi
+  mkdir -p "$DIR" || die "cannot create $DIR"
+  jq '(.data.node // .data.repositoryOwner.projectV2) as $p
+      | if $p == null or $p.id == null then error("project not found")
+        else {projectId: $p.id, fields: [ $p.fields.nodes[] | select(.id != null) ]} end' "$resp" > "$FIELDS_FILE.tmp.$$" 2>/dev/null \
+    || { rm -f "$resp" "$FIELDS_FILE.tmp.$$"; die "project $OWNER/$NUMBER not found or not readable (check githubProject.owner/projectNumber/projectId and the 'project' scope)" 2; }
+  mv "$FIELDS_FILE.tmp.$$" "$FIELDS_FILE"
+  rm -f "$resp"
+}
+
+# ---------------------------------------------------------------- write
+_gh_item_edit() {
+  local err out rc hdr body
+  err="$(mktemp)"; out="$(mktemp)"; hdr="$(mktemp)"; body="$(mktemp)"
+  gh project item-edit "$@" > "$out" 2> "$err"; rc=$?
+  cp "$out" "$body"; : > "$hdr"
+  _detect_rate_limit "$rc" "" "$err" "$hdr" "$body"
+  if [ "$rc" -ne 0 ]; then
+    local msg; msg="$(head -n1 "$err")"
+    rm -f "$err" "$out" "$hdr" "$body"
+    die "gh project item-edit failed${msg:+: $msg}" 2
+  fi
+  rm -f "$err" "$out" "$hdr" "$body"
+}
+
+field_id() { jq -r --arg n "$1" 'first(.fields[] | select(.name == $n) | .id) // empty' "$FIELDS_FILE"; }
+option_id() { jq -r --arg f "$1" --arg o "$2" 'first(.fields[] | select(.name == $f) | .options[] | select((.name | ascii_downcase) == ($o | ascii_downcase)) | .id) // empty' "$FIELDS_FILE"; }
+
+# ---------------------------------------------------------------- commands
+case "$CMD" in
+  get) resolve_item 0; printf '%s\n' "$ITEM_JSON" ;;
+
+  body)
+    resolve_item 1
+    b="$(printf '%s' "$ITEM_JSON" | jq -r '.body // ""')"
+    [ -n "$b" ] || die "item $WANT has no body"
+    printf '%s\n' "$b" ;;
+
+  fields) load_fields; cat "$FIELDS_FILE" ;;
+
+  set-status)
+    status_name="$LABEL"
+    # A stateMap bucket name resolves to its first mapped status.
+    mapped="$(jq -r --arg b "$LABEL" '.githubProject.stateMap[$b][0]? // empty' "$RC")"
+    if [ -n "$mapped" ]; then status_name="$mapped"; fi
+    if [ -n "$FROM" ]; then
+      allowed="$(jq -c --arg b "$FROM" '.githubProject.stateMap[$b] // empty' "$RC")"
+      [ -n "$allowed" ] || die "unknown --from bucket '$FROM' (not in .roadmap.json stateMap)"
+      resolve_item 0
+      printf '%s' "$ITEM_JSON" | jq -e --argjson a "$allowed" '.status as $s | $s != null and ($a | index($s))' >/dev/null \
+        || die "task-not-in-from-bucket: $WANT has Status '$(printf '%s' "$ITEM_JSON" | jq -r '.status // "none"')', not in bucket '$FROM'"
+      iid="$(printf '%s' "$ITEM_JSON" | jq -r '.itemId')"
+    else
+      iid="$(resolve_item_id)" || exit $?
+    fi
+    load_fields
+    fid="$(field_id Status)"; [ -n "$fid" ] || die "board has no single-select Status field"
+    oid="$(option_id Status "$status_name")"
+    if [ -z "$oid" ]; then
+      FORCE=1; load_fields
+      oid="$(option_id Status "$status_name")"
+    fi
+    [ -n "$oid" ] || die "Status has no option '$status_name' (options: $(jq -r '[.fields[] | select(.name=="Status") | .options[].name] | join(", ")' "$FIELDS_FILE"))"
+    pid="$(jq -r '.projectId' "$FIELDS_FILE")"
+    _gh_item_edit --id "$iid" --project-id "$pid" --field-id "$fid" --single-select-option-id "$oid"
+    "$CACHE_BIN" patch "$WANT" --status "$status_name" "$PROJECT" >/dev/null 2>&1 \
+      || printf 'atelier-project-item: warning: board updated, but the local cache row for %s was not patched; run: atelier-project-cache invalidate %s\n' "$WANT" "$WANT" >&2
+    printf 'item %s status set to %s\n' "$WANT" "$status_name" ;;
+
+  set-ready)
+    iid="$(resolve_item_id)" || exit $?
+    load_fields
+    fid="$(field_id Ready)"; [ -n "$fid" ] || die "board has no single-select Ready field"
+    pid="$(jq -r '.projectId' "$FIELDS_FILE")"
+    if [ "$READY_ARG" = true ]; then
+      ready_name="$(jq -r --arg f Ready 'first(.fields[] | select(.name == $f) | .options[0].name) // empty' "$FIELDS_FILE")"
+      oid="$(option_id Ready "$ready_name")"
+      [ -n "$oid" ] || die "Ready field has no option to set"
+      _gh_item_edit --id "$iid" --project-id "$pid" --field-id "$fid" --single-select-option-id "$oid"
+      patch_ready="$ready_name"
+    else
+      _gh_item_edit --id "$iid" --project-id "$pid" --field-id "$fid" --clear
+      patch_ready=""
+    fi
+    "$CACHE_BIN" patch "$WANT" --ready "$patch_ready" "$PROJECT" >/dev/null 2>&1 \
+      || printf 'atelier-project-item: warning: board updated, but the local cache row for %s was not patched; run: atelier-project-cache invalidate %s\n' "$WANT" "$WANT" >&2
+    printf 'item %s ready set to %s\n' "$WANT" "$READY_ARG" ;;
+esac

@@ -1677,6 +1677,9 @@ phase_c_1_setup_project_helper() {
   # the canonical next-id / duplicates id allocator (ids live in the Atelier ID
   # field AND as a #NNN title prefix; reading one source hands out taken ids).
   _phase_c_1_symlink_helper atelier-project-cache
+  # atelier-project-item: targeted single-item get/body/set-status/set-ready over
+  # the same board, so a claim or move never re-sweeps it (#529).
+  _phase_c_1_symlink_helper atelier-project-item
   # M4.23 / M4.27 / M4.28: atelier-setup-{coolify,vercel,neon} install +
   # configure the optional integration plugins. Invoked by the Phase C.2 opt-in
   # prompts and by /atelier:setup-{coolify,vercel,neon}.
