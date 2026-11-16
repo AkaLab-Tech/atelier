@@ -335,11 +335,41 @@ has "$net_out" '3 items' && has "$net_out" '3 graphql points' && pass "refresh o
 PNN="$T/netproj2"; mkproj "$PNN"
 : > "$SHIM_DIR/calls.log"
 cp "$SHIM_DIR/page-first.http" "$SHIM_DIR/page-first.keep"
-http200 "$SHIM_DIR/page-first.http" '{"data":{"rateLimit":{"cost":2},"organization":{"projectV2":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"N1","content":{"__typename":"DraftIssue","id":"DN1","title":"#5 By number"},"st":{"name":"Todo"},"aid":{"text":"5"}}]}}}}}'
+http200 "$SHIM_DIR/page-first.http" '{"data":{"rateLimit":{"cost":2},"repositoryOwner":{"projectV2":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"N1","content":{"__typename":"DraftIssue","id":"DN1","title":"#5 By number"},"st":{"name":"Todo"},"aid":{"text":"5"}}]}}}}}'
 bash "$PC" refresh "$PNN" >/dev/null 2>&1
 nl1="$(sed -n 1p "$SHIM_DIR/calls.log")"
 has "$nl1" 'owner=AcmeOrg|' && has "$nl1" 'number=7|' && ! has "$nl1" 'projectId=' && pass "without a projectId the board is addressed by owner and number" || fail "by-number argv wrong: $nl1"
-jq -e '.items[0].id=="#5" and .items[0].itemId=="N1"' "$ATELIER_CONFIG_DIR/cache/project-AcmeOrg-7/index.json" >/dev/null 2>&1 && pass "organization.projectV2 payloads index the same way" || fail "by-number index wrong"
+jq -e '.items[0].id=="#5" and .items[0].itemId=="N1"' "$ATELIER_CONFIG_DIR/cache/project-AcmeOrg-7/index.json" >/dev/null 2>&1 && pass "repositoryOwner.projectV2 payloads index the same way" || fail "by-number index wrong"
+has "$nl1" 'repositoryOwner(' && ! has "$nl1" 'organization(' && pass "the by-number query uses repositoryOwner( and not organization(" || fail "by-number query shape wrong: $nl1"
+
+# user-owned board: same repositoryOwner shape, addressed by the user login
+PUSR="$T/userproj"; mkdir -p "$PUSR"
+cat > "$PUSR/.roadmap.json" <<'JSON'
+{ "backend": "github-project", "offlineMirror": false,
+  "githubProject": { "owner": "some-user", "projectNumber": 3 } }
+JSON
+: > "$SHIM_DIR/calls.log"
+bash "$PC" refresh "$PUSR" >/dev/null 2>&1; usr_rc=$?
+ul1="$(sed -n 1p "$SHIM_DIR/calls.log")"
+[ "$usr_rc" -eq 0 ] && has "$ul1" 'owner=some-user|' && has "$ul1" 'number=3|' && pass "a user-owned board refreshes by owner login and number" || fail "user-owned refresh rc=$usr_rc argv: $ul1"
+jq -e '.items[0].id=="#5" and .items[0].itemId=="N1"' "$ATELIER_CONFIG_DIR/cache/project-some-user-3/index.json" >/dev/null 2>&1 && pass "a user-owned repositoryOwner.projectV2 payload indexes the same way" || fail "user-owned index wrong"
+
+# repositoryOwner: null -> exit 2, "not found", nothing written for a fresh project
+http200 "$SHIM_DIR/page-first.http" '{"data":{"rateLimit":{"cost":1},"repositoryOwner":null}}'
+PNUL="$T/nullowner"; mkdir -p "$PNUL"
+cat > "$PNUL/.roadmap.json" <<'JSON'
+{ "backend": "github-project", "offlineMirror": false,
+  "githubProject": { "owner": "ghost-owner", "projectNumber": 4 } }
+JSON
+nul_out="$(bash "$PC" refresh "$PNUL" 2>&1)"; nul_rc=$?
+[ "$nul_rc" -eq 2 ] && has "$nul_out" 'not found' && pass "a null repositoryOwner exits 2 with a not-found message" || fail "null owner rc=$nul_rc: $nul_out"
+[ ! -e "$ATELIER_CONFIG_DIR/cache/project-ghost-owner-4/index.json" ] && pass "a null repositoryOwner writes no index for a fresh project" || fail "index written for a null owner"
+# same failure against an existing cache leaves it intact
+UIDX="$ATELIER_CONFIG_DIR/cache/project-some-user-3/index.json"
+ubefore="$(cksum < "$UIDX")"
+touch -t 200001010000 "$UIDX"
+nul2_out="$(bash "$PC" refresh "$PUSR" 2>&1)"; nul2_rc=$?
+[ "$nul2_rc" -eq 2 ] && has "$nul2_out" 'not found' && [ "$(cksum < "$UIDX")" = "$ubefore" ] && jq -e '.items[0].id=="#5"' "$UIDX" >/dev/null 2>&1 && pass "a null repositoryOwner leaves the previous cache intact" || fail "previous cache damaged or wrong rc=$nul2_rc: $nul2_out"
 cp "$SHIM_DIR/page-first.keep" "$SHIM_DIR/page-first.http"
 
 # --- body: 1 call on first read, 0 on the second ---

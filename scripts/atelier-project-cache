@@ -307,13 +307,13 @@ gh_graphql() {
 _FIELD_FRAGMENT='fragment FV on ProjectV2ItemFieldValue { ... on ProjectV2ItemFieldSingleSelectValue { name } ... on ProjectV2ItemFieldTextValue { text } ... on ProjectV2ItemFieldNumberValue { number } }'
 _ITEMS_SELECTION='items(first: 100, after: $endCursor) { pageInfo { hasNextPage endCursor } nodes { id content { __typename ... on DraftIssue { id title } ... on Issue { number title } ... on PullRequest { number title } } st: fieldValueByName(name: "Status") { ...FV } rd: fieldValueByName(name: "Ready") { ...FV } pr: fieldValueByName(name: "Priority") { ...FV } es: fieldValueByName(name: "Estimate") { ...FV } kd: fieldValueByName(name: "Kind") { ...FV } aid: fieldValueByName(name: "Atelier ID") { ...FV } tr: fieldValueByName(name: "Target Repo") { ...FV } } }'
 _Q_BY_ID='query($projectId: ID!, $endCursor: String) { rateLimit { cost remaining resetAt } node(id: $projectId) { ... on ProjectV2 { '"$_ITEMS_SELECTION"' } } } '"$_FIELD_FRAGMENT"
-_Q_BY_NUMBER='query($owner: String!, $number: Int!, $endCursor: String) { rateLimit { cost remaining resetAt } organization(login: $owner) { projectV2(number: $number) { '"$_ITEMS_SELECTION"' } } } '"$_FIELD_FRAGMENT"
+_Q_BY_NUMBER='query($owner: String!, $number: Int!, $endCursor: String) { rateLimit { cost remaining resetAt } repositoryOwner(login: $owner) { ... on ProjectV2Owner { projectV2(number: $number) { '"$_ITEMS_SELECTION"' } } } } '"$_FIELD_FRAGMENT"
 
 # One page of items -> the flat item shape the index builder consumes
 # (lower-cased field keys, content.{id,type,number}).
 _NORMALIZE_JQ='
   def fv: if . == null then null else (.name // .text // .number) end;
-  ((.data.node // .data.organization.projectV2).items.nodes // [])
+  ((.data.node // .data.repositoryOwner.projectV2).items.nodes // [])
   | map({ id: .id, title: (.content.title // ""),
           content: { id: (.content.id // null), type: (.content.__typename // null), number: (.content.number // null) },
           status: (.st | fv), ready: (.rd | fv), priority: (.pr | fv), estimate: (.es | fv),
@@ -335,16 +335,16 @@ _fetch_pages() {
     fi
     [ -n "$cursor" ] && args+=(-f "endCursor=$cursor")
     gh_graphql "$resp" "${args[@]}"
-    jq -e '(.data.node // .data.organization.projectV2).items | type == "object"' "$resp" >/dev/null 2>&1 \
-      || { rm -f "$resp" "$pagef"; die "project not found or not readable (check githubProject.owner/projectNumber/projectId and the 'project' scope)" 2; }
+    jq -e '(.data.node // .data.repositoryOwner.projectV2).items | type == "object"' "$resp" >/dev/null 2>&1 \
+      || { rm -f "$resp" "$pagef"; die "project ${OWNER:-?}/${NUMBER:-?} not found or not readable (check githubProject.owner/projectNumber/projectId and the 'project' scope)" 2; }
     jq "$_NORMALIZE_JQ" "$resp" > "$pagef.n" 2>/dev/null \
       && jq -s '.[0] + .[1]' "$pagef" "$pagef.n" > "$pagef.new" 2>/dev/null \
       || { rm -f "$resp" "$pagef" "$pagef.n" "$pagef.new"; die "unexpected graphql payload" 2; }
     rm -f "$pagef.n"
     mv "$pagef.new" "$pagef"
     PAGES_COST=$(( PAGES_COST + $(jq -r '.data.rateLimit.cost // 0' "$resp") ))
-    if [ "$(jq -r '(.data.node // .data.organization.projectV2).items.pageInfo.hasNextPage' "$resp")" != true ]; then break; fi
-    cursor="$(jq -r '(.data.node // .data.organization.projectV2).items.pageInfo.endCursor // empty' "$resp")"
+    if [ "$(jq -r '(.data.node // .data.repositoryOwner.projectV2).items.pageInfo.hasNextPage' "$resp")" != true ]; then break; fi
+    cursor="$(jq -r '(.data.node // .data.repositoryOwner.projectV2).items.pageInfo.endCursor // empty' "$resp")"
     if [ -z "$cursor" ] || [ "$page" -ge "$max_pages" ]; then PAGES_COMPLETE=false; break; fi
   done
   jq '{items: .}' "$pagef" > "$out"
