@@ -7,6 +7,7 @@
 # When the argument list is not fully visible (xargs, parallel, find -exec, or an
 # unresolved $-expansion) only the read-only subcommands pass; anything else is a
 # write, because the hidden arguments may carry --apply or a different vault (#782).
+# Unlisted xargs/parallel options no longer hide the command word (#786).
 # The only discriminator is the payload's agent_id / agent_type (present in a
 # subagent's PreToolUse payload, absent at top level; verified in
 # docs/research/subagent-pretooluse-payload-2026-11.md). CLAUDE_CODE_CHILD_SESSION
@@ -275,6 +276,22 @@ scan_subst() { # token depth
   done
 }
 
+# #786: an option the skip lists above do not know leaves its value at i, which the
+# dispatcher would read as the command. Advance i to the first later token that is
+# atelier-memory or a wrapper/shell the dispatcher handles; with none, leave i alone.
+# Reads toks/nt/i from the caller (dynamic scope).
+fwd_opaque_cmd() {
+  local j b
+  _fwd_is() { case "$1" in *'$'*) expand_cfg "$1"; b="${EXP_CFG##*/}" ;; *) b="${1##*/}" ;; esac
+    case "$b" in atelier-memory|env|command|exec|nohup|time|builtin|sudo|nice|stdbuf|timeout|setsid|caffeinate|ionice|bash|sh|zsh|dash|ksh|eval) return 0 ;; esac; return 1; }
+  [ "$i" -ge "$nt" ] && return 0
+  _fwd_is "${toks[$i]}" && return 0
+  for ((j = i + 1; j < nt; j++)); do
+    _fwd_is "${toks[$j]}" && { i=$j; return 0; }
+  done
+  return 0
+}
+
 process_script() { # script depth
   local script="$1" depth="$2" out seg nt i j k c rest t base sub do_split env_split E_UNK xflag has_c ARGS_OPAQUE=0
   [ "$depth" -gt 4 ] && return 0
@@ -346,6 +363,7 @@ process_script() { # script depth
               *) break ;;
             esac
           done
+          fwd_opaque_cmd
           continue ;;
         parallel)
           ARGS_OPAQUE=1; i=$((i + 1))
@@ -360,6 +378,7 @@ process_script() { # script depth
           for ((j = i; j < nt; j++)); do
             case "${toks[$j]}" in ':::'*) nt=$j; toks=("${toks[@]:0:$j}"); break ;; esac
           done
+          fwd_opaque_cmd
           continue ;;
         command|exec|nohup|time|builtin|sudo|nice|stdbuf|timeout|setsid|caffeinate|ionice|coproc)
           i=$((i + 1)); while [ "$i" -lt "$nt" ]; do case "${toks[$i]}" in -*|[0-9]*) i=$((i + 1)) ;; *) break ;; esac; done; continue ;;
