@@ -190,6 +190,74 @@ out="$(bash "$PI" set-status 77 Done "$P" 2>&1)"; rc=$?
 out="$(bash "$PI" set-status 77 Bogus "$P" 2>&1)"; rc=$?
 [ "$rc" -eq 1 ] && has "$out" "no option 'Bogus'" && pass "unknown Status option is refused with the option list" || fail "bogus status rc=$rc: $out"
 
+echo "-- id collision: draft #277 vs repo issue #277 (cache-first, identity check) --"
+issue_nodes() {  # $1 = JSON of extra keys for the project-7 item (aid / title)
+  http200 "$SHIM_DIR/resp-issue.http" '{"data":{"repository":{"issue":{"body":"Issue body.","projectItems":{"nodes":[{"project":{"number":7},"id":"PVTI_i277","content":{"__typename":"Issue","number":277'"$1"'},"st":{"name":"Done"},"rd":null,"pr":null,"es":null'"$2"'}]}}}}}'
+}
+issue_nodes ',"title":"Some issue"' ''
+http200 "$SHIM_DIR/resp-node.http" '{"data":{"node":{"id":"PVTI_d277","content":{"__typename":"DraftIssue","body":"Draft 277 body."},"st":{"name":"Todo"},"rd":null,"pr":null,"es":null}}}'
+DROW='{"id":"#277","itemId":"PVTI_d277"}'
+
+reset
+printf '%s' "$DROW" > "$SHIM_DIR/cache-row"
+out="$(bash "$PI" get 277 "$P" 2>&1)"; rc=$?
+{ [ "$rc" -eq 0 ] && [ "$(printf '%s' "$out" | jq -r '[.itemId,.contentType,.status] | join(",")')" = "PVTI_d277,DraftIssue,Todo" ]; } && pass "collision get: resolves the cached draft, not the issue" || fail "collision get rc=$rc: $out"
+[ "$(cnt "$LOG" 'repository(owner')" = 0 ] && [ "$(cnt "$LOG" 'node(id: $itemId')" = 1 ] && [ "$(gh_total)" = 1 ] && pass "collision get: 1 node(id:) read, 0 issue queries" || fail "collision get calls: $(cat "$LOG")"
+
+reset
+printf '%s' "$DROW" > "$SHIM_DIR/cache-row"
+out="$(bash "$PI" body 277 "$P" 2>&1)"; rc=$?
+{ [ "$rc" -eq 0 ] && [ "$out" = "Draft 277 body." ]; } && pass "collision body: prints the draft's body, not the issue's" || fail "collision body rc=$rc: $out"
+[ "$(cnt "$LOG" 'repository(owner')" = 0 ] && pass "collision body: 0 issue queries" || fail "collision body calls: $(cat "$LOG")"
+
+reset
+printf '%s' "$DROW" > "$SHIM_DIR/cache-row"
+out="$(bash "$PI" set-status 277 inProgress --from roadmap "$P" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "collision set-status --from roadmap: draft is Todo, so not refused (the issue is Done)" || fail "collision set-status rc=$rc: $out"
+[ "$(cnt "$LOG" 'project|item-edit|--id|PVTI_d277|--project-id|PVT_1|--field-id|F_st|--single-select-option-id|O_ip|')" = 1 ] && [ "$(cnt "$LOG" 'PVTI_i277')" = 0 ] && pass "collision set-status: item-edit targets the draft item, never the issue's" || fail "collision edit args: $(cat "$LOG")"
+[ "$(cnt "$CLOG" 'patch|#277|--status|In Progress|')" = 1 ] && pass "collision set-status: cache patch targets #277 (same item as the edit)" || fail "collision cache patch: $(cat "$CLOG" 2>/dev/null)"
+[ "$(cnt "$LOG" 'repository(owner')" = 0 ] && pass "collision set-status: 0 issue queries" || fail "collision set-status issue queried: $(cat "$LOG")"
+
+reset
+printf '%s' "$DROW" > "$SHIM_DIR/cache-row"
+out="$(bash "$PI" set-status 277 inProgress --from history "$P" 2>&1)"; rc=$?
+{ [ "$rc" -eq 1 ] && has "$out" "task-not-in-from-bucket" && [ "$(cnt "$LOG" 'project|item-edit|')" = 0 ]; } && pass "collision set-status --from history (the issue's bucket): refused, 0 item-edit" || fail "collision history rc=$rc: $out / $(cat "$LOG")"
+
+reset
+printf '%s' "$DROW" > "$SHIM_DIR/cache-row"
+out="$(bash "$PI" set-ready 277 true "$P" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "collision set-ready exits 0" || fail "collision set-ready rc=$rc: $out"
+[ "$(cnt "$LOG" 'project|item-edit|--id|PVTI_d277|')" = 1 ] && [ "$(cnt "$LOG" 'PVTI_i277')" = 0 ] && [ "$(cnt "$LOG" 'repository(owner')" = 0 ] && pass "collision set-ready: edits the draft item, 0 issue queries" || fail "collision set-ready args: $(cat "$LOG")"
+[ "$(cnt "$CLOG" 'patch|#277|--ready|ready|')" = 1 ] && pass "collision set-ready: cache patch targets #277" || fail "collision set-ready patch: $(cat "$CLOG" 2>/dev/null)"
+
+echo "-- identity check on the issue path --"
+# uncached id; the issue query answers with an item that belongs to a different atelier id
+reject_case() {  # $1 label
+  local out rc
+  out="$(bash "$PI" get 277 "$P" 2>&1)"; rc=$?
+  [ "$rc" -eq 1 ] && pass "$1: get exits 1" || fail "$1: get rc=$rc: $out"
+  has "$out" "atelier-project-cache refresh" && pass "$1: tells the operator to run atelier-project-cache refresh" || fail "$1: no refresh hint: $out"
+  rm -f "$LOG"
+  out="$(bash "$PI" set-ready 277 true "$P" 2>&1)"; rc=$?
+  [ "$rc" -eq 1 ] && pass "$1: set-ready exits 1" || fail "$1: set-ready rc=$rc: $out"
+  [ "$(cnt "$LOG" 'project|item-edit|')" = 0 ] && [ "$(cnt "$LOG" 'item-list')" = 0 ] && pass "$1: 0 item-edit, no listing" || fail "$1: unexpected calls: $(cat "$LOG")"
+}
+reset
+issue_nodes '' ',"aid":{"text":"#278"}'
+reject_case "issue item with a different Atelier ID field"
+reset
+issue_nodes ',"title":"#278 other task"' ''
+reject_case "issue item with a different #NNN title prefix"
+reset
+issue_nodes ',"title":"#278 other task"' ',"aid":{"text":"277"}'
+out="$(bash "$PI" get 277 "$P" 2>&1)"; rc=$?
+{ [ "$rc" -eq 0 ] && [ "$(printf '%s' "$out" | jq -r .itemId)" = PVTI_i277 ]; } && pass "Atelier ID field wins over a stale title prefix (matching id accepted)" || fail "aid-vs-title rc=$rc: $out"
+reset
+issue_nodes ',"title":"Plain title, no prefix"' ''
+out="$(bash "$PI" get 277 "$P" 2>&1)"; rc=$?
+{ [ "$rc" -eq 0 ] && [ "$(printf '%s' "$out" | jq -r .itemId)" = PVTI_i277 ]; } && pass "issue item with no Atelier ID and no title prefix is still accepted" || fail "no-identity rc=$rc: $out"
+[ "$(cnt "$LOG" 'api|graphql|')" = 1 ] && [ "$(cnt "$LOG" 'item-list')" = 0 ] && pass "uncached issue id: exactly 1 api graphql, 0 item-list" || fail "uncached issue calls: $(cat "$LOG")"
+
 echo "-- rate limits: exit 4, one attempt, never retried --"
 rl_case() {  # $1 label  $2 kind  $3 wait-substring ; override files already written
   local label="$1" kind="$2" expect="$3" out rc

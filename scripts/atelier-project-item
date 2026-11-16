@@ -219,12 +219,13 @@ _resolve_via_issue() {
   slug="$(repo_slug)" || return 1
   owner="${slug%%/*}"; name="${slug#*/}"
   resp="$(mktemp)"
-  sel='content { __typename ... on Issue { number } }'
+  sel='content { __typename ... on Issue { number title } } aid: fieldValueByName(name: "Atelier ID") { ...FV }'
   gh_graphql "$resp" --tolerate-not-found \
     -f "query=query(\$owner: String!, \$name: String!, \$num: Int!) { rateLimit { cost remaining resetAt } repository(owner: \$owner, name: \$name) { issue(number: \$num) { $( [ "$withbody" = 1 ] && printf 'body ') projectItems(first: 10) { nodes { project { number } $sel $_ITEM_FIELDS } } } } } $_FV" \
     -f "owner=$owner" -f "name=$name" -F "num=$num"
-  ITEM_JSON="$(jq -c --arg id "$WANT" --argjson pn "$NUMBER" --argjson wb "$withbody" "$_ITEM_JQ"'
-    def pick: (first(.projectItems.nodes[]? | select(.project.number == $pn)) // null);
+  ITEM_JSON="$(jq -c --arg id "$WANT" --arg num "$num" --argjson pn "$NUMBER" --argjson wb "$withbody" "$_ITEM_JQ"'
+    def own: ((.aid | fv) // ((.content.title // "") | capture("^#(?<n>[0-9]+[A-Za-z]*)")? | .n) // null) | if . == null then null else ltrimstr("#") end;
+    def pick: (first(.projectItems.nodes[]? | select(.project.number == $pn) | select(own == null or own == $num)) // null);
     (.data.repository.issue // null) as $i
     | if $i == null then empty
       else ($i | pick) as $n
@@ -258,11 +259,11 @@ _read_node() {
 
 resolve_item() {
   local withbody="${1:-0}" row iid
-  _resolve_via_issue "$withbody" && return 0
   if row="$(_cached_row)" && [ -n "$row" ]; then
     iid="$(printf '%s' "$row" | jq -r '.itemId // empty')"
     if [ -n "$iid" ] && _read_node "$iid" "$withbody"; then return 0; fi
   fi
+  _resolve_via_issue "$withbody" && return 0
   die "cannot resolve $WANT without sweeping the board (not an issue on this project, and no cached itemId); run: atelier-project-cache refresh"
 }
 
