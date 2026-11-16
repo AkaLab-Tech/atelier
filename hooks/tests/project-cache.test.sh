@@ -482,6 +482,23 @@ bash "$PC" refresh "$PN" --force >/dev/null 2>&1
 [ "$?" -eq 2 ] && pass "a non-rate-limit failure exits 2" || fail "plain failure did not exit 2"
 rm -f "$SHIM_DIR/override.http" "$SHIM_DIR/override.err" "$SHIM_DIR/override.rc"
 
+# --- user text that merely mentions a rate limit is not a rate limit (HTTP 200, gh exit 0) ---
+rlbody="$(printf 'We hit a secondary rate limit, then API rate limit already exceeded, tagged RATE_LIMITED.\nSecond line.')"
+rlbody_json="$(jq -cn --arg b "$rlbody" '{data:{rateLimit:{cost:1},node:{content:{body:$b}}}}')"
+http200 "$SHIM_DIR/body-I3.http" "$rlbody_json"
+rm -f "$NDIR/bodies/I3.md"
+rb_out="$(bash "$PC" body 103 "$PN" --no-refresh 2>&1)"; rb_rc=$?
+[ "$rb_rc" -eq 0 ] && pass "body on HTTP 200 whose text mentions rate limits exits 0 (not 4)" || fail "body with rate-limit text rc=$rb_rc: $rb_out"
+[ "$rb_out" = "$rlbody" ] && pass "that body is printed verbatim" || fail "body not verbatim: $rb_out"
+[ "$(cat "$NDIR/bodies/I3.md" 2>/dev/null)" = "$rlbody" ] && pass "that body is cached in bodies/I3.md" || fail "rate-limit-text body not cached"
+
+cp "$SHIM_DIR/page-c2.http" "$SHIM_DIR/page-c2.keep"
+http200 "$SHIM_DIR/page-c2.http" '{"data":{"rateLimit":{"cost":1},"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":"c3"},"nodes":[{"id":"I3","content":{"__typename":"DraftIssue","id":"D3","title":"feat #103 secondary rate limit docs"},"st":{"name":"Todo"},"aid":null}]}}}}'
+rr_out="$(bash "$PC" refresh "$PN" --force 2>&1)"; rr_rc=$?
+[ "$rr_rc" -eq 0 ] && pass "refresh with a title mentioning 'secondary rate limit' exits 0 (not 4)" || fail "refresh with rate-limit title rc=$rr_rc: $rr_out"
+jq -e '[.items[].title] | index("feat #103 secondary rate limit docs") != null' "$NIDX" >/dev/null 2>&1 && pass "the index contains the rate-limit-worded title" || fail "title missing: $(jq -c '[.items[].title]' "$NIDX")"
+cp "$SHIM_DIR/page-c2.keep" "$SHIM_DIR/page-c2.http"
+
 rm -rf "$T"
 if [ "$fails" -eq 0 ]; then printf 'project-cache: all pass\n'; exit 0; fi
 printf 'project-cache: %d failure(s)\n' "$fails"; exit 1

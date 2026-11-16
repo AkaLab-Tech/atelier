@@ -270,11 +270,19 @@ gh_graphql() {
   fi
   [ -e "$body" ] || : > "$body"
   status="$(head -n1 "$hdr" | awk '{print $2}')"
-  text="$(cat "$err"; head -c 4096 "$body")"
-  if printf '%s' "$text" | grep -Eqi 'secondary rate limit'; then kind=secondary
-  elif printf '%s' "$text" | grep -Eqi 'API rate limit (already )?exceeded'; then kind=primary
-  elif jq -e 'any(.errors[]?; .type == "RATE_LIMITED")' "$body" >/dev/null 2>&1; then kind=primary
-  elif { [ "$status" = 403 ] || [ "$status" = 429 ]; } && grep -qi '^retry-after:' "$hdr"; then kind=secondary
+  # Item titles and plan bodies are user text, so the wording patterns are only
+  # trusted on a failed call (gh exit != 0, or HTTP 403/429). On a clean 200 the
+  # only signal is the parsed top-level errors[].type.
+  if [ "$rc" -ne 0 ] || [ "$status" = 403 ] || [ "$status" = 429 ]; then
+    text="$(cat "$err"; head -c 4096 "$body")"
+    if printf '%s' "$text" | grep -Eqi 'secondary rate limit'; then kind=secondary
+    elif printf '%s' "$text" | grep -Eqi 'API rate limit (already )?exceeded'; then kind=primary
+    fi
+  fi
+  if [ -z "$kind" ]; then
+    if jq -e '(.errors? | if type == "array" then any(.[]; type == "object" and .type == "RATE_LIMITED") else false end)' "$body" >/dev/null 2>&1; then kind=primary
+    elif { [ "$status" = 403 ] || [ "$status" = 429 ]; } && grep -qi '^retry-after:' "$hdr"; then kind=secondary
+    fi
   fi
   if [ -n "$kind" ]; then
     _rate_limit_stop "$kind" "$hdr" "$body"   # exits 4
