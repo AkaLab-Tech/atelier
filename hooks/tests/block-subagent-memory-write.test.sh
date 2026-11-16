@@ -392,6 +392,71 @@ assert_allow "#782 add with command-substitution body and isolated config dir" "
 assert_allow "#782 fully visible render with visible isolated vault" "sub-1" "implementer" \
   "atelier-memory render --vault $TMP/iso-vault"
 
+# --- 12. #786: an unlisted value-taking option must not hide the command ----
+block_and_786() {
+  assert_block "#786 $1" "sub-1" "implementer" "$2"
+  assert_allow "#786 top-level: $1" "" "" "$2"
+}
+block_and_786 "parallel --joblog j verify ::: --apply" 'parallel --joblog j atelier-memory verify ::: --apply'
+block_and_786 "parallel --timeout 10 add x" 'parallel --timeout 10 atelier-memory add x'
+block_and_786 "parallel --halt now,fail=1 verify ::: --apply" 'parallel --halt now,fail=1 atelier-memory verify ::: --apply'
+block_and_786 "parallel --env X import ::: f" 'parallel --env X atelier-memory import ::: f'
+block_and_786 "parallel -j 2 --joblog j verify ::: --apply" 'parallel -j 2 --joblog j atelier-memory verify ::: --apply'
+block_and_786 "xargs --max-lines 1 add" 'printf x | xargs --max-lines 1 atelier-memory add'
+block_and_786 "xargs --replace R verify R" 'printf x | xargs --replace R atelier-memory verify R'
+block_and_786 "xargs --eof E verify" 'printf x | xargs --eof E atelier-memory verify'
+block_and_786 "xargs -n 1 --max-lines 1 verify" 'printf x | xargs -n 1 --max-lines 1 atelier-memory verify'
+
+assert_allow "#786 parallel --joblog verify with isolated mktemp ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  'ATELIER_CONFIG_DIR="$(mktemp -d)" parallel --joblog j atelier-memory verify ::: --apply'
+assert_allow "#786 parallel --joblog verify with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "ATELIER_CONFIG_DIR=$ISO parallel --joblog j atelier-memory verify ::: --apply"
+assert_allow "#786 parallel --timeout add with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "ATELIER_CONFIG_DIR=$ISO parallel --timeout 10 atelier-memory add x"
+assert_allow "#786 parallel --halt verify with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "ATELIER_CONFIG_DIR=$ISO parallel --halt now,fail=1 atelier-memory verify ::: --apply"
+assert_allow "#786 parallel --env import with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "ATELIER_CONFIG_DIR=$ISO parallel --env X atelier-memory import ::: f"
+assert_allow "#786 parallel -j 2 --joblog verify with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "ATELIER_CONFIG_DIR=$ISO parallel -j 2 --joblog j atelier-memory verify ::: --apply"
+assert_allow "#786 parallel --joblog verify with ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1" "sub-1" "implementer" \
+  'ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 parallel --joblog j atelier-memory verify ::: --apply'
+assert_allow "#786 parallel --timeout add with ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1" "sub-1" "implementer" \
+  'ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 parallel --timeout 10 atelier-memory add x'
+
+assert_allow "#786 xargs --max-lines add with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "printf x | ATELIER_CONFIG_DIR=$ISO xargs --max-lines 1 atelier-memory add"
+assert_allow "#786 xargs --replace verify with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "printf x | ATELIER_CONFIG_DIR=$ISO xargs --replace R atelier-memory verify R"
+assert_allow "#786 xargs --eof verify with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "printf x | ATELIER_CONFIG_DIR=$ISO xargs --eof E atelier-memory verify"
+assert_allow "#786 xargs -n --max-lines verify with isolated ATELIER_CONFIG_DIR" "sub-1" "implementer" \
+  "printf x | ATELIER_CONFIG_DIR=$ISO xargs -n 1 --max-lines 1 atelier-memory verify"
+assert_allow "#786 xargs --max-lines add with ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1" "sub-1" "implementer" \
+  'printf x | ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 xargs --max-lines 1 atelier-memory add'
+assert_allow "#786 xargs --eof verify with ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1" "sub-1" "implementer" \
+  'printf x | ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 xargs --eof E atelier-memory verify'
+
+# The command search stops before the first ::: / :::: / :::+ / ::::+ (a later atelier-memory is an argument)
+assert_allow "#786 parallel echo ::: atelier-memory" "sub-1" "implementer" 'parallel echo ::: atelier-memory'
+assert_allow "#786 parallel echo :::: atelier-memory" "sub-1" "implementer" 'parallel echo :::: atelier-memory'
+assert_allow "#786 parallel echo :::+ atelier-memory" "sub-1" "implementer" 'parallel echo :::+ atelier-memory'
+assert_allow "#786 parallel echo ::::+ atelier-memory" "sub-1" "implementer" 'parallel echo ::::+ atelier-memory'
+assert_allow "#786 parallel --joblog j echo ::: atelier-memory" "sub-1" "implementer" \
+  'parallel --joblog j echo ::: atelier-memory'
+
+# Read-only through the unlisted options stays allowed
+assert_allow "#786 parallel --joblog show ::: Q-1 (read-only)" "sub-1" "implementer" \
+  'parallel --joblog j atelier-memory show ::: Q-1'
+assert_allow "#786 xargs --max-lines show (read-only)" "sub-1" "implementer" \
+  'printf x | xargs --max-lines 1 atelier-memory show'
+
+# Wrapper rule: an env wrapper after the unlisted option keeps the isolated-override logic
+assert_allow "#786 parallel --joblog env ATELIER_CONFIG_DIR=<tmp> verify (isolated override honoured)" "sub-1" "implementer" \
+  "parallel --joblog j env ATELIER_CONFIG_DIR=$ISO atelier-memory verify ::: --apply"
+assert_block "#786 parallel --joblog env ATELIER_CONFIG_DIR=<real store> verify" "sub-1" "implementer" \
+  "parallel --joblog j env ATELIER_CONFIG_DIR=$ACD atelier-memory verify ::: --apply"
+
 echo ""
 if [ "$fails" -eq 0 ]; then
   echo "block-subagent-memory-write: all checks passed"
