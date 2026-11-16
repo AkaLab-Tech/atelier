@@ -252,6 +252,283 @@ mkdir -p "$T/bare"
 bash "$PC" index "$T/bare" >/dev/null 2>&1
 [ "$?" -eq 1 ] && pass "refuses a project with no .roadmap.json" || fail "should refuse a bare dir"
 
+# ===========================================================================
+# Network path (#528): a `gh` shim on PATH stands in for GitHub. Hermetic: the
+# shim answers from files under $SHIM_DIR, logs every call's argv, and never
+# touches the network. The fixture env var must be unset so the real
+# (paginated) code path runs.
+# ===========================================================================
+unset ATELIER_PROJECT_CACHE_FIXTURE
+SHIM_DIR="$T/shim"; SHIM_BIN="$T/shimbin"; mkdir -p "$SHIM_DIR" "$SHIM_BIN"
+cat > "$SHIM_BIN/gh" <<'SHIM'
+#!/usr/bin/env bash
+# argv -> one line in calls.log, fields joined by '|'.
+printf '%s|' "$@" >> "$SHIM_DIR/calls.log"; printf '\n' >> "$SHIM_DIR/calls.log"
+if [ "${1:-}" = api ] && [ "${2:-}" = rate_limit ]; then
+  cat "$SHIM_DIR/rate_limit.txt" 2>/dev/null; exit 0
+fi
+if [ -f "$SHIM_DIR/override.http" ]; then
+  cat "$SHIM_DIR/override.http"
+  [ -f "$SHIM_DIR/override.err" ] && cat "$SHIM_DIR/override.err" >&2
+  exit "$(cat "$SHIM_DIR/override.rc" 2>/dev/null || echo 0)"
+fi
+cursor=first; item=""
+for a in "$@"; do
+  case "$a" in
+    endCursor=*) cursor="${a#endCursor=}" ;;
+    itemId=*) item="${a#itemId=}" ;;
+  esac
+done
+if [ -n "$item" ]; then f="$SHIM_DIR/body-$item.http"; else f="$SHIM_DIR/page-$cursor.http"; fi
+[ -f "$f" ] || { echo "shim: no canned response for $f" >&2; exit 1; }
+cat "$f"
+SHIM
+chmod +x "$SHIM_BIN/gh"
+export SHIM_DIR
+export PATH="$SHIM_BIN:$PATH"
+export ATELIER_CONFIG_DIR="$T/config-net"
+
+# canned HTTP response: $1 = file, $2 = json body, rest = extra header lines
+http200() { local f="$1" j="$2"; shift 2; { printf 'HTTP/2.0 200 OK\r\ncontent-type: application/json\r\n'; for h in "$@"; do printf '%s\r\n' "$h"; done; printf '\r\n%s' "$j"; } > "$f"; }
+ncalls() { [ -f "$SHIM_DIR/calls.log" ] && wc -l < "$SHIM_DIR/calls.log" | tr -d ' ' || printf 0; }
+callsmatching() { local n; n="$(grep -cF -- "$1" "$SHIM_DIR/calls.log" 2>/dev/null)"; printf '%s' "${n:-0}"; }
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+has() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }
+
+http200 "$SHIM_DIR/page-first.http" '{"data":{"rateLimit":{"cost":1},"node":{"items":{"pageInfo":{"hasNextPage":true,"endCursor":"c1"},"nodes":[{"id":"I1","content":{"__typename":"DraftIssue","id":"D1","title":"#101 Alpha"},"st":{"name":"Todo"},"rd":{"name":"ready"},"pr":{"name":"P1"},"es":{"text":"~2h"},"kd":{"name":"feat"},"aid":{"text":"101"},"tr":{"text":"acme-api"}}]}}}}'
+http200 "$SHIM_DIR/page-c1.http" '{"data":{"rateLimit":{"cost":1},"node":{"items":{"pageInfo":{"hasNextPage":true,"endCursor":"c2"},"nodes":[{"id":"I2","content":{"__typename":"Issue","number":7,"title":"Beta"},"st":{"name":"Done"},"aid":{"text":"#102"}}]}}}}'
+http200 "$SHIM_DIR/page-c2.http" '{"data":{"rateLimit":{"cost":1},"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":"c3"},"nodes":[{"id":"I3","content":{"__typename":"DraftIssue","id":"D3","title":"feat gamma #103 ~S"},"st":{"name":"Todo"},"aid":null}]}}}}'
+http200 "$SHIM_DIR/body-I1.http" '{"data":{"rateLimit":{"cost":1},"node":{"content":{"body":"Hello body"}}}}'
+
+PN="$T/netproj"; mkdir -p "$PN"
+cat > "$PN/.roadmap.json" <<'JSON'
+{ "backend": "github-project",
+  "githubProject": { "owner": "AcmeOrg", "projectNumber": 9, "projectId": "PVT_xyz" } }
+JSON
+NDIR="$ATELIER_CONFIG_DIR/cache/project-AcmeOrg-9"
+NIDX="$NDIR/index.json"
+
+# --- a 3-page board: exactly 3 paginated calls, cursor chained, no body, no item-list ---
+: > "$SHIM_DIR/calls.log"
+net_out="$(bash "$PC" refresh "$PN" 2>&1)"; net_rc=$?
+[ "$net_rc" -eq 0 ] && pass "paginated refresh succeeds" || fail "paginated refresh rc=$net_rc: $net_out"
+[ "$(callsmatching 'api|graphql|')" = 3 ] && [ "$(ncalls)" = 3 ] && pass "a 3-page board costs exactly 3 gh api graphql calls" || fail "expected 3 graphql calls, got $(ncalls): $(cat "$SHIM_DIR/calls.log")"
+[ "$(callsmatching 'item-list')" = 0 ] && pass "no item-list call is made" || fail "item-list was called"
+[ "$(callsmatching 'first: 100')" = 3 ] && pass "every page asks for first: 100" || fail "first: 100 missing from some page"
+[ "$(callsmatching 'projectId=PVT_xyz')" = 3 ] && pass "the project is addressed by the roadmap projectId" || fail "projectId not passed on every page"
+[ "$(callsmatching 'itemId=')" = 0 ] && pass "no per-item body is requested during the sweep" || fail "a body was requested in the sweep"
+[ "$(callsmatching 'body')" = 0 ] && pass "the sweep query does not select body at all" || fail "sweep query selects body"
+l1="$(sed -n 1p "$SHIM_DIR/calls.log")"; l2="$(sed -n 2p "$SHIM_DIR/calls.log")"; l3="$(sed -n 3p "$SHIM_DIR/calls.log")"
+has "$l1" 'endCursor=' && fail "page 1 sent a cursor" || pass "page 1 carries no endCursor"
+has "$l2" 'endCursor=c1|' && pass "page 2 carries the cursor from page 1 (c1)" || fail "page 2 cursor wrong: $l2"
+has "$l3" 'endCursor=c2|' && pass "page 3 carries the cursor from page 2 (c2)" || fail "page 3 cursor wrong: $l3"
+jq -e '[.items[].id] == ["#101","#102","#103"]' "$NIDX" >/dev/null 2>&1 && pass "paginated index resolves ids from field, field-with-hash and title" || fail "ids wrong: $(jq -c '[.items[].id]' "$NIDX")"
+jq -e '.items[0] | .itemId=="I1" and .draftId=="D1" and .type=="DraftIssue" and .status=="Todo" and .ready=="ready" and .priority=="P1" and .estimate=="~2h" and .kind=="feat" and .repo=="acme-api" and .bodyBytes==null' "$NIDX" >/dev/null 2>&1 && pass "page-1 row carries every aliased field" || fail "row 0 wrong: $(jq -c '.items[0]' "$NIDX")"
+jq -e '.items[1] | .type=="Issue" and .status=="Done" and .draftId==null' "$NIDX" >/dev/null 2>&1 && pass "an Issue-backed row has no draft id" || fail "row 1 wrong: $(jq -c '.items[1]' "$NIDX")"
+jq -e '[.items[] | has("body")] | any | not' "$NIDX" >/dev/null 2>&1 && pass "paginated index carries no bodies" || fail "body leaked into the paginated index"
+jq -e '.schemaVersion==2 and .complete==true and .graphqlPoints==3 and .items==3' "$NDIR/meta.json" >/dev/null 2>&1 && pass "meta records schema 2, complete, 3 graphql points, 3 items" || fail "meta wrong: $(cat "$NDIR/meta.json")"
+has "$net_out" '3 items' && has "$net_out" '3 graphql points' && pass "refresh output reports items and points" || fail "refresh output: $net_out"
+[ "$(bash "$PC" next-id "$PN" --no-refresh 2>&1)" = "#104" ] && pass "next-id over the paginated index is #104" || fail "next-id wrong"
+[ "$(ncalls)" = 3 ] && pass "reads off a fresh cache make no further gh calls" || fail "a fresh read called gh"
+
+# --- by-number addressing when .roadmap.json has no projectId ---
+PNN="$T/netproj2"; mkproj "$PNN"
+: > "$SHIM_DIR/calls.log"
+cp "$SHIM_DIR/page-first.http" "$SHIM_DIR/page-first.keep"
+http200 "$SHIM_DIR/page-first.http" '{"data":{"rateLimit":{"cost":2},"repositoryOwner":{"projectV2":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"N1","content":{"__typename":"DraftIssue","id":"DN1","title":"#5 By number"},"st":{"name":"Todo"},"aid":{"text":"5"}}]}}}}}'
+bash "$PC" refresh "$PNN" >/dev/null 2>&1
+nl1="$(sed -n 1p "$SHIM_DIR/calls.log")"
+has "$nl1" 'owner=AcmeOrg|' && has "$nl1" 'number=7|' && ! has "$nl1" 'projectId=' && pass "without a projectId the board is addressed by owner and number" || fail "by-number argv wrong: $nl1"
+jq -e '.items[0].id=="#5" and .items[0].itemId=="N1"' "$ATELIER_CONFIG_DIR/cache/project-AcmeOrg-7/index.json" >/dev/null 2>&1 && pass "repositoryOwner.projectV2 payloads index the same way" || fail "by-number index wrong"
+has "$nl1" 'repositoryOwner(' && ! has "$nl1" 'organization(' && pass "the by-number query uses repositoryOwner( and not organization(" || fail "by-number query shape wrong: $nl1"
+
+# user-owned board: same repositoryOwner shape, addressed by the user login
+PUSR="$T/userproj"; mkdir -p "$PUSR"
+cat > "$PUSR/.roadmap.json" <<'JSON'
+{ "backend": "github-project", "offlineMirror": false,
+  "githubProject": { "owner": "some-user", "projectNumber": 3 } }
+JSON
+: > "$SHIM_DIR/calls.log"
+bash "$PC" refresh "$PUSR" >/dev/null 2>&1; usr_rc=$?
+ul1="$(sed -n 1p "$SHIM_DIR/calls.log")"
+[ "$usr_rc" -eq 0 ] && has "$ul1" 'owner=some-user|' && has "$ul1" 'number=3|' && pass "a user-owned board refreshes by owner login and number" || fail "user-owned refresh rc=$usr_rc argv: $ul1"
+jq -e '.items[0].id=="#5" and .items[0].itemId=="N1"' "$ATELIER_CONFIG_DIR/cache/project-some-user-3/index.json" >/dev/null 2>&1 && pass "a user-owned repositoryOwner.projectV2 payload indexes the same way" || fail "user-owned index wrong"
+
+# repositoryOwner: null -> exit 2, "not found", nothing written for a fresh project
+http200 "$SHIM_DIR/page-first.http" '{"data":{"rateLimit":{"cost":1},"repositoryOwner":null}}'
+PNUL="$T/nullowner"; mkdir -p "$PNUL"
+cat > "$PNUL/.roadmap.json" <<'JSON'
+{ "backend": "github-project", "offlineMirror": false,
+  "githubProject": { "owner": "ghost-owner", "projectNumber": 4 } }
+JSON
+nul_out="$(bash "$PC" refresh "$PNUL" 2>&1)"; nul_rc=$?
+[ "$nul_rc" -eq 2 ] && has "$nul_out" 'not found' && pass "a null repositoryOwner exits 2 with a not-found message" || fail "null owner rc=$nul_rc: $nul_out"
+[ ! -e "$ATELIER_CONFIG_DIR/cache/project-ghost-owner-4/index.json" ] && pass "a null repositoryOwner writes no index for a fresh project" || fail "index written for a null owner"
+# same failure against an existing cache leaves it intact
+UIDX="$ATELIER_CONFIG_DIR/cache/project-some-user-3/index.json"
+ubefore="$(cksum < "$UIDX")"
+touch -t 200001010000 "$UIDX"
+nul2_out="$(bash "$PC" refresh "$PUSR" 2>&1)"; nul2_rc=$?
+[ "$nul2_rc" -eq 2 ] && has "$nul2_out" 'not found' && [ "$(cksum < "$UIDX")" = "$ubefore" ] && jq -e '.items[0].id=="#5"' "$UIDX" >/dev/null 2>&1 && pass "a null repositoryOwner leaves the previous cache intact" || fail "previous cache damaged or wrong rc=$nul2_rc: $nul2_out"
+cp "$SHIM_DIR/page-first.keep" "$SHIM_DIR/page-first.http"
+
+# --- body: 1 call on first read, 0 on the second ---
+before="$(ncalls)"
+b1="$(bash "$PC" body 101 "$PN" 2>&1)"
+[ "$b1" = "Hello body" ] && pass "body fetches and returns the item body" || fail "body returned '$b1'"
+[ "$(( $(ncalls) - before ))" = 1 ] && pass "first body read makes exactly 1 call" || fail "first body read made $(( $(ncalls) - before )) calls"
+bl="$(tail -n1 "$SHIM_DIR/calls.log")"
+has "$bl" 'itemId=I1|' && pass "the body call is keyed by the item node id" || fail "body argv: $bl"
+[ -f "$NDIR/bodies/I1.md" ] && pass "the body is cached in bodies/<itemId>.md" || fail "body not cached"
+before="$(ncalls)"
+b2="$(bash "$PC" body 101 "$PN" 2>&1)"
+[ "$b2" = "Hello body" ] && [ "$(ncalls)" = "$before" ] && pass "second body read makes 0 calls" || fail "second body read: '$b2', calls $(( $(ncalls) - before ))"
+bash "$PC" body 101 "$PN" --no-refresh >/dev/null 2>&1 && pass "a cached body is served under --no-refresh" || fail "--no-refresh refused a cached body"
+[ "$(ncalls)" = "$before" ] && pass "a cached body under --no-refresh makes 0 gh calls" || fail "cached --no-refresh read called gh"
+# uncached body under --no-refresh: exactly 1 itemId call, no sweep, served and cached
+http200 "$SHIM_DIR/body-I2.http" '{"data":{"rateLimit":{"cost":1},"node":{"content":{"body":"Beta body"}}}}'
+touch -t 200001010000 "$NIDX"   # index far past its TTL: --no-refresh must still not sweep
+before="$(ncalls)"
+nb1="$(bash "$PC" body 102 "$PN" --no-refresh 2>&1)"; nb_rc=$?
+[ "$nb_rc" -eq 0 ] && [ "$nb1" = "Beta body" ] && pass "--no-refresh serves an uncached body" || fail "--no-refresh uncached body rc=$nb_rc out='$nb1'"
+[ "$(( $(ncalls) - before ))" = 1 ] && pass "--no-refresh uncached body makes exactly 1 gh call" || fail "--no-refresh uncached body made $(( $(ncalls) - before )) calls"
+nbl="$(tail -n1 "$SHIM_DIR/calls.log")"
+has "$nbl" 'api|graphql|' && has "$nbl" 'itemId=I2|' && pass "the --no-refresh body call is a graphql call keyed by itemId" || fail "--no-refresh body argv: $nbl"
+[ "$(sed -n "$(( before + 1 )),\$p" "$SHIM_DIR/calls.log" | grep -cF -e 'projectId=' -e 'endCursor=' -e 'first: 100')" = 0 ] && pass "--no-refresh body makes 0 page-sweep calls (stale index)" || fail "--no-refresh swept pages"
+[ -f "$NDIR/bodies/I2.md" ] && pass "--no-refresh body is cached in bodies/<itemId>.md" || fail "--no-refresh body not cached"
+before="$(ncalls)"
+nb2="$(bash "$PC" body 102 "$PN" --no-refresh 2>&1)"
+[ "$nb2" = "Beta body" ] && [ "$(ncalls)" = "$before" ] && pass "second --no-refresh body read makes 0 calls" || fail "second --no-refresh read: '$nb2', calls $(( $(ncalls) - before ))"
+# missing index under --no-refresh: dies, no sweep, no call
+PNM="$T/netproj3"; mkproj "$PNM"; sed -i.bak 's/"projectNumber": 7/"projectNumber": 31/' "$PNM/.roadmap.json"; rm -f "$PNM/.roadmap.json.bak"   # board 31 has no cache
+before="$(ncalls)"
+bash "$PC" body 5 "$PNM" --no-refresh >/dev/null 2>&1
+nm_rc=$?
+[ "$nm_rc" -ne 0 ] && [ "$(ncalls)" = "$before" ] && pass "--no-refresh body with no index fails with 0 gh calls" || fail "no-index --no-refresh rc=$nm_rc calls $(( $(ncalls) - before ))"
+touch "$NIDX"   # restore a fresh mtime for the tests below
+
+# --- patch: in place, no network ---
+before="$(ncalls)"; m0="$(mtime_of "$NIDX")"
+pt_out="$(bash "$PC" patch 101 --status "In Progress" --ready notready "$PN" 2>&1)"; pt_rc=$?
+[ "$pt_rc" -eq 0 ] && pass "patch succeeds" || fail "patch rc=$pt_rc: $pt_out"
+[ "$(ncalls)" = "$before" ] && pass "patch makes no gh call" || fail "patch called gh"
+jq -e '.items[0].status=="In Progress" and .items[0].ready=="notready" and .items[0].title=="#101 Alpha"' "$NIDX" >/dev/null 2>&1 && pass "patch updates status and ready on that row only" || fail "patch row wrong: $(jq -c '.items[0]' "$NIDX")"
+jq -e '.items[1].status=="Done" and .items[2].status=="Todo"' "$NIDX" >/dev/null 2>&1 && pass "patch leaves the other rows alone" || fail "patch touched other rows"
+[ "$(mtime_of "$NIDX")" = "$m0" ] && pass "patch keeps the index mtime (TTL not extended)" || fail "patch moved the index mtime"
+bash "$PC" patch 101 --status Done "$PN" >/dev/null 2>&1
+jq -e '.items[0].status=="Done" and .items[0].ready=="notready"' "$NIDX" >/dev/null 2>&1 && pass "patch with only --status leaves ready untouched" || fail "partial patch wrong"
+bash "$PC" patch 101 "$PN" >/dev/null 2>&1; [ "$?" -ne 0 ] && pass "patch with no field is refused" || fail "patch with no field accepted"
+bash "$PC" patch 999 --status Done "$PN" >/dev/null 2>&1; [ "$?" -ne 0 ] && pass "patch of an unknown id is refused" || fail "patch of unknown id accepted"
+
+# --- invalidate <id>: per item ---
+before="$(ncalls)"
+iv_out="$(bash "$PC" invalidate 101 "$PN" 2>&1)"; iv_rc=$?
+[ "$iv_rc" -eq 0 ] && pass "invalidate <id> succeeds" || fail "invalidate <id> rc=$iv_rc: $iv_out"
+[ ! -f "$NDIR/bodies/I1.md" ] && pass "invalidate <id> drops that item's cached body" || fail "body survived invalidate <id>"
+jq -e '.items[0].stale==true and (.items[1].stale // false)==false and (.items[2].stale // false)==false' "$NIDX" >/dev/null 2>&1 && pass "invalidate <id> flags only that row stale" || fail "stale flags wrong: $(jq -c '[.items[].stale]' "$NIDX")"
+[ ! -f "$NDIR/.stale" ] && pass "invalidate <id> does not set the whole-cache marker" || fail "whole-cache marker set by per-item invalidate"
+[ "$(ncalls)" = "$before" ] && pass "invalidate <id> makes no gh call" || fail "invalidate <id> called gh"
+bash "$PC" patch 101 --status Todo "$PN" >/dev/null 2>&1
+jq -e '.items[0] | has("stale") | not' "$NIDX" >/dev/null 2>&1 && pass "patch clears the row's stale flag" || fail "stale flag survived patch"
+bash "$PC" invalidate 999 "$PN" >/dev/null 2>&1; [ "$?" -ne 0 ] && pass "invalidate of an unknown id is refused" || fail "invalidate of unknown id accepted"
+bash "$PC" invalidate "$PN" >/dev/null 2>&1
+[ -f "$NDIR/.stale" ] && pass "bare invalidate still drops the whole-cache marker" || fail "bare invalidate changed"
+rm -f "$NDIR/.stale"
+
+# --- a stale row makes the next read refresh (and a refresh clears it) ---
+bash "$PC" invalidate 101 "$PN" >/dev/null 2>&1
+before="$(ncalls)"
+bash "$PC" index "$PN" >/dev/null 2>&1
+[ "$(( $(ncalls) - before ))" = 3 ] && pass "a read after invalidate <id> re-sweeps the board (3 pages)" || fail "re-sweep made $(( $(ncalls) - before )) calls"
+jq -e '[.items[] | has("stale")] | any | not' "$NIDX" >/dev/null 2>&1 && pass "the re-sweep clears the stale flags" || fail "stale flags survived the re-sweep"
+
+# --- rate limits: stop, exit 4, ONE attempt, no REST work fallback, old cache intact ---
+rl_case() {  # $1 label  $2 kind  $3 expect-substring  (override files already written)
+  local label="$1" kind="$2" expect="$3" sum_before sum_after before rc err
+  sum_before="$(cksum < "$NIDX")"; before="$(ncalls)"
+  err="$(bash "$PC" refresh "$PN" --force 2>&1 >/dev/null)"; rc=$?
+  [ "$rc" -eq 4 ] && pass "$label: exits 4" || fail "$label: exit $rc: $err"
+  has "$err" "rate limit hit ($kind)" && pass "$label: names the kind ($kind)" || fail "$label: kind missing: $err"
+  has "$err" "$expect" && pass "$label: prints the wait ($expect)" || fail "$label: wait missing: $err"
+  has "$err" 'local)' && pass "$label: prints a local reset time" || fail "$label: no local time: $err"
+  has "$err" 'nothing was retried' && pass "$label: says nothing was retried" || fail "$label: no stop notice: $err"
+  [ "$(( $(ncalls) - before ))" = 1 ] && pass "$label: exactly one gh attempt" || fail "$label: $(( $(ncalls) - before )) gh calls"
+  [ "$(( $(callsmatching 'repos/') + $(callsmatching 'issues') + $(callsmatching 'api|rest') ))" = 0 ] && pass "$label: no REST fallback for the work" || fail "$label: REST call seen"
+  sum_after="$(cksum < "$NIDX")"
+  [ "$sum_before" = "$sum_after" ] && pass "$label: old cache left intact" || fail "$label: index changed"
+  [ -d "$NDIR/.lock" ] && fail "$label: lock leaked" || pass "$label: lock released"
+}
+rm -f "$SHIM_DIR/override.err" "$SHIM_DIR/rate_limit.txt"
+
+# primary, HTTP 403 with retry-after, text on stderr
+printf 'HTTP/2.0 403 Forbidden\r\nretry-after: 60\r\n\r\n{"message":"API rate limit already exceeded for user ID 1."}' > "$SHIM_DIR/override.http"
+printf 'gh: API rate limit already exceeded for user ID 1. (HTTP 403)\n' > "$SHIM_DIR/override.err"; echo 1 > "$SHIM_DIR/override.rc"
+rl_case "primary (text, retry-after)" primary "retry after 60s"
+
+# primary, GraphQL RATE_LIMITED on HTTP 200, reset from x-ratelimit-reset
+future=$(( $(date +%s) + 1200 ))
+http200 "$SHIM_DIR/override.http" '{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}],"data":null}' "x-ratelimit-reset: $future"
+rm -f "$SHIM_DIR/override.err"; echo 0 > "$SHIM_DIR/override.rc"
+rl_case "primary (RATE_LIMITED on 200)" primary "retry after 1"
+
+# primary, reset from data.rateLimit.resetAt
+fut_iso="$(date -u -d "@$(( $(date +%s) + 1800 ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$(( $(date +%s) + 1800 ))" +%Y-%m-%dT%H:%M:%SZ)"
+http200 "$SHIM_DIR/override.http" "{\"errors\":[{\"type\":\"RATE_LIMITED\",\"message\":\"x\"}],\"data\":{\"rateLimit\":{\"cost\":1,\"resetAt\":\"$fut_iso\"}}}"
+rl_case "primary (resetAt)" primary "retry after 1"
+
+# secondary, text on stderr
+printf 'HTTP/2.0 403 Forbidden\r\nretry-after: 45\r\n\r\n{"message":"You have exceeded a secondary rate limit."}' > "$SHIM_DIR/override.http"
+printf 'gh: You have exceeded a secondary rate limit. Please wait a few minutes (HTTP 403)\n' > "$SHIM_DIR/override.err"; echo 1 > "$SHIM_DIR/override.rc"
+rl_case "secondary (text)" secondary "retry after 45s"
+
+# secondary, bare 429 + retry-after with no recognisable text
+printf 'HTTP/2.0 429 Too Many Requests\r\nretry-after: 30\r\n\r\n{"message":"slow down"}' > "$SHIM_DIR/override.http"
+printf 'gh: slow down (HTTP 429)\n' > "$SHIM_DIR/override.err"; echo 1 > "$SHIM_DIR/override.rc"
+rl_case "secondary (429 + retry-after)" secondary "retry after 30s"
+
+# primary with no timing at all: the diagnostic rate_limit read supplies the reset
+printf 'HTTP/2.0 403 Forbidden\r\n\r\n{"message":"API rate limit exceeded"}' > "$SHIM_DIR/override.http"
+printf 'gh: API rate limit exceeded (HTTP 403)\n' > "$SHIM_DIR/override.err"; echo 1 > "$SHIM_DIR/override.rc"
+echo "$(( $(date +%s) + 600 ))" > "$SHIM_DIR/rate_limit.txt"
+before="$(ncalls)"
+err="$(bash "$PC" refresh "$PN" --force 2>&1 >/dev/null)"; rc=$?
+[ "$rc" -eq 4 ] && { has "$err" 'retry after 5' || has "$err" 'retry after 6'; } && pass "no headers: the reset comes from the diagnostic rate_limit read" || fail "diagnostic reset wrong (rc $rc): $err"
+[ "$(( $(ncalls) - before ))" = 2 ] && [ "$(callsmatching 'rate_limit')" = 1 ] && pass "the diagnostic is one extra read, not a retry of the work" || fail "unexpected call count $(( $(ncalls) - before ))"
+rm -f "$SHIM_DIR/override.http" "$SHIM_DIR/override.err" "$SHIM_DIR/override.rc" "$SHIM_DIR/rate_limit.txt"
+
+# a rate limit on page 2 must not replace the previous cache with a partial one
+cp "$SHIM_DIR/page-c1.http" "$SHIM_DIR/page-c1.keep"
+printf 'HTTP/2.0 403 Forbidden\r\nretry-after: 10\r\n\r\n{"message":"API rate limit exceeded"}' > "$SHIM_DIR/page-c1.http"
+sum_before="$(cksum < "$NIDX")"; metasum="$(cksum < "$NDIR/meta.json")"; before="$(ncalls)"
+err="$(bash "$PC" refresh "$PN" --force 2>&1 >/dev/null)"; rc=$?
+[ "$rc" -eq 4 ] && [ "$(( $(ncalls) - before ))" = 2 ] && pass "a limit on page 2 stops after page 2 (2 calls, exit 4)" || fail "page-2 limit: rc $rc, calls $(( $(ncalls) - before ))"
+[ "$sum_before" = "$(cksum < "$NIDX")" ] && [ "$metasum" = "$(cksum < "$NDIR/meta.json")" ] && pass "a mid-sweep limit leaves the old index and meta intact" || fail "partial sweep replaced the cache"
+cp "$SHIM_DIR/page-c1.keep" "$SHIM_DIR/page-c1.http"
+
+# a plain failure is exit 2, not 4
+printf 'HTTP/2.0 500 Internal Server Error\r\n\r\n{"message":"boom"}' > "$SHIM_DIR/override.http"
+printf 'gh: boom (HTTP 500)\n' > "$SHIM_DIR/override.err"; echo 1 > "$SHIM_DIR/override.rc"
+bash "$PC" refresh "$PN" --force >/dev/null 2>&1
+[ "$?" -eq 2 ] && pass "a non-rate-limit failure exits 2" || fail "plain failure did not exit 2"
+rm -f "$SHIM_DIR/override.http" "$SHIM_DIR/override.err" "$SHIM_DIR/override.rc"
+
+# --- user text that merely mentions a rate limit is not a rate limit (HTTP 200, gh exit 0) ---
+rlbody="$(printf 'We hit a secondary rate limit, then API rate limit already exceeded, tagged RATE_LIMITED.\nSecond line.')"
+rlbody_json="$(jq -cn --arg b "$rlbody" '{data:{rateLimit:{cost:1},node:{content:{body:$b}}}}')"
+http200 "$SHIM_DIR/body-I3.http" "$rlbody_json"
+rm -f "$NDIR/bodies/I3.md"
+rb_out="$(bash "$PC" body 103 "$PN" --no-refresh 2>&1)"; rb_rc=$?
+[ "$rb_rc" -eq 0 ] && pass "body on HTTP 200 whose text mentions rate limits exits 0 (not 4)" || fail "body with rate-limit text rc=$rb_rc: $rb_out"
+[ "$rb_out" = "$rlbody" ] && pass "that body is printed verbatim" || fail "body not verbatim: $rb_out"
+[ "$(cat "$NDIR/bodies/I3.md" 2>/dev/null)" = "$rlbody" ] && pass "that body is cached in bodies/I3.md" || fail "rate-limit-text body not cached"
+
+cp "$SHIM_DIR/page-c2.http" "$SHIM_DIR/page-c2.keep"
+http200 "$SHIM_DIR/page-c2.http" '{"data":{"rateLimit":{"cost":1},"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":"c3"},"nodes":[{"id":"I3","content":{"__typename":"DraftIssue","id":"D3","title":"feat #103 secondary rate limit docs"},"st":{"name":"Todo"},"aid":null}]}}}}'
+rr_out="$(bash "$PC" refresh "$PN" --force 2>&1)"; rr_rc=$?
+[ "$rr_rc" -eq 0 ] && pass "refresh with a title mentioning 'secondary rate limit' exits 0 (not 4)" || fail "refresh with rate-limit title rc=$rr_rc: $rr_out"
+jq -e '[.items[].title] | index("feat #103 secondary rate limit docs") != null' "$NIDX" >/dev/null 2>&1 && pass "the index contains the rate-limit-worded title" || fail "title missing: $(jq -c '[.items[].title]' "$NIDX")"
+cp "$SHIM_DIR/page-c2.keep" "$SHIM_DIR/page-c2.http"
+
 rm -rf "$T"
 if [ "$fails" -eq 0 ]; then printf 'project-cache: all pass\n'; exit 0; fi
 printf 'project-cache: %d failure(s)\n' "$fails"; exit 1

@@ -92,10 +92,12 @@ META="$CACHE_DIR/meta.json"
 PROJ="$TMP/p1"; mkproj "$PROJ" '["Todo"]'
 ATELIER_PROJECT_CACHE_FIXTURE="$FIXTURE" "$PC" refresh "$PROJ" >/dev/null 2>&1
 
-if [ "$(jq -r '.schemaVersion // "absent"' "$META")" = "1" ]; then
-  pass "meta.json records a schemaVersion"
+# The version this build writes, read from the script so a bump does not rot the test.
+SCHEMA_V="$(sed -n 's/^SCHEMA_VERSION=\([0-9][0-9]*\)$/\1/p' "$PC" | head -n1)"
+if [ -n "$SCHEMA_V" ] && [ "$(jq -r '.schemaVersion // "absent"' "$META")" = "$SCHEMA_V" ]; then
+  pass "meta.json records the current schemaVersion ($SCHEMA_V)"
 else
-  fail "meta.json has no schemaVersion (a reader cannot tell a v1 cache from a future v2)"
+  fail "meta.json has no schemaVersion matching the script's SCHEMA_VERSION '$SCHEMA_V' (a reader cannot tell one cache version from another)"
 fi
 
 if [ "$(jq -r '.complete' "$META")" = "true" ]; then
@@ -117,7 +119,7 @@ else
 fi
 
 if ATELIER_PROJECT_CACHE_FIXTURE="$FIXTURE" "$PC" backlog "$PROJ" >/dev/null 2>&1 \
-   && [ "$(jq -r '.schemaVersion' "$META")" = "1" ]; then
+   && [ "$(jq -r '.schemaVersion' "$META")" = "$SCHEMA_V" ]; then
   pass "a pre-versioned cache rebuilds on first contact when refresh is allowed"
 else
   fail "a pre-versioned cache did not rebuild"
