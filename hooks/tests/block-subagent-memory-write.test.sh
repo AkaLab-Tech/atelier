@@ -457,6 +457,52 @@ assert_allow "#786 parallel --joblog env ATELIER_CONFIG_DIR=<tmp> verify (isolat
 assert_block "#786 parallel --joblog env ATELIER_CONFIG_DIR=<real store> verify" "sub-1" "implementer" \
   "parallel --joblog j env ATELIER_CONFIG_DIR=$ACD atelier-memory verify ::: --apply"
 
+# --- 13. #788: read-only forward search stays allowed; eval under parallel/xargs is not opaque
+block_and_788() {
+  assert_block "#788 $1" "sub-1" "implementer" "$2"
+  assert_allow "#788 top-level: $1" "" "" "$2"
+}
+
+# Fix A: known options / attached values do not make the command word a forward search
+assert_allow "#788 xargs grep -n atelier-memory" "sub-1" "implementer" 'xargs grep -n atelier-memory'
+assert_allow "#788 git ls-files | xargs rg atelier-memory" "sub-1" "implementer" 'git ls-files | xargs rg atelier-memory'
+assert_allow "#788 parallel grep atelier-memory ::: a b" "sub-1" "implementer" 'parallel grep atelier-memory ::: a b'
+assert_allow "#788 xargs grep -rn hooks/atelier-memory" "sub-1" "implementer" 'xargs grep -rn "hooks/atelier-memory"'
+assert_allow "#788 xargs -0 grep atelier-memory" "sub-1" "implementer" 'xargs -0 grep atelier-memory'
+assert_allow "#788 xargs -n1 grep atelier-memory" "sub-1" "implementer" 'xargs -n1 grep atelier-memory'
+
+# Unlisted options still hide nothing: the command stays found and blocked
+block_and_788 "parallel --joblog j atelier-memory verify ::: --apply" 'parallel --joblog j atelier-memory verify ::: --apply'
+block_and_788 "xargs --max-lines 1 atelier-memory add" 'printf x | xargs --max-lines 1 atelier-memory add'
+block_and_788 "parallel --joblog env ATELIER_CONFIG_DIR=<real store> verify" \
+  "parallel --joblog j env ATELIER_CONFIG_DIR=$ACD atelier-memory verify ::: --apply"
+assert_allow "#788 parallel --joblog env ATELIER_CONFIG_DIR=<isolated> verify" "sub-1" "implementer" \
+  "parallel --joblog j env ATELIER_CONFIG_DIR=$ISO atelier-memory verify ::: --apply"
+
+# Known residual: an unknown flag may take a value, so the search is treated as a forward and
+# fails closed. This over-block of a read-only search is accepted (documented, #788).
+assert_block "#788 xargs --someflag grep atelier-memory (accepted fail-closed over-block)" "sub-1" "implementer" \
+  'xargs --someflag grep atelier-memory'
+
+# Fix B: eval under parallel/xargs is not opaque
+block_and_788 "parallel eval atelier-memory verify ::: --apply" 'parallel eval atelier-memory verify ::: --apply'
+block_and_788 "xargs eval atelier-memory verify" "printf -- '--apply\\n' | xargs eval atelier-memory verify"
+assert_allow "#788 parallel eval isolated \$ISO" "sub-1" "implementer" \
+  "ATELIER_CONFIG_DIR=$ISO parallel eval atelier-memory verify ::: --apply"
+assert_allow "#788 parallel eval isolated mktemp -d" "sub-1" "implementer" \
+  'ATELIER_CONFIG_DIR="$(mktemp -d)" parallel eval atelier-memory verify ::: --apply'
+assert_allow "#788 xargs eval isolated \$ISO" "sub-1" "implementer" \
+  "printf -- '--apply\\n' | ATELIER_CONFIG_DIR=$ISO xargs eval atelier-memory verify"
+assert_allow "#788 xargs eval isolated mktemp -d" "sub-1" "implementer" \
+  "printf -- '--apply\\n' | ATELIER_CONFIG_DIR=\"\$(mktemp -d)\" xargs eval atelier-memory verify"
+assert_allow "#788 parallel eval with ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1" "sub-1" "implementer" \
+  'ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 parallel eval atelier-memory verify ::: --apply'
+assert_allow "#788 xargs eval with ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1" "sub-1" "implementer" \
+  "printf -- '--apply\\n' | ATELIER_ALLOW_SUBAGENT_MEMORY_WRITE=1 xargs eval atelier-memory verify"
+# Read-only through eval stays allowed
+assert_allow "#788 parallel eval atelier-memory show (read-only)" "sub-1" "implementer" \
+  'parallel eval atelier-memory show ::: Q-1'
+
 echo ""
 if [ "$fails" -eq 0 ]; then
   echo "block-subagent-memory-write: all checks passed"
