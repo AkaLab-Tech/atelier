@@ -4,17 +4,19 @@
 # a session and its subagents stop paying for the same board listing over and over.
 #
 # Why this exists: GitHub's GraphQL budget is 5000 *points* per hour and the cost
-# is computed from nodes requested, not requests made. `gh project item-list` pulls
-# every item with every field value nested, so one full listing of a ~180-item board
-# measures at ~200 points — about 24 listings per hour, total, across every agent.
-# Writes are cheap by comparison (a field update is 1). The budget goes on reads.
+# is computed from nodes requested, not requests made. The old `gh project item-list`
+# pulled every item with every field value and body nested, ~1 point per item (607
+# points for a 592-item board). The refresh now pages `items(first:100)` over
+# `gh api graphql` asking only for the index fields: ~1 point per 100-item page
+# (~10 on a 600-item board). Bodies are fetched lazily, one `node(id:)` per item.
+# Writes are cheap too (a field update is 1).
 #
 # Two properties make the cache worth having beyond the point count:
-#   * Under `planStorage: resident` the task plans live in the item bodies, so the
-#     raw listing is dominated by plan text (measured: 90% of a 1.0 MB dump). The
-#     cache splits a body-free `index.json` from per-item bodies, so the common
-#     questions (next free id, what is in Todo, are there duplicate ids) read ~10%
-#     of the bytes and none of the network.
+#   * Under `planStorage: resident` the task plans live in the item bodies, so a
+#     listing with bodies is dominated by plan text (measured: 90% of a 1.0 MB
+#     dump). The cache keeps a body-free `index.json` and fetches a body only when
+#     `body <id>` asks for it, so the common questions (next free id, what is in
+#     Todo, are there duplicate ids) read none of that and no per-item network.
 #   * `next-id` and `duplicates` read ids from BOTH the `Atelier ID` field and a
 #     `#NNN` title prefix. Reading only the field silently under-reports the max
 #     and hands out an id that is already taken.
@@ -27,7 +29,8 @@
 #   atelier-project-cache body <id>   [<project>] [--no-refresh]
 #   atelier-project-cache next-id     [<project>] [--no-refresh]
 #   atelier-project-cache duplicates  [<project>] [--no-refresh]
-#   atelier-project-cache invalidate  [<project>]
+#   atelier-project-cache invalidate  [<id>] [<project>]
+#   atelier-project-cache patch <id> [--status X] [--ready Y] [<project>]
 #   atelier-project-cache stats       [<project>]
 #   atelier-project-cache path        [<project>]
 #
@@ -38,31 +41,51 @@
 # network and reads whatever is on disk, failing if there is nothing servable.
 # A snapshot is servable only when meta.json carries the current schemaVersion
 # and reports complete:true; anything else is a miss, never a partial read.
+# `body <id> --no-refresh` never sweeps the index, but an uncached body is still
+# fetched with its single node(id:) call (then cached): the flag forbids the
+# board sweep, not one cheap item read.
 #
-# After ANY write to the board (item-create, item-edit), call `invalidate` — the
-# next read then refetches instead of serving state you just changed.
+# After ANY write to the board (item-create, item-edit), either `patch <id>
+# --status X --ready Y` (updates that index row in place, no network) or
+# `invalidate [<id>]` — the next read then refetches instead of serving state you
+# just changed. `invalidate <id>` marks only that item stale (drops its cached
+# body, flags its row); bare `invalidate` marks the whole cache stale.
+#
+# Rate limits: a primary or secondary GraphQL rate limit prints one line with the
+# kind and the retry-after time, exits 4, and is never retried; the previous cache
+# stays intact.
 #
 # Cache lives in $ATELIER_CONFIG_DIR/cache/project-<owner>-<number>/ and is
 # disposable: delete it and the next read rebuilds it. It is never a source of
 # truth, and it is unrelated to the backend's `offlineMirror` (which writes
 # ROADMAP.md / IN_PROGRESS.md / HISTORY.md as tracking files).
 #
-# Exit: 0 ok · 1 usage/config error · 2 backend unavailable · 3 duplicates found
+# Exit: 0 ok · 1 usage/config error · 2 backend unavailable · 3 duplicates found · 4 rate limited
+# shellcheck disable=SC2016,SC2015 # jq programs and GraphQL documents are literal, not shell
 set -uo pipefail
 
-usage() { sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,63p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die() { printf 'atelier-project-cache: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 case "${1:-}" in --help|-h|'') usage; exit 0 ;; esac
 CMD="$1"; shift
 
 # ---------------------------------------------------------------- args
-PROJECT="" ; FORCE=0 ; NO_REFRESH=0 ; ID_ARG=""
-case "$CMD" in get|body) ID_ARG="${1:-}"; [ -n "$ID_ARG" ] || die "$CMD needs a task id"; shift ;; esac
+PROJECT="" ; FORCE=0 ; NO_REFRESH=0 ; ID_ARG="" ; SET_STATUS="" ; SET_READY="" ; HAS_STATUS=0 ; HAS_READY=0
+case "$CMD" in get|body|patch) ID_ARG="${1:-}"; [ -n "$ID_ARG" ] || die "$CMD needs a task id"; shift ;; esac
+# `invalidate` takes an optional id; an id-shaped first argument that is not a
+# directory is the id, anything else is the project path as before.
+if [ "$CMD" = invalidate ] && [ $# -gt 0 ]; then
+  case "$1" in
+    \#[0-9]*|[0-9]*) if [ ! -d "$1" ] && printf '%s' "$1" | grep -Eq '^#?[0-9]+[a-z]?$'; then ID_ARG="$1"; shift; fi ;;
+  esac
+fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --force) FORCE=1 ;;
     --no-refresh) NO_REFRESH=1 ;;
+    --status) [ $# -ge 2 ] || die "--status needs a value"; SET_STATUS="$2"; HAS_STATUS=1; shift ;;
+    --ready) [ $# -ge 2 ] || die "--ready needs a value"; SET_READY="$2"; HAS_READY=1; shift ;;
     -*) die "unknown flag: $1" ;;
     *) PROJECT="$1" ;;
   esac
@@ -81,6 +104,7 @@ BACKEND="$(jq -r '.backend // "files"' "$RC")"
 OWNER="$(jq -r '.githubProject.owner // empty' "$RC")"
 NUMBER="$(jq -r '.githubProject.projectNumber // empty' "$RC")"
 [ -n "$OWNER" ] && [ -n "$NUMBER" ] || die "'.githubProject.owner' / '.projectNumber' missing from .roadmap.json"
+PROJECT_ID="$(jq -r '.githubProject.projectId // empty' "$RC")"
 
 # owner/number land in a filesystem path that refresh() removes with `rm -rf`,
 # so they are validated before use — a slug carrying `/` or `..` would otherwise
@@ -113,7 +137,7 @@ TTL="${ATELIER_PROJECT_CACHE_TTL:-3600}"
 # answers with fields that have moved or been renamed, and nothing in the
 # output says so. An existing pre-versioned cache therefore refreshes exactly
 # once on first contact with this version, which is the intended migration.
-SCHEMA_VERSION=1
+SCHEMA_VERSION=2
 
 # GNU coreutils FIRST, BSD/macOS as fallback. Order matters: `stat -f %m` is BSD
 # syntax, but on GNU stat `-f` means --file-system, so it prints a multi-line
@@ -134,6 +158,7 @@ is_fresh() {
   [ -d "$BODIES" ] || return 1
   [ -f "$DIR/.stale" ] && return 1
   schema_ok || return 1
+  jq -e 'any(.items[]; .stale == true)' "$INDEX" >/dev/null 2>&1 && return 1
   local a; a="$(age)" || return 1
   [ "$a" -lt "$TTL" ]
 }
@@ -196,9 +221,132 @@ _cache_cleanup() {
   return 0
 }
 
-# One `gh project item-list` for the whole board, split into a body-free index
-# plus one file per body. $ATELIER_PROJECT_CACHE_FIXTURE substitutes a local
-# JSON file for the network call, which is how the test suite stays hermetic.
+# ---------------------------------------------------------------- graphql
+# The only place this script talks to GitHub. One attempt per call, never a
+# retry: a rate limit is a stop signal, and retrying (or falling back to REST,
+# which spends the same account budget) is how an agent burns the next window.
+# Success: response body (JSON) in "$1". Rate limit: one line on stderr, exit 4.
+# Anything else that fails: exit 2.
+_epoch_hhmm() { date -d "@$1" +%H:%M 2>/dev/null || date -r "$1" +%H:%M 2>/dev/null || printf '??:??'; }
+
+_rate_limit_stop() {
+  local kind="$1" hdr="$2" body="$3" now wait="" reset="" ra rl
+  now="$(date +%s)"
+  ra="$(awk 'tolower($1)=="retry-after:" {print $2; exit}' "$hdr" 2>/dev/null | tr -d '\r ')"
+  rl="$(awk 'tolower($1)=="x-ratelimit-reset:" {print $2; exit}' "$hdr" 2>/dev/null | tr -d '\r ')"
+  case "$ra" in ''|*[!0-9]*) ra="" ;; esac
+  case "$rl" in ''|*[!0-9]*) rl="" ;; esac
+  if [ -n "$ra" ]; then wait="$ra"
+  elif [ -n "$rl" ]; then wait=$(( rl - now ))
+  else
+    reset="$(jq -r '.data.rateLimit.resetAt // empty | fromdateiso8601? // empty' "$body" 2>/dev/null)"
+    if [ -n "$reset" ]; then wait=$(( reset - now ))
+    else
+      # Diagnostic read only: it tells us when the window resets, it is not a
+      # fallback for the work. It may itself be refused; then the time is unknown.
+      reset="$(gh api rate_limit --jq '.resources.graphql.reset' 2>/dev/null)"
+      case "$reset" in ''|*[!0-9]*) ;; *) wait=$(( reset - now )) ;; esac
+    fi
+  fi
+  if [ -n "$wait" ]; then
+    [ "$wait" -lt 0 ] && wait=0
+    printf 'atelier: GitHub GraphQL rate limit hit (%s) — retry after %ss (~%s local). Stopping; nothing was retried.\n' \
+      "$kind" "$wait" "$(_epoch_hhmm $(( now + wait )))" >&2
+  else
+    printf 'atelier: GitHub GraphQL rate limit hit (%s) — retry after unknown (~??:?? local). Stopping; nothing was retried.\n' "$kind" >&2
+  fi
+  exit 4
+}
+
+gh_graphql() {
+  local out="$1"; shift
+  local resp err hdr body rc status kind="" text
+  resp="$(mktemp)"; err="$(mktemp)"; hdr="$(mktemp)"; body="$(mktemp)"
+  gh api graphql -i "$@" > "$resp" 2> "$err"; rc=$?
+  if head -n1 "$resp" | grep -q '^HTTP/'; then
+    awk -v h="$hdr" -v b="$body" '{ sub(/\r$/,"") } !inb { if ($0 == "") { inb=1; next } print > h; next } { print > b }' "$resp"
+  else
+    cp "$resp" "$body"; : > "$hdr"
+  fi
+  [ -e "$body" ] || : > "$body"
+  status="$(head -n1 "$hdr" | awk '{print $2}')"
+  text="$(cat "$err"; head -c 4096 "$body")"
+  if printf '%s' "$text" | grep -Eqi 'secondary rate limit'; then kind=secondary
+  elif printf '%s' "$text" | grep -Eqi 'API rate limit (already )?exceeded'; then kind=primary
+  elif jq -e 'any(.errors[]?; .type == "RATE_LIMITED")' "$body" >/dev/null 2>&1; then kind=primary
+  elif { [ "$status" = 403 ] || [ "$status" = 429 ]; } && grep -qi '^retry-after:' "$hdr"; then kind=secondary
+  fi
+  if [ -n "$kind" ]; then
+    _rate_limit_stop "$kind" "$hdr" "$body"   # exits 4
+  fi
+  if [ "$rc" -ne 0 ]; then
+    local msg; msg="$(head -n1 "$err")"
+    rm -f "$resp" "$err" "$hdr" "$body"
+    die "gh api graphql failed${msg:+: $msg} (auth, missing 'project' scope, or network)" 2
+  fi
+  if jq -e '(.errors // []) | length > 0' "$body" >/dev/null 2>&1; then
+    local emsg; emsg="$(jq -r '.errors[0].message // "unknown error"' "$body")"
+    rm -f "$resp" "$err" "$hdr" "$body"
+    die "graphql error: $emsg" 2
+  fi
+  cat "$body" > "$out"
+  rm -f "$resp" "$err" "$hdr" "$body"
+}
+
+# Index fields only — no bodies. Each field value is read through one
+# fieldValueByName alias; the fragment covers every value type those fields can
+# have (single select, text, number).
+_FIELD_FRAGMENT='fragment FV on ProjectV2ItemFieldValue { ... on ProjectV2ItemFieldSingleSelectValue { name } ... on ProjectV2ItemFieldTextValue { text } ... on ProjectV2ItemFieldNumberValue { number } }'
+_ITEMS_SELECTION='items(first: 100, after: $endCursor) { pageInfo { hasNextPage endCursor } nodes { id content { __typename ... on DraftIssue { id title } ... on Issue { number title } ... on PullRequest { number title } } st: fieldValueByName(name: "Status") { ...FV } rd: fieldValueByName(name: "Ready") { ...FV } pr: fieldValueByName(name: "Priority") { ...FV } es: fieldValueByName(name: "Estimate") { ...FV } kd: fieldValueByName(name: "Kind") { ...FV } aid: fieldValueByName(name: "Atelier ID") { ...FV } tr: fieldValueByName(name: "Target Repo") { ...FV } } }'
+_Q_BY_ID='query($projectId: ID!, $endCursor: String) { rateLimit { cost remaining resetAt } node(id: $projectId) { ... on ProjectV2 { '"$_ITEMS_SELECTION"' } } } '"$_FIELD_FRAGMENT"
+_Q_BY_NUMBER='query($owner: String!, $number: Int!, $endCursor: String) { rateLimit { cost remaining resetAt } organization(login: $owner) { projectV2(number: $number) { '"$_ITEMS_SELECTION"' } } } '"$_FIELD_FRAGMENT"
+
+# One page of items -> the flat item shape the index builder consumes
+# (lower-cased field keys, content.{id,type,number}).
+_NORMALIZE_JQ='
+  def fv: if . == null then null else (.name // .text // .number) end;
+  ((.data.node // .data.organization.projectV2).items.nodes // [])
+  | map({ id: .id, title: (.content.title // ""),
+          content: { id: (.content.id // null), type: (.content.__typename // null), number: (.content.number // null) },
+          status: (.st | fv), ready: (.rd | fv), priority: (.pr | fv), estimate: (.es | fv),
+          kind: (.kd | fv), "atelier ID": (.aid | fv), "target Repo": (.tr | fv) })'
+
+# Pages the board into $1 as {items:[...]}; sets PAGES_COST / PAGES_COMPLETE.
+PAGES_COST=0; PAGES_COMPLETE=true
+_fetch_pages() {
+  local out="$1" cursor="" page=0 max_pages=100 resp pagef
+  resp="$(mktemp)"; pagef="$(mktemp)"
+  printf '[]' > "$pagef"
+  while :; do
+    page=$((page + 1))
+    local args=()
+    if [ -n "$PROJECT_ID" ]; then
+      args=(-f "query=$_Q_BY_ID" -f "projectId=$PROJECT_ID")
+    else
+      args=(-f "query=$_Q_BY_NUMBER" -f "owner=$OWNER" -F "number=$NUMBER")
+    fi
+    [ -n "$cursor" ] && args+=(-f "endCursor=$cursor")
+    gh_graphql "$resp" "${args[@]}"
+    jq -e '(.data.node // .data.organization.projectV2).items | type == "object"' "$resp" >/dev/null 2>&1 \
+      || { rm -f "$resp" "$pagef"; die "project not found or not readable (check githubProject.owner/projectNumber/projectId and the 'project' scope)" 2; }
+    jq "$_NORMALIZE_JQ" "$resp" > "$pagef.n" 2>/dev/null \
+      && jq -s '.[0] + .[1]' "$pagef" "$pagef.n" > "$pagef.new" 2>/dev/null \
+      || { rm -f "$resp" "$pagef" "$pagef.n" "$pagef.new"; die "unexpected graphql payload" 2; }
+    rm -f "$pagef.n"
+    mv "$pagef.new" "$pagef"
+    PAGES_COST=$(( PAGES_COST + $(jq -r '.data.rateLimit.cost // 0' "$resp") ))
+    if [ "$(jq -r '(.data.node // .data.organization.projectV2).items.pageInfo.hasNextPage' "$resp")" != true ]; then break; fi
+    cursor="$(jq -r '(.data.node // .data.organization.projectV2).items.pageInfo.endCursor // empty' "$resp")"
+    if [ -z "$cursor" ] || [ "$page" -ge "$max_pages" ]; then PAGES_COMPLETE=false; break; fi
+  done
+  jq '{items: .}' "$pagef" > "$out"
+  rm -f "$resp" "$pagef"
+}
+
+# A paginated body-free listing of the whole board into index.json. Bodies are
+# NOT fetched here (see `body`). $ATELIER_PROJECT_CACHE_FIXTURE substitutes a local
+# flat-shape {items:[...]} JSON file (optionally with .content.body) for the
+# network.
 refresh() {
   mkdir -p "$DIR" || die "cannot create $DIR"
 
@@ -219,7 +367,7 @@ refresh() {
   # that path — which is how the lock leaked and blocked every later refresh.
   RAW=""; BODIES_TMP=""; HOLD_LOCK=1
   trap '_cache_cleanup' EXIT
-  local cost=null before=0 after=0
+  local cost=null complete=true
   RAW="$(mktemp)" || die "mktemp failed"
 
   if [ -n "${ATELIER_PROJECT_CACHE_FIXTURE:-}" ]; then
@@ -227,13 +375,11 @@ refresh() {
     cat "$ATELIER_PROJECT_CACHE_FIXTURE" > "$RAW"
   else
     command -v gh >/dev/null 2>&1 || die "gh is required" 2
-    before="$(gh api rate_limit --jq '.resources.graphql.used' 2>/dev/null || printf 0)"
-    gh project item-list "$NUMBER" --owner "$OWNER" --limit 1000 --format json > "$RAW" 2>/dev/null \
-      || die "gh project item-list failed (rate limit, auth, or missing 'project' scope)" 2
-    after="$(gh api rate_limit --jq '.resources.graphql.used' 2>/dev/null || printf 0)"
-    [ "$after" -ge "$before" ] && cost=$(( after - before ))
+    _fetch_pages "$RAW"
+    cost="$PAGES_COST"
+    complete="$PAGES_COMPLETE"
   fi
-  jq -e '.items | type == "array"' "$RAW" >/dev/null 2>&1 || die "unexpected item-list payload" 2
+  jq -e '.items | type == "array"' "$RAW" >/dev/null 2>&1 || die "unexpected board payload" 2
 
   # index: everything except the body. `id` is the canonical atelier id, taken
   # from the Atelier ID field and falling back to a `#NNN` title prefix.
@@ -280,15 +426,16 @@ refresh() {
       priority: (.priority // null),
       estimate: (.estimate // null),
       repo:     (."target Repo" // null),
-      bodyBytes: ((.content.body // "") | length)
+      bodyBytes: (if .content.body == null then null else (.content.body | length) end)
     } ]
   }' "$RAW" > "$INDEX.tmp" 2>/dev/null || die "failed to build index"
   mv "$INDEX.tmp" "$INDEX"
 
-  # bodies, one file per item, keyed by item node id (always present and unique).
-  # Built in a PRIVATE scratch dir (never a shared fixed name) and swapped in
-  # under the lock, so neither a crash nor a concurrent refresh can leave the
-  # live bodies/ missing.
+  # Bodies are lazy: a refresh starts an empty bodies/ (any body cached before
+  # may be out of date) and `body <id>` fills it one item at a time. Built in a
+  # PRIVATE scratch dir and swapped in under the lock, so neither a crash nor a
+  # concurrent refresh can leave the live bodies/ missing. A fixture that carries
+  # bodies pre-seeds it.
   BODIES_TMP="$(mktemp -d "$DIR/.bodies.XXXXXX")" || die "cannot create a scratch bodies dir"
   jq -r '.items[] | select((.content.body // "") != "") | "\(.id)\t\(.content.body | @base64)"' "$RAW" \
   | while IFS=$'\t' read -r iid b64; do
@@ -301,16 +448,12 @@ refresh() {
   BODIES_TMP=""
   rm -rf "$bodies_old"
 
-  # `--limit 1000` above is a cap, not a promise: a board that actually holds
-  # 1000+ items comes back truncated, and `gh` says nothing about it. Landing
-  # exactly on the limit is the only signal available, so treat it as "cannot
-  # confirm complete" and record that rather than presenting a short board as
-  # the whole one. `complete: false` makes every later read a cache miss, which
-  # is the right outcome: refetching is cheap next to claiming work from a
-  # backlog that quietly lost its tail.
-  local count complete=true
+  # complete:false only when pagination could not confirm it reached the last
+  # page (hasNextPage with no cursor, or the page cap). `complete: false` makes
+  # every later read a cache miss, which beats claiming work from a backlog that
+  # quietly lost its tail.
+  local count
   count="$(jq '.items | length' "$INDEX")"
-  [ "$count" -ge 1000 ] && complete=false
 
   jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg owner "$OWNER" --arg number "$NUMBER" \
         --argjson version "$SCHEMA_VERSION" --argjson complete "$complete" \
@@ -320,7 +463,7 @@ refresh() {
         > "$META"
   rm -f "$DIR/.stale"
 
-  [ "$complete" = true ] || printf 'atelier-project-cache: warning: the listing returned %s items, the --limit ceiling; the board may be truncated and the cache is marked incomplete\n' "$count" >&2
+  [ "$complete" = true ] || printf 'atelier-project-cache: warning: pagination could not confirm the last page (%s items read); the cache is marked incomplete\n' "$count" >&2
 }
 
 ensure() {
@@ -347,11 +490,66 @@ ensure() {
 
 norm_id() { case "$1" in \#*) printf '%s' "$1" ;; *) printf '#%s' "$1" ;; esac; }
 
+# Rewrite index.json through a tmp file, preserving its mtime (the freshness
+# clock). Caller holds the lock.
+_index_edit() {
+  jq "$@" "$INDEX" > "$INDEX.tmp" 2>/dev/null || { rm -f "$INDEX.tmp"; die "failed to edit the index"; }
+  touch -r "$INDEX" "$INDEX.tmp" 2>/dev/null
+  mv "$INDEX.tmp" "$INDEX"
+}
+
+# One node(id:) call for a single item's body; cached in bodies/<itemId>.md.
+# An empty body is cached as an empty file so it is not asked for twice.
+_fetch_body() {
+  local iid="$1" resp
+  command -v gh >/dev/null 2>&1 || die "gh is required" 2
+  resp="$(mktemp)"
+  gh_graphql "$resp" \
+    -f 'query=query($itemId: ID!) { rateLimit { cost remaining resetAt } node(id: $itemId) { ... on ProjectV2Item { content { ... on DraftIssue { body } ... on Issue { body } } } } }' \
+    -f "itemId=$iid"
+  mkdir -p "$BODIES"
+  jq -r '.data.node.content.body // ""' "$resp" > "$BODIES/$iid.md.tmp.$$" \
+    && mv "$BODIES/$iid.md.tmp.$$" "$BODIES/$iid.md"
+  rm -f "$resp" "$BODIES/$iid.md.tmp.$$"
+}
+
 # ---------------------------------------------------------------- commands
 case "$CMD" in
   path) printf '%s\n' "$DIR" ;;
 
-  invalidate) mkdir -p "$DIR"; : > "$DIR/.stale"; printf 'cache marked stale: %s\n' "$DIR" ;;
+  # With an id: a per-item stale mark (drop that body, flag that row) — the next
+  # read refreshes, but a reader that only wants other rows is not disturbed
+  # until then. Without: the whole-cache mark, kept for compatibility.
+  invalidate)
+    mkdir -p "$DIR"
+    if [ -n "$ID_ARG" ]; then
+      want="$(norm_id "$ID_ARG")"
+      [ -f "$INDEX" ] || { : > "$DIR/.stale"; printf 'no index yet; cache marked stale: %s\n' "$DIR"; exit 0; }
+      iid="$(jq -r --arg id "$want" 'first(.items[] | select(.id == $id) | .itemId) // empty' "$INDEX")"
+      [ -n "$iid" ] || die "no item with id $want"
+      _acquire_lock || die "another refresh holds the lock ($DIR/.lock); retry" 2
+      trap '_cache_cleanup' EXIT
+      rm -f "$BODIES/$iid.md"
+      _index_edit --arg iid "$iid" '(.items[] | select(.itemId == $iid)) |= (.stale = true)'
+      printf 'item %s marked stale\n' "$want"
+    else
+      : > "$DIR/.stale"; printf 'cache marked stale: %s\n' "$DIR"
+    fi ;;
+
+  # Update one row after a targeted board write, with no network: the caller just
+  # set Status/Ready itself, so re-reading the board to learn it is pure cost.
+  # Clears the row's stale flag. Keeps the index mtime so the TTL is not extended.
+  patch)
+    [ "$HAS_STATUS" -eq 1 ] || [ "$HAS_READY" -eq 1 ] || die "patch needs --status and/or --ready"
+    [ -f "$INDEX" ] || die "no cache to patch — run: atelier-project-cache refresh"
+    want="$(norm_id "$ID_ARG")"
+    iid="$(jq -r --arg id "$want" 'first(.items[] | select(.id == $id) | .itemId) // empty' "$INDEX")"
+    [ -n "$iid" ] || die "no item with id $want"
+    _acquire_lock || die "another refresh holds the lock ($DIR/.lock); retry" 2
+    trap '_cache_cleanup' EXIT
+    _index_edit --arg iid "$iid" --argjson hs "$HAS_STATUS" --arg st "$SET_STATUS" --argjson hr "$HAS_READY" --arg rd "$SET_READY" \
+      '(.items[] | select(.itemId == $iid)) |= ((if $hs == 1 then .status = $st else . end) | (if $hr == 1 then .ready = $rd else . end) | del(.stale))'
+    printf 'item %s patched\n' "$want" ;;
 
   # --force only bypasses the freshness check; it must NOT delete the index
   # first. refresh() writes through a .tmp and swaps on success, so a fetch that
@@ -406,7 +604,11 @@ index:   \(.indexBytes) bytes"' "$META" ;;
     want="$(norm_id "$ID_ARG")"
     iid="$(jq -r --arg id "$want" '.items[] | select(.id == $id) | .itemId' "$INDEX" | head -1)"
     [ -n "$iid" ] || die "no item with id $want"
-    [ -f "$BODIES/$iid.md" ] || die "item $want has no body"
+    if [ ! -f "$BODIES/$iid.md" ]; then
+      [ -z "${ATELIER_PROJECT_CACHE_FIXTURE:-}" ] || die "item $want has no body"
+      _fetch_body "$iid"
+    fi
+    [ -s "$BODIES/$iid.md" ] || die "item $want has no body"
     cat "$BODIES/$iid.md" ;;
 
   next-id) ensure
