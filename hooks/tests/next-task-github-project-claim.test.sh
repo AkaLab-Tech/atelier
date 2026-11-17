@@ -298,6 +298,18 @@ chk_prose "$NEXT_TASK" 'Bash(gh issue view:*)' \
 chk_prose "$NEXT_TASK" 'Bash(atelier-project-item:*)' \
   "next-task #530: allowed-tools grants Bash(atelier-project-item:*)"
 
+# Auto-pick fresh-state read: the "Never" exemption in chk_no_listing_instructed
+# would hide a getTask(id) instruction on a line that also says "Never", so pin
+# the exact sentences.
+chk_prose "$NEXT_TASK" 'on `github-project` take the `title` from the cached backlog row and the fresh state' \
+  "next-task #530: auto-pick takes title from cached row, fresh state from atelier-project-item"
+
+chk_prose "$NEXT_TASK" 'never `getTask(id)`, whose project-detail operation fetches every item on the board' \
+  "next-task #530: auto-pick forbids getTask(id) on github-project"
+
+chk_absent "$NEXT_TASK" 'After the selection algorithm picks an `id`, call `getTask(id)`' \
+  "next-task #530: auto-pick no longer instructs an unconditional getTask(id)"
+
 chk_prose "$NEXT_TASK" 'call `atelier-project-item get <id>` (one targeted read printing JSON' \
   "next-task #530: claim verify uses atelier-project-item get"
 
