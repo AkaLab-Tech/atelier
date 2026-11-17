@@ -257,6 +257,10 @@ chk_prose "$NEXT_TASK" 'do **not** suggest `/atelier:resume-task` here, since th
 
 chk_no_listing_instructed() {
   local file="$1" label="$2" bad
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    fail "$label — file not readable: $file"
+    return 0
+  fi
   bad="$(grep -nE 'gh project item-list|listTasks' "$file" 2>/dev/null \
     | grep -vE '[Nn]ever|[Nn]ot |no board listing|would instead|discover the backlog|instead of' || true)"
   if [ -z "$bad" ]; then
@@ -266,8 +270,30 @@ chk_no_listing_instructed() {
   fi
 }
 
-chk_no_listing_instructed "$$NEXT_TASK" \
+chk_no_listing_instructed "$NEXT_TASK" \
   "next-task: no gh project item-list / listTasks instructed for a single item (#530)"
+
+# Negative-case self-test: the check must be live (fails on an instructed
+# listing line and on a missing file, passes on a prohibitive mention).
+_st_dir="$(mktemp -d)"
+printf '%s\n' 'Run `gh project item-list 1 --owner X` to find the item.' >"$_st_dir/bad.md"
+printf '%s\n' 'Never run `gh project item-list`; no board listing.' >"$_st_dir/ok.md"
+_st_bad="$(pass() { echo PASS; }; fail() { echo FAIL; }; chk_no_listing_instructed "$_st_dir/bad.md" x)"
+_st_ok="$(pass() { echo PASS; }; fail() { echo FAIL; }; chk_no_listing_instructed "$_st_dir/ok.md" x)"
+_st_missing="$(pass() { echo PASS; }; fail() { echo FAIL; }; chk_no_listing_instructed "$_st_dir/nope.md" x)"
+rm -rf "$_st_dir"
+case "$_st_bad" in FAIL*) pass "self-test: chk_no_listing_instructed fails on an instructed listing line" ;; *) fail "self-test: instructed listing line not detected: $_st_bad" ;; esac
+case "$_st_ok" in PASS) pass "self-test: chk_no_listing_instructed allows a prohibitive mention" ;; *) fail "self-test: prohibitive mention wrongly flagged: $_st_ok" ;; esac
+case "$_st_missing" in FAIL*) pass "self-test: chk_no_listing_instructed fails on a missing file" ;; *) fail "self-test: missing file not detected: $_st_missing" ;; esac
+
+chk_prose "$NEXT_TASK" 'atelier-project-cache get <id> --no-refresh' \
+  "next-task #530: title source is atelier-project-cache get <id> --no-refresh"
+
+chk_prose "$NEXT_TASK" '`gh issue view <issueNumber> --json title`' \
+  "next-task #530: title cache-miss fallback is gh issue view --json title"
+
+chk_prose "$NEXT_TASK" 'Bash(gh issue view:*)' \
+  "next-task #530: allowed-tools grants Bash(gh issue view:*)"
 
 chk_prose "$NEXT_TASK" 'Bash(atelier-project-item:*)' \
   "next-task #530: allowed-tools grants Bash(atelier-project-item:*)"

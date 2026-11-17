@@ -203,6 +203,10 @@ chk_prose "$CMD" 'do not skip the whole' \
 
 chk_no_listing_instructed() {
   local file="$1" label="$2" bad
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    fail "$label — file not readable: $file"
+    return 0
+  fi
   bad="$(grep -nE 'gh project item-list|listTasks' "$file" 2>/dev/null \
     | grep -vE '[Nn]ever|[Nn]ot |no board listing|would instead|discover the backlog|instead of' || true)"
   if [ -z "$bad" ]; then
@@ -212,7 +216,7 @@ chk_no_listing_instructed() {
   fi
 }
 
-chk_no_listing_instructed "$$CMD" \
+chk_no_listing_instructed "$CMD" \
   "status: no gh project item-list / listTasks instructed for a single item (#530)"
 
 chk_prose "$CMD" 'Bash(atelier-project-item:*)' \

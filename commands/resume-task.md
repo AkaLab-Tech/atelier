@@ -1,7 +1,7 @@
 ---
 description: Continue a task after interruption or unblocking. Auto-detects the resume mode from `IN_PROGRESS.md` state — "interrupted" (active entry, partial progress) vs "blocked-resumed" (entry has the `[BLOCKED]` marker and the GitHub issue has been closed by the operator). Runs the mode-specific cleanup, then hands off to `task-orchestrator`.
 argument-hint: "<task-id> [--yes|-y] [--ignore-live]"
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(atelier-worktree-create:*), Bash(git worktree:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(env:*), Bash(jq:*), Bash(test:*), Bash(gh issue view:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh api graphql:*), Bash(atelier-task-backend:*), Bash(atelier-resolve-base:*), Bash(atelier-baseline-override:*), Bash(git fetch:*), Skill, Task, Bash(atelier-subagent-ledger:*), Bash(atelier-project-item:*)
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git wt:*), Bash(atelier-worktree-create:*), Bash(git worktree:*), Bash(ls:*), Bash(rm:*), Bash(rmdir:*), Bash(env:*), Bash(jq:*), Bash(test:*), Bash(gh issue view:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh api graphql:*), Bash(atelier-task-backend:*), Bash(atelier-resolve-base:*), Bash(atelier-baseline-override:*), Bash(git fetch:*), Skill, Task, Bash(atelier-subagent-ledger:*), Bash(atelier-project-item:*), Bash(atelier-project-cache:*)
 ---
 
 You are running the `/resume-task` slash command. Three distinct entry points lead here — all end with the same orchestrator hand-off, but they require different pre-flight cleanup:
@@ -118,7 +118,7 @@ The board says the task is in progress, but there is no open PR to inherit from 
    ```
    Exit 0 → capture the last stdout line as the worktree path. Exit 1 → the worktree was created but holds prod/stage env files and no path was printed: stop, print the flagged names from stderr, point to `docs/troubleshooting.md`, and do not dispatch. Exit 2 → nothing was created: stop and report stderr verbatim.
 
-   Resolve `<slug>` from the task's title (from `getTask(id)` in step 2), using the same slug convention `/next-task` uses. The recreated worktree starts clean — there is no partial implementation to preserve, so this is effectively attempt 1, same as a task with no prior work. Proceed to step 5 with `resume_mode: interrupted`.
+   Resolve `<slug>` from the task's title (from `getTask(id)` in step 2; on `github-project` the `atelier-project-item get` record carries no `title`, so take it from `atelier-project-cache get <id> --no-refresh`, and on a cache miss from the item's content: `gh issue view <issueNumber> --json title` for an `Issue`, or a single-node GraphQL read of `itemId` for a `DraftIssue`), using the same slug convention `/next-task` uses. The recreated worktree starts clean — there is no partial implementation to preserve, so this is effectively attempt 1, same as a task with no prior work. Proceed to step 5 with `resume_mode: interrupted`.
 
 Either way, **do not** call `moveTask` again here — the board is already correctly in the `inProgress` bucket from the original claim; re-issuing the same move is unnecessary and reproduces the exact `task-not-in-from-bucket` symptom this recovery path exists to resolve.
 

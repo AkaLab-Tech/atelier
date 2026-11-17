@@ -212,6 +212,10 @@ chk_absent "$RESUME_TASK" 'The command **auto-detects** which mode applies from 
 
 chk_no_listing_instructed() {
   local file="$1" label="$2" bad
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    fail "$label — file not readable: $file"
+    return 0
+  fi
   bad="$(grep -nE 'gh project item-list|listTasks' "$file" 2>/dev/null \
     | grep -vE '[Nn]ever|[Nn]ot |no board listing|would instead|discover the backlog|instead of' || true)"
   if [ -z "$bad" ]; then
@@ -221,8 +225,17 @@ chk_no_listing_instructed() {
   fi
 }
 
-chk_no_listing_instructed "$$RESUME_TASK" \
+chk_no_listing_instructed "$RESUME_TASK" \
   "resume-task: no gh project item-list / listTasks instructed for a single item (#530)"
+
+chk_prose "$RESUME_TASK" 'atelier-project-cache get <id> --no-refresh' \
+  "resume-task #530: title source is atelier-project-cache get <id> --no-refresh"
+
+chk_prose "$RESUME_TASK" '`gh issue view <issueNumber> --json title`' \
+  "resume-task #530: title cache-miss fallback is gh issue view --json title"
+
+chk_prose "$RESUME_TASK" 'Bash(atelier-project-cache:*)' \
+  "resume-task #530: allowed-tools grants Bash(atelier-project-cache:*)"
 
 chk_prose "$RESUME_TASK" 'Bash(atelier-project-item:*)' \
   "resume-task #530: allowed-tools grants Bash(atelier-project-item:*)"
