@@ -536,17 +536,18 @@ Applies to any project whose `.roadmap.json` declares `backend: "github-project"
 
 GitHub's GraphQL budget is **5000 points per hour**, and the cost is computed from
 the nodes a query requests, not from the number of requests. `gh project item-list`
-pulls every item with every field value nested, so **one full listing of a ~180-item
-board costs ~200 points** — roughly 24 listings per hour for the whole account,
-shared across every session and every subagent. Field updates cost 1 point each and
-are not the problem. Reads are.
+pulls every item with every field value nested, so **one legacy full listing of this
+board costs about 600 points** — roughly 8 listings per hour for the whole account,
+shared across every session and every subagent. The paginated, body-free refresh in
+`atelier-project-cache` costs about 1 point per 100 items. Field updates cost 1 point
+each and are not the problem. Reads are.
 
-Three rules, in order of how much they save:
+Four rules, in order of how much they save:
 
 1. **Subagents never LIST the board.** The expensive call is the full listing, not
    a single-item read. A specialist reading its own task through the backend's
-   task-read primitive (`getTask(id)`, concretely `mcp__github__issue_read` on a
-   `github-project` repo) costs a point or two and is exactly what `planner` and
+   task-read primitive (`getTask(id)`; on `github-project` that is
+   `atelier-project-item get <id>`, the single-item path, or `mcp__github__issue_read`) costs a point or two and is exactly what `planner` and
    `task-decomposer` are told to do — that stays. What must not happen is a
    subagent running `gh project item-list` / `listTasks` over the whole board to
    find its task, or to allocate an id. Pass the task content inline in the
@@ -570,9 +571,19 @@ Three rules, in order of how much they save:
    bodies and dominate the payload (measured on a real board: bodies were 90% of a
    1.0 MB dump). It auto-refreshes past its TTL; `--no-refresh` forbids the network.
 
-3. **Invalidate after every write.** Run `atelier-project-cache invalidate`
-   immediately after any `item-create` / `item-edit`, so the next read refetches
-   instead of serving state you just changed.
+3. **Patch the cache row after a write.** Status/Ready writes on `github-project`
+   go through `atelier-project-item` (`set-status <id> <label> [--from <bucket>]`,
+   `set-ready <id> true|false`), which patches the cache itself. Do not use crt's
+   Status/Ready writers here: their option-id resolution lists the board (follow-up
+   AkaLab-Tech/claude-roadmap-tools#43). After any other `item-create` / `item-edit`,
+   run `atelier-project-cache patch <id>` to refresh that one row, or
+   `atelier-project-cache invalidate <id>` to drop it, so the next read does not serve
+   state you just changed. Never a whole-cache `invalidate` for one item.
+
+4. **Rate limit: surface and stop.** When a script exits 4 it printed one line with
+   the kind of limit and the reset time. Report that line and stop: no blind retries
+   and no REST workaround. Reading `retry-after` or `gh api rate_limit` only to
+   report the reset time is a diagnostic, not a workaround.
 
 **Cached discovery is safe because the claim is not cached.** The shortlist comes
 from the cache; the single item about to be claimed is always re-read from the
