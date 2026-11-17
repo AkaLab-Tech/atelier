@@ -166,7 +166,7 @@ chk_prose "$RESUME_TASK" 'the worktree found or recreated in step 3b for board-i
 chk_prose "$RESUME_TASK" 'Board-interrupted-resume (step 3b, non-`files` backend, #66) also passes `interrupted`' \
   "step 5: board-interrupted-resume passes resume_mode: interrupted (identical orchestrator handling)"
 
-chk_prose "$RESUME_TASK" 'Call `getPlan(id)` via the `roadmap-tracking-flow` skill and pass its **Approach**, **Affected areas**, and **Acceptance criteria** **inline**' \
+chk_prose "$RESUME_TASK" 'Call `getPlan(id)` via the `roadmap-tracking-flow` skill (for `github-project`: `atelier-project-item body <id>`) and pass its **Approach**, **Affected areas**, and **Acceptance criteria** **inline**' \
   "step 5: resident plan-storage carried inline via getPlan(id)"
 
 chk_prose "$RESUME_TASK" 'Omit `main_checkout_root` for this mode — it has no meaning here, mirroring `/atelier:next-task` step 8.' \
@@ -200,6 +200,48 @@ chk_prose "$RESUME_TASK" 'Read `IN_PROGRESS.md`. Search for a heading line that 
 
 chk_absent "$RESUME_TASK" 'The command **auto-detects** which mode applies from the state of `IN_PROGRESS.md` and (for PR-open-resume) the presence of an open PR. The operator does not pick.' \
   "no-regression: pre-#66 auto-detect summary (files-only wording) superseded by backend-aware wording"
+
+# ---------------------------------------------------------------------------
+# #530: no single-item read/write is instructed as a board listing
+# ---------------------------------------------------------------------------
+#
+# Single items go through `atelier-project-item`. A line may still *mention*
+# `gh project item-list` / `listTasks` when it prohibits them (never / no board
+# listing / would instead) or names the backlog-discovery cache call they were
+# replaced by; any other line naming them is an instruction to list the board.
+
+chk_no_listing_instructed() {
+  local file="$1" label="$2" bad
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    fail "$label — file not readable: $file"
+    return 0
+  fi
+  bad="$(grep -nE 'gh project item-list|listTasks' "$file" 2>/dev/null \
+    | grep -vE '[Nn]ever|[Nn]ot |no board listing|would instead|discover the backlog|instead of' || true)"
+  if [ -z "$bad" ]; then
+    pass "$label"
+  else
+    fail "$label — instructing line(s): $bad"
+  fi
+}
+
+chk_no_listing_instructed "$RESUME_TASK" \
+  "resume-task: no gh project item-list / listTasks instructed for a single item (#530)"
+
+chk_prose "$RESUME_TASK" 'atelier-project-cache get <id> --no-refresh' \
+  "resume-task #530: title source is atelier-project-cache get <id> --no-refresh"
+
+chk_prose "$RESUME_TASK" '`gh issue view <issueNumber> --json title`' \
+  "resume-task #530: title cache-miss fallback is gh issue view --json title"
+
+chk_prose "$RESUME_TASK" 'Bash(atelier-project-cache:*)' \
+  "resume-task #530: allowed-tools grants Bash(atelier-project-cache:*)"
+
+chk_prose "$RESUME_TASK" 'Bash(atelier-project-item:*)' \
+  "resume-task #530: allowed-tools grants Bash(atelier-project-item:*)"
+
+chk_prose "$RESUME_TASK" 'for `github-project`: `atelier-project-item get <id>`, a targeted read — never a board listing' \
+  "resume-task #530: step 3b item read uses atelier-project-item get"
 
 # ---------------------------------------------------------------------------
 # Result
