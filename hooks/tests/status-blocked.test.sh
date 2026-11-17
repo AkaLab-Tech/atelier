@@ -193,6 +193,35 @@ chk_prose "$CMD" 'do not skip the whole' \
   "degradation: gh issue list failure does not skip the whole ▶ Blocked section"
 
 # ---------------------------------------------------------------------------
+# #530: no single-item read/write is instructed as a board listing
+# ---------------------------------------------------------------------------
+#
+# Single items go through `atelier-project-item`. A line may still *mention*
+# `gh project item-list` / `listTasks` when it prohibits them (never / no board
+# listing / would instead) or names the backlog-discovery cache call they were
+# replaced by; any other line naming them is an instruction to list the board.
+
+chk_no_listing_instructed() {
+  local file="$1" label="$2" bad
+  bad="$(grep -nE 'gh project item-list|listTasks' "$file" 2>/dev/null \
+    | grep -vE '[Nn]ever|[Nn]ot |no board listing|would instead|discover the backlog|instead of' || true)"
+  if [ -z "$bad" ]; then
+    pass "$label"
+  else
+    fail "$label — instructing line(s): $bad"
+  fi
+}
+
+chk_no_listing_instructed "$$CMD" \
+  "status: no gh project item-list / listTasks instructed for a single item (#530)"
+
+chk_prose "$CMD" 'Bash(atelier-project-item:*)' \
+  "status #530: allowed-tools grants Bash(atelier-project-item:*)"
+
+chk_prose "$CMD" 'look the single item up with `atelier-project-item get <id>`' \
+  "status #530: cache miss falls back to atelier-project-item get"
+
+# ---------------------------------------------------------------------------
 # Result
 # ---------------------------------------------------------------------------
 echo ""

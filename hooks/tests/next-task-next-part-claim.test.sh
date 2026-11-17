@@ -53,7 +53,7 @@ chk_prose "$NEXT_TASK" 'Before any worktree exists, classify the claim and recor
   "classifier: runs before the worktree is created"
 chk_prose "$NEXT_TASK" 'it is never an orchestrator brief field' \
   "classifier: CLAIM_KIND is not a brief field"
-chk_prose "$NEXT_TASK" 'Read the item fresh with `getTask(id)` (not from the cache). If its Status is **not** in `stateMap.inProgress`, `CLAIM_KIND=first`' \
+chk_prose "$NEXT_TASK" 'Read the item fresh with `getTask(id)` (not from the cache; for `github-project`: `atelier-project-item get <id>`). If its Status is **not** in `stateMap.inProgress`, `CLAIM_KIND=first`' \
   "signal (a): fresh getTask; Status outside inProgress -> first"
 chk_prose "$NEXT_TASK" 'Status is in `stateMap.inProgress` (signal a)' \
   "signal (a): Status in stateMap.inProgress"
@@ -133,11 +133,11 @@ chk_prose "$NEXT_TASK" 'Branch:      task/<id>-<slug>   (next part: task/<id>-<s
 # ---------------------------------------------------------------------------
 chk_prose "$NEXT_TASK" '**`CLAIM_KIND=next-part` — claim by consuming `Ready`, never `moveTask`**' \
   "step 6: next-part claims by consuming Ready, never moveTask"
-chk_prose "$NEXT_TASK" 'Re-read the item with a fresh `getTask(id)` and re-check the open `task/<id>-*` PR list.' \
+chk_prose "$NEXT_TASK" 'Re-read the item fresh (`github-project`: `atelier-project-item get <id>`; otherwise `getTask(id)`) and re-check the open `task/<id>-*` PR list.' \
   "step 6: fresh re-read before taking the token"
 chk_prose "$NEXT_TASK" '(c) `Ready` is still set' \
   "step 6: Ready re-checked at re-read"
-chk_prose "$NEXT_TASK" 'Call `setReady(id, false)` (one atomic field update).' \
+chk_prose "$NEXT_TASK" 'Call `setReady(id, false)` (`github-project`: `atelier-project-item set-ready <id> false`; one field update' \
   "step 6: setReady(id, false) after the re-read"
 chk_prose "$NEXT_TASK" 'That consumed `Ready` is the claim token' \
   "step 6: consumed Ready is the token"
@@ -149,7 +149,7 @@ chk_prose "$NEXT_TASK" 'lands on the resume path (`/atelier:resume-task` step 3b
   "step 6: interrupted next-part claim lands on resume step 3b"
 chk_prose "$NEXT_TASK" '- **`CLAIM_KIND=first`** — as follows, unchanged:' \
   "step 6: first claim path unchanged (moveTask)"
-chk_prose "$NEXT_TASK" 'Call `moveTask(id, "roadmap", "in_progress")` via the `roadmap-tracking-flow` skill.' \
+chk_prose "$NEXT_TASK" 'For `github-project`, claim with `atelier-project-item set-status <id> "In Progress" --from roadmap`' \
   "step 6: first claim still uses moveTask roadmap -> in_progress"
 chk_prose "$NEXT_TASK" '`claiming task <id> (next part <N>)`' \
   "step 4: next-part log line"

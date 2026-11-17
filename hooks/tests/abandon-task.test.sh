@@ -268,8 +268,43 @@ chk_prose "$CMD" 'Bash(gh api graphql:' \
 chk_absent "$CMD" 'gh api` is outside this command'"'"'s tool grant' \
   "step 7 (#66): stale 'gh api is outside this command's tool grant' claim removed"
 
-chk_prose "$CMD" 'is granted in this command'"'"'s frontmatter for the skill'"'"'s own `getTask`/`moveTask` calls' \
-  "step 7 (#66): corrected parenthetical explains why Bash(gh api graphql:*) is granted"
+chk_prose "$CMD" 'atelier-project-item set-status <id> "Todo" --from inProgress' \
+  "step 7 (#530): fallback bucket move uses atelier-project-item set-status --from inProgress"
+
+# ---------------------------------------------------------------------------
+# #530: no single-item read/write is instructed as a board listing
+# ---------------------------------------------------------------------------
+#
+# Single items go through `atelier-project-item`. A line may still *mention*
+# `gh project item-list` / `listTasks` when it prohibits them (never / no board
+# listing / would instead) or names the backlog-discovery cache call they were
+# replaced by; any other line naming them is an instruction to list the board.
+
+chk_no_listing_instructed() {
+  local file="$1" label="$2" bad
+  bad="$(grep -nE 'gh project item-list|listTasks' "$file" 2>/dev/null \
+    | grep -vE '[Nn]ever|[Nn]ot |no board listing|would instead|discover the backlog|instead of' || true)"
+  if [ -z "$bad" ]; then
+    pass "$label"
+  else
+    fail "$label — instructing line(s): $bad"
+  fi
+}
+
+chk_no_listing_instructed "$$CMD" \
+  "abandon-task: no gh project item-list / listTasks instructed for a single item (#530)"
+
+chk_prose "$CMD" 'Bash(atelier-project-item:*)' \
+  "abandon-task #530: allowed-tools grants Bash(atelier-project-item:*)"
+
+chk_prose "$CMD" 'call `atelier-project-item get <id>` (targeted read, never a board listing)' \
+  "abandon-task #530: anchor check reads the item with atelier-project-item get"
+
+chk_prose "$CMD" 'Read the Status options with `atelier-project-item fields`' \
+  "abandon-task #530: Status options read with atelier-project-item fields"
+
+chk_prose "$CMD" 'atelier-project-item set-status <id> "<that option>" --from inProgress' \
+  "abandon-task #530: Abandoned/Cancelled move uses set-status --from inProgress"
 
 # ---------------------------------------------------------------------------
 # Result

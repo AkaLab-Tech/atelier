@@ -231,7 +231,7 @@ chk_absent "$NEXT_TASK" 'the task was already claimed by a concurrent actor — 
 chk_prose "$NEXT_TASK" 'do **not** assume a race — diagnose which of two distinct causes holds before reporting anything (#66)' \
   "next-task step 6 (#66): task-not-in-from-bucket now diagnosed instead of assumed"
 
-chk_prose "$NEXT_TASK" 'Re-read the item with `getTask(id)` via the `roadmap-tracking-flow` skill, and reuse the open `task/*` PR list already fetched in step 2 (no need to re-query)' \
+chk_prose "$NEXT_TASK" 'Re-read the item with `atelier-project-item get <id>` (`getTask(id)` via the `roadmap-tracking-flow` skill on other backends), and reuse the open `task/*` PR list already fetched in step 2 (no need to re-query)' \
   "next-task step 6 (#66): diagnosis reuses step 2's PR list, no re-query"
 
 chk_prose "$NEXT_TASK" '**Self-interrupted claim (resumable, not a race)**' \
@@ -245,6 +245,53 @@ chk_prose "$NEXT_TASK" '**Genuine race**' \
 
 chk_prose "$NEXT_TASK" 'do **not** suggest `/atelier:resume-task` here, since there is no interrupted work of *this* claim'"'"'s to resume' \
   "next-task step 6 (#66): genuine-race case does NOT suggest /atelier:resume-task"
+
+# ---------------------------------------------------------------------------
+# #530: no single-item read/write is instructed as a board listing
+# ---------------------------------------------------------------------------
+#
+# Single items go through `atelier-project-item`. A line may still *mention*
+# `gh project item-list` / `listTasks` when it prohibits them (never / no board
+# listing / would instead) or names the backlog-discovery cache call they were
+# replaced by; any other line naming them is an instruction to list the board.
+
+chk_no_listing_instructed() {
+  local file="$1" label="$2" bad
+  bad="$(grep -nE 'gh project item-list|listTasks' "$file" 2>/dev/null \
+    | grep -vE '[Nn]ever|[Nn]ot |no board listing|would instead|discover the backlog|instead of' || true)"
+  if [ -z "$bad" ]; then
+    pass "$label"
+  else
+    fail "$label — instructing line(s): $bad"
+  fi
+}
+
+chk_no_listing_instructed "$$NEXT_TASK" \
+  "next-task: no gh project item-list / listTasks instructed for a single item (#530)"
+
+chk_prose "$NEXT_TASK" 'Bash(atelier-project-item:*)' \
+  "next-task #530: allowed-tools grants Bash(atelier-project-item:*)"
+
+chk_prose "$NEXT_TASK" 'call `atelier-project-item get <id>` (one targeted read printing JSON' \
+  "next-task #530: claim verify uses atelier-project-item get"
+
+chk_prose "$NEXT_TASK" 'a rate limit is reported to the operator, never retried or worked around by listing the board' \
+  "next-task #530: rate limit (exit 4) reported, not worked around by listing"
+
+chk_prose "$NEXT_TASK" 'Read the item fresh with `getTask(id)` (not from the cache; for `github-project`: `atelier-project-item get <id>`)' \
+  "next-task #530: claim-kind signal (a) read uses atelier-project-item get"
+
+chk_prose "$NEXT_TASK" 'atelier-project-item set-status <id> "In Progress" --from roadmap' \
+  "next-task #530: claim move uses set-status --from roadmap"
+
+chk_prose "$NEXT_TASK" 'atelier-project-item set-ready <id> false' \
+  "next-task #530: Ready consume uses set-ready <id> false"
+
+chk_prose "$NEXT_TASK" 'atelier-project-item body <id>' \
+  "next-task #530: plan read (resident) uses atelier-project-item body"
+
+chk_prose "$NEXT_TASK" 'Re-read the item fresh (`github-project`: `atelier-project-item get <id>`; otherwise `getTask(id)`)' \
+  "next-task #530: freshness re-read uses atelier-project-item get"
 
 # ---------------------------------------------------------------------------
 # Result

@@ -141,6 +141,32 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# #530: no single-item read/write is instructed as a board listing
+# ---------------------------------------------------------------------------
+#
+# Single items go through `atelier-project-item`. A line may still *mention*
+# `gh project item-list` / `listTasks` when it prohibits them (never / no board
+# listing / would instead) or names the backlog-discovery cache call they were
+# replaced by; any other line naming them is an instruction to list the board.
+
+chk_no_listing_instructed() {
+  local file="$1" label="$2" bad
+  bad="$(grep -nE 'gh project item-list|listTasks' "$file" 2>/dev/null \
+    | grep -vE '[Nn]ever|[Nn]ot |no board listing|would instead|discover the backlog|instead of' || true)"
+  if [ -z "$bad" ]; then
+    pass "$label"
+  else
+    fail "$label — instructing line(s): $bad"
+  fi
+}
+
+chk_no_listing_instructed "$$CMD" \
+  "babysit-prs: no gh project item-list / listTasks instructed for a single item (#530)"
+
+chk_prose "$CMD" 'any single board item it needs goes through `atelier-project-item`, never a board listing' \
+  "babysit-prs #530: single board items go through atelier-project-item"
+
+# ---------------------------------------------------------------------------
 # Result
 # ---------------------------------------------------------------------------
 echo ""

@@ -104,8 +104,11 @@ chk_prose "$PLAN_TASK" '`git status --porcelain .plan` only — there is no `ROA
 chk_prose "$PLAN_TASK" 'setReady(id, true)' \
   "Phase 4: non-files calls setReady(id, true)"
 
-chk_prose "$PLAN_TASK" 'call the backend'"'"'s `setReady(id, true)` operation via the `roadmap-tracking-flow` skill' \
-  "Phase 4: setReady driven through roadmap-tracking-flow skill"
+chk_prose "$PLAN_TASK" 'for `github-project` run `atelier-project-item set-ready <id> true`' \
+  "Phase 4: github-project Ready flip driven through atelier-project-item set-ready"
+
+chk_prose "$PLAN_TASK" 'for `linear` call the backend'"'"'s `setReady(id, true)` via the `roadmap-tracking-flow` skill' \
+  "Phase 4: linear setReady driven through roadmap-tracking-flow skill"
 
 chk_prose "$PLAN_TASK" 'git add .plan' \
   "Phase 4: github-project commits .plan only"
@@ -129,8 +132,8 @@ chk_prose "$PLAN_TASK" 'There is no `ROADMAP.md` to revert.' \
 chk_prose "$PLAN_TASK" 'setReady(id, false)' \
   "Phase 5: on mid-Phase-4 failure, calls setReady(id, false) to un-set"
 
-chk_prose "$PLAN_TASK" 'call `setReady(id, false)` via the `roadmap-tracking-flow` skill to un-set the `Ready` field' \
-  "Phase 5: setReady(id, false) un-set driven through roadmap-tracking-flow skill"
+chk_prose "$PLAN_TASK" 'call `atelier-project-item set-ready <id> false` (`github-project`; `setReady(id, false)` via the `roadmap-tracking-flow` skill for `linear`) to un-set the `Ready` field' \
+  "Phase 5: Ready un-set driven through atelier-project-item set-ready <id> false"
 
 # ---------------------------------------------------------------------------
 # Group 5: Interaction mode (interactive-only for BOTH backends)
@@ -217,6 +220,35 @@ chk_prose "$PLAN_TASK" 'Never** set `planStorage: resident` on a `files` backend
 
 chk_prose "$PLAN_TASK" 'Bash(gh api graphql:*)' \
   "frontmatter: Bash(gh api graphql:*) in allowed-tools (#66)"
+
+# ---------------------------------------------------------------------------
+# #530: no single-item read/write is instructed as a board listing
+# ---------------------------------------------------------------------------
+#
+# Single items go through `atelier-project-item`. A line may still *mention*
+# `gh project item-list` / `listTasks` when it prohibits them (never / no board
+# listing / would instead) or names the backlog-discovery cache call they were
+# replaced by; any other line naming them is an instruction to list the board.
+
+chk_no_listing_instructed() {
+  local file="$1" label="$2" bad
+  bad="$(grep -nE 'gh project item-list|listTasks' "$file" 2>/dev/null \
+    | grep -vE '[Nn]ever|[Nn]ot |no board listing|would instead|discover the backlog|instead of' || true)"
+  if [ -z "$bad" ]; then
+    pass "$label"
+  else
+    fail "$label — instructing line(s): $bad"
+  fi
+}
+
+chk_no_listing_instructed "$$PLAN_TASK" \
+  "plan-task: no gh project item-list / listTasks instructed for a single item (#530)"
+
+chk_prose "$PLAN_TASK" 'Bash(atelier-project-item:*)' \
+  "plan-task #530: allowed-tools grants Bash(atelier-project-item:*)"
+
+chk_prose "$PLAN_TASK" 'its `itemId`, the `PVTI_` node id' \
+  "plan-task #530: setPlan receives the item id resolved by atelier-project-item get"
 
 # ---------------------------------------------------------------------------
 # Result

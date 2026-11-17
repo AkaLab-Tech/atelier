@@ -10,6 +10,8 @@ You are running the `/atelier:babysit-prs` slash command. Your job is one **idem
 - Fixed-cadence: `/loop 10m /atelier:babysit-prs` (re-runs every 10 minutes; `Esc` stops; 7-day cap).
 - Self-paced: `/loop /atelier:babysit-prs` (the model picks a 1 min–1 h delay and ends the loop by not scheduling another once every PR is terminal).
 
+An unattended `/loop` never refreshes the `github-project` board cache: this command reads only PR state, and any single board item it needs goes through `atelier-project-item`, never a board listing.
+
 The pass verdict at the end of each run tells a self-paced `/loop` whether to continue.
 
 ## Interaction mode (read once at the start)
