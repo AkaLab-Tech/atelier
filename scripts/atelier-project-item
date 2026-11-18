@@ -16,12 +16,12 @@
 #
 # get      Prints {id, itemId, contentType, issueNumber, status, ready,
 #          priority, estimate}. Resolution order:
-#            1. a numeric id is tried as an issue number in the project's repo
-#               (one repository.issue(number){projectItems} query, keeping the
-#               entry whose project.number matches this board);
-#            2. otherwise (draft items) the itemId cached by
-#               `atelier-project-cache get <id> --no-refresh`, plus one
-#               node(id:) read;
+#            1. the itemId cached by `atelier-project-cache get <id> --no-refresh`,
+#               plus one node(id:) read;
+#            2. if there is no cached row, or the cached itemId is stale
+#               (NOT_FOUND) and the row is not a DraftIssue, one
+#               repository.issue(number){projectItems} query for numeric ids,
+#               keeping the entry whose project.number matches this board;
 #            3. otherwise it fails and says to run `atelier-project-cache refresh`.
 #          The repo is `.githubProject.repo` (owner/name) in .roadmap.json, else
 #          derived from the project's `origin` remote.
@@ -246,7 +246,7 @@ _read_node() {
   resp="$(mktemp)"
   sel='content { __typename ... on Issue { number } }'
   [ "$withbody" = 1 ] && sel='content { __typename ... on Issue { number body } ... on DraftIssue { body } }'
-  gh_graphql "$resp" \
+  gh_graphql "$resp" --tolerate-not-found \
     -f "query=query(\$itemId: ID!) { rateLimit { cost remaining resetAt } node(id: \$itemId) { ... on ProjectV2Item { $sel $_ITEM_FIELDS } } } $_FV" \
     -f "itemId=$iid"
   ITEM_JSON="$(jq -c --arg id "$WANT" --argjson wb "$withbody" "$_ITEM_JQ"'
@@ -261,10 +261,15 @@ resolve_item() {
   local withbody="${1:-0}" row iid
   if row="$(_cached_row)" && [ -n "$row" ]; then
     iid="$(printf '%s' "$row" | jq -r '.itemId // empty')"
-    if [ -n "$iid" ] && _read_node "$iid" "$withbody"; then return 0; fi
+    if [ -n "$iid" ]; then
+      _read_node "$iid" "$withbody" && return 0
+      # a stale draft itemId must never fall through to a repo issue with the same number
+      [ "$(printf '%s' "$row" | jq -r '.type // empty')" = DraftIssue ] \
+        && die "cannot resolve $WANT without sweeping the board (the cached itemId is stale); run: atelier-project-cache refresh"
+    fi
   fi
   _resolve_via_issue "$withbody" && return 0
-  die "cannot resolve $WANT without sweeping the board (not an issue on this project, and no cached itemId); run: atelier-project-cache refresh"
+  die "cannot resolve $WANT without sweeping the board (not an issue on this project, and the cached itemId is missing or stale); run: atelier-project-cache refresh"
 }
 
 # Item id for a write. A draft's itemId is stable, so the free offline cache
