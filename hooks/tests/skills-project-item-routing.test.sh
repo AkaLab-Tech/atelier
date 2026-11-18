@@ -92,7 +92,7 @@ chk_prose "$TD" 'Exit 4 means rate limited' \
 # ---------------------------------------------------------------------------
 chk_prose "$AM" '`atelier-project-item get <id>`: if its `status` is already in `stateMap.history`' \
   "auto-merge #531: post-merge step reads status with atelier-project-item get"
-chk_prose "$AM" '`atelier-project-item set-status <id> Done`' \
+chk_prose "$AM" '`atelier-project-item set-status <id> history`' \
   "auto-merge #531: Done move uses atelier-project-item set-status"
 chk_prose "$AM" 'Never list the board for this.' \
   "auto-merge #531: never list the board for the Done move"
@@ -132,6 +132,25 @@ chk_prose "$OR" 'no REST workaround' \
   "operator-rules #531: no REST workaround"
 chk_prose "$OR" 'Four rules, in order of how much they save' \
   "operator-rules #531: four rules heading"
+
+# chk_none <file> <fixed-string> <label>  (#800)
+# Passes when the fixed string occurs zero times; counts on the file path, no pipe.
+chk_none() {
+  local file="$1" pattern="$2" label="$3" n
+  n="$(grep -cF -e "$pattern" "$file" 2>/dev/null || true)"
+  if [ "${n:-0}" = "0" ]; then pass "$label"; else fail "$label — found $n x: $pattern"; fi
+}
+
+# #800: Status writes pass stateMap bucket names, never hardcoded board labels.
+for f in commands/next-task.md commands/abandon-task.md skills/auto-merge/SKILL.md; do
+  chk_none "$REPO_ROOT/$f" 'set-status <id> "In Progress"' "#800: $f has no hardcoded In Progress set-status"
+  chk_none "$REPO_ROOT/$f" 'set-status <id> "Todo"' "#800: $f has no hardcoded Todo set-status"
+  chk_none "$REPO_ROOT/$f" 'set-status <id> Done' "#800: $f has no hardcoded Done set-status"
+done
+chk_prose "$REPO_ROOT/commands/next-task.md" 'atelier-project-item set-status <id> inProgress --from roadmap' \
+  "#800: next-task claims with the inProgress bucket"
+chk_prose "$REPO_ROOT/commands/abandon-task.md" 'atelier-project-item set-status <id> roadmap --from inProgress' \
+  "#800: abandon-task fallback uses the roadmap bucket"
 
 printf '\n'
 if [ "$fails" -eq 0 ]; then printf 'ALL PASS\n'; exit 0; fi

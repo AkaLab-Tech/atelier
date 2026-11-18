@@ -319,7 +319,7 @@ chk_prose "$NEXT_TASK" 'a rate limit is reported to the operator, never retried 
 chk_prose "$NEXT_TASK" 'Read the item fresh with `getTask(id)` (not from the cache; for `github-project`: `atelier-project-item get <id>`)' \
   "next-task #530: claim-kind signal (a) read uses atelier-project-item get"
 
-chk_prose "$NEXT_TASK" 'atelier-project-item set-status <id> "In Progress" --from roadmap' \
+chk_prose "$NEXT_TASK" 'atelier-project-item set-status <id> inProgress --from roadmap' \
   "next-task #530: claim move uses set-status --from roadmap"
 
 chk_prose "$NEXT_TASK" 'atelier-project-item set-ready <id> false' \
