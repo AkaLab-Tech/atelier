@@ -529,6 +529,72 @@ rr_out="$(bash "$PC" refresh "$PN" --force 2>&1)"; rr_rc=$?
 jq -e '[.items[].title] | index("feat #103 secondary rate limit docs") != null' "$NIDX" >/dev/null 2>&1 && pass "the index contains the rate-limit-worded title" || fail "title missing: $(jq -c '[.items[].title]' "$NIDX")"
 cp "$SHIM_DIR/page-c2.keep" "$SHIM_DIR/page-c2.http"
 
+# --- no scratch files remain (#798): stop, failure and success paths all clean up ---
+# TMPDIR points at a fresh directory; after each run it must be empty, and the cache
+# dir must hold no .bodies.* scratch dir and no index.json.tmp.
+# BSD/macOS mktemp ignores $TMPDIR when called with no template, GNU mktemp honours it.
+# This wrapper makes both behave the GNU way so a leaked bare `mktemp` file lands in
+# the test's TMPDIR on every platform.
+REAL_MKTEMP="$(command -v mktemp)"; MK_BIN="$T/mkbin"; mkdir -p "$MK_BIN"
+cat > "$MK_BIN/mktemp" <<SHIM
+#!/bin/sh
+if [ "\$#" -eq 0 ]; then exec "$REAL_MKTEMP" "\${TMPDIR:-/tmp}/tmp.XXXXXXXXXX"; fi
+if [ "\$#" -eq 1 ] && [ "\$1" = "-d" ]; then exec "$REAL_MKTEMP" -d "\${TMPDIR:-/tmp}/tmp.XXXXXXXXXX"; fi
+exec "$REAL_MKTEMP" "\$@"
+SHIM
+chmod +x "$MK_BIN/mktemp"
+no_scratch() {  # $1 label  $2 expected rc  $3 actual rc  $4 TMPDIR dir
+  local label="$1" want="$2" got="$3" td="$4" left cleft
+  [ "$got" -eq "$want" ] && pass "$label: exits $want" || fail "$label: exit $got (wanted $want)"
+  left="$(find "$td" -mindepth 1 2>/dev/null)"
+  [ -z "$(find "$td" -mindepth 1 -print -quit 2>/dev/null)" ] && pass "$label: no scratch files left in TMPDIR" || fail "$label: left in TMPDIR: $left"
+  cleft="$(find "$NDIR" -mindepth 1 \( -name '.bodies.*' -o -name 'index.json.tmp' \) 2>/dev/null)"
+  [ -z "$(find "$NDIR" -mindepth 1 \( -name '.bodies.*' -o -name 'index.json.tmp' \) -print -quit 2>/dev/null)" ] && pass "$label: no .bodies.* or index.json.tmp left in the cache dir" || fail "$label: left in cache dir: $cleft"
+}
+rm -f "$SHIM_DIR/override.http" "$SHIM_DIR/override.err" "$SHIM_DIR/override.rc"
+
+# a) rate limit on page 1
+TD="$(mktemp -d)"
+printf 'HTTP/2.0 403 Forbidden\r\nretry-after: 60\r\n\r\n{"message":"API rate limit already exceeded for user ID 1."}' > "$SHIM_DIR/override.http"
+printf 'gh: API rate limit already exceeded for user ID 1. (HTTP 403)\n' > "$SHIM_DIR/override.err"; echo 1 > "$SHIM_DIR/override.rc"
+PATH="$MK_BIN:$PATH" TMPDIR="$TD" bash "$PC" refresh "$PN" --force >/dev/null 2>&1; rc=$?
+no_scratch "scratch: page-1 rate limit" 4 "$rc" "$TD"
+rm -r "$TD"
+
+# b) rate limit on page 2 (multi-page path, RAW scratch already in use)
+TD="$(mktemp -d)"
+rm -f "$SHIM_DIR/override.http" "$SHIM_DIR/override.err" "$SHIM_DIR/override.rc"
+cp "$SHIM_DIR/page-c1.http" "$SHIM_DIR/page-c1.keep"
+printf 'HTTP/2.0 403 Forbidden\r\nretry-after: 10\r\n\r\n{"message":"API rate limit exceeded"}' > "$SHIM_DIR/page-c1.http"
+PATH="$MK_BIN:$PATH" TMPDIR="$TD" bash "$PC" refresh "$PN" --force >/dev/null 2>&1; rc=$?
+no_scratch "scratch: page-2 rate limit" 4 "$rc" "$TD"
+cp "$SHIM_DIR/page-c1.keep" "$SHIM_DIR/page-c1.http"
+rm -r "$TD"
+
+# c) plain failure (die, exit 2)
+TD="$(mktemp -d)"
+printf 'HTTP/2.0 500 Internal Server Error\r\n\r\n{"message":"boom"}' > "$SHIM_DIR/override.http"
+printf 'gh: boom (HTTP 500)\n' > "$SHIM_DIR/override.err"; echo 1 > "$SHIM_DIR/override.rc"
+PATH="$MK_BIN:$PATH" TMPDIR="$TD" bash "$PC" refresh "$PN" --force >/dev/null 2>&1; rc=$?
+no_scratch "scratch: plain failure" 2 "$rc" "$TD"
+rm -r "$TD"
+
+# d) body fetch rate-limited (uncached body, --no-refresh so only the body call runs)
+TD="$(mktemp -d)"
+printf 'HTTP/2.0 403 Forbidden\r\nretry-after: 20\r\n\r\n{"message":"API rate limit exceeded"}' > "$SHIM_DIR/override.http"
+printf 'gh: API rate limit exceeded (HTTP 403)\n' > "$SHIM_DIR/override.err"; echo 1 > "$SHIM_DIR/override.rc"
+rm -f "$NDIR/bodies/I1.md"
+PATH="$MK_BIN:$PATH" TMPDIR="$TD" bash "$PC" body 101 "$PN" --no-refresh >/dev/null 2>&1; rc=$?
+no_scratch "scratch: rate-limited body fetch" 4 "$rc" "$TD"
+rm -r "$TD"
+rm -f "$SHIM_DIR/override.http" "$SHIM_DIR/override.err" "$SHIM_DIR/override.rc"
+
+# e) successful refresh
+TD="$(mktemp -d)"
+PATH="$MK_BIN:$PATH" TMPDIR="$TD" bash "$PC" refresh "$PN" --force >/dev/null 2>&1; rc=$?
+no_scratch "scratch: successful refresh" 0 "$rc" "$TD"
+rm -r "$TD"
+
 rm -rf "$T"
 if [ "$fails" -eq 0 ]; then printf 'project-cache: all pass\n'; exit 0; fi
 printf 'project-cache: %d failure(s)\n' "$fails"; exit 1
