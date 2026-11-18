@@ -547,8 +547,9 @@ Four rules, in order of how much they save:
 1. **Subagents never LIST the board.** The expensive call is the full listing, not
    a single-item read. A specialist reading its own task through the backend's
    task-read primitive (`getTask(id)`; on `github-project` that is
-   `atelier-project-item get <id>`, the single-item path, or `mcp__github__issue_read`) costs a point or two and is exactly what `planner` and
-   `task-decomposer` are told to do — that stays. What must not happen is a
+   `atelier-project-item get <id>`, the single-item path, or
+   `mcp__github__issue_read`) costs a point or two and is exactly what `planner`
+   and `task-decomposer` are told to do — that stays. What must not happen is a
    subagent running `gh project item-list` / `listTasks` over the whole board to
    find its task, or to allocate an id. Pass the task content inline in the
    briefing where you already have it, or point the agent at
@@ -572,9 +573,9 @@ Four rules, in order of how much they save:
    1.0 MB dump). It auto-refreshes past its TTL; `--no-refresh` forbids the network.
 
 3. **Patch the cache row after a write.** Status/Ready writes on `github-project`
-   go through `atelier-project-item` (`set-status <id> <label> [--from <bucket>]`, passing a stateMap bucket name
-   (`roadmap`/`inProgress`/`history`) rather than a literal Status label so boards
-   with custom Status names work,
+   go through `atelier-project-item` (`set-status <id> <label> [--from <bucket>]`,
+   passing a stateMap bucket name (`roadmap`/`inProgress`/`history`) rather than a
+   literal Status label so boards with custom Status names work,
    `set-ready <id> true|false`), which patches the cache itself. Do not use crt's
    Status/Ready writers here: their option-id resolution lists the board (follow-up
    AkaLab-Tech/claude-roadmap-tools#43). After any other `item-create` / `item-edit`,
