@@ -67,6 +67,17 @@ set -uo pipefail
 usage() { sed -n '2,63p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die() { printf 'atelier-project-cache: %s\n' "$1" >&2; exit "${2:-1}"; }
 
+# One private scratch dir per process, removed by the single EXIT trap below, so
+# no exit path (rate-limit stop, die inside a nested call, INT/TERM) leaks files.
+# _scratch_init must run in the parent shell, never inside $(...), or SCRATCH is
+# set in a subshell and the trap never sees it.
+SCRATCH=""
+_scratch_init() {
+  [ -n "$SCRATCH" ] && return 0
+  SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/atelier-project-cache.XXXXXX")" || die "mktemp failed"
+}
+_scratch() { mktemp "$SCRATCH/$1.XXXXXX"; }
+
 case "${1:-}" in --help|-h|'') usage; exit 0 ;; esac
 CMD="$1"; shift
 
@@ -213,13 +224,19 @@ _acquire_lock() {
 }
 
 _cache_cleanup() {
+  [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
   [ -n "$RAW" ] && rm -f "$RAW"
   [ -n "$BODIES_TMP" ] && rm -rf "$BODIES_TMP"
   # rm -rf, not rmdir: the lock dir carries a pid file, so rmdir fails and the
   # lock leaks — which is the very failure this cleanup exists to prevent.
+  # Only lock holders (refresh, _index_edit) write $INDEX.tmp.
+  [ "$HOLD_LOCK" -eq 1 ] && rm -f "$INDEX.tmp"
   [ "$HOLD_LOCK" -eq 1 ] && rm -rf "$DIR/.lock"
   return 0
 }
+trap '_cache_cleanup' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ---------------------------------------------------------------- graphql
 # The only place this script talks to GitHub. One attempt per call, never a
@@ -261,7 +278,8 @@ _rate_limit_stop() {
 gh_graphql() {
   local out="$1"; shift
   local resp err hdr body rc status kind="" text
-  resp="$(mktemp)"; err="$(mktemp)"; hdr="$(mktemp)"; body="$(mktemp)"
+  _scratch_init
+  resp="$(_scratch resp)"; err="$(_scratch err)"; hdr="$(_scratch hdr)"; body="$(_scratch body)"
   gh api graphql -i "$@" > "$resp" 2> "$err"; rc=$?
   if head -n1 "$resp" | grep -q '^HTTP/'; then
     awk -v h="$hdr" -v b="$body" '{ sub(/\r$/,"") } !inb { if ($0 == "") { inb=1; next } print > h; next } { print > b }' "$resp"
@@ -323,7 +341,8 @@ _NORMALIZE_JQ='
 PAGES_COST=0; PAGES_COMPLETE=true
 _fetch_pages() {
   local out="$1" cursor="" page=0 max_pages=100 resp pagef
-  resp="$(mktemp)"; pagef="$(mktemp)"
+  _scratch_init
+  resp="$(_scratch resp)"; pagef="$(_scratch pagef)"
   printf '[]' > "$pagef"
   while :; do
     page=$((page + 1))
@@ -371,12 +390,12 @@ refresh() {
     die "another refresh holds the lock ($DIR/.lock) and it is not stale; retry, or remove it if you know the holder is gone" 2
   fi
 
-  # EXIT, not RETURN: `die` exits the process, and a RETURN trap does not run on
+  # The global EXIT trap (not RETURN): `die` exits the process, and a RETURN trap does not run on
   # that path — which is how the lock leaked and blocked every later refresh.
   RAW=""; BODIES_TMP=""; HOLD_LOCK=1
-  trap '_cache_cleanup' EXIT
   local cost=null complete=true
-  RAW="$(mktemp)" || die "mktemp failed"
+  _scratch_init
+  RAW="$(_scratch raw)" || die "mktemp failed"
 
   if [ -n "${ATELIER_PROJECT_CACHE_FIXTURE:-}" ]; then
     [ -f "$ATELIER_PROJECT_CACHE_FIXTURE" ] || die "fixture not found: $ATELIER_PROJECT_CACHE_FIXTURE"
@@ -511,7 +530,8 @@ _index_edit() {
 _fetch_body() {
   local iid="$1" resp
   command -v gh >/dev/null 2>&1 || die "gh is required" 2
-  resp="$(mktemp)"
+  _scratch_init
+  resp="$(_scratch resp)"
   gh_graphql "$resp" \
     -f 'query=query($itemId: ID!) { rateLimit { cost remaining resetAt } node(id: $itemId) { ... on ProjectV2Item { content { ... on DraftIssue { body } ... on Issue { body } } } } }' \
     -f "itemId=$iid"
@@ -536,7 +556,6 @@ case "$CMD" in
       iid="$(jq -r --arg id "$want" 'first(.items[] | select(.id == $id) | .itemId) // empty' "$INDEX")"
       [ -n "$iid" ] || die "no item with id $want"
       _acquire_lock || die "another refresh holds the lock ($DIR/.lock); retry" 2
-      trap '_cache_cleanup' EXIT
       rm -f "$BODIES/$iid.md"
       _index_edit --arg iid "$iid" '(.items[] | select(.itemId == $iid)) |= (.stale = true)'
       printf 'item %s marked stale\n' "$want"
@@ -554,7 +573,6 @@ case "$CMD" in
     iid="$(jq -r --arg id "$want" 'first(.items[] | select(.id == $id) | .itemId) // empty' "$INDEX")"
     [ -n "$iid" ] || die "no item with id $want"
     _acquire_lock || die "another refresh holds the lock ($DIR/.lock); retry" 2
-    trap '_cache_cleanup' EXIT
     _index_edit --arg iid "$iid" --argjson hs "$HAS_STATUS" --arg st "$SET_STATUS" --argjson hr "$HAS_READY" --arg rd "$SET_READY" \
       '(.items[] | select(.itemId == $iid)) |= ((if $hs == 1 then .status = $st else . end) | (if $hr == 1 then .ready = $rd else . end) | del(.stale))'
     printf 'item %s patched\n' "$want" ;;
