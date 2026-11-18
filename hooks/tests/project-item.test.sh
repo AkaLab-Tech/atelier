@@ -48,10 +48,11 @@ if [ "${1:-}" = api ] && [ "${2:-}" = graphql ]; then
   case "$q" in
     *'repository(owner'*) k=issue ;;
     *'node(id: $itemId'*) k=node ;;
+    *'node(id: $pid'*) k=projnode ;;
     *) k=fields ;;
   esac
   [ -f "$SHIM_DIR/resp-$k.http" ] || { echo "shim: no canned response for $k" >&2; exit 1; }
-  cat "$SHIM_DIR/resp-$k.http"; exit 0
+  cat "$SHIM_DIR/resp-$k.http"; exit "$(cat "$SHIM_DIR/resp-$k.rc" 2>/dev/null || echo 0)"
 fi
 echo "shim: unexpected gh call: $*" >&2; exit 1
 SHIM
@@ -84,7 +85,7 @@ has() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }
 # count log lines containing a fixed string (never pipes into grep -q)
 cnt() { local f="$1" n; shift; n="$(grep -cF -- "$1" "$f" 2>/dev/null)"; printf '%s' "${n:-0}"; }
 gh_total() { [ -f "$SHIM_DIR/calls.log" ] && wc -l < "$SHIM_DIR/calls.log" | tr -d ' ' || printf 0; }
-reset() { rm -f "$SHIM_DIR"/calls.log "$SHIM_DIR"/cache.log "$SHIM_DIR"/override.* "$SHIM_DIR"/edit.err "$SHIM_DIR"/cache-row; rm -r -f "$ATELIER_CONFIG_DIR"; }
+reset() { rm -f "$SHIM_DIR"/calls.log "$SHIM_DIR"/cache.log "$SHIM_DIR"/override.* "$SHIM_DIR"/resp-*.rc "$SHIM_DIR"/edit.err "$SHIM_DIR"/cache-row; rm -r -f "$ATELIER_CONFIG_DIR"; }
 LOG="$SHIM_DIR/calls.log"; CLOG="$SHIM_DIR/cache.log"
 
 # canned responses
@@ -131,6 +132,58 @@ out="$(bash "$PI" get 77 "$P" 2>&1)"; rc=$?
 [ "$rc" -eq 1 ] && pass "get <uncached draft> fails with exit 1" || fail "uncached draft exit $rc: $out"
 has "$out" "atelier-project-cache refresh" && pass "uncached draft: tells the operator to run atelier-project-cache refresh" || fail "no refresh hint: $out"
 [ "$(cnt "$LOG" 'item-list')" = 0 ] && [ "$(cnt "$LOG" 'node(id: $itemId')" = 0 ] && pass "uncached draft: no listing and no node read" || fail "unexpected calls: $(cat "$LOG")"
+
+echo "-- stale cached itemId is a cache miss (#799) --"
+NF='{"data":{"node":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a node with the global id of '"'PVTI_gone'"'"}]}'
+http200 "$SHIM_DIR/resp-issue.http" '{"data":{"repository":{"issue":{"body":"Issue 12 body.","projectItems":{"nodes":[{"project":{"number":7},"id":"PVTI_i12","content":{"__typename":"Issue","number":12},"st":{"name":"Todo"},"rd":{"name":"ready"},"pr":{"name":"P1"},"es":{"text":"~2h"}}]}}}}}'
+http200 "$SHIM_DIR/resp-node.http" "$NF"
+stale_setup() {  # $1 = cache row
+  reset
+  printf '%s' "$1" > "$SHIM_DIR/cache-row"
+  echo 1 > "$SHIM_DIR/resp-node.rc"
+}
+stale_setup '{"id":"#12","itemId":"PVTI_gone","type":"Issue"}'
+out="$(bash "$PI" get 12 "$P" 2>&1)"; rc=$?
+{ [ "$rc" -eq 0 ] && [ "$(printf '%s' "$out" | jq -r .itemId)" = PVTI_i12 ]; } && pass "stale issue itemId: get falls back to the issue query" || fail "stale issue get rc=$rc: $out"
+{ [ "$(cnt "$LOG" 'node(id: $itemId')" = 1 ] && [ "$(cnt "$LOG" 'repository(owner')" = 1 ] && [ "$(cnt "$LOG" 'item-list')" = 0 ] && [ "$(gh_total)" = 2 ]; } && pass "stale issue itemId: 1 node read, 1 issue query, 0 item-list" || fail "stale issue calls: $(cat "$LOG")"
+
+stale_setup '{"id":"#12","itemId":"PVTI_gone","type":"Issue"}'
+out="$(bash "$PI" body 12 "$P" 2>&1)"; rc=$?
+{ [ "$rc" -eq 0 ] && [ "$out" = "Issue 12 body." ]; } && pass "stale issue itemId: body prints the issue body" || fail "stale issue body rc=$rc: $out"
+
+http200 "$SHIM_DIR/resp-issue.http" '{"data":{"repository":{"issue":{"body":"Issue 77 body.","projectItems":{"nodes":[{"project":{"number":7},"id":"PVTI_i77","content":{"__typename":"Issue","number":77},"st":{"name":"Done"},"rd":null,"pr":null,"es":null}]}}}}}'
+stale_setup '{"id":"#77","itemId":"PVTI_gone","type":"DraftIssue"}'
+out="$(bash "$PI" get 77 "$P" 2>&1)"; rc=$?
+{ [ "$rc" -eq 1 ] && has "$out" "atelier-project-cache refresh"; } && pass "stale draft itemId: exits 1 with the refresh hint" || fail "stale draft rc=$rc: $out"
+{ [ "$(cnt "$LOG" 'node(id: $itemId')" = 1 ] && [ "$(cnt "$LOG" 'repository(owner')" = 0 ] && [ "$(cnt "$LOG" 'item-list')" = 0 ]; } && pass "stale draft itemId: never resolves to the repo issue (0 issue queries)" || fail "stale draft calls: $(cat "$LOG")"
+
+stale_setup '{"id":"#77a","itemId":"PVTI_gone"}'
+out="$(bash "$PI" get 77a "$P" 2>&1)"; rc=$?
+{ [ "$rc" -eq 1 ] && has "$out" "atelier-project-cache refresh"; } && pass "stale letter-suffixed id: exits 1 with the refresh hint" || fail "stale suffixed rc=$rc: $out"
+{ [ "$(cnt "$LOG" 'repository(owner')" = 0 ] && [ "$(cnt "$LOG" 'item-list')" = 0 ]; } && pass "stale letter-suffixed id: 0 issue queries, 0 item-list" || fail "stale suffixed calls: $(cat "$LOG")"
+
+stale_setup '{"id":"#12","itemId":"PVTI_gone","type":"Issue"}'
+http200 "$SHIM_DIR/resp-node.http" '{"data":{"node":null},"errors":[{"type":"FORBIDDEN","message":"Resource not accessible"}]}'
+out="$(bash "$PI" get 12 "$P" 2>&1)"; rc=$?
+[ "$rc" -eq 2 ] && pass "non-NOT_FOUND node error is still fatal (exit 2)" || fail "forbidden rc=$rc: $out"
+[ "$(cnt "$LOG" 'repository(owner')" = 0 ] && pass "non-NOT_FOUND node error: no issue query" || fail "forbidden calls: $(cat "$LOG")"
+http200 "$SHIM_DIR/resp-node.http" '{"data":{"node":{"id":"PVTI_d","content":{"__typename":"DraftIssue","body":"Draft plan."},"st":{"name":"In Progress"},"rd":null,"pr":{"name":"P2"},"es":null}}}'
+rm -f "$SHIM_DIR/resp-node.rc"
+
+echo "-- fields with githubProject.projectId (#799) --"
+P2="$T/proj-pid"; mkdir -p "$P2"
+cat > "$P2/.roadmap.json" <<'JSON'
+{ "backend": "github-project",
+  "githubProject": { "owner": "AcmeOrg", "projectNumber": 7, "projectId": "PVT_9",
+    "stateMap": { "roadmap": ["Todo"], "inProgress": ["In Progress"], "history": ["Done"] } } }
+JSON
+http200 "$SHIM_DIR/resp-projnode.http" '{"data":{"node":{"id":"PVT_9","fields":{"nodes":[{},{"id":"F_st","name":"Status","options":[{"id":"O_todo","name":"Todo"}]}]}}}}'
+reset
+out="$(bash "$PI" fields "$P2" 2>&1)"; rc=$?
+{ [ "$rc" -eq 0 ] && [ "$(printf '%s' "$out" | jq -r .projectId)" = PVT_9 ]; } && pass "fields with projectId prints projectId PVT_9" || fail "fields pid rc=$rc: $out"
+{ [ "$(cnt "$LOG" 'node(id: $pid')" = 1 ] && [ "$(cnt "$LOG" 'pid=PVT_9|')" = 1 ] && [ "$(cnt "$LOG" 'repositoryOwner')" = 0 ]; } && pass "fields with projectId: 1 node(id: \$pid) call, 0 repositoryOwner" || fail "fields pid calls: $(cat "$LOG")"
+bash "$PI" fields "$P2" >/dev/null 2>&1
+[ "$(gh_total)" = 1 ] && pass "second fields within TTL makes 0 extra gh calls" || fail "fields pid refetched: $(gh_total)"
 
 echo "-- body --"
 reset
