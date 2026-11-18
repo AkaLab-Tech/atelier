@@ -152,6 +152,83 @@ chk_prose "$REPO_ROOT/commands/next-task.md" 'atelier-project-item set-status <i
 chk_prose "$REPO_ROOT/commands/abandon-task.md" 'atelier-project-item set-status <id> roadmap --from inProgress' \
   "#800: abandon-task fallback uses the roadmap bucket"
 
+# #801: restored closed-without-merge note + operator-rules line width.
+NOTE='A PR closed without merging leaves the issue open (correct).'
+MAXW=86
+
+# wrap_report <file> <start-marker> <end-marker> <max>
+# Prints "NOSTART", "NOEND", or "OK <lines>" plus one "LONG <n>: <head>" line
+# per over-long line. Markers are fixed strings anchored at line start; the
+# range is [start, end). A missing marker never yields an empty-range pass.
+wrap_report() {
+  awk -v s="$2" -v e="$3" -v max="$4" '
+    index($0, s) == 1 { st = 1; inr = 1; n = 0 }
+    inr && st && index($0, e) == 1 { en = 1; inr = 0 }
+    inr { n++; if (length($0) > max) printf "LONG %d: %s\n", length($0), substr($0, 1, 60) }
+    END { if (!st) print "NOSTART"; else if (!en) print "NOEND"; else print "OK " n }
+  ' "$1"
+}
+
+# chk_wrap <file> <start> <end> <label>  — passes only when the report has no LONG line and ends OK
+chk_wrap() {
+  local file="$1" start="$2" end="$3" label="$4" out
+  if [ ! -r "$file" ]; then fail "$label — file not readable: $file"; return 0; fi
+  out="$(wrap_report "$file" "$start" "$end" "$MAXW")"
+  case "$out" in
+    LONG\ *|NOSTART*|NOEND*) fail "$label — $(printf '%s' "$out" | tr '\n' ';')" ;;
+    OK\ *) pass "$label" ;;
+    *) fail "$label — unexpected report: $out" ;;
+  esac
+}
+
+R1='1. **Subagents never LIST the board.**'
+R2='2. **Read through `atelier-project-cache`.**'
+R3='3. **Patch the cache row after a write.**'
+R4='4. **Rate limit: surface and stop.**'
+
+# Restored note: the github-project bullet itself (single line), not a file-wide count.
+am_gp="$(grep -F -e '- **`github-project` backend.**' "$AM" 2>/dev/null || true)"
+am_gp_n="$(grep -cF -e '- **`github-project` backend.**' "$AM" 2>/dev/null || true)"
+if [ "${am_gp_n:-0}" != "1" ]; then
+  fail "#801: auto-merge has exactly one github-project backend bullet (found ${am_gp_n:-0})"
+else
+  case "$am_gp" in
+    *"$NOTE"*) pass "#801: auto-merge github-project bullet carries the closed-without-merge note" ;;
+    *) fail "#801: auto-merge github-project bullet lacks: $NOTE" ;;
+  esac
+fi
+
+chk_wrap "$OR" "$R1" "$R2" "#801: operator-rules rule 1 lines are <= $MAXW chars"
+chk_wrap "$OR" "$R3" "$R4" "#801: operator-rules rule 3 lines are <= $MAXW chars"
+
+# Self-test of the wrap check on fixtures: over-long must be flagged, wrapped
+# must pass, a missing marker must fail.
+w_tmp="$(mktemp -d)"
+long_line="$(printf 'x%.0s' $(seq 1 100))"
+printf '%s\n' "$R1 start" "   $long_line" "$R2 next" >"$w_tmp/long.md"
+printf '%s\n' "$R1 start" "   short wrapped line" "   another short line" "$R2 next" >"$w_tmp/wrapped.md"
+printf '%s\n' "$R1 start" "   short" >"$w_tmp/noend.md"
+printf '%s\n' "no markers here" >"$w_tmp/nostart.md"
+case "$(wrap_report "$w_tmp/long.md" "$R1" "$R2" "$MAXW")" in
+  LONG\ *) pass "#801 self-test: over-long rule fixture is flagged" ;;
+  *) fail "#801 self-test: over-long rule fixture not flagged" ;;
+esac
+case "$(wrap_report "$w_tmp/wrapped.md" "$R1" "$R2" "$MAXW")" in
+  "OK 3") pass "#801 self-test: wrapped rule fixture passes" ;;
+  *) fail "#801 self-test: wrapped rule fixture did not pass" ;;
+esac
+if [ "$(wrap_report "$w_tmp/noend.md" "$R1" "$R2" "$MAXW")" = "NOEND" ]; then
+  pass "#801 self-test: missing end marker fails"
+else
+  fail "#801 self-test: missing end marker did not fail"
+fi
+if [ "$(wrap_report "$w_tmp/nostart.md" "$R1" "$R2" "$MAXW")" = "NOSTART" ]; then
+  pass "#801 self-test: missing start marker fails"
+else
+  fail "#801 self-test: missing start marker did not fail"
+fi
+rm -r "$w_tmp"
+
 printf '\n'
 if [ "$fails" -eq 0 ]; then printf 'ALL PASS\n'; exit 0; fi
 printf '%s FAILED\n' "$fails"
