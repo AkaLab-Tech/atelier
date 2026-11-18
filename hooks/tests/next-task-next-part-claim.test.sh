@@ -149,7 +149,7 @@ chk_prose "$NEXT_TASK" 'lands on the resume path (`/atelier:resume-task` step 3b
   "step 6: interrupted next-part claim lands on resume step 3b"
 chk_prose "$NEXT_TASK" '- **`CLAIM_KIND=first`** — as follows, unchanged:' \
   "step 6: first claim path unchanged (moveTask)"
-chk_prose "$NEXT_TASK" 'For `github-project`, claim with `atelier-project-item set-status <id> "In Progress" --from roadmap`' \
+chk_prose "$NEXT_TASK" 'For `github-project`, claim with `atelier-project-item set-status <id> inProgress --from roadmap`' \
   "step 6: first claim still uses moveTask roadmap -> in_progress"
 chk_prose "$NEXT_TASK" '`claiming task <id> (next part <N>)`' \
   "step 4: next-part log line"

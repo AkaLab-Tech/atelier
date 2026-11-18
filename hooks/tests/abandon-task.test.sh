@@ -268,7 +268,7 @@ chk_prose "$CMD" 'Bash(gh api graphql:' \
 chk_absent "$CMD" 'gh api` is outside this command'"'"'s tool grant' \
   "step 7 (#66): stale 'gh api is outside this command's tool grant' claim removed"
 
-chk_prose "$CMD" 'atelier-project-item set-status <id> "Todo" --from inProgress' \
+chk_prose "$CMD" 'atelier-project-item set-status <id> roadmap --from inProgress' \
   "step 7 (#530): fallback bucket move uses atelier-project-item set-status --from inProgress"
 
 # ---------------------------------------------------------------------------
