@@ -40,7 +40,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/block-protected-push.sh"
+HOOK="${BPP_HOOK:-$REPO_ROOT/hooks/block-protected-push.sh}"
 TEMPLATE="$REPO_ROOT/templates/settings.template.json"
 
 TMP="$(mktemp -d)"

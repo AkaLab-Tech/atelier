@@ -43,7 +43,7 @@
 #   jq missing — fail OPEN (exit 0): a missing hook dependency must never
 #   turn into a blanket block of every Bash call.
 
-# shellcheck disable=SC2016,SC2088,SC1003,SC2018,SC2019,SC2153
+# shellcheck disable=SC2016,SC2088,SC1003,SC2018,SC2019,SC2153,SC2020
 # (literal $ / backtick / backslash in patterns are intentional: lexer-level matching)
 set -uo pipefail
 
@@ -110,6 +110,8 @@ oversize() { # reason detail
 if [ "${#command_str}" -gt "$MAX_CMD_BYTES" ]; then
   oversize "command is ${#command_str} bytes and names git; too large to analyse for a push" "failing closed past $MAX_CMD_BYTES bytes"
 fi
+
+ORIG_COMMAND_STR="$command_str"
 
 # Drop lines that are provably not a push before any lexing: a whole line that
 # is `git <builtin non-push subcommand> <plain words>` — no quote, escape,
@@ -332,6 +334,9 @@ check_push() {
   for e in ${GI_CFG[@]+"${GI_CFG[@]}"}; do
     case "${e%%=*}" in
       remote.*.push) check_refspec "${e#*=}" "config refspec" ;;
+      remote.*.receivepack)
+        # same decision as --receive-pack: the program that applies the ref updates is replaced
+        block "remote receive-program override through -c" "the remote-side receive program is replaced, so the resulting ref updates cannot be resolved" ;;
     esac
   done
 
@@ -455,10 +460,59 @@ check_exec_builtin() { # depth
   return 0
 }
 
+# Exec-capable option / config value class: git runs some option values, config
+# values and environment values as shell command lines (remote-side program
+# options, helper / editor / transport commands). Whitespace-bearing values of
+# those are rescanned as scripts, so a nested push there is judged like a
+# top-level one. -c values are rescanned whatever their key (the key set that
+# runs commands is open-ended); option values only for the program options
+# (matched on any prefix git accepts) and the short -u form.
+scan_exec_values() { # depth first-cfg-index
+  local depth="$1" from="$2" i n t name val hasval e x m pn
+  local -a svr=(${GI_REST[@]+"${GI_REST[@]}"}) svo=(${GI_OPTS[@]+"${GI_OPTS[@]}"}) svc=(${GI_CFG[@]+"${GI_CFG[@]}"}) sva=(${SEG_ASSIGNS[@]+"${SEG_ASSIGNS[@]}"})
+  local svs="$GI_SUB" sve="$GI_CFG_ENV_RISK" svt="$CUR_SEG_TEXT"
+  local -a vals=()
+  for ((i = from; i < ${#svc[@]}; i++)); do
+    e="${svc[$i]}"; vals+=("${e#*=}")
+  done
+  if [ "$from" -eq 0 ]; then
+    for x in ${sva[@]+"${sva[@]}"}; do
+      case "${x%%=*}" in GIT_*|EDITOR|VISUAL|PAGER|SSH_ASKPASS) vals+=("${x#*=}") ;; esac
+    done
+  fi
+  n=${#svr[@]}; i=0
+  while [ "$i" -lt "$n" ]; do
+    t="${svr[$i]}"; i=$((i + 1))
+    case "$t" in
+      --) break ;;
+      --*)
+        name="${t#--}"; hasval=0; val=""
+        case "$name" in *=*) hasval=1; val="${name#*=}"; name="${name%%=*}" ;; esac
+        [ -n "$name" ] || continue
+        m=0
+        for pn in upload-pack receive-pack exec; do
+          case "$pn" in "$name"*) m=1 ;; esac
+        done
+        [ "$m" -eq 1 ] || continue
+        if [ "$hasval" -eq 0 ]; then val="${svr[$i]:-}"; i=$((i + 1)); fi
+        vals+=("$val") ;;
+      -u?*) vals+=("${t#-u}") ;;
+      -u) vals+=("${svr[$i]:-}"); i=$((i + 1)) ;;
+    esac
+  done
+  for x in ${vals[@]+"${vals[@]}"}; do
+    x="${x#!}"
+    case "$x" in *[[:space:]]*|*'$('*|*'`'*|*$'\002'*|*$'\003'*) scan_script "$(unmask "$x")" $((depth + 1)) ;; esac
+  done
+  GI_REST=(${svr[@]+"${svr[@]}"}); GI_OPTS=(${svo[@]+"${svo[@]}"}); GI_CFG=(${svc[@]+"${svc[@]}"})
+  SEG_ASSIGNS=(${sva[@]+"${sva[@]}"}); GI_SUB="$svs"; GI_CFG_ENV_RISK="$sve"; CUR_SEG_TEXT="$svt"
+  return 0
+}
+
 # Resolve the git subcommand (expanding aliases) and classify.
 gi_process() { # depth args...
   local depth="$1"; shift
-  local hops=0 sub lsub val a x alias_key
+  local hops=0 sub lsub val a x alias_key cfg_done=0
   local -a cur=("$@") rest=()
   gi_reset
   # GIT_DIR / GIT_WORK_TREE assignments select the repository like the options do
@@ -468,7 +522,7 @@ gi_process() { # depth args...
       GIT_WORK_TREE=*) GI_OPTS+=("--work-tree=${x#*=}") ;;
       GIT_CONFIG_KEY_*=*|GIT_CONFIG_PARAMETERS=*|GIT_CONFIG_COUNT=*)
         gi_lc "${x#*=}"; a="$GI_LC"
-        case "$a" in *alias.*|*push.default*|*.push*) block "alias / push configuration through the environment" "$x injects git configuration that can turn a command into a push (failing closed)" ;; esac ;;
+        case "$a" in *alias.*|*push.default*|*.push*|*receivepack*|*uploadpack*) block "alias / push configuration through the environment" "$x injects git configuration that can turn a command into a push (failing closed)" ;; esac ;;
     esac
   done
   while :; do
@@ -482,6 +536,7 @@ gi_process() { # depth args...
       block "unresolved git subcommand" "git subcommand '$sub' still contains a variable, substitution or brace expansion (failing closed)"
     fi
     gi_lc "$sub"; lsub="$GI_LC"
+    scan_exec_values "$depth" "$cfg_done"; cfg_done=${#GI_CFG[@]}
     case "$lsub" in
       push) check_push; return 0 ;;
       send-pack|http-push)
@@ -527,7 +582,8 @@ mask_and_lex_alias() { # alias value → TOKS (first segment only; aliases are o
   IFS="$RS" read -r -d '' -a segs <<< "$LEX_OUT" || true
   split_tokens "${segs[0]:-}"
   local i
-  for i in ${!TOKS[@]+"${!TOKS[@]}"}; do TOKS[i]="$(unmask "${TOKS[$i]}")"; done
+  # (index loop, not ${!TOKS[@]+...}: bash 4.4+ reads that as an indirect expansion)
+  for ((i = 0; i < ${#TOKS[@]}; i++)); do TOKS[i]="$(unmask "${TOKS[$i]}")"; done
 }
 
 # --- segment scan --------------------------------------------------------------
@@ -956,5 +1012,133 @@ scan_script() { # script depth
   return 0
 }
 
+# --- layer 1: the pre-#808 detection, kept as an independent floor ------------
+# The detection that shipped before #808, carried over unchanged in what it
+# blocks (it is deliberately broad: any `git ... push` word sequence anywhere in
+# a segment, commit/PR message payloads stripped first). The lexer / resolver
+# below (layer 2) can only add blocks on top of it; a command is allowed only
+# when both layers allow it. Only the per-segment trimming is done in pure bash
+# instead of a sed fork per segment, which does not change the result.
+legacy_strip_message_payload() {
+  local s="$1" sq out pat prev_len flag_pair
+  sq=$'\047'
+  local value_any="(\"[^\"]*\"|${sq}[^${sq}]*${sq}|[^[:space:]]*)"
+  local value_quoted="(\"[^\"]*\"|${sq}[^${sq}]*${sq})"
+  out="$s"
+  for flag_pair in '-m|--message' '-F|--file'; do
+    pat="(^|[[:space:]])(${flag_pair})(=${value_any}|[[:space:]]+${value_any}|${value_quoted})"
+    while [[ "$out" =~ $pat ]]; do
+      prev_len=${#out}
+      out="${out/"${BASH_REMATCH[0]}"/ }"
+      if [ "${#out}" -ge "$prev_len" ]; then
+        break
+      fi
+    done
+  done
+  printf '%s' "$out"
+}
+
+legacy_is_protected_name() {
+  local name="$1" b
+  for b in main master develop staging; do
+    [ "$name" = "$b" ] && return 0
+  done
+  return 1
+}
+
+legacy_layer1() { # command
+  case "$1" in
+    *git*push*) ;;
+    *) return 0 ;;
+  esac
+  local scan_str seg raw raw_tokens push_idx i args hard_force plus_refspec bulk_refspec
+  local tok body protected_name ref dst
+  local -a push_segments=() tokens=() positionals=()
+  scan_str="$(legacy_strip_message_payload "$1")"
+  while IFS= read -r seg; do
+    seg="${seg#"${seg%%[![:space:]]*}"}"
+    seg="${seg%"${seg##*[![:space:]]}"}"
+    [ -z "$seg" ] && continue
+    case "$seg" in
+      *git*push*) push_segments+=("$seg") ;;
+    esac
+  done < <(printf '%s\n' "$scan_str" | tr ';&|' '\n\n\n')
+  [ "${#push_segments[@]}" -eq 0 ] && return 0
+
+  for seg in "${push_segments[@]}"; do
+    read -ra raw_tokens <<< "$seg"
+    tokens=()
+    for raw in ${raw_tokens[@]+"${raw_tokens[@]}"}; do
+      raw="${raw//\"/}"
+      raw="${raw//\'/}"
+      raw="${raw#\\}"
+      tokens+=("$raw")
+    done
+    [ "${#tokens[@]}" -eq 0 ] && continue
+
+    push_idx=-1
+    for i in "${!tokens[@]}"; do
+      if [ "${tokens[$i]}" = "push" ]; then
+        push_idx="$i"
+        break
+      fi
+    done
+    [ "$push_idx" -lt 0 ] && continue
+
+    args=()
+    if [ "$((push_idx + 1))" -lt "${#tokens[@]}" ]; then
+      args=("${tokens[@]:$((push_idx + 1))}")
+    fi
+
+    hard_force=0; plus_refspec=0; bulk_refspec=0
+    positionals=()
+
+    for tok in ${args[@]+"${args[@]}"}; do
+      case "$tok" in
+        --force-with-lease*|--force-if-includes*) : ;;
+        --force|--force=*) hard_force=1 ;;
+        --all|--mirror) bulk_refspec=1 ;;
+        +*) plus_refspec=1; positionals+=("$tok") ;;
+        --*) : ;;
+        -*)
+          body="${tok#-}"
+          if [[ "$body" =~ ^[a-zA-Z]+$ ]] && [[ "$body" == *f* ]]; then
+            hard_force=1
+          fi
+          ;;
+        *) positionals+=("$tok") ;;
+      esac
+    done
+
+    protected_name=""
+    if [ "${#positionals[@]}" -ge 2 ]; then
+      for ref in "${positionals[@]:1}"; do
+        dst="$ref"
+        dst="${dst#+}"
+        case "$dst" in
+          *:*) dst="${dst#*:}" ;;
+        esac
+        dst="${dst#refs/heads/}"
+        if legacy_is_protected_name "$dst"; then
+          protected_name="$dst"
+          break
+        fi
+      done
+    fi
+
+    if [ -n "$protected_name" ]; then
+      block "push targets protected branch '$protected_name'" "segment resolved destination ref to '$protected_name'" "$seg"
+    fi
+    if [ "$bulk_refspec" -eq 1 ]; then
+      block "bulk push (--all/--mirror)" "bulk push updates every remote ref, including protected branches, without naming one (--mirror additionally deletes remote refs absent locally)" "$seg"
+    fi
+    if [ "$hard_force" -eq 1 ] || [ "$plus_refspec" -eq 1 ]; then
+      block "hard force push" "segment carries a hard --force/-f flag or a '+' hard-force refspec (--force-with-lease is the only sanctioned force form)" "$seg"
+    fi
+  done
+  return 0
+}
+
+legacy_layer1 "$ORIG_COMMAND_STR"
 scan_script "$command_str" 0
 exit 0

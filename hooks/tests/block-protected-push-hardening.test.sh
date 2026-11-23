@@ -59,6 +59,8 @@ export GIT_CONFIG_GLOBAL="$TMP/gitconfig"
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_TERMINAL_PROMPT=0
 unset GIT_DIR GIT_WORK_TREE GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+# an editor variable would override core.editor (the editor-key case)
+unset GIT_EDITOR VISUAL EDITOR GIT_SEQUENCE_EDITOR
 
 fails=0
 CASES=0
@@ -89,6 +91,24 @@ git --git-dir="$1" update-ref -d refs/heads/main
 exec git receive-pack "$1"
 SH
 chmod +x "$RP"
+
+# Portable stand-ins for wrapper binaries that exist on only some platforms
+# (`command` is a shell builtin on Linux, `caffeinate` is macOS-only, `stdbuf`
+# is GNU-only). The oracle runs the real command through bash -c; these stand-ins
+# make `env ... command git ...`, `caffeinate git ...` and `stdbuf -o0 git ...`
+# runnable everywhere, so the oracle never depends on an OS-specific binary. The
+# hook never executes them; it only classifies the command text.
+mkdir -p "$TMP/bin"
+for w in command caffeinate; do
+  printf '#!/bin/sh\nexec "$@"\n' > "$TMP/bin/$w"
+done
+cat > "$TMP/bin/stdbuf" <<'SH'
+#!/bin/sh
+while [ "$#" -gt 0 ]; do case "$1" in -*) shift ;; *) break ;; esac; done
+exec "$@"
+SH
+chmod +x "$TMP/bin/command" "$TMP/bin/caffeinate" "$TMP/bin/stdbuf"
+export PATH="$TMP/bin:$PATH"
 
 # Template: bare remote with main at c1; clone whose local main is one commit
 # ahead (c2) and that sits on task/1-x (c3, one more commit), tag v1.2.3 local.
@@ -455,6 +475,92 @@ oa "--dry-run on a task branch"                           'git push --dry-run or
 cls_end
 
 # =============================================================================
+cls "exec-capable config / option value class"
+# =============================================================================
+# A config value or an option value that git runs as a program: the value text
+# is rescanned as a script. INNER is a push to a protected ref; its stdio is
+# redirected so it cannot disturb the git protocol of the outer command, and
+# INNER_E also drops the inherited -c parameters so the inner push does not
+# re-enter the same program key (no recursion in the oracle).
+INNER='git push origin task/1-x:main >/dev/null 2>&1 </dev/null'
+INNER_E='env -u GIT_CONFIG_PARAMETERS git push origin task/1-x:main >/dev/null 2>&1 </dev/null'
+# program-valued config key
+ob "receive-program key, inline text, task-branch push"   "git -c remote.origin.receivepack='$INNER_E; git receive-pack' push origin task/1-x"
+ob "upload-program key, inline text, fetch"               "git -c remote.origin.uploadpack='$INNER_E; git upload-pack' fetch origin"
+ob "editor key, inline text, commit"                      "git -c core.editor='$INNER; true' commit --allow-empty"
+hb "transport-command key, inline text, fetch"            "git -c core.sshCommand='git push origin task/1-x:main; ssh' fetch"
+hb "credential-helper key with a leading !"               "git -c credential.helper='!git push origin task/1-x:main' fetch"
+hb "credential-helper key with a leading ! and a space"   "git -c 'credential.helper=! git push origin task/1-x:main' fetch"
+hb "pager key, inline text"                               "git -c core.pager='git push origin task/1-x:main; cat' log"
+hb "askpass key, inline text"                             "git -c core.askPass='git push origin task/1-x:main' fetch"
+hb "diff-tool key, inline text"                           "git -c diff.external='git push origin task/1-x:main' diff"
+# exec-capable options
+ob "fetch --upload-pack=<text>"                           "git fetch --upload-pack='$INNER; git upload-pack' origin"
+ob "fetch --upload-pack <text>"                           "git fetch --upload-pack '$INNER; git upload-pack' origin"
+ob "pull --upload-pack=<text>"                            "git pull --upload-pack='$INNER; git upload-pack' origin task/1-x"
+ob "clone -u <text>"                                      "git clone -u '$INNER; git upload-pack' @REMOTE@ z"
+ob "clone --upload-pack=<text>"                           "git clone --upload-pack='$INNER; git upload-pack' @REMOTE@ z"
+ob "ls-remote --upload-pack=<text>"                       "git ls-remote --upload-pack='$INNER; git upload-pack' origin"
+ob "push --receive-pack=<text>"                           "git push --receive-pack='$INNER; git receive-pack' origin task/1-x"
+ob "push --receive-pack <text>"                           "git push --receive-pack '$INNER; git receive-pack' origin task/1-x"
+ob "push --exec <text> (separate value)"                  "git push --exec '$INNER; git receive-pack' origin task/1-x"
+ob "push --exec=<text>"                                   "git push --exec='$INNER; git receive-pack' origin task/1-x"
+hb "ls-remote --exec=<text>"                              "git ls-remote --exec='git push origin task/1-x:main; git upload-pack' origin"
+hb "archive --remote with --exec=<text>"                  "git archive --remote=origin --exec='git push origin task/1-x:main; git upload-archive' HEAD"
+cls_end
+
+# =============================================================================
+cls "path-valued program key class"
+# =============================================================================
+# A program key whose value is a script path (no inline text to rescan): the
+# script itself is outside the command text, so the hook cannot see inside it.
+# Confirmed on the full hook: see the report; the oracle case below states the
+# observed behaviour.
+ob "receive-program key, script path (full hook)"         'git -c remote.origin.receivepack=@RP@ push origin task/1-x'
+cls_end
+
+# =============================================================================
+cls "abbreviated option class"
+# =============================================================================
+# Long options git accepts when unambiguous: every abbreviation of an exec-capable
+# option carries a program, so its value is rescanned like the full spelling.
+ob "push --e <text> (separate value)"                     "git push --e '$INNER; git receive-pack' origin task/1-x"
+ob "push --ex <text>"                                     "git push --ex '$INNER; git receive-pack' origin task/1-x"
+ob "push --exe <text>"                                    "git push --exe '$INNER; git receive-pack' origin task/1-x"
+ob "push --e=<text>"                                      "git push --e='$INNER; git receive-pack' origin task/1-x"
+ob "push --ex=<text>"                                     "git push --ex='$INNER; git receive-pack' origin task/1-x"
+ob "push --exe=<text>"                                    "git push --exe='$INNER; git receive-pack' origin task/1-x"
+ob "push --e <script path>"                               'git push --e @RP@ origin task/1-x'
+ob "push --e=<script path>"                               'git push --e=@RP@ origin task/1-x'
+ob "push --ex <script path>"                              'git push --ex @RP@ origin task/1-x'
+ob "push --exe=<script path>"                             'git push --exe=@RP@ origin task/1-x'
+ob "push --rece=<text>"                                   "git push --rece='$INNER; git receive-pack' origin task/1-x"
+hb "push --rec <script path> (ambiguous for git, conservative)" 'git push --rec @RP@ origin task/1-x'
+ob "fetch --upload-p=<text>"                              "git fetch --upload-p='$INNER; git upload-pack' origin"
+hb "fetch --up=<text> (ambiguous for git, conservative)"  "git fetch --up='$INNER; git upload-pack' origin"
+ob "fetch --upl <text>"                                   "git fetch --upl '$INNER; git upload-pack' origin"
+ob "clone --upload=<text>"                                "git clone --upload='$INNER; git upload-pack' @REMOTE@ z"
+ob "ls-remote --up=<text>"                                "git ls-remote --up='$INNER; git upload-pack' origin"
+hb "push --e through the -C selector"                     "git -C @WORK@ push --e '$INNER; git receive-pack' origin task/1-x"
+hb "push abbreviated option after the remote"             "git push origin --e='$INNER; git receive-pack' task/1-x"
+hb "push --e with a harmless program (conservative)"      'git push --e /bin/true origin task/1-x'
+cls_end
+
+# =============================================================================
+cls "alias class with multi-word bodies"
+# =============================================================================
+ob "in-command alias body: push plus remote"              "git -c 'alias.zz=push origin' zz HEAD:main"
+ob "in-command alias body: push, flag and remote"         "git -c 'alias.zz=push -q origin' zz HEAD:main"
+ob "in-command alias body: push plumbing plus remote"     "git -c 'alias.zz=send-pack @REMOTE@' zz HEAD:refs/heads/main"
+ob "persistent alias body: push, flag and remote"         'git zz HEAD:main' 'git config alias.zz "push -q origin"'
+ob "persistent alias body: push plumbing plus remote"     'git zz HEAD:refs/heads/main' 'git config alias.zz "send-pack @REMOTE@"'
+ob "persistent alias body naming a protected refspec"     'git zz' 'git config alias.zz "push origin HEAD:main"'
+ob "persistent alias chain, multi-word bodies"            'git zz HEAD:main' 'git config alias.yy "push origin"; git config alias.zz "yy"'
+ob "persistent alias, multi-word body, via -C"            'git -C @WORK@ zz HEAD:main' 'git config alias.zz "push origin"'
+oa "persistent alias body: multi-word, no push"           'git zz task/1-x' 'git config alias.zz "checkout -q"'
+cls_end
+
+# =============================================================================
 cls "allow guard (no over-blocking)"
 # =============================================================================
 ha "task/<id>-<slug> push"                                'git push origin task/12-foo'
@@ -470,16 +576,16 @@ oa "commit message mentioning a protected push"           'git commit --allow-em
 ha "commit message mentioning a force push"               'git commit -m "Document why git push --force origin main is denied"'
 ha "commit message with backticks in single quotes"       "git commit -m 'mention \`git push origin main\` in backticks'"
 ha "commit message with a quoted refspec"                 'git commit -m "docs: git push origin HEAD:main is blocked by the hook"'
-ha "commit message through -F - and a quoted heredoc"     $'git commit -q --allow-empty -F - <<\'EOF\'\nnote: run git push origin HEAD:main manually\nEOF'
+hb "commit message through -F - and a quoted heredoc (expected block: layer 1 matches quoted text, #814)"     $'git commit -q --allow-empty -F - <<\'EOF\'\nnote: run git push origin HEAD:main manually\nEOF'
 ha "commit message through \$(cat <<'EOF')"               $'git commit -m "$(cat <<\'EOF\'\nfix: docs about git push --force origin main\nEOF\n)"'
 ha "PR body through \$(cat <<'EOF') with backticks"       $'gh pr create --title t --body "$(cat <<\'EOF\'\n## Summary\nNever run `git push origin main`\nEOF\n)"'
-ha "PR body mentioning a protected push"                  'gh pr create --title "t" --body "Do not git push origin main or git push --force"'
-ha "heredoc prose written to a file"                      $'cat > notes.md <<\'EOF\'\ngit push origin main\nEOF'
-ha "unquoted heredoc prose without substitutions"         $'cat <<EOF\ngit push --force origin main\nEOF'
-ha "echo of a push, double-quoted"                        'echo "git push origin main"'
-ha "echo of a push, single-quoted"                        "echo 'git push origin HEAD:main'"
-ha "echo of a push, unquoted"                             'echo git push origin main'
-ha "git log --grep for a push"                            'git log --grep="git push origin main" --oneline'
+hb "PR body mentioning a protected push (expected block: layer 1 matches quoted text, #814)"                  'gh pr create --title "t" --body "Do not git push origin main or git push --force"'
+hb "heredoc prose written to a file (expected block: layer 1 matches quoted text, #814)"                      $'cat > notes.md <<\'EOF\'\ngit push origin main\nEOF'
+hb "unquoted heredoc prose without substitutions (expected block: layer 1 matches quoted text, #814)"         $'cat <<EOF\ngit push --force origin main\nEOF'
+hb "echo of a push, double-quoted (expected block: layer 1 matches quoted text, #814)"                        'echo "git push origin main"'
+hb "echo of a push, single-quoted (expected block: layer 1 matches quoted text, #814)"                        "echo 'git push origin HEAD:main'"
+hb "echo of a push, unquoted (expected block: layer 1 matches quoted text, #814)"                             'echo git push origin main'
+hb "git log --grep for a push (expected block: layer 1 matches quoted text, #814)"                            'git log --grep="git push origin main" --oneline'
 ha "ripgrep for a push"                                   'rg -n "git push" docs'
 ha "cat .gitignore"                                       'cat .gitignore'
 ha "ls .github"                                           'ls .github'
@@ -659,8 +765,8 @@ hb "python3 - <<'EOF' running a push"                       $'python3 - <<\'EOF\
 hb "echo | ssh host bash -s"                                "echo 'git push origin HEAD:main' | ssh host bash -s"
 ha "echo hello | bash"                                      'echo hello | bash'
 oa "echo task-branch push | bash"                           "echo 'git push origin task/1-x' | bash"
-oa "echo push | bash -c (stdin ignored)"                    "echo 'git push origin HEAD:main' | bash -c 'echo hi'"
-oa "echo push | bash script.sh (stdin ignored)"             "echo 'git push origin HEAD:main' | bash script.sh" 'echo true > script.sh'
+hb "echo push | bash -c (stdin ignored) (expected block: layer 1 matches quoted text, #814)"                    "echo 'git push origin HEAD:main' | bash -c 'echo hi'"
+hb "echo push | bash script.sh (stdin ignored) (expected block: layer 1 matches quoted text, #814)"             "echo 'git push origin HEAD:main' | bash script.sh" 'echo true > script.sh'
 cls_end
 
 # =============================================================================
@@ -668,14 +774,14 @@ cls "over-block guard (prose naming a push)"
 # =============================================================================
 # Text that merely mentions a push (PR bodies, commit messages, notes, searches)
 # is data, even when the same command line also contains a ; or a shell word.
-ha "gh pr create --body with push text and ; in title"      "gh pr create --title 'a; b' --body 'git push origin HEAD:main'"
-ha "gh pr create --body-file - heredoc, title naming bash eval" $'gh pr create --title "fix bash eval" --body-file - <<\'EOF\'\nDo not run git push origin HEAD:main by hand.\nEOF'
-ha "gh pr create --body \$(cat heredoc)"                    $'gh pr create --body "$(cat <<\'EOF\'\nDo not run git push origin HEAD:main by hand.\nEOF\n)"'
-oa "git commit -F - heredoc with push prose"                $'git commit -q --allow-empty -F - <<\'EOF\'\ndocs: never run git push origin HEAD:main\nEOF'
-oa "cat > f <<'EOF' with push prose"                        $'cat > f <<\'EOF\'\ngit push origin HEAD:main\nEOF'
-oa "cat > f <<EOF with push prose"                          $'cat > f <<EOF\ngit push origin HEAD:main\nEOF'
-oa "echo \"push text\" > notes.txt"                         'echo "git push origin HEAD:main" > notes.txt'
-ha "rg for push text"                                       "rg 'git push origin HEAD:main' docs"
+hb "gh pr create --body with push text and ; in title (expected block: layer 1 matches quoted text, #814)"      "gh pr create --title 'a; b' --body 'git push origin HEAD:main'"
+hb "gh pr create --body-file - heredoc, title naming bash eval (expected block: layer 1 matches quoted text, #814)" $'gh pr create --title "fix bash eval" --body-file - <<\'EOF\'\nDo not run git push origin HEAD:main by hand.\nEOF'
+hb "gh pr create --body \$(cat heredoc) (expected block: layer 1 matches quoted text, #814)"                    $'gh pr create --body "$(cat <<\'EOF\'\nDo not run git push origin HEAD:main by hand.\nEOF\n)"'
+hb "git commit -F - heredoc with push prose (expected block: layer 1 matches quoted text, #814)"                $'git commit -q --allow-empty -F - <<\'EOF\'\ndocs: never run git push origin HEAD:main\nEOF'
+hb "cat > f <<'EOF' with push prose (expected block: layer 1 matches quoted text, #814)"                        $'cat > f <<\'EOF\'\ngit push origin HEAD:main\nEOF'
+hb "cat > f <<EOF with push prose (expected block: layer 1 matches quoted text, #814)"                          $'cat > f <<EOF\ngit push origin HEAD:main\nEOF'
+hb "echo \"push text\" > notes.txt (expected block: layer 1 matches quoted text, #814)" 'echo "git push origin HEAD:main" > notes.txt'
+hb "rg for push text (expected block: layer 1 matches quoted text, #814)"                                       "rg 'git push origin HEAD:main' docs"
 cls_end
 
 # =============================================================================

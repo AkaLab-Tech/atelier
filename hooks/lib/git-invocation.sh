@@ -38,7 +38,7 @@ gi_lc() {
 # Config keys that decide where a push goes or what a git command name means.
 gi_key_is_push_risk() { # lower-cased key
   case "$1" in
-    alias.*|push.default|remote.*.push|remote.*.pushurl|remote.pushdefault) return 0 ;;
+    alias.*|push.default|remote.*.push|remote.*.pushurl|remote.pushdefault|remote.*.receivepack|remote.*.uploadpack) return 0 ;;
   esac
   return 1
 }
@@ -179,51 +179,29 @@ gi_has_expansion() {
 }
 
 # Match a push long option the way git's option parser does: an unambiguous
-# prefix selects the option. Sets GI_OPT to the canonical class:
+# prefix selects the option. The prefix is matched against the full table of
+# push long options, so the minimum accepted length is whatever is unique in
+# that table (including one-letter forms). Sets GI_OPT to the canonical class:
 #   force | lease | all | prune | tags | delete | receive-pack | repo |
 #   push-option | recurse | other
-# Ambiguous prefixes that git would reject are classed conservatively (toward
-# the riskier reading), since a rejected command does nothing either way.
+# When a prefix is shared by several options git rejects it; the riskiest
+# class among the candidates is returned, since a rejected command does
+# nothing either way.
 GI_OPT=""
+GI_PUSH_LONG_OPTS="all:all atomic:other branches:all delete:delete dry-run:other exec:receive-pack follow-tags:other force:force force-with-lease:lease force-if-includes:lease ipv4:other ipv6:other mirror:all porcelain:other progress:other prune:prune push-option:push-option quiet:other receive-pack:receive-pack recurse-submodules:recurse repo:repo set-upstream:other signed:other tags:tags thin:other verbose:other verify:other"
 gi_push_long_opt() { # name without leading dashes and without =value
-  local nm="$1" len
-  len=${#nm}
+  local nm="$1" ent full cls exact="" hits="" c
   GI_OPT="other"
   case "$nm" in no-*) return 0 ;; esac
-  [ "$len" -eq 0 ] && return 0
-  # exact names first
-  case "$nm" in
-    force) GI_OPT=force; return 0 ;;
-    force-with-lease|force-if-includes) GI_OPT=lease; return 0 ;;
-    all|branches|mirror) GI_OPT=all; return 0 ;;
-    prune) GI_OPT=prune; return 0 ;;
-    tags) GI_OPT=tags; return 0 ;;
-    delete) GI_OPT=delete; return 0 ;;
-    receive-pack|exec) GI_OPT=receive-pack; return 0 ;;
-    repo) GI_OPT=repo; return 0 ;;
-    push-option) GI_OPT=push-option; return 0 ;;
-    recurse-submodules) GI_OPT=recurse; return 0 ;;
-  esac
-  # prefixes (riskier class wins when several options share the prefix)
-  case "force" in "$nm"*) GI_OPT=force; return 0 ;; esac
-  case "all" in "$nm"*) GI_OPT=all; return 0 ;; esac
-  case "branches" in "$nm"*) GI_OPT=all; return 0 ;; esac
-  case "mirror" in "$nm"*) GI_OPT=all; return 0 ;; esac
-  if [ "$len" -ge 2 ]; then
-    case "receive-pack" in "$nm"*) GI_OPT=receive-pack; return 0 ;; esac
-    case "exec" in "$nm"*) GI_OPT=receive-pack; return 0 ;; esac
-  fi
-  case "force-with-lease" in "$nm"*) GI_OPT=lease; return 0 ;; esac
-  case "force-if-includes" in "$nm"*) GI_OPT=lease; return 0 ;; esac
-  if [ "$len" -ge 3 ]; then
-    case "prune" in "$nm"*) GI_OPT=prune; return 0 ;; esac
-    case "delete" in "$nm"*) GI_OPT=delete; return 0 ;; esac
-    case "tags" in "$nm"*) GI_OPT=tags; return 0 ;; esac
-    case "repo" in "$nm"*) GI_OPT=repo; return 0 ;; esac
-    case "push-option" in "$nm"*) GI_OPT=push-option; return 0 ;; esac
-  fi
-  if [ "$len" -ge 4 ]; then
-    case "recurse-submodules" in "$nm"*) GI_OPT=recurse; return 0 ;; esac
-  fi
+  [ -z "$nm" ] && return 0
+  for ent in $GI_PUSH_LONG_OPTS; do
+    full="${ent%%:*}"; cls="${ent#*:}"
+    if [ "$full" = "$nm" ]; then exact="$cls"; break; fi
+    case "$full" in "$nm"*) hits+=" $cls " ;; esac
+  done
+  if [ -n "$exact" ]; then GI_OPT="$exact"; return 0; fi
+  for c in receive-pack force all prune delete tags repo push-option recurse lease; do
+    case "$hits" in *" $c "*) GI_OPT="$c"; return 0 ;; esac
+  done
   return 0
 }
