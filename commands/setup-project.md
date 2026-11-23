@@ -217,5 +217,5 @@ These all live in the bash helper; documented here so the operator knows what to
 - `atelier-setup-project --help` prints the full CLI contract.
 - `which atelier-setup-project` should resolve to `~/.local/bin/atelier-setup-project` (a symlink installed by `install.sh`).
 - If `which` is empty: re-run `install.sh`, or check that `~/.local/bin` is on `$PATH`.
-- If the helper reports "cannot locate the atelier plugin root", `$CLAUDE_PLUGIN_ROOT` is not set (you are probably running ad-hoc via `claude --plugin-dir`). Run `atelier-setup-project --plugin-root /abs/path/to/atelier-checkout <path>` directly from your terminal, or export `ATELIER_PLUGIN_ROOT` in your shell.
+- If the helper reports "cannot locate the atelier plugin root", `$CLAUDE_PLUGIN_ROOT` is not set (you are probably running ad-hoc via `claude --plugin-dir`). Run `atelier-setup-project --plugin-root /abs/path/to/atelier-checkout <path>` directly from your own terminal, or export `ATELIER_PLUGIN_ROOT` there. `--plugin-root` is a terminal-only escape hatch: outside an interactive terminal the helper accepts only its own source root, the managed runtime dir or the marketplace install, and the permission template denies the flag to agent Bash calls.
 
