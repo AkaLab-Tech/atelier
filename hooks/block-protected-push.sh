@@ -116,7 +116,7 @@ fi
 IFS= read -r -d '' AWK_BENIGN <<'AWK' || true
 BEGIN {
   ORS = "\n"; cont = 0
-  re = "^[ \t]*git[ \t]+(status|log|diff|show|add|commit|fetch|pull|checkout|switch|branch|stash|rev-parse|ls-files|merge|rebase|reset|tag|remote|describe|blame|clean|restore|rm|mv|rev-list|cat-file|show-ref|for-each-ref|worktree|ls-remote|shortlog|cherry-pick|revert)([ \t]+[A-Za-z0-9_./=:@%,+-]+)*[ \t]*$"
+  re = "^[ \t]*git[ \t]+(status|log|diff|show|add|commit|fetch|pull|checkout|switch|branch|stash|rev-parse|ls-files|merge|reset|tag|remote|describe|blame|clean|restore|rm|mv|rev-list|cat-file|show-ref|for-each-ref|worktree|ls-remote|shortlog|cherry-pick|revert)([ \t]+[A-Za-z0-9_./=:@%,+-]+)*[ \t]*$"
 }
 {
   if (!cont && $0 ~ re) { cont = 0; next }
@@ -434,12 +434,15 @@ check_exec_builtin() { # depth
   for ((i = 0; i < n; i++)); do
     x="${all[$i]}"
     x="${x#--exec=}"
+    case "$x" in -x?*) x="${x#-x}" ;; esac
     case "$x" in
       *[[:space:]]*) scan_script "$(unmask "$x")" $((depth + 1)) ;;
       *)
         gi_lc "${x##*/}"; lx="$GI_LC"
-        if [ "$lx" = "git" ]; then
-          scan_segment $((depth + 1)) "${all[@]:$i}"
+        # `git` and the dashed entry points (git-push, git-send-pack, ...) are on
+        # PATH for exec children, so they start a command like bare `git` does
+        if [ "$lx" = "git" ] || [[ "$lx" == git-* ]]; then
+          scan_segment $((depth + 1)) "$x" "${all[@]:$((i + 1))}"
           return 0
         fi ;;
     esac

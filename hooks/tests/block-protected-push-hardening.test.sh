@@ -566,6 +566,35 @@ oa "rebase without --exec"                                  'git rebase origin/m
 oa "filter-branch --tree-filter with a non-push command"    "FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --tree-filter 'git status' -- origin/main..HEAD"
 ha "git-foo with a nested push to a task branch"            "git-foo 'git push origin HEAD:task/1-x'"
 ha "git-foo with a nested non-push command"                 "git-foo 'git status'"
+# Dashed entry point via an exec option (#808 cycle 3): inside an exec-capable
+# builtin, an argument whose basename is `git` or `git-*` starts a command and is
+# classified like `git <name>`, so a single-token `git-push` runs the implicit
+# push of the effective repo and dashed plumbing is blocked categorically. The
+# clone sits on a protected branch with push.default=current; the oracle also
+# sets remote.origin.push because the exec'd command runs on a detached HEAD
+# (during a rebase / bisect), where only an explicit configured refspec pushes.
+# The scratch remote has main at c1 and the clone's main is ahead of it.
+EXECPATH="$(git --exec-path)"
+ONMAIN='git checkout -q main && git config push.default current && git config remote.origin.push refs/heads/main:refs/heads/main'
+ONTASK='git config push.default current && git config remote.origin.push refs/heads/task/1-x:refs/heads/task/1-x'
+# the submodule is its own repository (detached HEAD), so give it a commit and a
+# configured refspec toward the scratch remote's main
+SMMAIN="git checkout -q main && $SMSETUP && $ONMAIN && git -C sub config remote.origin.push HEAD:refs/heads/main && git -C sub commit -q --allow-empty -m s1"
+BISMAIN="git checkout -q main && git commit -q --allow-empty -m c2b && git config push.default current && git config remote.origin.push refs/heads/main:refs/heads/main && git bisect start HEAD origin/main"
+ob "rebase -x with dashed push entry point"                 'git rebase -x git-push HEAD~1' "$ONMAIN"
+ob "rebase --exec=<dashed push>"                            'git rebase --exec=git-push HEAD~1' "$ONMAIN"
+ob "rebase -x<glued dashed push>"                           'git rebase -xgit-push HEAD~1' "$ONMAIN"
+ob "submodule foreach with dashed push entry point"         'git submodule foreach git-push' "$SMMAIN"
+ob "bisect run with dashed push entry point"                'git bisect run git-push' "$BISMAIN"
+hb "rebase -x with dashed send-pack plumbing"               'git rebase -x git-send-pack origin/main'
+# hook-only, but in a clone that sits on main (the shared clone is on task/1-x)
+mk_env; (cd "$WORK" && eval "$ONMAIN") >/dev/null 2>&1
+expect_block "rebase -x with an exec-path dashed push [hook-only]" "$WORK" "git rebase -x $EXECPATH/git-push origin/main"
+oa "rebase onto a base, no exec"                            'git rebase origin/main' "$ONMAIN"
+oa "rebase -x with a non-push command"                      "git rebase -x 'pnpm --version >/dev/null; true' origin/main" "$ONMAIN"
+oa "rebase -x with dashed status"                           'git rebase -x git-status origin/main' "$ONMAIN"
+oa "rebase -x dashed push from a task branch"               'git rebase -x git-push origin/main' "$ONTASK"
+oa "submodule foreach dashed push from a task branch"       'git submodule foreach git-push' "$SMSETUP && $ONTASK"
 cls_end
 
 # =============================================================================
