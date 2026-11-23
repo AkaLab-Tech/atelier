@@ -44,6 +44,10 @@ USAGE:
 OPTIONS:
   --plugin-root <path>   Path to the atelier plugin root (containing
                          templates/ and .claude-plugin/plugin.json).
+                         Outside an interactive terminal the
+                         flag and \$ATELIER_PLUGIN_ROOT are accepted only
+                         for this script's own source root, the managed
+                         runtime dir or the marketplace install.
                          Resolution order: this flag, then
                          \$ATELIER_PLUGIN_ROOT, then the atelier checkout
                          this script lives in, then the first match under
@@ -353,6 +357,43 @@ looks_like_plugin_root() {
 }
 
 # ---------- plugin root resolution ----------
+# is_trusted_plugin_root <path> — 0 when <path> canonicalises to one of the
+# roots atelier itself installs: this script's own source root, the managed
+# runtime dir ($ATELIER_RUNTIME_DIR, default ~/.local/share/atelier: its
+# `current` link or a <version> child), or the marketplace install under
+# $ATELIER_CONFIG_DIR/plugins/*/atelier. Kept identical in atelier-update and
+# atelier-setup-project (#809).
+is_trusted_plugin_root() {
+  local cand src d t base cfg
+  local -a trusted
+  cand="$(cd -P "$1" 2>/dev/null && pwd)" || return 1
+  src="${BASH_SOURCE[0]}"
+  while [ -L "$src" ]; do
+    d="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ $src != /* ]] && src="$d/$src"
+  done
+  trusted=("$(cd -P "$(dirname "$src")/.." 2>/dev/null && pwd)")
+  base="${ATELIER_RUNTIME_DIR:-$HOME/.local/share/atelier}"
+  cfg="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+  for t in "$base/current" "$base"/*/ "$cfg"/plugins/*/atelier; do
+    [ -d "$t" ] || continue
+    trusted+=("$(cd -P "$t" 2>/dev/null && pwd)")
+  done
+  for t in "${trusted[@]}"; do
+    [ -n "$t" ] && [ "$cand" = "$t" ] && return 0
+  done
+  return 1
+}
+
+# require_trusted_plugin_root <label> <path> — an untrusted root given through
+# the flag or the env var is accepted only from an interactive terminal.
+require_trusted_plugin_root() {
+  is_trusted_plugin_root "$2" && return 0
+  [ -t 0 ] && return 0
+  die "$1 '$2' is not a trusted atelier root; an override outside the installed locations is only accepted when run from an interactive terminal"
+}
+
 resolve_plugin_root() {
   local candidate
 
@@ -360,6 +401,7 @@ resolve_plugin_root() {
     candidate="$PLUGIN_ROOT_FLAG"
     looks_like_plugin_root "$candidate" \
       || die "--plugin-root '$candidate' is not an atelier checkout (missing templates/settings.template.json or .claude-plugin/plugin.json)"
+    require_trusted_plugin_root "--plugin-root" "$candidate"
     printf '%s\n' "$candidate"; return
   fi
 
@@ -367,6 +409,7 @@ resolve_plugin_root() {
     candidate="$ATELIER_PLUGIN_ROOT"
     looks_like_plugin_root "$candidate" \
       || die "\$ATELIER_PLUGIN_ROOT='$candidate' is not an atelier checkout"
+    require_trusted_plugin_root "\$ATELIER_PLUGIN_ROOT" "$candidate"
     printf '%s\n' "$candidate"; return
   fi
 

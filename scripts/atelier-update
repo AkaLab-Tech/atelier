@@ -307,8 +307,14 @@ OPTIONS:
                          \$ATELIER_PLUGIN_ROOT, then the source root this
                          script lives inside (resolved via readlink on the
                          symlink, then dirname). Flag/env paths must be a
-                         git repository with an \`origin\` remote pointing
-                         at AkaLab-Tech/atelier (or a fork thereof). When
+                         git repository and, outside an interactive
+                         terminal, must resolve to this script's own
+                         source root, the managed runtime dir or the
+                         marketplace install; any other path is refused
+                         unless the command runs from a terminal. In clone
+                         mode a warning is printed when the \`origin\`
+                         remote is not named atelier (or a fork named
+                         atelier-*). When
                          the discovered root is the managed runtime dir
                          (#39 — no git clone on disk), the update runs via
                          \`claude plugin update\` + a runtime-dir swap
@@ -379,11 +385,49 @@ done
 #             plain tree with no git metadata.
 RUNTIME_BASE="${ATELIER_RUNTIME_DIR:-$HOME/.local/share/atelier}"
 
+# is_trusted_plugin_root <path> — 0 when <path> canonicalises to one of the
+# roots atelier itself installs: this script's own source root, the managed
+# runtime dir ($ATELIER_RUNTIME_DIR, default ~/.local/share/atelier: its
+# `current` link or a <version> child), or the marketplace install under
+# $ATELIER_CONFIG_DIR/plugins/*/atelier. Kept identical in atelier-update and
+# atelier-setup-project (#809).
+is_trusted_plugin_root() {
+  local cand src d t base cfg
+  local -a trusted
+  cand="$(cd -P "$1" 2>/dev/null && pwd)" || return 1
+  src="${BASH_SOURCE[0]}"
+  while [ -L "$src" ]; do
+    d="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ $src != /* ]] && src="$d/$src"
+  done
+  trusted=("$(cd -P "$(dirname "$src")/.." 2>/dev/null && pwd)")
+  base="${ATELIER_RUNTIME_DIR:-$HOME/.local/share/atelier}"
+  cfg="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+  for t in "$base/current" "$base"/*/ "$cfg"/plugins/*/atelier; do
+    [ -d "$t" ] || continue
+    trusted+=("$(cd -P "$t" 2>/dev/null && pwd)")
+  done
+  for t in "${trusted[@]}"; do
+    [ -n "$t" ] && [ "$cand" = "$t" ] && return 0
+  done
+  return 1
+}
+
+# require_trusted_plugin_root <label> <path> — an untrusted root given through
+# the flag or the env var is accepted only from an interactive terminal.
+require_trusted_plugin_root() {
+  is_trusted_plugin_root "$2" && return 0
+  [ -t 0 ] && return 0
+  die "$1 '$2' is not a trusted atelier root; an override outside the installed locations is only accepted when run from an interactive terminal"
+}
+
 resolve_plugin_root() {
   # 1) explicit flag wins — legacy/dev clone flow, unchanged (#39 keeps
   #    --plugin-root as the explicit clone escape hatch).
   if [ -n "$PLUGIN_ROOT_FLAG" ]; then
     [ -d "$PLUGIN_ROOT_FLAG/.git" ] || die "--plugin-root '$PLUGIN_ROOT_FLAG' is not a git repo"
+    require_trusted_plugin_root "--plugin-root" "$PLUGIN_ROOT_FLAG"
     printf '%s\n' "$PLUGIN_ROOT_FLAG"
     return
   fi
@@ -391,6 +435,7 @@ resolve_plugin_root() {
   # 2) env var — unchanged
   if [ -n "${ATELIER_PLUGIN_ROOT:-}" ]; then
     [ -d "$ATELIER_PLUGIN_ROOT/.git" ] || die "\$ATELIER_PLUGIN_ROOT '$ATELIER_PLUGIN_ROOT' is not a git repo"
+    require_trusted_plugin_root "\$ATELIER_PLUGIN_ROOT" "$ATELIER_PLUGIN_ROOT"
     printf '%s\n' "$ATELIER_PLUGIN_ROOT"
     return
   fi
@@ -692,6 +737,14 @@ if [ -z "$REMOTE_URL" ]; then
   die "no 'origin' remote in $PLUGIN_ROOT — cannot pull"
 fi
 sublog "remote:      $REMOTE_URL"
+# Advisory defense in depth (the trusted-root check is the boundary): warn
+# unless the repository name is atelier or a fork named atelier-*.
+REMOTE_NAME="$(printf '%s' "$REMOTE_URL" | tr '[:upper:]' '[:lower:]')"
+REMOTE_NAME="${REMOTE_NAME%/}"; REMOTE_NAME="${REMOTE_NAME%.git}"; REMOTE_NAME="${REMOTE_NAME##*[/:]}"
+case "$REMOTE_NAME" in
+  atelier|atelier-*) ;;
+  *) warn "origin remote '$REMOTE_URL' does not look like the atelier repository (or a fork named atelier-*)" ;;
+esac
 
 # ---------- capture pre-pull state ----------
 OLD_SHA="$(git -C "$PLUGIN_ROOT" rev-parse HEAD)"
