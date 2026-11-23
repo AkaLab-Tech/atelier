@@ -58,6 +58,12 @@
       "Bash(git push origin +*)",
       "Bash(git reset --hard*)",
       "Bash(git config --global*)",
+      "Bash(git send-pack*)",
+      "Bash(git http-push*)",
+      "Bash(git config alias.*)",
+      "Bash(git config --local alias.*)",
+      "Bash(git config remote.*.push*)",
+      "Bash(git config --local remote.*.push*)",
 
       "Bash(gh auth logout*)",
       "Bash(gh auth refresh*)",

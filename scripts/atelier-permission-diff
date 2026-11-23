@@ -227,6 +227,12 @@ describe_permission() {
     "Bash(git push * --all*)")                   echo "BLOCKED: bulk push of every branch" ;;
     "Bash(git push --mirror*)")                  echo "BLOCKED: mirror push (updates and deletes every remote ref)" ;;
     "Bash(git push * --mirror*)")                echo "BLOCKED: mirror push (updates and deletes every remote ref)" ;;
+    "Bash(git send-pack*)")                      echo "BLOCKED: push plumbing (updates remote refs directly)" ;;
+    "Bash(git http-push*)")                      echo "BLOCKED: push plumbing (updates remote refs directly)" ;;
+    "Bash(git config alias.*)")                  echo "BLOCKED: git alias write (can disguise a push)" ;;
+    "Bash(git config --local alias.*)")          echo "BLOCKED: git alias write (can disguise a push)" ;;
+    "Bash(git config remote.*.push*)")           echo "BLOCKED: remote push-refspec config write (redirects pushes)" ;;
+    "Bash(git config --local remote.*.push*)")   echo "BLOCKED: remote push-refspec config write (redirects pushes)" ;;
     "Bash(git reset --hard*)")                   echo "BLOCKED: destructive reset" ;;
     "Bash(gh auth logout*)")                     echo "BLOCKED: GitHub logout" ;;
     "Bash(pnpm publish*)")                       echo "BLOCKED: publish to registry" ;;

@@ -40,7 +40,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$REPO_ROOT/hooks/block-protected-push.sh"
+HOOK="${BPP_HOOK:-$REPO_ROOT/hooks/block-protected-push.sh}"
 TEMPLATE="$REPO_ROOT/templates/settings.template.json"
 
 TMP="$(mktemp -d)"
@@ -226,6 +226,9 @@ else
   #   origin +*            → hard-force '+' refspec
   #   --all / --mirror     → bulk push (#35c), both flag positions
   #   * :*                 → remote-ref deletion via an empty source side
+  #   send-pack/http-push  → push plumbing that updates remote refs directly (#808)
+  #   config alias.* / remote.*.push* → in-command alias / remote-push config
+  #                          writes that turn another command into a push (#808)
   REQUIRED_DENY_ENTRIES=(
     'Bash(git push *:main)'
     'Bash(git push *:master)'
@@ -237,6 +240,12 @@ else
     'Bash(git push --mirror*)'
     'Bash(git push * --mirror*)'
     'Bash(git push * :*)'
+    'Bash(git send-pack*)'
+    'Bash(git http-push*)'
+    'Bash(git config alias.*)'
+    'Bash(git config --local alias.*)'
+    'Bash(git config remote.*.push*)'
+    'Bash(git config --local remote.*.push*)'
   )
 
   for entry in "${REQUIRED_DENY_ENTRIES[@]}"; do
