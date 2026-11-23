@@ -791,6 +791,9 @@ cls "large payload"
 # applies (PLAN.md assumes a 10 s ceiling). A run past the bound is treated by
 # Claude Code as a non-blocking error, i.e. it would allow: the hook must either
 # finish well inside the bound or fail closed — never run long and allow.
+# BPP_NO_TIMING=1 (set by a recording wrapper that runs more than one hook per
+# payload, where wall-clock no longer measures a single hook) keeps the verdict
+# checks and skips only the elapsed-time bound.
 LARGE_BOUND=10
 rawfile_rc() { # file → rc (stdin JSON built from the file with jq --rawfile)
   local f="$1"
@@ -809,7 +812,7 @@ large_case() { # desc file expected-rc
   t0=$SECONDS
   code="$(rawfile_rc "$f")"
   t1=$SECONDS
-  if [ "$((t1 - t0))" -ge "$LARGE_BOUND" ]; then
+  if [ -z "${BPP_NO_TIMING:-}" ] && [ "$((t1 - t0))" -ge "$LARGE_BOUND" ]; then
     [ "$want" = "2" ] && BLOCK_FAILS=$((BLOCK_FAILS + 1))
     fail "$desc took $((t1 - t0))s (bound ${LARGE_BOUND}s): a hook timeout fails open"
   elif [ "$code" = "$want" ]; then

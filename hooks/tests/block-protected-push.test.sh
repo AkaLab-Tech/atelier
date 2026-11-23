@@ -28,11 +28,10 @@
 # deny[] still carries the Layer-1 globs backing all of the above.
 #
 # Hermetic: drives hooks/block-protected-push.sh directly with crafted
-# stdin JSON. No network, no real git remote — the hook is pure string
-# parsing over tool_input.command, so no throwaway git repo is needed
-# (contrast with block-env-commit-worktree.test.sh, which does need one
-# because that hook introspects the actual working tree). Requires jq
-# (the hook's own dependency).
+# stdin JSON. No network, no real git remote — the hook is string parsing
+# over tool_input.command; the one case whose verdict depends on the
+# checked-out branch (the arg-less push) runs in a scratch repo under
+# mktemp -d. Requires jq (the hook's own dependency).
 #
 # Run:  hooks/tests/block-protected-push.test.sh
 # Exit: 0 = all assertions pass, 1 = at least one failed.
@@ -56,10 +55,11 @@ fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 # the exit code. CLAUDE_PROJECT_DIR is pinned to an isolated temp dir so
 # log_decision() never touches real repo state.
 run_hook() {
-  local command_str="$1"
+  local command_str="$1" cwd="${2:-.}"
   local payload
   payload="$(jq -cn --arg c "$command_str" '{tool_name:"Bash", tool_input:{command:$c}}')"
   (
+    cd "$cwd" || exit 1
     CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
     CLAUDE_PROJECT_DIR="$TMP/logs" \
       bash "$HOOK" <<<"$payload" >/dev/null 2>&1
@@ -76,9 +76,9 @@ assert_block() {
 }
 
 assert_allow() {
-  local desc="$1" cmd="$2"
+  local desc="$1" cmd="$2" cwd="${3:-.}"
   local code
-  code="$(run_hook "$cmd")"
+  code="$(run_hook "$cmd" "$cwd")"
   [ "$code" = "0" ] && pass "$desc → allowed (exit 0)" \
                      || fail "$desc expected exit 0, got $code — cmd: $cmd"
 }
@@ -182,7 +182,9 @@ assert_allow "git push --tags origin"  "git push --tags origin"
 # Claude Code surfaces as a hook ERROR, not as an allow/deny verdict. The
 # assertion below pins exit 0 specifically; a status of 1 here is the
 # crash, a status of 2 would be an over-block.
-assert_allow "git push (no arguments)" "git push"
+SCRATCH_REPO="$TMP/scratch-repo"
+git init -q "$SCRATCH_REPO" && git -C "$SCRATCH_REPO" checkout -q -b task/1-x
+assert_allow "git push (no arguments)" "git push" "$SCRATCH_REPO"
 
 # === ALLOW: commit message merely mentioning "git push origin main" ========
 assert_allow 'git commit -m "..." mentioning git push origin main' \
