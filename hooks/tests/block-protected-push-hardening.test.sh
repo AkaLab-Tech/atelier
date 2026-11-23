@@ -501,6 +501,74 @@ ha "non-git command (ls)"                                 'ls -la'
 cls_end
 
 # =============================================================================
+cls "external-subcommand class"
+# =============================================================================
+# `git <external>` / `git-<name>`: the word `push` is an argument of a helper
+# that is not a git builtin, so the tail after it gets the full push check. The
+# real helper (`git subtree`, in git's exec path) runs in the oracle cases; the
+# split commit goes to develop/staging (absent on the scratch remote). Hook-only
+# because they cannot run end-to-end here: the git-subtree command word (the
+# helper refuses direct invocation on this install), --force (git subtree push
+# has no such option here), HEAD:refs/heads/<x> (git subtree prefixes the remote
+# name, creating refs/heads/refs/heads/<x>, so no protected ref moves), and lfs
+# (not installed).
+SUBSETUP='mkdir sub && echo a > sub/f && git add sub && git commit -q -m sub'
+if [ -x "$(git --exec-path)/git-subtree" ]; then
+  ob "subtree push, plain protected branch"                 'git subtree push --prefix=sub origin develop' "$SUBSETUP"
+  ob "subtree push, spaced -P prefix form"                  'git subtree push -P sub origin staging' "$SUBSETUP"
+  ob "subtree push, HEAD:<protected> refspec"               'git subtree push --prefix=sub origin HEAD:develop' "$SUBSETUP"
+  ob "subtree push through -C"                              'git -C @WORK@ subtree push --prefix=sub origin develop' "$SUBSETUP"
+  oa "subtree push to a task branch"                        'git subtree push --prefix=sub origin task/1-x' "$SUBSETUP"
+  oa "subtree split"                                        'git subtree split --prefix=sub' "$SUBSETUP"
+else
+  hb "subtree push, plain protected branch"                 'git subtree push --prefix=sub origin develop'
+  hb "subtree push, spaced -P prefix form"                  'git subtree push -P sub origin staging'
+  hb "subtree push, HEAD:<protected> refspec"               'git subtree push --prefix=sub origin HEAD:develop'
+  hb "subtree push through -C"                              'git -C @WORK@ subtree push --prefix=sub origin develop'
+  ha "subtree push to a task branch"                        'git subtree push --prefix=sub origin task/1-x'
+  ha "subtree split"                                        'git subtree split --prefix=sub'
+fi
+hb "subtree push, HEAD:refs/heads/<protected> refspec"      'git subtree push --prefix=sub origin HEAD:refs/heads/master'
+hb "subtree push through the git-subtree command word"      'git-subtree push --prefix=sub origin develop'
+hb "subtree push --force over main"                         'git subtree push --prefix=sub --force origin main'
+ha "git-subtree push to a task branch"                      'git-subtree push --prefix=sub origin task/1-x'
+hb "subtree push to main"                                 'git subtree push --prefix=sub origin main'
+hb "git-subtree push to main"                               'git-subtree push --prefix=sub origin main'
+hb "lfs push to a protected branch"                         'git lfs push origin main'
+hb "lfs push --all"                                         'git lfs push --all origin'
+hb "upper-case PUSH argument of an external subcommand"     'git foo PUSH origin main'
+ha "subtree pull"                                           'git subtree pull --prefix=sub origin task/1-x'
+ha "git-subtree pull"                                       'git-subtree pull --prefix=sub origin task/1-x'
+ha "lfs ls-files"                                           'git lfs ls-files'
+ha "external subcommand without a push argument"            'git foo bar --baz origin main'
+oa "git stash push stays allowed"                           'git stash push -m x'
+cls_end
+
+# =============================================================================
+cls "nested-command-argument class"
+# =============================================================================
+# A command line carried inside an argument of submodule foreach / rebase --exec /
+# bisect run / filter-branch / an external subcommand is rescanned as a script.
+SMSETUP='git submodule add -q @REMOTE@ sub && git commit -q -m sm'
+ob "submodule foreach, quoted nested push"                  "git submodule foreach 'git push origin HEAD:develop'" "$SMSETUP"
+ob "submodule foreach, unquoted nested push"                'git submodule foreach git push origin HEAD:develop' "$SMSETUP"
+ob "rebase -x with a nested push"                           "git rebase -x 'git push origin HEAD:refs/heads/develop' origin/main"
+ob "rebase --exec=<cmd> with a nested push"                 "git rebase --exec='git push origin HEAD:refs/heads/develop' origin/main"
+ob "bisect run sh -c with a nested push"                    "git bisect run sh -c 'git push origin HEAD:refs/heads/develop'" 'git bisect start HEAD origin/main'
+ob "bisect run with a bare git argument"                    'git bisect run git push origin HEAD:refs/heads/develop' 'git bisect start HEAD origin/main'
+ob "filter-branch --tree-filter with a nested push"         "FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --tree-filter 'git push origin HEAD:refs/heads/develop' -- origin/main..HEAD"
+hb "git-foo with a quoted nested protected push"            "git-foo 'git push origin HEAD:main'"
+oa "submodule foreach, nested push to a task branch"        "git submodule foreach 'git push origin HEAD:refs/heads/task/1-x'" "$SMSETUP"
+oa "submodule foreach, nested non-push command"             'git submodule foreach git status' "$SMSETUP"
+oa "submodule update --init"                                'git submodule update --init' "$SMSETUP"
+oa "rebase -x with a nested push to a task branch"          "git rebase -x 'git push origin HEAD:refs/heads/task/1-x' origin/main"
+oa "rebase without --exec"                                  'git rebase origin/main'
+oa "filter-branch --tree-filter with a non-push command"    "FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --tree-filter 'git status' -- origin/main..HEAD"
+ha "git-foo with a nested push to a task branch"            "git-foo 'git push origin HEAD:task/1-x'"
+ha "git-foo with a nested non-push command"                 "git-foo 'git status'"
+cls_end
+
+# =============================================================================
 cls "large payload"
 # =============================================================================
 # The hooks.json entry for this hook sets no timeout, so the platform default

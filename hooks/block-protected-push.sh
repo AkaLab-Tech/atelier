@@ -403,6 +403,50 @@ check_config_write() {
   return 0
 }
 
+# External git subcommands (git-subtree and friends) can push internally, and
+# their argument layout is not known here. Mirror the pre-#808 rule: every
+# `push` argument starts a push-shaped tail that gets the same destination
+# checks as `git push`; arguments with no `push` token stay allowed.
+check_external_push() {
+  local -a all=() tail=()
+  local x i n lx
+  for x in ${GI_REST[@]+"${GI_REST[@]}"}; do all+=("$x"); done
+  n=${#all[@]}
+  for ((i = 0; i < n; i++)); do
+    gi_lc "${all[$i]}"; lx="$GI_LC"
+    [ "$lx" = "push" ] || continue
+    tail=()
+    if [ "$((i + 1))" -lt "$n" ]; then tail=("${all[@]:$((i + 1))}"); fi
+    GI_REST=(${tail[@]+"${tail[@]}"})
+    check_push
+  done
+  return 0
+}
+
+# Builtins that run a user-supplied command line (submodule foreach, rebase
+# --exec, bisect run): rescan it, so a nested push there is judged like a
+# top-level one (the pre-#808 hook saw it because it split on `push` tokens).
+check_exec_builtin() { # depth
+  local depth="$1" i n x lx
+  local -a all=()
+  for x in ${GI_REST[@]+"${GI_REST[@]}"}; do all+=("$x"); done
+  n=${#all[@]}
+  for ((i = 0; i < n; i++)); do
+    x="${all[$i]}"
+    x="${x#--exec=}"
+    case "$x" in
+      *[[:space:]]*) scan_script "$(unmask "$x")" $((depth + 1)) ;;
+      *)
+        gi_lc "${x##*/}"; lx="$GI_LC"
+        if [ "$lx" = "git" ]; then
+          scan_segment $((depth + 1)) "${all[@]:$i}"
+          return 0
+        fi ;;
+    esac
+  done
+  return 0
+}
+
 # Resolve the git subcommand (expanding aliases) and classify.
 gi_process() { # depth args...
   local depth="$1"; shift
@@ -436,6 +480,7 @@ gi_process() { # depth args...
         block "push plumbing command (git $lsub)" "git $lsub updates remote refs directly and bypasses the push destination checks; it is blocked categorically" ;;
       config) check_config_write; return 0 ;;
     esac
+    case "$lsub" in submodule|rebase|bisect) check_exec_builtin "$depth"; return 0 ;; esac
     gi_is_builtin_nonpush "$lsub" && return 0
 
     # alias: in-invocation -c first, then persistent config
@@ -443,7 +488,7 @@ gi_process() { # depth args...
     val=""
     if gi_cfg_lookup "$alias_key"; then val="$GI_VAL"
     elif gi_config_get "$alias_key"; then val="$GI_VAL"
-    else return 0
+    else check_exec_builtin "$depth"; check_external_push; return 0
     fi
     hops=$((hops + 1))
     rest=()
@@ -582,6 +627,10 @@ scan_segment() { # depth tokens...
       check_push ;;
     git-send-pack|git-http-push)
       block "push plumbing command ($lbase)" "$lbase updates remote refs directly and bypasses the push destination checks; it is blocked categorically" ;;
+    git-*)
+      gi_reset
+      for x in ${after[@]+"${after[@]}"}; do GI_REST+=("$x"); done
+      check_exec_builtin "$depth"; check_external_push ;;
     bash|sh|zsh|dash|ksh|ash)
       k=0; body=""
       while [ "$k" -lt "${#after[@]}" ]; do
