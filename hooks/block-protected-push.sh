@@ -27,9 +27,14 @@
 #     non-tag destination whose last path component is protected is blocked;
 #   - unresolved shell expansion in a push's command word, refspecs or options
 #     fails closed (only for segments that could be a push).
+#   - a command word outside the recognised set that is not data-only is a
+#     possible runner: later git / shell tokens are scanned as commands and
+#     whitespace-bearing tokens are rescanned as scripts; a shell reading stdin
+#     has its statically known payload (here-string, heredoc, echo/printf args)
+#     rescanned.
 # Residual gaps (PLAN.md §3): scripts written first and run later, obfuscation
-# through files or encoded payloads, and server-side protection (a separate
-# control).
+# through files or encoded payloads, text fed to a shell that is not in the
+# command itself, and server-side protection (a separate control).
 #
 # Contract per Claude Code hooks reference (PreToolUse):
 #   stdin  — JSON: { tool_name, tool_input: { command } }
@@ -547,6 +552,84 @@ wrapper_skip() { # wrapper-name, tokens after it...
   printf '%d' "$k"
 }
 
+# Text a shell could later read from stdin, collected from literal producers in
+# the current script (echo/printf args, here-string words) regardless of order, so
+# `echo X | bash`, `bash <<< X` and `bash <(echo X)` are all judged the same way.
+# It is rescanned as a script only when the script also has a shell reading stdin
+# (STDIN_SHELL=1). A payload that is not statically known (a file, another
+# command's output) stays in the documented residual gaps.
+PAYLOAD=""
+STDIN_SHELL=0
+
+payload_add() { # text — add literal producer text, with printf/echo \n escapes honoured
+  local txt="$1"
+  if [ "${#txt}" -lt 20000 ]; then
+    txt="${txt//\\n/$'\n'}"; txt="${txt//\\t/ }"; txt="${txt//\\r/ }"
+  fi
+  PAYLOAD+="$txt"$'\n'
+}
+
+# Commands whose arguments are data, never executed: a protected-push shape in
+# their words is prose (a search pattern, a message, a path) and stays allowed.
+# Every other command word is treated as a possible command runner: its remaining
+# tokens are scanned for an embedded command (see scan_segment).
+is_data_command() { # lowercased basename
+  case "$1" in
+    echo|printf|cat|gh|rg|grep|egrep|fgrep|ag|ack|head|tail|wc|sort|uniq|tee|ls|diff|cmp|less|more|tr|cut|jq|yq|column|true|false|:|test|'['|'[['|read|cd|pwd|mkdir|rmdir|touch|rm|cp|mv|ln|chmod|chown|stat|file|basename|dirname|realpath|readlink|date|sleep|which|type|whereis|open|pbcopy|pbpaste|curl|wget|mktemp|tar|unzip|zip|gzip|gunzip|shasum|md5|md5sum|sha256sum|base64|printenv|export|unset|alias) return 0 ;;
+  esac
+  return 1
+}
+
+is_shell_name() { # lowercased basename
+  case "$1" in bash|sh|zsh|dash|ksh|ash) return 0 ;; esac
+  return 1
+}
+
+# Unknown command word (caffeinate, stdbuf, arch, script, watch, flock, parallel,
+# ssh, pnpm exec, ...): any later token that starts a command is scanned like a
+# command of its own, and a token with whitespace that mentions git is rescanned
+# as a script (`ssh host 'git push ...'`, `watch 'git push ...'`).
+scan_runner_tokens() { # depth tokens... (command word included)
+  local depth="$1"; shift
+  local -a tk=("$@")
+  local n=${#tk[@]} j x nb lx hasexp=0 haspush=0
+  for ((j = 0; j < n; j++)); do
+    x="${tk[$j]}"
+    # a huge argument is not rescanned (per-character lexing is the cost): it
+    # fails closed when it names both git and push, and is otherwise skipped
+    if [ "${#x}" -ge 4000 ]; then
+      # two linear scans: a single `*git*push*` glob is quadratic on long input
+      nb="$(printf '%s' "$x" | tr -d "\\\\\"'")"
+      case "$nb" in
+        *[pP][uU][sS][hH]*)
+          case "$nb" in
+            *[gG][iI][tT]*) block "oversized command-runner argument that names git push" "a ${#x}-byte argument of an unlisted command runner mentions git and push; too large to analyse (failing closed)" "${tk[0]}" ;;
+          esac ;;
+      esac
+      continue
+    fi
+    if gi_has_expansion "$x"; then hasexp=1; fi
+    gi_lc "$x"; case "$GI_LC" in *push*) haspush=1 ;; esac
+    case "$x" in
+      *[[:space:]]*)
+        scan_script "$(unmask "$x")" $((depth + 1))
+        # `NAME=cmd args` / `--exec=cmd args`: the value is a command line too
+        case "$x" in [-A-Za-z_]*=*) scan_script "$(unmask "${x#*=}")" $((depth + 1)) ;; esac
+        CUR_SEG_TEXT="${tk[*]-}" ;;
+      *)
+        nb="${x##*/}"; gi_lc "$nb"; lx="$GI_LC"
+        if [ "$lx" = "git" ] || [[ "$lx" == git-* ]] || is_shell_name "$lx" || [ "$lx" = "eval" ]; then
+          scan_segment $((depth + 1)) "$x" ${tk[@]+"${tk[@]:$((j + 1))}"}
+          return 0
+        fi ;;
+    esac
+  done
+  if [ "$hasexp" -eq 1 ] && [ "$haspush" -eq 1 ]; then
+    block "unresolved command word in a push" "an unlisted command runner has an argument naming push and another that still contains shell expansion, so the command it runs cannot be resolved (failing closed)"
+  fi
+  return 0
+}
+
 scan_segment() { # depth tokens...
   local depth="$1"; shift
   local -a raw=("$@") t=()
@@ -558,10 +641,21 @@ scan_segment() { # depth tokens...
     case "$x" in *'$('*|*'`'*) scan_subst "$x" "$depth" ;; esac
   done
 
-  # drop redirections (`> file`, `2>&1`, `< in`)
-  n=${#raw[@]}; i=0
+  # a here-string word is literal stdin text for whatever reads it
+  n=${#raw[@]}
+  for ((i = 0; i < n; i++)); do
+    x="${raw[$i]}"
+    case "$x" in
+      '<<<') payload_add "$(unmask "${raw[$((i + 1))]:-}")" ;;
+      '<<<'?*) payload_add "$(unmask "${x#<<<}")" ;;
+    esac
+  done
+
+  # drop redirections (`> file`, `2>&1`, `< in`, `<<< word`, `<< EOF`)
+  i=0
   while [ "$i" -lt "$n" ]; do
     x="${raw[$i]}"; i=$((i + 1))
+    case "$x" in '<<<'|'<<'|'<<-') i=$((i + 1)); continue ;; esac
     if [[ "$x" =~ $REDIR_RE ]]; then
       [ -z "${BASH_REMATCH[2]}" ] && i=$((i + 1))
       continue
@@ -635,18 +729,29 @@ scan_segment() { # depth tokens...
       for x in ${after[@]+"${after[@]}"}; do GI_REST+=("$x"); done
       check_exec_builtin "$depth"; check_external_push ;;
     bash|sh|zsh|dash|ksh|ash)
-      k=0; body=""
+      k=0; body=""; local sflag=0 file=""
       while [ "$k" -lt "${#after[@]}" ]; do
         x="${after[$k]}"; k=$((k + 1))
         case "$x" in
-          --) break ;;
+          --) file="${after[$k]:-}"; break ;;
+          -o|+o|-O|+O|--rcfile|--init-file) k=$((k + 1)) ;;
           --*) ;;
           -*c*) body="${after[$k]:-}"; break ;;
-          -*) ;;
-          *) break ;;
+          -*s*) sflag=1 ;;
+          -*|+*) ;;
+          *) file="$x"; break ;;
         esac
       done
       [ -n "$body" ] && scan_script "$(unmask "$body")" $((depth + 1))
+      # no script file (or -s, or a stdin path): the shell reads its script from
+      # stdin, so the literal text feeding it is rescanned when the script ends
+      if [ -z "$body" ]; then
+        case "$file" in ''|-|/dev/stdin|/dev/fd/*|/proc/self/fd/*) STDIN_SHELL=1 ;; esac
+        [ "$sflag" -eq 1 ] && STDIN_SHELL=1
+      fi
+      ;;
+    source|.)
+      case "${after[0]:-}" in ''|/dev/*|/proc/*) STDIN_SHELL=1 ;; esac
       ;;
     eval)
       body=""
@@ -665,6 +770,34 @@ scan_segment() { # depth tokens...
         esac
         k=$((k + 1))
       done ;;
+    echo)
+      body=""
+      for x in ${after[@]+"${after[@]}"}; do
+        case "$x" in -n|-e|-E|-ne|-en|-nE|-En|-eE|-Ee) continue ;; esac
+        body+="$x "
+      done
+      payload_add "$(unmask "$body")" ;;
+    printf)
+      local -a pa=()
+      local rest acc ai=0 guard=0 pn pre1 arg
+      for x in ${after[@]+"${after[@]}"}; do pa+=("$x"); done
+      pn=$((${#pa[@]} - 1))
+      if [ "$pn" -ge 0 ] && [ "${pa[0]}" != "-v" ]; then
+        rest="${pa[0]}"; acc=""
+        while [ "$guard" -lt 64 ]; do
+          guard=$((guard + 1))
+          case "$rest" in *%[sbq]*) ;; *) break ;; esac
+          pre1="${rest%%%[sbq]*}"
+          rest="${rest#*%[sbq]}"
+          arg=""; [ "$pn" -ge 1 ] && arg="${pa[$((1 + ai % pn))]}"
+          ai=$((ai + 1))
+          acc+="$pre1$arg"
+        done
+        payload_add "$(unmask "$acc$rest")"
+        for x in "${pa[@]:1}"; do payload_add "$(unmask "$x")"; done
+      fi ;;
+    *)
+      is_data_command "$lbase" || scan_runner_tokens "$depth" "${t[@]:$i}" ;;
   esac
   return 0
 }
@@ -692,10 +825,55 @@ scan_subst() { # token depth — re-scan every $(...) / `...` inside the token
 # backticks in a body whose delimiter is unquoted: rescan those substitutions.
 # Quoted-delimiter bodies stay literal and unscanned; bodies feeding a shell are
 # kept by strip_heredocs and scanned as script text.
+# A heredoc body is prose (inert) unless the line hands it to something that can
+# execute stdin: a shell, `source`/`eval`, a remote/container runner, an
+# interpreter, or a pipeline whose downstream names one (`cat <<EOF | bash`).
+# The delimiter quoting is irrelevant to that: the consumer executes the text
+# either way. Words are matched anywhere on the line (conservative: a title that
+# says "bash" keeps the body scanned, which only costs a scan).
+HD_RUNNER_RE='(^|[[:space:];&|(/])(bash|sh|zsh|dash|ksh|ash|source|eval|ssh|su|docker|podman|kubectl|nsenter|chroot|xargs|parallel|expect|python[0-9.]*|perl|ruby|node|php)([[:space:]]|$)'
+hd_feeds_runner() { # line
+  local line="$1" pre post g=0
+  local mre='^(.*[[:space:]])(--title|--message|--subject|--body|-m|-t|-b)[= ]+("[^"]*"|'"'"'[^'"'"']*'"'"')(.*)$'
+  pre="${line%%<<*}"
+  # a quoted message/title value is prose: `--title "fix bash eval"` is not a shell
+  while [ "$g" -lt 20 ] && [[ "$pre" =~ $mre ]]; do
+    pre="${BASH_REMATCH[1]}${BASH_REMATCH[2]} ${BASH_REMATCH[4]}"; g=$((g + 1))
+  done
+  if [[ "$pre" =~ $HD_RUNNER_RE ]]; then return 0; fi
+  post="${line#*<<}"
+  case "$post" in
+    *'|'*) post="${post#*|}"; if [[ "$post" =~ $HD_RUNNER_RE ]]; then return 0; fi ;;
+  esac
+  return 1
+}
+
+# Like lib strip_heredocs (drop prose bodies) but with the runner predicate above.
+strip_heredocs_bpp() { # script
+  local line delim="" dash=0 out="" t hd_dash hd_delim
+  local re='(^|[^<])<<(-?)[[:space:]]*\\?["'"'"']?([A-Za-z_][A-Za-z0-9_]*)'
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ -n "$delim" ]; then
+      t="$line"
+      if [ "$dash" = 1 ]; then t="${t#"${t%%[!	]*}"}"; fi
+      [ "$t" = "$delim" ] && delim=""
+      continue
+    fi
+    out+="$line"$'\n'
+    if [[ "$line" =~ $re ]]; then
+      hd_dash="${BASH_REMATCH[2]:-}"; hd_delim="${BASH_REMATCH[3]:-}"
+      if ! hd_feeds_runner "$line"; then
+        delim="$hd_delim"
+        if [ -n "$hd_dash" ]; then dash=1; else dash=0; fi
+      fi
+    fi
+  done <<< "$1"
+  printf '%s' "$out"
+}
+
 scan_heredoc_bodies() { # script depth
-  local line delim="" dash=0 t pre hd_dash hd_delim hd_q body="" collect=0
+  local line delim="" dash=0 t hd_dash hd_delim hd_q body="" collect=0
   local re='(^|[^<])<<(-?)[[:space:]]*(\\?["'"'"']?)([A-Za-z_][A-Za-z0-9_]*)'
-  local shre='(^|[[:space:];&|(])(bash|sh|zsh|dash|ksh|source|eval)([[:space:]]|$)'
   while IFS= read -r line || [ -n "$line" ]; do
     if [ -n "$delim" ]; then
       t="$line"
@@ -711,8 +889,7 @@ scan_heredoc_bodies() { # script depth
     fi
     if [[ "$line" =~ $re ]]; then
       hd_dash="${BASH_REMATCH[2]:-}"; hd_q="${BASH_REMATCH[3]:-}"; hd_delim="${BASH_REMATCH[4]:-}"
-      pre="${line%%<<*}"
-      if ! [[ "$pre" =~ $shre ]]; then
+      if ! hd_feeds_runner "$line"; then
         delim="$hd_delim"
         if [ -n "$hd_dash" ]; then dash=1; else dash=0; fi
         if [ -z "$hd_q" ]; then collect=1; else collect=0; fi
@@ -725,7 +902,7 @@ scan_heredoc_bodies() { # script depth
 }
 
 scan_script() { # script depth
-  local script="$1" depth="$2" seg stripped
+  local script="$1" depth="$2" seg stripped lx
   local -a segs=()
   if [ "$depth" -gt "$MAX_DEPTH" ]; then
     if could_be_push "$script"; then
@@ -733,8 +910,10 @@ scan_script() { # script depth
     fi
     return 0
   fi
+  local saved_payload="$PAYLOAD" saved_stdin="$STDIN_SHELL"
+  PAYLOAD=""; STDIN_SHELL=0
   case "$script" in *'<<'*) scan_heredoc_bodies "$script" "$depth" ;; esac
-  stripped="$(strip_heredocs "$script")" || stripped=""
+  stripped="$(strip_heredocs_bpp "$script")" || stripped=""
   if [ -z "$stripped" ] && [ -n "$script" ]; then
     if could_be_push "$script"; then
       block "heredoc stripping failed on a command that could be a push" "failing closed" "$script"
@@ -754,6 +933,26 @@ scan_script() { # script depth
     split_tokens "$seg"
     scan_segment "$depth" ${TOKS[@]+"${TOKS[@]}"}
   done
+  if [ "$STDIN_SHELL" -eq 1 ] && [ -n "$PAYLOAD" ]; then
+    seg="$PAYLOAD"
+    PAYLOAD="$saved_payload"; STDIN_SHELL="$saved_stdin"
+    if [ "${#seg}" -ge 20000 ]; then
+      lx="$(printf '%s' "$seg" | tr -d "\\\\\"'")"
+      case "$lx" in
+        *[pP][uU][sS][hH]*)
+          case "$lx" in
+            *[gG][iI][tT]*) block "oversized text piped into a shell names git push" "${#seg} bytes of literal text feed a shell reading stdin and mention git and push; too large to analyse (failing closed)" "${script:0:200}" ;;
+          esac ;;
+      esac
+    else
+      scan_script "$seg" $((depth + 1))
+    fi
+    PAYLOAD="$saved_payload"; STDIN_SHELL="$saved_stdin"
+    return 0
+  fi
+  # a stdin-reading shell inside a nested script (`ssh h "bash -s"`) reads the
+  # caller's stdin, so the flag propagates up; the payload does not
+  PAYLOAD="$saved_payload"; STDIN_SHELL=$((saved_stdin | STDIN_SHELL))
   return 0
 }
 

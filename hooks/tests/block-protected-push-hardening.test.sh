@@ -598,6 +598,87 @@ oa "submodule foreach dashed push from a task branch"       'git submodule forea
 cls_end
 
 # =============================================================================
+cls "command-runner prefix class"
+# =============================================================================
+# A command word that is not on the hook's data-only list may run a command
+# handed to it as an argument: its tokens are scanned for a git entry point, a
+# shell, or a whitespace-containing script. Data-only words never execute args.
+ob "caffeinate prefix"                                      'caffeinate git push origin HEAD:main'
+ob "stdbuf prefix"                                          'stdbuf -o0 git push origin HEAD:main'
+hb "script -q /dev/null prefix (needs a tty, not reproducible headless)"                             'script -q /dev/null git push origin HEAD:main'
+hb "arch prefix"                                            'arch -arm64 git push origin HEAD:main'
+hb "unbuffer prefix"                                        'unbuffer git push origin HEAD:main'
+hb "chronic prefix"                                         'chronic git push origin HEAD:main'
+hb "flock <file> prefix"                                    'flock /tmp/x.lock git push origin HEAD:main'
+hb "script -c '<cmd>'"                                      "script -q -c 'git push origin HEAD:main' /dev/null"
+hb "watch '<cmd>'"                                          "watch 'git push origin HEAD:main'"
+hb "parallel with ::: args"                                 'parallel git push origin ::: main'
+hb "ssh host <git push>"                                    'ssh host git push origin HEAD:main'
+hb "ssh host '<cmd>'"                                       "ssh host 'git push origin HEAD:main'"
+hb "ssh host \"cd x && <cmd>\""                             'ssh host "cd x && git push origin HEAD:main"'
+hb "pnpm exec git push"                                     'pnpm exec git push origin HEAD:main'
+hb "python3 -c os.system"                                   "python3 -c \"import os; os.system('git push origin HEAD:main')\""
+hb "awk BEGIN{system()}"                                    "awk 'BEGIN{system(\"git push origin HEAD:main\")}'"
+hb "make push CMD='<cmd>'"                                  "make push CMD='git push origin HEAD:main'"
+hb "trap '<cmd>' EXIT"                                      "trap 'git push origin HEAD:main' EXIT"
+ha "ssh host uptime"                                        'ssh host uptime'
+oa "caffeinate task-branch push"                            'caffeinate git push origin task/1-x'
+ha "caffeinate -i pnpm test"                                'caffeinate -i pnpm test'
+ha "ssh -o BatchMode=yes host task-branch push"             "ssh -o BatchMode=yes host 'git push origin task/x'"
+ha "watch -n5 'git status'"                                 "watch -n5 'git status'"
+ha "man git-push"                                           'man git-push'
+ha "which git"                                              'which git'
+ha "git-wt new fix"                                         'git-wt new fix'
+ha "pnpm install git-foo"                                   'pnpm install git-foo'
+ha "ls git-wt"                                              'ls git-wt'
+ha "sed -n over push text (sed is not data-only, text is inert)" "sed -n '/git push origin HEAD:main/p' f"
+cls_end
+
+# =============================================================================
+cls "stdin-fed shell class"
+# =============================================================================
+# A shell that reads its program from stdin runs a statically known payload
+# (here-string, echo / printf output, heredoc body, process substitution).
+ob "here-string with spaces"                                "bash <<< 'git push origin HEAD:main'"
+ob "here-string, no space"                                  "bash <<<'git push origin HEAD:main'"
+ob "echo | bash"                                            "echo 'git push origin HEAD:main' | bash"
+ob "echo | /bin/bash"                                       "echo 'git push origin HEAD:main' | /bin/bash"
+hb "echo | sudo bash -s"                                    "echo 'git push origin HEAD:main' | sudo bash -s"
+ob "echo | cat | bash"                                      "echo 'git push origin HEAD:main' | cat | bash"
+ob "echo | tee /dev/null | bash"                            "echo 'git push origin HEAD:main' | tee /dev/null | bash"
+ob "printf | sh"                                            "printf 'git push origin HEAD:main\\n' | sh"
+ob "printf format + args | sh"                              "printf 'git %s origin HEAD:main\\n' push | sh"
+ob "echo -e multi-line | bash"                              "echo -e 'true\\ngit push origin HEAD:main' | bash"
+ob "bash <(echo ...)"                                       "bash <(echo 'git push origin HEAD:main')"
+hb "source <(echo ...) (bash 3.2 cannot source a process substitution)"                                     "source <(echo 'git push origin HEAD:main')"
+ob "cat <<'EOF' | bash"                                     $'cat <<\'EOF\' | bash\ngit push origin HEAD:main\nEOF'
+ob "cat <<EOF | bash"                                       $'cat <<EOF | bash\ngit push origin HEAD:main\nEOF'
+ob "bash << EOF"                                            $'bash << EOF\ngit push origin HEAD:main\nEOF'
+hb "ssh host <<'EOF' body"                                  $'ssh host <<\'EOF\'\ngit push origin HEAD:main\nEOF'
+hb "python3 - <<'EOF' running a push"                       $'python3 - <<\'EOF\'\nimport os\nos.system("git push origin HEAD:main")\nEOF'
+hb "echo | ssh host bash -s"                                "echo 'git push origin HEAD:main' | ssh host bash -s"
+ha "echo hello | bash"                                      'echo hello | bash'
+oa "echo task-branch push | bash"                           "echo 'git push origin task/1-x' | bash"
+oa "echo push | bash -c (stdin ignored)"                    "echo 'git push origin HEAD:main' | bash -c 'echo hi'"
+oa "echo push | bash script.sh (stdin ignored)"             "echo 'git push origin HEAD:main' | bash script.sh" 'echo true > script.sh'
+cls_end
+
+# =============================================================================
+cls "over-block guard (prose naming a push)"
+# =============================================================================
+# Text that merely mentions a push (PR bodies, commit messages, notes, searches)
+# is data, even when the same command line also contains a ; or a shell word.
+ha "gh pr create --body with push text and ; in title"      "gh pr create --title 'a; b' --body 'git push origin HEAD:main'"
+ha "gh pr create --body-file - heredoc, title naming bash eval" $'gh pr create --title "fix bash eval" --body-file - <<\'EOF\'\nDo not run git push origin HEAD:main by hand.\nEOF'
+ha "gh pr create --body \$(cat heredoc)"                    $'gh pr create --body "$(cat <<\'EOF\'\nDo not run git push origin HEAD:main by hand.\nEOF\n)"'
+oa "git commit -F - heredoc with push prose"                $'git commit -q --allow-empty -F - <<\'EOF\'\ndocs: never run git push origin HEAD:main\nEOF'
+oa "cat > f <<'EOF' with push prose"                        $'cat > f <<\'EOF\'\ngit push origin HEAD:main\nEOF'
+oa "cat > f <<EOF with push prose"                          $'cat > f <<EOF\ngit push origin HEAD:main\nEOF'
+oa "echo \"push text\" > notes.txt"                         'echo "git push origin HEAD:main" > notes.txt'
+ha "rg for push text"                                       "rg 'git push origin HEAD:main' docs"
+cls_end
+
+# =============================================================================
 cls "large payload"
 # =============================================================================
 # The hooks.json entry for this hook sets no timeout, so the platform default
