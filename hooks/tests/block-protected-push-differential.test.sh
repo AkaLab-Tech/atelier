@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Differential test for #808 — hooks/block-protected-push.sh (this revision)
-# versus the baseline revision on main.
+# versus a pinned pre-#808 baseline.
 #
 # The hardening only ever adds blocks: layer 1 is the baseline detection
 # unchanged and layer 2 can only add. This test pins that property over the whole
@@ -18,16 +18,16 @@
 #   3. the corpus is non-trivial (the baseline blocks a real share of it, and
 #      this revision blocks at least as many commands as the baseline does).
 #
-# The baseline is read from git (origin/main, else main) with `git archive`, or
-# from BPP_BASELINE_ROOT=<dir containing hooks/> when set. When neither is
-# available (for example a shallow CI checkout that has no main ref) the test
-# prints a visible SKIP line and exits 0: the property cannot be checked without
-# a baseline.
+# The baseline is the pre-#808 hook, committed as a fixture under
+# hooks/tests/fixtures/block-protected-push-baseline/ (source commit recorded
+# in the README there), or BPP_BASELINE_ROOT=<dir containing hooks/> when set.
+# It never depends on a git ref, so it behaves the same in shallow and full
+# clones. A missing fixture is a failure.
 #
 # Hermetic: no network, scratch dirs under mktemp -d.
 #
 # Run:  hooks/tests/block-protected-push-differential.test.sh
-# Exit: 0 = all assertions pass (or the baseline is unavailable), 1 = failure.
+# Exit: 0 = all assertions pass, 1 = failure.
 
 set -uo pipefail
 
@@ -40,26 +40,29 @@ fails=0
 pass() { printf '  PASS: %s\n' "$1"; }
 fail() { printf '  FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 
-echo "#808 differential — block-protected-push versus the baseline on main"
+echo "#808 differential — block-protected-push versus the pinned pre-#808 baseline"
 
 # --- locate the baseline hook tree -----------------------------------------------
-BASE_ROOT="${BPP_BASELINE_ROOT:-}"
-if [ -z "$BASE_ROOT" ]; then
-  for ref in origin/main main; do
-    if git -C "$REPO_ROOT" rev-parse --verify -q "$ref^{commit}" >/dev/null 2>&1; then
-      mkdir -p "$TMP/base"
-      if git -C "$REPO_ROOT" archive "$ref" hooks 2>/dev/null | tar -x -C "$TMP/base" 2>/dev/null; then
-        BASE_ROOT="$TMP/base"
-        break
-      fi
-    fi
-  done
-fi
-if [ -z "$BASE_ROOT" ] || [ ! -f "$BASE_ROOT/hooks/block-protected-push.sh" ]; then
-  echo "  SKIP: no baseline hook available (no origin/main or main ref, no BPP_BASELINE_ROOT); differential not checked"
-  exit 0
+BASELINE_SHA="bb96cd11d20d93f12f816d3122c74ed27f35c9a0"
+BASE_ROOT="${BPP_BASELINE_ROOT:-$REPO_ROOT/hooks/tests/fixtures/block-protected-push-baseline}"
+if [ ! -f "$BASE_ROOT/hooks/block-protected-push.sh" ] || [ ! -f "$BASE_ROOT/hooks/lib/log-decision.sh" ]; then
+  fail "baseline hook fixture is missing under $BASE_ROOT"
+  exit 1
 fi
 pass "baseline hook located"
+
+if [ -z "${BPP_BASELINE_ROOT:-}" ]; then
+  if git -C "$REPO_ROOT" cat-file -e "${BASELINE_SHA}^{commit}" 2>/dev/null; then
+    if git -C "$REPO_ROOT" show "${BASELINE_SHA}:hooks/block-protected-push.sh" 2>/dev/null \
+        | cmp -s - "$BASE_ROOT/hooks/block-protected-push.sh"; then
+      pass "fixture is byte-identical to the hook at ${BASELINE_SHA:0:7}"
+    else
+      fail "fixture differs from the hook at ${BASELINE_SHA:0:7}"
+    fi
+  else
+    echo "  NOTE: commit ${BASELINE_SHA:0:7} not present locally (shallow clone); fixture provenance check skipped"
+  fi
+fi
 
 command -v jq >/dev/null 2>&1 || { fail "jq is required"; exit 1; }
 
@@ -86,7 +89,7 @@ chmod +x "$TMP/wrap.sh"
 run_corpus() { # test-file → exit code of the file when run through the wrapper
   local f="$1" out rc
   out="$TMP/$(basename "$f").out"
-  BPP_HOOK="$TMP/wrap.sh" BPP_BASE_ROOT="$BASE_ROOT" BPP_HEAD_ROOT="$REPO_ROOT" \
+  BPP_HOOK="$TMP/wrap.sh" BPP_NO_TIMING=1 BPP_BASE_ROOT="$BASE_ROOT" BPP_HEAD_ROOT="$REPO_ROOT" \
     BPP_DIFF_LOG="$DIFFLOG" bash "$f" >"$out" 2>&1
   rc=$?
   if [ "$rc" -eq 0 ]; then
@@ -130,10 +133,15 @@ if [ "$head_blocks" -ge "$base_blocks" ]; then pass "this revision blocks at lea
 else fail "this revision blocks fewer commands ($head_blocks) than the baseline ($base_blocks)"; fi
 
 if [ "$added" -ge 1 ]; then pass "the hardening adds blocks over the baseline ($added newly blocked)"
-else fail "no command is newly blocked: the baseline may be the same revision as this one"; fi
+else fail "no command is newly blocked: the pinned pre-#808 baseline may have been altered or replaced"; fi
 
 if [ "$errors" -eq 0 ]; then pass "no hook run exited with a code other than 0 or 2"
-else fail "$errors hook run(s) exited with a code other than 0 or 2"; fi
+else
+  fail "$errors hook run(s) exited with a code other than 0 or 2 (baseline rc, head rc, command):"
+  awk '($1 != 0 && $1 != 2) || ($2 != 0 && $2 != 2) { print $1, $2, $3 }' "$DIFFLOG" | head -20 | while read -r b h c; do
+    printf '    %s %s %s\n' "$b" "$h" "$(printf '%s' "$c" | base64 -d 2>/dev/null | head -c 160)"
+  done
+fi
 
 echo
 if [ "$fails" -eq 0 ]; then
