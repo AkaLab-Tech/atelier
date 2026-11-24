@@ -404,7 +404,7 @@ atelier allows your project's test runners and its lint, typecheck and test scri
 
 Other package scripts and other `pnpm exec` programs are no longer allowed ahead of time; auto-mode judges them, and you may see an occasional prompt for a script with an unusual name. Inline code evaluation through `pnpm exec` is refused.
 
-Docker Compose is allowed only in the form atelier's own docker flow uses (explicit project name and the task's `docker-compose.yml`). Before a compose command starts containers, a hook reads the resulting configuration and refuses it when it would reach outside the task's folder, ask for extra privileges, or mount the container runtime itself. If it refuses, fix the compose file rather than working around the check.
+Docker Compose is allowed only in the form atelier's own docker flow uses (explicit project name and the task's `docker-compose.yml`). A hook lets a compose command that starts containers through only in that exact form (optionally after a `cd` into the task's folder), and reads the resulting configuration first; it refuses it when it would reach outside the task's folder, ask for extra privileges, or mount the container runtime itself. If it refuses, fix the compose file or use the exact form rather than working around the check.
 
 #### atelier's own `autoMode.allow` entry
 

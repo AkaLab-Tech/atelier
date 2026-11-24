@@ -13,11 +13,12 @@
 #   D  PLAN.md section 3 Allow list agrees with the template
 #   H  hooks/block-compose-escape.sh (hermetic: `docker` is a stub on a
 #      sanitized PATH that prints fixture config JSON; no daemon is reached)
-#        - blocks container-creating subcommands whose effective config or
-#          flags reach outside the worktree
-#        - allows the docker-env shapes on a compliant fixture
-#        - ignores text that only mentions compose, other subcommands, and the
-#          repo's own test runner
+#        - closed allowlist: only the exact docker-env up shape (optionally
+#          behind `cd <worktree> &&`) may start containers; any other
+#          container-creating compose command is blocked
+#        - the allowed shape's effective config is checked (specific tags)
+#        - ignores text that only mentions compose, read-only subcommands, and
+#          the repo's own test runner
 #        - fails closed when the config cannot be resolved, within its budget
 #
 # Hermetic: mktemp sandbox, fake HOME, stub docker, no network.
@@ -258,10 +259,10 @@ else
 fi
 
 # Sanitized PATH: only the tools the hook needs, plus a stub docker.
-SBX="$TMP/sbx"; SBX_NODOCKER="$TMP/sbx-nodocker"; mkdir -p "$SBX" "$SBX_NODOCKER"
+SBX="$TMP/sbx"; SBX_NODOCKER="$TMP/sbx-nodocker"; SBX_NOJQ="$TMP/sbx-nojq"; mkdir -p "$SBX" "$SBX_NODOCKER" "$SBX_NOJQ"
 for t in bash sh jq git env cat dirname basename sleep kill mktemp rm date awk sed tr head tail sort uniq grep cut wc mkdir ls readlink uname id printf expr; do
   p="$(command -v "$t" 2>/dev/null || true)"
-  case "$p" in /*) ln -sf "$p" "$SBX/$t"; ln -sf "$p" "$SBX_NODOCKER/$t" ;; esac
+  case "$p" in /*) ln -sf "$p" "$SBX/$t"; ln -sf "$p" "$SBX_NODOCKER/$t"; [ "$t" = jq ] || ln -sf "$p" "$SBX_NOJQ/$t" ;; esac
 done
 cat > "$SBX/docker" <<'STUB'
 #!/bin/sh
@@ -293,6 +294,7 @@ esac
 exit 0
 STUB
 chmod +x "$SBX/docker"
+cp "$SBX/docker" "$SBX_NOJQ/docker"
 
 FH="$TMP/home"; mkdir -p "$FH"
 WT="$TMP/wt"; mkdir -p "$WT/data" "$WT/run" && git -C "$WT" init -q 2>/dev/null
@@ -302,6 +304,8 @@ WT2="$TMP/sibling"; mkdir -p "$WT2" && git -C "$WT2" init -q 2>/dev/null; : > "$
 OUTSIDE="$TMP/outside"; mkdir -p "$OUTSIDE"; : > "$OUTSIDE/docker-compose.yml"
 ln -s "$FH" "$WT/linkdir"
 ln -s "$OUTSIDE/docker-compose.yml" "$WT/linked-compose.yml"
+LNK="$TMP/lnk"; mkdir -p "$LNK" && git -C "$LNK" init -q 2>/dev/null
+ln -s "$OUTSIDE/docker-compose.yml" "$LNK/docker-compose.yml"
 STUB_LOGF="$TMP/stub.log"
 CFGF="$TMP/cfg.json"
 
@@ -339,29 +343,48 @@ expect_allow() { # label command [cwd]
   else fail "$1 (rc=$HOOK_RC, want 0; stderr: $(printf '%s' "$HOOK_ERR" | head -2 | tr '\n' ' '))"; fi
 }
 
-UP="docker compose -p demo --file $WT/docker-compose.yml up -d --wait"
+# The shape block's stderr does not print its tag; the tag is the `pattern`
+# field of the decision log entry the hook writes.
+expect_shape() { # label command [cwd]
+  local log="$WT/.task-log/hook-decisions.jsonl"
+  rm -f "$log"
+  run_hook "$2" "${3:-$WT}"
+  if [ "$HOOK_RC" -eq 2 ] && jq -e -s 'map(select(.hook == "block-compose-escape" and .action == "block" and .pattern == "not-allowlisted-shape")) | length == 1' "$log" >/dev/null 2>&1; then pass "$1"
+  else fail "$1 (rc=$HOOK_RC, want 2 with logged tag 'not-allowlisted-shape'; log: $(tail -1 "$log" 2>/dev/null | cut -c1-160); stderr: $(printf '%s' "$HOOK_ERR" | head -1 | cut -c1-120))"; fi
+}
 
-# --- docker-env shapes on a compliant fixture ---
+UP="docker compose -p demo --file $WT/docker-compose.yml up -d --wait"
+CPB="docker compose -p demo --file $WT/docker-compose.yml"
+
+# --- the allowed shape on a compliant fixture ---
 mkcfg '.'
-expect_allow "H1 docker-env up on a compliant fixture" "$UP"
-expect_allow "H1 docker-env up with quoted arguments (as the skill writes it)" \
+expect_allow "H1 exact shape on a compliant fixture" "$UP"
+expect_allow "H1 exact shape with quoted arguments (as the skill writes it)" \
   "docker compose -p \"demo\" --file \"$WT/docker-compose.yml\" up -d --wait"
-expect_allow "H1 docker-env down" "docker compose -p demo --file $WT/docker-compose.yml down"
-expect_allow "H1 docker-env down --volumes --remove-orphans" \
-  "docker compose -p demo --file $WT/docker-compose.yml down --volumes --remove-orphans"
-expect_allow "H1 docker-env logs" "docker compose -p demo --file $WT/docker-compose.yml logs --tail 50 web"
-expect_allow "H1 docker-env ps" "docker compose -p demo --file $WT/docker-compose.yml ps --format json"
+expect_allow "H1 exact shape with single-quoted arguments" \
+  "docker compose -p 'demo' --file '$WT/docker-compose.yml' up -d --wait"
+expect_allow "H1 exact shape behind a cd to the worktree" "cd $WT && $UP"
+expect_allow "H1 exact shape behind a quoted cd to the worktree" \
+  "cd \"$WT\" && docker compose -p \"demo\" --file \"$WT/docker-compose.yml\" up -d --wait"
+expect_allow "H1 exact shape with a trailing newline" "$UP
+"
+expect_allow "H1 project name with dots, dashes and underscores" \
+  "docker compose -p my_proj-1.x --file $WT/docker-compose.yml up -d --wait"
 run_hook "$UP"
-if grep -qE 'compose .*config --no-env-resolution --format json' "$STUB_LOGF" && grep -qF -- "-p demo" "$STUB_LOGF" \
-   && grep -qF -- "--file $WT/docker-compose.yml" "$STUB_LOGF" && grep -qF -- "--profile *" "$STUB_LOGF"; then
+if [ "$(sed -n '1p' "$STUB_LOGF")" = "compose -p demo --file $WT/docker-compose.yml --profile * config --no-env-resolution --format json" ]; then
   pass "H1 config resolved read-only with the command's project/file and all profiles"
 else
-  fail "H1 config resolution args unexpected: $(cat "$STUB_LOGF")"
+  fail "H1 config resolution args unexpected: $(tr '\n' '|' < "$STUB_LOGF")"
 fi
-expect_allow "H1 up in a bash -c wrapper on a compliant fixture" "bash -c '$UP'"
-expect_allow "H1 chained after another command" "echo start && $UP && echo done"
+if [ "$(grep -c . "$STUB_LOGF")" -eq 1 ]; then pass "H1 one config call when the first succeeds"
+else fail "H1 expected a single config call: $(tr '\n' '|' < "$STUB_LOGF")"; fi
+for sub in up run create start restart watch scale build exec cp; do
+  run_hook "$CPB $sub web"
+  if [ "$HOOK_RC" -eq 2 ] && [ ! -s "$STUB_LOGF" ]; then pass "H1 '$sub' off-shape is blocked before any docker call"
+  else fail "H1 '$sub' off-shape: rc=$HOOK_RC log=$(tr '\n' '|' < "$STUB_LOGF")"; fi
+done
 
-# --- config reaches outside the worktree ---
+# --- the effective-config checks, on the allowed shape ---
 mkcfg '.services.web.volumes[0].source = $home'
 expect_block "H2 bind of the home directory" bind-outside-worktree "$UP"
 mkcfg '.services.web.volumes[0].source = "/"'
@@ -412,181 +435,341 @@ mkcfg '.services.web.build = {context:$home}'
 expect_block "H2 build context outside the worktree" bind-outside-worktree "$UP"
 mkcfg '.services.web.build = {context:($wt + "/data")}'
 expect_allow "H2 build context inside the worktree is allowed" "$UP"
-
-# every container-creating subcommand is checked
 mkcfg '.services.web.privileged = true'
-for sub in up run create start restart watch scale; do
-  expect_block "H3 subcommand '$sub' is checked" privileged \
-    "docker compose -p demo --file $WT/docker-compose.yml $sub web"
+expect_block "H2 the cd form checks the config too" privileged "cd $WT && $UP"
+
+# --- anything that is not exactly the shape is blocked ---
+mkcfg '.'
+# wrappers in front (including those whose option takes a value)
+for w in 'timeout 5' 'timeout -s KILL 5' 'timeout --signal=KILL 5' 'timeout -k 1 5' \
+         'env' 'env FOO=1' 'env -u FOO' 'env --unset=FOO' 'env -i' \
+         'nice' 'nice -n 5' 'sudo' 'sudo -u root' 'nohup' 'time' 'command' 'exec' 'builtin' 'FOO=1' 'COMPOSE_PROJECT_NAME=demo' \
+         'COMPOSE_FILE=/etc/other.yml' 'COMPOSE_PROFILES=p'; do
+  expect_shape "H3 wrapper '$w' before the shape" "$w $UP"
 done
-expect_block "H3 standalone docker-compose binary" privileged \
-  "docker-compose -p demo --file $WT/docker-compose.yml up -d"
-expect_block "H3 global docker flags before compose" privileged \
-  "docker --context other compose -p demo --file $WT/docker-compose.yml up -d"
-expect_block "H3 short -f form" privileged "docker compose -p demo -f $WT/docker-compose.yml up -d"
-expect_block "H3 --file= form" privileged "docker compose -p demo --file=$WT/docker-compose.yml up -d"
-expect_block "H3 -p after --file" privileged "docker compose --file $WT/docker-compose.yml -p demo up -d"
-expect_block "H3 inside bash -c" privileged "bash -c '$UP'"
-expect_block "H3 inside sh -c after a separator" privileged "true; sh -c \"$UP\""
-expect_block "H3 inside eval" privileged "eval $UP"
-expect_block "H3 behind env prefix" privileged "env FOO=1 $UP"
-expect_block "H3 behind a pipe" privileged "echo go | $UP"
-expect_block "H3 behind && chain" privileged "cd $WT && $UP"
-expect_block "H3 env assignment prefix reaching compose" privileged "COMPOSE_PROJECT_NAME=demo $UP"
+expect_shape "H3 xargs -I{} before the shape" "echo x | xargs -I{} $UP"
+expect_shape "H3 xargs -I X before the shape" "echo x | xargs -I X $UP"
+expect_shape "H3 xargs -n1 before the shape" "echo x | xargs -n1 $UP"
+expect_shape "H3 xargs bare before the shape" "echo x | xargs $UP"
+expect_shape "H3 wrapper behind a cd" "cd $WT && timeout -s KILL 5 $UP"
+# extra, missing, renamed or reordered elements
+expect_shape "H3 extra --profile" "$CPB --profile p up -d --wait"
+expect_shape "H3 extra --project-directory" "$CPB --project-directory $WT up -d --wait"
+expect_shape "H3 extra --env-file" "$CPB --env-file $WT/.e up -d --wait"
+expect_shape "H3 extra --env-file outside" "$CPB --env-file $OUTSIDE/.e up -d --wait"
+expect_shape "H3 short -f instead of --file" "docker compose -p demo -f $WT/docker-compose.yml up -d --wait"
+expect_shape "H3 --file= form" "docker compose -p demo --file=$WT/docker-compose.yml up -d --wait"
+expect_shape "H3 --project-name instead of -p" "docker compose --project-name demo --file $WT/docker-compose.yml up -d --wait"
+expect_shape "H3 -p after --file" "docker compose --file $WT/docker-compose.yml -p demo up -d --wait"
+expect_shape "H3 second --file" "$CPB --file $WT/docker-compose.yml up -d --wait"
+expect_shape "H3 missing --wait" "$CPB up -d"
+expect_shape "H3 missing -d" "$CPB up --wait"
+expect_shape "H3 reordered --wait -d" "$CPB up --wait -d"
+expect_shape "H3 bare up" "$CPB up"
+expect_shape "H3 extra service name" "$CPB up -d --wait web"
+expect_shape "H3 extra --build" "$CPB up -d --wait --build"
+expect_shape "H3 extra --force-recreate" "$CPB up -d --wait --force-recreate"
+expect_shape "H3 stderr redirect 2>&1" "$UP 2>&1"
+expect_shape "H3 stdout redirect" "$UP > $WT/out.log"
+expect_shape "H3 stdin redirect" "$UP < /dev/null"
+expect_shape "H3 no -p" "docker compose --file $WT/docker-compose.yml up -d --wait"
+expect_shape "H3 no --file" "docker compose -p demo up -d --wait"
+expect_shape "H3 no -p and no --file" "docker compose up -d --wait"
+expect_shape "H3 bare up -d" "docker compose up -d"
+expect_shape "H3 global flag before compose (--context)" "docker --context other compose -p demo --file $WT/docker-compose.yml up -d --wait"
+expect_shape "H3 global flag before compose (-H)" "docker -H tcp://127.0.0.1:2375 compose -p demo --file $WT/docker-compose.yml up -d --wait"
+expect_shape "H3 standalone docker-compose binary" "docker-compose -p demo --file $WT/docker-compose.yml up -d --wait"
+expect_shape "H3 docker-compose v1 bare" "docker-compose up -d"
+# connectors and nesting
+expect_shape "H3 || after the shape" "$UP || true"
+expect_shape "H3 || before the shape" "false || $UP"
+expect_shape "H3 ; after the shape" "$UP; true"
+expect_shape "H3 ; before the shape" "true; $UP"
+expect_shape "H3 && after the shape" "$UP && echo done"
+expect_shape "H3 && before the shape (not a cd)" "true && $UP"
+expect_shape "H3 chain around the shape" "echo start && $UP && echo done"
+expect_shape "H3 pipe into the shape" "echo go | $UP"
+expect_shape "H3 pipe out of the shape" "$UP | cat"
+expect_shape "H3 background &" "$UP &"
+expect_shape "H3 background & then command" "$UP & echo x"
+expect_shape "H3 subshell" "($UP)"
+expect_shape "H3 brace group" "{ $UP; }"
+expect_shape "H3 command substitution" "echo \$($UP)"
+expect_shape "H3 substitution assigned" "x=\$($UP)"
+expect_shape "H3 nested substitution" "echo \$(echo \$($UP))"
+expect_shape "H3 backticks" "echo \`$UP\`"
+expect_shape "H3 bash -c" "bash -c '$UP'"
+expect_shape "H3 sh -c after a separator" "true; sh -c \"$UP\""
+expect_shape "H3 bash -c with a substitution inside" "bash -c 'echo \$($UP)'"
+expect_shape "H3 eval" "eval $UP"
+expect_shape "H3 eval nested" "eval eval eval eval $UP"
+expect_shape "H3 here-string into bash" "bash <<< \"$UP\""
+expect_shape "H3 if/then" "if true; then $UP; fi"
+expect_shape "H3 negation" "! $UP"
+expect_shape "H3 for/do" "for i in 1; do $UP; done"
+expect_shape "H3 while then up" "while false; do :; done; $UP"
+expect_shape "H3 case/esac" "case x in x) $UP ;; esac"
+expect_shape "H3 time keyword" "time $UP"
+q1="$(printf '%q' "$UP")"; b1="bash -c $q1"
+q2="$(printf '%q' "$b1")"; b2="bash -c $q2"
+q3="$(printf '%q' "$b2")"; b3="bash -c $q3"
+q4="$(printf '%q' "$b3")"; b4="bash -c $q4"
+expect_shape "H3 bash -c nested 3 levels" "$b3"
+expect_shape "H3 bash -c nested 4 levels" "$b4"
+# the cd prefix
+expect_shape "H3 cd to the sibling worktree, file in this one" "cd $WT2 && $UP"
+expect_shape "H3 cd to a subdirectory" "cd $WT/data && $UP"
+expect_shape "H3 cd to an outside directory" "cd $OUTSIDE && $UP"
+expect_shape "H3 cd to a relative path" "cd ./ && $UP"
+expect_shape "H3 cd to a relative subdirectory" "cd data && $UP"
+expect_shape "H3 cd with a flag" "cd -P $WT && $UP"
+expect_shape "H3 cd followed by ;" "cd $WT; $UP"
+expect_shape "H3 cd followed by ||" "cd $WT || $UP"
+expect_shape "H3 cd followed by |" "cd $WT | $UP"
+expect_shape "H3 cd followed by a newline" "cd $WT
+$UP"
+expect_shape "H3 two cds" "cd $WT && cd $WT && $UP"
+expect_shape "H3 bare cd" "cd && $UP"
+expect_shape "H3 cd -" "cd - && $UP"
+expect_shape "H3 cd with a variable" 'cd $X && '"$UP"
+expect_shape "H3 cd with a substitution" 'cd $(pwd) && '"$UP"
+expect_shape "H3 cd with backticks" 'cd `pwd` && '"$UP"
+expect_shape "H3 cd to a nonexistent target" "cd $TMP/no-such-dir && $UP"
+expect_shape "H3 cd with a glob" "cd $TMP/w* && $UP"
+expect_shape "H3 pushd instead of cd" "pushd $WT && $UP"
+expect_shape "H3 cd inside a subshell" "(cd $WT && true); $UP"
+expect_shape "H3 cd inside a subshell group holding the shape" "(cd $WT && $UP)"
+expect_shape "H3 cd in a skipped || branch" "true || cd $WT; $UP"
+expect_shape "H3 cd sent to the background" "cd $WT & $UP"
+expect_shape "H3 cd inside a substitution" "echo \$(cd $WT && true) && $UP"
+expect_shape "H3 cd and the shape inside one substitution" "x=\$(cd $WT && $UP)"
+expect_shape "H3 brace group with cd and the shape" "{ cd $WT && $UP; }"
+expect_shape "H3 cd to the worktree, extra flag on the shape" "cd $WT && $CPB up -d"
+# file and project-name variants
+expect_shape "H3 file in a subdirectory of the worktree" "docker compose -p demo --file $WT/data/docker-compose.yml up -d --wait"
+expect_shape "H3 file with a relative path" "docker compose -p demo --file docker-compose.yml up -d --wait"
+expect_shape "H3 file with a dot-dot path" "docker compose -p demo --file ../outside/docker-compose.yml up -d --wait"
+expect_shape "H3 file with another basename" "docker compose -p demo --file $WT/compose.yml up -d --wait"
+expect_shape "H3 file with .yaml extension" "docker compose -p demo --file $WT/docker-compose.yaml up -d --wait"
+expect_shape "H3 file symlink with another basename" "docker compose -p demo --file $WT/linked-compose.yml up -d --wait"
+expect_shape "H3 file with a space in the path" "docker compose -p demo --file '$WT/a b/docker-compose.yml' up -d --wait"
+expect_shape "H3 file from stdin" "docker compose -p demo --file - up -d --wait"
+expect_shape "H3 file with a shell variable" 'docker compose -p demo --file "$F" up -d --wait'
+expect_shape "H3 file with a glob" "docker compose -p demo --file $WT/*.yml up -d --wait"
+expect_shape "H3 file with a tilde" "docker compose -p demo --file ~/docker-compose.yml up -d --wait"
+expect_shape "H3 project name with a space" "docker compose -p 'de mo' --file $WT/docker-compose.yml up -d --wait"
+expect_shape "H3 project name starting with a dash" "docker compose -p -x --file $WT/docker-compose.yml up -d --wait"
+expect_shape "H3 project name with a semicolon" "docker compose -p 'a;b' --file $WT/docker-compose.yml up -d --wait"
+expect_shape "H3 project name with a variable" 'docker compose -p "$N" --file '"$WT"'/docker-compose.yml up -d --wait'
+expect_shape "H3 project name with a substitution" 'docker compose -p "$(whoami)" --file '"$WT"'/docker-compose.yml up -d --wait'
+expect_block "H4 file outside the worktree" path-outside-worktree \
+  "docker compose -p demo --file $OUTSIDE/docker-compose.yml up -d --wait"
+expect_block "H4 file in a sibling repository" path-outside-worktree \
+  "docker compose -p demo --file $WT2/docker-compose.yml up -d --wait"
+expect_block "H4 file symlink named docker-compose.yml" symlinked-path \
+  "docker compose -p demo --file $LNK/docker-compose.yml up -d --wait" "$LNK"
+expect_block "H4 cwd in another repository, file in this one's sibling" path-outside-worktree \
+  "docker compose -p demo --file $WT/docker-compose.yml up -d --wait" "$WT2"
+expect_block "H4 cd form with a file outside" path-outside-worktree \
+  "cd $OUTSIDE && docker compose -p demo --file $OUTSIDE/docker-compose.yml up -d --wait"
 
-# --- compose-file / directory arguments outside the worktree ---
-mkcfg '.'
-expect_block "H4 --file outside the worktree" path-outside-worktree \
-  "docker compose -p demo --file $OUTSIDE/docker-compose.yml up -d"
-expect_block "H4 --file in a sibling worktree" path-outside-worktree \
-  "docker compose -p demo --file $WT2/docker-compose.yml up -d"
-expect_block "H4 --file by relative dot-dot" path-outside-worktree \
-  "docker compose -p demo --file ../outside/docker-compose.yml up -d"
-expect_block "H4 --file symlink to a file outside" symlinked-path \
-  "docker compose -p demo --file $WT/linked-compose.yml up -d"
-expect_block "H4 --file from stdin" unresolvable-path "docker compose -p demo --file - up -d"
-expect_block "H4 --file with a shell variable" unresolvable-path 'docker compose -p demo --file "$F" up -d'
-expect_block "H4 --project-directory outside" path-outside-worktree \
-  "docker compose -p demo --file $WT/docker-compose.yml --project-directory $OUTSIDE up -d"
-expect_block "H4 --env-file outside" path-outside-worktree \
-  "docker compose -p demo --file $WT/docker-compose.yml --env-file $OUTSIDE/.e up -d"
-expect_block "H4 COMPOSE_FILE env prefix outside" path-outside-worktree \
-  "COMPOSE_FILE=$OUTSIDE/docker-compose.yml docker compose -p demo up -d"
-expect_block "H4 exported COMPOSE_FILE outside" path-outside-worktree \
-  "export COMPOSE_FILE=$OUTSIDE/docker-compose.yml; docker compose -p demo up -d"
-expect_block "H4 cwd in another worktree, file in this one's sibling" path-outside-worktree \
-  "docker compose -p demo --file $WT/docker-compose.yml up -d" "$WT2"
-
-# --- run / create flags ---
-mkcfg '.'
-RUN="docker compose -p demo --file $WT/docker-compose.yml run --rm"
-expect_block "H5 run -v home directory" bind-outside-worktree "$RUN -v $FH:/h web sh"
-expect_block "H5 run -v root" bind-outside-worktree "$RUN -v /:/host web sh"
-expect_block "H5 run -v runtime socket" bind-outside-worktree "$RUN -v /var/run/docker.sock:/var/run/docker.sock web sh"
-expect_block "H5 run -v joined form" bind-outside-worktree "$RUN -v$FH:/h web sh"
-expect_block "H5 run --volume" bind-outside-worktree "$RUN --volume $FH:/h web sh"
-expect_block "H5 run --volume=" bind-outside-worktree "$RUN --volume=$FH:/h web sh"
-expect_block "H5 run --mount bind outside" bind-outside-worktree "$RUN --mount type=bind,source=$FH,target=/h web sh"
-expect_block "H5 run --mount=src= outside" bind-outside-worktree "$RUN --mount=type=bind,src=$FH,dst=/h web sh"
-expect_block "H5 run -v relative dot-dot" bind-outside-worktree "$RUN -v ../../..:/h web sh"
-expect_block "H5 run -v tilde" bind-outside-worktree "$RUN -v ~/.ssh:/h web sh"
-expect_block "H5 run -v symlink" symlinked-bind-source "$RUN -v $WT/linkdir:/h web sh"
-expect_block "H5 run --volumes-from" container-volumes "$RUN --volumes-from other web sh"
-expect_block "H5 run --privileged" elevated-flag "$RUN --privileged web sh"
-expect_block "H5 run --cap-add" elevated-flag "$RUN --cap-add SYS_ADMIN web sh"
-expect_block "H5 run --cap-add=" elevated-flag "$RUN --cap-add=ALL web sh"
-expect_block "H5 run --device" elevated-flag "$RUN --device /dev/sda web sh"
-expect_block "H5 run --security-opt" elevated-flag "$RUN --security-opt seccomp=unconfined web sh"
-expect_block "H5 run --pid host" host-namespace-flag "$RUN --pid host web sh"
-expect_block "H5 run --pid=host" host-namespace-flag "$RUN --pid=host web sh"
-expect_block "H5 run --ipc=host" host-namespace-flag "$RUN --ipc=host web sh"
-expect_block "H5 run --uts host" host-namespace-flag "$RUN --uts host web sh"
-expect_block "H5 run --network host" host-namespace-flag "$RUN --network host web sh"
-expect_block "H5 run --net=host" host-namespace-flag "$RUN --net=host web sh"
-expect_block "H5 run --network container:x" host-namespace-flag "$RUN --network container:x web sh"
-expect_block "H5 create -v outside" bind-outside-worktree \
-  "docker compose -p demo --file $WT/docker-compose.yml create -v $FH:/h web"
-expect_allow "H5 run with an in-worktree bind" "$RUN -v $WT/data:/d web sh"
-expect_allow "H5 run with a relative in-worktree bind" "$RUN -v ./data:/d web sh"
-expect_allow "H5 run with a named volume" "$RUN -v cache:/c web sh"
-expect_allow "H5 run with a tmpfs mount" "$RUN --mount type=tmpfs,target=/t web sh"
-expect_allow "H5 run with a bridge network" "$RUN --network bridge web sh"
-expect_allow "H5 run with plain flags" "$RUN -e FOO=1 -T web echo hi"
-
-# --- flag-form parsing: attached, grouped and `=` forms; both subcommands ---
-CB="docker compose -p demo --file $WT/docker-compose.yml"
+# --- container-creating subcommands off the shape are always blocked ---
+for sub in run create start restart watch scale build exec cp; do
+  expect_shape "H5 subcommand '$sub' (with --file)" "$CPB $sub web"
+  expect_shape "H5 subcommand '$sub' (bare)" "docker compose $sub web"
+  expect_shape "H5 subcommand '$sub' behind cd" "cd $WT && $CPB $sub web"
+  expect_shape "H5 subcommand '$sub' with docker-compose v1" "docker-compose $sub web"
+  expect_shape "H5 subcommand '$sub' with a global flag" "docker --context x compose $sub web"
+done
+RUN="$CPB run --rm"
+for tail in "-v $FH:/h web sh" "-v /:/host web sh" "-v /var/run/docker.sock:/var/run/docker.sock web sh" \
+            "-v$FH:/h web sh" "--volume $FH:/h web sh" "--volume=$FH:/h web sh" \
+            "--mount type=bind,source=$FH,target=/h web sh" "--mount=type=bind,src=$FH,dst=/h web sh" \
+            "-v ../../..:/h web sh" "-v ~/.ssh:/h web sh" "-v $WT/linkdir:/h web sh" \
+            "--volumes-from other web sh" "--privileged web sh" "--cap-add SYS_ADMIN web sh" "--cap-add=ALL web sh" \
+            "--device /dev/sda web sh" "--security-opt seccomp=unconfined web sh" "--pid host web sh" \
+            "--pid=host web sh" "--ipc=host web sh" "--uts host web sh" "--network host web sh" "--net=host web sh" \
+            "--network container:x web sh" "-v $WT/data:/d web sh" "-v ./data:/d web sh" "-v cache:/c web sh" \
+            "--mount type=tmpfs,target=/t web sh" "--network bridge web sh" "-e FOO=1 -T web echo hi"; do
+  expect_shape "H5 run: $tail" "$RUN $tail"
+done
 for sub in run create; do
-  expect_block "H5f $sub -v SRC" bind-outside-worktree "$CB $sub -v $FH:/x web"
-  expect_block "H5f $sub -vSRC" bind-outside-worktree "$CB $sub -v$FH:/x web"
-  expect_block "H5f $sub -v=SRC" bind-outside-worktree "$CB $sub -v=$FH:/x web"
-  expect_block "H5f $sub -dv SRC" bind-outside-worktree "$CB $sub -dv $FH:/x web"
-  expect_block "H5f $sub -dvSRC" bind-outside-worktree "$CB $sub -dv$FH:/x web"
-  expect_block "H5f $sub -dv=SRC" bind-outside-worktree "$CB $sub -dv=$FH:/x web"
-  expect_block "H5f $sub -itv SRC" bind-outside-worktree "$CB $sub -itv $FH:/x web"
-  expect_block "H5f $sub -e A=1 -v SRC" bind-outside-worktree "$CB $sub -e A=1 -v $FH:/x web"
-  expect_block "H5f $sub -T -v SRC" bind-outside-worktree "$CB $sub -T -v $FH:/x web"
-  expect_block "H5f $sub --volume SRC" bind-outside-worktree "$CB $sub --volume $FH:/x web"
-  expect_block "H5f $sub --volume=SRC" bind-outside-worktree "$CB $sub --volume=$FH:/x web"
-  expect_block "H5f $sub --mount type=bind,src=" bind-outside-worktree "$CB $sub --mount type=bind,src=$FH,dst=/x web"
-  expect_block "H5f $sub --mount=type=bind,source=" bind-outside-worktree "$CB $sub --mount=type=bind,source=$FH,target=/x web"
-  expect_block "H5f $sub --network host" host-namespace-flag "$CB $sub --network host web"
-  expect_block "H5f $sub --network=host" host-namespace-flag "$CB $sub --network=host web"
-  expect_block "H5f $sub --pid=host" host-namespace-flag "$CB $sub --pid=host web"
-  expect_block "H5f $sub --cap-add ALL" elevated-flag "$CB $sub --cap-add ALL web"
-  expect_block "H5f $sub --privileged" elevated-flag "$CB $sub --privileged web"
-  expect_allow "H5f $sub -dv in-worktree bind" "$CB $sub -dv $WT/data:/d web"
-  expect_allow "H5f $sub -v named volume" "$CB $sub -v data:/d web"
-  expect_allow "H5f $sub -e takes -v as its value" "$CB $sub -e -v web"
+  for tail in "-v $FH:/x web" "-v$FH:/x web" "-v=$FH:/x web" "-dv $FH:/x web" "-dv$FH:/x web" "-dv=$FH:/x web" \
+              "-itv $FH:/x web" "-e A=1 -v $FH:/x web" "-T -v $FH:/x web" "--volume $FH:/x web" "--volume=$FH:/x web" \
+              "--mount type=bind,src=$FH,dst=/x web" "--mount=type=bind,source=$FH,target=/x web" \
+              "--network host web" "--network=host web" "--pid=host web" "--cap-add ALL web" "--privileged web" \
+              "-dv $WT/data:/d web" "-v data:/d web" "-e -v web" "-dv" "--volume" "web -v $FH:/x" "web sh -v $FH:/x" "-- web sh -v $FH:/x"; do
+    expect_shape "H5f $sub: $tail" "$CPB $sub $tail"
+  done
 done
-expect_block "H5f run -dv with no value" unresolvable-flag-value "$CB run -dv"
-expect_block "H5f run --volume with no value" unresolvable-flag-value "$CB run --volume"
-expect_block "H5f create -dv with no value" unresolvable-flag-value "$CB create -dv"
-expect_block "H5f create --volume with no value" unresolvable-flag-value "$CB create --volume"
-expect_block "H5f create scans past the positional" bind-outside-worktree "$CB create web -v $FH:/x"
-expect_allow "H5f run: command args after the service are not flags" "$CB run web sh -v $FH:/x"
-expect_allow "H5f run: args after -- are not flags" "$CB run -- web sh -v $FH:/x"
+EXB="$CPB exec"
+for tail in "--privileged web sh" "--index 1 --privileged web sh" "--privileged=true web sh" "--cap-add=ALL web sh" \
+            "web sh" "web sh --privileged" "-- web sh --privileged"; do
+  expect_shape "H5x exec: $tail" "$EXB $tail"
+done
+expect_shape "H5x cp host copy" "$CPB cp web:/etc/passwd $WT/data/passwd"
+expect_shape "H5x cp into a container from outside" "$CPB cp $FH/.ssh web:/root"
+expect_shape "H5x cp inside a substitution" "echo \$($CPB cp web:/a $WT/data/a)"
+expect_shape "H5x build on a clean fixture" "$CPB build"
+expect_shape "H5x alpha watch" "$CPB alpha watch"
+expect_allow "H5x alpha ls stays allowed" "$CPB alpha ls"
+run_hook "$EXB web sh"
+[ ! -s "$STUB_LOGF" ] && pass "H5x exec never calls docker" || fail "H5x exec invoked docker: $(cat "$STUB_LOGF")"
 
-# --- text that only mentions compose, other subcommands, the repo's runner ---
+# --- expansion, alias, function and absolute-path probes ---
+expect_shape "H6 variable as the subcommand word's neighbour (c=compose)" 'c=compose; docker $c up'
+expect_shape "H6 variable as the program (d=docker)" 'd=docker; $d compose up'
+expect_shape "H6 variable as the subcommand (s=up)" 's=up; docker compose $s'
+expect_shape "H6 variable subcommand with the shape's prefix" "s=up; $CPB \$s -d --wait"
+expect_shape "H6 braced variable as the subcommand" 'docker compose ${S:-up}'
+expect_shape "H6 substitution as the subcommand" 'docker compose $(echo up)'
+expect_shape "H6 backticks as the subcommand" 'docker compose `echo up`'
+expect_shape "H6 ANSI-C quoting" "docker compose \$'up'"
+expect_shape "H6 expansion in command position" '$CMD compose up'
+expect_shape "H6 expansion in command position with a subcommand word, docker named earlier" 'echo docker; $CMD up -d'
+expect_shape "H6 expansion in command position of a docker line" 'echo docker; $X'
+expect_shape "H6 alias to a compose command" 'alias d="docker compose"; d up'
+expect_shape "H6 alias with a single-quoted body" "alias d='docker compose up'; d"
+expect_shape "H6 function wrapping compose" 'f(){ docker compose up; }; f'
+expect_shape "H6 absolute path to docker" '/usr/local/bin/docker compose up'
+expect_shape "H6 absolute path with the shape's arguments" "/usr/local/bin/docker compose -p demo --file $WT/docker-compose.yml up -d --wait"
+expect_shape "H6 command docker" 'command docker compose up'
+expect_shape "H6 backslash docker" '\docker compose up'
+expect_shape "H6 env docker" 'env docker compose up'
+expect_shape "H6 quoted program word" '"docker" compose up'
+expect_shape "H6 quoted compose word" "docker 'compose' up"
+expect_shape "H6 bare docker compose up" 'docker compose up'
+expect_shape "H6 docker compose up -d" 'docker compose up -d'
+
+# --- text that only mentions compose, and read-only subcommands ---
 mkcfg '.services.web.privileged = true'
-expect_allow "H6 echo that names a compose command" "echo \"docker compose -p demo --file $WT/docker-compose.yml up -d\""
-expect_allow "H6 single-quoted mention" "echo 'docker compose up -d --privileged'"
-expect_allow "H6 heredoc prose naming compose up" "cat <<'EOF'
+expect_allow "H7 echo that names a compose command" "echo \"docker compose -p demo --file $WT/docker-compose.yml up -d\""
+expect_allow "H7 single-quoted mention" "echo 'docker compose up -d --privileged'"
+expect_allow "H7 echo with a bare mention" "echo docker compose up"
+expect_allow "H7 printf with a mention" "printf '%s\n' 'docker compose up'"
+expect_allow "H7 heredoc prose naming compose up" "cat <<'EOF'
 docker compose -p demo --file $WT/docker-compose.yml up -d
 EOF"
-expect_allow "H6 heredoc written to a file" "cat > $WT/notes.md <<EOF
+expect_allow "H7 heredoc written to a file" "cat > $WT/notes.md <<EOF
 run docker compose up to start
 EOF"
-expect_allow "H6 grep for the word compose" "rg compose $WT"
-expect_allow "H6 commit message mentioning compose" "git commit -m 'docs: describe docker compose up'"
-for sub in down logs ps version config pull ls images top port; do
-  expect_allow "H6 subcommand '$sub' is not checked" "docker compose -p demo --file $WT/docker-compose.yml $sub"
+expect_allow "H7 search for the word compose" "rg compose $WT"
+expect_allow "H7 search with an expansion" 'rg compose $HOME'
+expect_allow "H7 grep for a compose command" "grep -n 'docker compose up' $WT/notes.md"
+expect_allow "H7 ls with an expansion" 'ls $HOME'
+expect_allow "H7 head of a file naming compose" "head -5 $WT/docker-compose.yml"
+expect_allow "H7 commit message mentioning compose" "git commit -m 'docs: describe docker compose up'"
+expect_allow "H7 commit message with an expansion" 'git commit -m "docker compose up $X"'
+expect_allow "H7 git status with an expanded directory" 'git -C "$W" status'
+expect_allow "H7 git log naming compose" "git log --grep='docker compose up'"
+expect_allow "H7 commit body in a heredoc" "git commit -F - <<'EOF'
+feat: run docker compose up in the skill
+EOF"
+expect_allow "H7 commit body in a heredoc inside a substitution" "git commit -m \"\$(cat <<'EOF'
+feat: run docker compose up in the skill
+EOF
+)\""
+expect_allow "H7 gh pr create with a body mentioning compose" "gh pr create --title t --body 'run docker compose up -d after the change'"
+expect_allow "H7 gh issue comment mentioning compose" "gh issue comment 1 --body 'docker compose up is slow'"
+expect_allow "H7 pnpm with an expansion and no compose word" 'pnpm --dir $WT test'
+expect_allow "H7 cd with an expansion then a read-only subcommand" 'cd "$WT" && docker compose ps'
+expect_allow "H7 plain ps" "docker compose ps"
+expect_allow "H7 timeout around logs" "timeout 5 docker compose logs"
+expect_allow "H7 timeout around ps with a file" "timeout 5 $CPB ps"
+expect_allow "H7 substitution naming compose as a word, no subcommand" 'echo $(echo compose) done'
+expect_allow "H7 substitution without compose" 'x=$(date +%s); echo "$x"'
+expect_allow "H7 keyword-only command without compose" "if true; then echo hi; fi"
+expect_allow "H7 unresolvable cd with no compose command" 'cd $X && echo compose'
+for sub in down logs ps version config ls images top port events; do
+  expect_allow "H7 subcommand '$sub' is not checked" "$CPB $sub"
+  expect_allow "H7 subcommand '$sub' behind a cd" "cd $WT && $CPB $sub"
+  expect_allow "H7 subcommand '$sub' wrapped in timeout" "timeout 5 $CPB $sub"
 done
-run_hook "docker compose -p demo --file $WT/docker-compose.yml down"
-[ ! -s "$STUB_LOGF" ] && pass "H6 down does not resolve the config" || fail "H6 down invoked docker: $(cat "$STUB_LOGF")"
-expect_allow "H6 hooks/tests/run-all.sh shard run" "hooks/tests/run-all.sh -j 8 --shard 1/8"
-expect_allow "H6 run-all.sh with a compose-named filter" "hooks/tests/run-all.sh --only 'docker-compose*'"
-expect_allow "H6 bash run-all.sh with a compose-named filter" "bash hooks/tests/run-all.sh --serial --only '*compose*'"
+expect_allow "H7 down --volumes --remove-orphans" "$CPB down --volumes --remove-orphans"
+expect_allow "H7 logs --tail 50 web" "$CPB logs --tail 50 web"
+expect_allow "H7 ps --format json" "$CPB ps --format json"
+expect_allow "H7 cd out of the worktree followed by down" "cd $OUTSIDE && docker compose down"
+expect_allow "H7 unresolvable cd followed by logs" 'cd $X && docker compose logs web'
+run_hook "$CPB down"
+[ ! -s "$STUB_LOGF" ] && pass "H7 down does not resolve the config" || fail "H7 down invoked docker: $(cat "$STUB_LOGF")"
+run_hook "timeout 5 docker compose logs"
+[ ! -s "$STUB_LOGF" ] && pass "H7 wrapped logs does not resolve the config" || fail "H7 wrapped logs invoked docker: $(cat "$STUB_LOGF")"
+run_hook "echo hello"
+[ "$HOOK_RC" -eq 0 ] && [ ! -s "$STUB_LOGF" ] && pass "H7 a command with neither docker nor compose exits 0 without calling docker" || fail "H7 plain command: rc=$HOOK_RC log=$(cat "$STUB_LOGF")"
+expect_allow "H7 hooks/tests/run-all.sh shard run" "hooks/tests/run-all.sh -j 8 --shard 1/8"
+expect_allow "H7 run-all.sh with a compose-named filter" "hooks/tests/run-all.sh --only 'docker-compose*'"
+expect_allow "H7 bash run-all.sh with a compose-named filter" "bash hooks/tests/run-all.sh --serial --only '*compose*'"
 run_hook "hooks/tests/run-all.sh -j 8 --shard 2/8"
-[ ! -s "$STUB_LOGF" ] && pass "H6 run-all.sh never reaches docker" || fail "H6 run-all.sh invoked docker"
+[ ! -s "$STUB_LOGF" ] && pass "H7 run-all.sh never reaches docker" || fail "H7 run-all.sh invoked docker"
 payload="$(jq -n --arg c "$UP" --arg d "$WT" '{tool_name:"Read",tool_input:{command:$c},cwd:$d}')"
 printf '%s' "$payload" | env -i PATH="$SBX" HOME="$FH" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" STUB_LOG="$STUB_LOGF" \
   STUB_CFG="$CFGF" "$SBX/bash" "$HOOK" >/dev/null 2>&1
-[ $? -eq 0 ] && pass "H6 a non-Bash tool_name exits 0 even with a bad fixture" || fail "H6 non-Bash tool_name not ignored"
+[ $? -eq 0 ] && pass "H7 a non-Bash tool_name exits 0 even with a bad fixture" || fail "H7 non-Bash tool_name not ignored"
+
+# --- prose that still blocks ---
+expect_shape "H8 prose piped into bash" "echo 'docker compose up -d' | bash"
+expect_shape "H8 prose piped into sh" "echo 'docker compose up -d' | sh"
+expect_shape "H8 prose piped into xargs docker" "echo 'compose up' | xargs docker"
+expect_shape "H8 prose piped into eval-like interpreter" "printf 'docker compose up' | zsh"
+expect_shape "H8 prose in a process substitution into bash" "bash <(echo 'docker compose up')"
+expect_shape "H8 prose in an output process substitution" "echo 'docker compose up' > >(bash)"
+expect_shape "H8 rg with --pre" "rg --pre ./filter 'compose up' ."
+expect_shape "H8 rg with --pre=" "rg --pre=./filter 'compose up' ."
+expect_shape "H8 grep with --hostname-bin" "rg --hostname-bin ./h 'compose up' ."
+expect_shape "H8 git -c alias naming compose up" "git -c alias.x='!docker compose up' commit -m x"
+expect_shape "H8 git with config-env" "git --config-env=alias.x=X commit -m 'docker compose up'"
+expect_shape "H8 inner substitution with an expansion in prose" "echo \"\$(\$X compose up)\""
+expect_shape "H8 inner backticks with an expansion in prose" "echo \"\`\$X compose up\`\""
+expect_shape "H8 heredoc into bash" "bash <<'EOF'
+docker compose up
+EOF"
 
 # --- fail closed ---
 mkcfg '.'
-STUB_RC=1 expect_block "H7 config command fails" unresolved-config "$UP"
+STUB_RC=1 expect_block "H9 config command fails" unresolved-config "$UP"
 echo 'not json at all' > "$CFGF"
-expect_block "H7 config output is not JSON" unresolved-config "$UP"
+expect_block "H9 config output is not JSON" unresolved-config "$UP"
 echo '[]' > "$CFGF"
-expect_block "H7 config output is not an object" unresolved-config "$UP"
+expect_block "H9 config output is not an object" unresolved-config "$UP"
 : > "$CFGF"
-expect_block "H7 config output is empty" unresolved-config "$UP"
+expect_block "H9 config output is empty" unresolved-config "$UP"
 rm -f "$CFGF"
-expect_block "H7 config output missing" unresolved-config "$UP"
+expect_block "H9 config output missing" unresolved-config "$UP"
 mkcfg '.'
-STUB_FAIL_PROFILE=1 expect_allow "H7 retry without --profile succeeds on a compliant fixture" "$UP"
-if [ "$(grep -c ' config ' "$STUB_LOGF")" -eq 2 ] && ! sed -n '2p' "$STUB_LOGF" | grep -qF -- '--profile'; then
-  pass "H7 second attempt drops --profile"
+STUB_FAIL_PROFILE=1 expect_allow "H9 retry without --profile succeeds on a compliant fixture" "$UP"
+if [ "$(grep -c ' config ' "$STUB_LOGF")" -eq 2 ] \
+   && [ "$(sed -n '1p' "$STUB_LOGF")" = "compose -p demo --file $WT/docker-compose.yml --profile * config --no-env-resolution --format json" ] \
+   && [ "$(sed -n '2p' "$STUB_LOGF")" = "compose -p demo --file $WT/docker-compose.yml config --no-env-resolution --format json" ]; then
+  pass "H9 second attempt drops --profile and keeps --no-env-resolution --format json"
 else
-  fail "H7 retry shape unexpected: $(cat "$STUB_LOGF")"
+  fail "H9 retry shape unexpected: $(tr '\n' '|' < "$STUB_LOGF")"
 fi
 mkcfg '.services.web.privileged = true'
-STUB_FAIL_PROFILE=1 expect_block "H7 retry result is still checked" privileged "$UP"
+STUB_FAIL_PROFILE=1 expect_block "H9 retry result is still checked" privileged "$UP"
+mkcfg '.'
+STUB_FAIL_STAR=1 expect_allow "H9 fallback after a failing --profile '*' call" "$UP"
+mkcfg '.services.web.privileged = true'
+STUB_FAIL_STAR=1 expect_block "H9 fallback result is still checked" privileged "$UP"
+mkcfg '.'
+STUB_REJECT_NOENV=1 expect_block "H9 compose without --no-env-resolution fails closed" unresolved-config "$UP"
+STUB_RC=1 expect_block "H9 both config calls failing fail closed (cd form)" unresolved-config "cd $WT && $UP"
 
 # --- time budget ---
 mkcfg '.'
 STUB_SLEEP=40 run_hook "$UP"
 if [ "$HOOK_RC" -eq 2 ] && grep -qF '(unresolved-config)' <<<"$HOOK_ERR" && [ "$HOOK_SECS" -le 20 ]; then
-  pass "H8 a stalled config resolution is cut off and blocked in ${HOOK_SECS}s (budget 12s, stub sleeps 40s)"
+  pass "H10 a stalled config resolution is cut off and blocked in ${HOOK_SECS}s (budget 12s, stub sleeps 40s)"
 else
-  fail "H8 stall handling: rc=$HOOK_RC secs=$HOOK_SECS stderr='$(printf '%s' "$HOOK_ERR" | head -1)'"
+  fail "H10 stall handling: rc=$HOOK_RC secs=$HOOK_SECS stderr='$(printf '%s' "$HOOK_ERR" | head -1)'"
 fi
 
-# --- docker absent ---
-HOOK_PATH="$SBX_NODOCKER" expect_allow "H9 docker absent from PATH: exits 0" "$UP"
+# --- docker or jq absent ---
+HOOK_PATH="$SBX_NODOCKER" expect_allow "H11 docker absent from PATH: exits 0" "$UP"
 mkcfg '.services.web.privileged = true'
-HOOK_PATH="$SBX_NODOCKER" expect_allow "H9 docker absent from PATH: exits 0 even for a bad fixture" "$UP"
+HOOK_PATH="$SBX_NODOCKER" expect_allow "H11 docker absent from PATH: exits 0 even for a bad fixture" "$UP"
+HOOK_PATH="$SBX_NODOCKER" expect_allow "H11 docker absent from PATH: exits 0 for an off-shape command" "$CPB run web"
+HOOK_PATH="$SBX_NOJQ" expect_allow "H11 jq absent from PATH: exits 0" "$UP"
+HOOK_PATH="$SBX_NOJQ" expect_allow "H11 jq absent from PATH: exits 0 for an off-shape command" "$CPB run web"
 
 # --- linked worktrees: boundary and directory tracking ---
 # A temp main checkout with two linked worktrees. The stub prints
@@ -602,6 +785,15 @@ mkdir -p "$LW1/data" "$LW2/data"
 : > "$MAIN/docker-compose.yml"; : > "$LW1/docker-compose.yml"; : > "$LW2/docker-compose.yml"
 if [ -f "$LW1/.git" ] && [ -f "$LW2/.git" ] && [ -d "$MAIN/.git" ]; then pass "W0 fixture: two linked worktrees of a main checkout"
 else fail "W0 fixture: linked worktrees were not created"; fi
+# The `<repo>-worktrees/<task>` layout.
+PROJ="$TMP/proj"; PWT="$TMP/proj-worktrees/task-1-x"
+mkdir -p "$PROJ" "$TMP/proj-worktrees" && git -C "$PROJ" init -q 2>/dev/null
+git -C "$PROJ" -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.name=t -c user.email=t@example.invalid \
+  commit -q --allow-empty -m init 2>/dev/null
+git -C "$PROJ" worktree add -q -b task-1-x "$PWT" 2>/dev/null
+mkdir -p "$PWT/data"; : > "$PWT/docker-compose.yml"
+if [ -f "$PWT/.git" ]; then pass "W0 fixture: a linked worktree under <repo>-worktrees/"
+else fail "W0 fixture: <repo>-worktrees worktree was not created"; fi
 
 cfg_for() { # dir jq-expr -> compliant-by-default config rooted at dir, to stdout
   jq -n --arg wt "$1" --arg home "$FH" --arg out "$OUTSIDE" \
@@ -609,178 +801,95 @@ cfg_for() { # dir jq-expr -> compliant-by-default config rooted at dir, to stdou
 }
 mkcfg_for() { cfg_for "$1" "$2" > "$CFGF"; }
 setcfg() { cfg_for "$1" "$2" > "$1/.stub-cfg.json"; }
-clearcfg() { rm -f "$MAIN/.stub-cfg.json" "$LW1/.stub-cfg.json" "$LW2/.stub-cfg.json"; }
-expect_block_any() { # label command [cwd]
-  run_hook "$2" "${3:-$WT}"
-  if [ "$HOOK_RC" -eq 2 ]; then pass "$1"
-  else fail "$1 (rc=$HOOK_RC, want 2 with any tag; stderr: $(printf '%s' "$HOOK_ERR" | head -2 | tr '\n' ' '))"; fi
-}
+clearcfg() { rm -f "$MAIN/.stub-cfg.json" "$LW1/.stub-cfg.json" "$LW2/.stub-cfg.json" "$PWT/.stub-cfg.json"; }
+upf() { printf 'docker compose -p x --file %s/docker-compose.yml up -d --wait' "$1"; }
 
-# 1. --file / --project-directory into a linked worktree, session in the main checkout
+# 1. the shape into a linked worktree, session elsewhere
 clearcfg; mkcfg_for "$LW1" '.'
-expect_allow "W1 --file into a linked worktree from the main checkout" \
-  "docker compose -p x --file $LW1/docker-compose.yml up -d --wait" "$MAIN"
+expect_allow "W1 file in a linked worktree from the main checkout" "$(upf "$LW1")" "$MAIN"
+expect_allow "W1 file in a linked worktree from an unrelated directory" "$(upf "$LW1")" "$OUTSIDE"
 expect_allow "W1 quoted -p and --file into a linked worktree" \
   "docker compose -p \"x\" --file \"$LW1/docker-compose.yml\" up -d --wait" "$MAIN"
-expect_allow "W1 --project-directory into a linked worktree" \
-  "docker compose -p x --project-directory $LW1 up -d --wait" "$MAIN"
-expect_allow "W1 --project-directory with --file into a linked worktree" \
-  "docker compose -p x --project-directory $LW1 --file $LW1/docker-compose.yml up -d" "$MAIN"
+expect_allow "W1 cd to the linked worktree then the shape" "cd $LW1 && $(upf "$LW1")" "$MAIN"
+mkcfg_for "$PWT" '.'
+expect_allow "W1 file in a <repo>-worktrees/<task> worktree" "$(upf "$PWT")" "$WT"
+expect_allow "W1 cd form in a <repo>-worktrees/<task> worktree" "cd $PWT && $(upf "$PWT")" "$WT"
+mkcfg_for "$PWT" '.services.web.privileged = true'
+expect_block "W1 privileged service in a <repo>-worktrees worktree is blocked" privileged "$(upf "$PWT")" "$WT"
 mkcfg_for "$LW1" '.services.web.privileged = true'
-expect_block "W1 a privileged service in a linked worktree is still blocked" privileged \
-  "docker compose -p x --file $LW1/docker-compose.yml up -d" "$MAIN"
+expect_block "W1 a privileged service in a linked worktree is blocked" privileged "$(upf "$LW1")" "$MAIN"
 mkcfg_for "$LW1" '.services.web.volumes[0].source = $home'
-expect_block "W1 an outside bind in a linked worktree is still blocked" bind-outside-worktree \
-  "docker compose -p x --file $LW1/docker-compose.yml up -d" "$MAIN"
+expect_block "W1 an outside bind in a linked worktree is blocked" bind-outside-worktree "$(upf "$LW1")" "$MAIN"
+expect_shape "W1 --project-directory into a linked worktree" \
+  "docker compose -p x --project-directory $LW1 up -d --wait" "$MAIN"
+expect_shape "W1 --project-directory with --file into a linked worktree" \
+  "docker compose -p x --project-directory $LW1 --file $LW1/docker-compose.yml up -d --wait" "$MAIN"
+expect_shape "W1 subdirectory of a <repo>-worktrees worktree" \
+  "docker compose -p x --file $PWT/data/docker-compose.yml up -d --wait" "$WT"
 
-# 2. cd into a worktree: its compose file, not the start directory's, is checked
+# 2. the cd form: the cd target must be the compose file's worktree
 clearcfg; mkcfg_for "$MAIN" '.'
 setcfg "$LW1" '.'
-expect_allow "W2 cd <wt> && up without --file" "cd $LW1 && docker compose up -d" "$MAIN"
-expect_allow "W2 cd <wt> && up with a relative --file" \
-  "cd $LW1 && docker compose --file docker-compose.yml up -d" "$MAIN"
-expect_allow "W2 cd <wt> && up -p/--file ./relative" \
-  "cd $LW1 && docker compose -p x -f ./docker-compose.yml up -d --wait" "$MAIN"
-expect_allow "W2 cd <wt> && run with a relative in-worktree bind" \
-  "cd $LW1 && docker compose run --rm -v ./data:/d web sh" "$MAIN"
-expect_block "W2 cd <wt> && run with a relative dot-dot bind" bind-outside-worktree \
-  "cd $LW1 && docker compose run --rm -v ../main:/d web sh" "$MAIN"
+expect_allow "W2 cd <wt> && shape from the main checkout" "cd $LW1 && $(upf "$LW1")" "$MAIN"
+expect_shape "W2 cd <wt> && up without --file" "cd $LW1 && docker compose up -d" "$MAIN"
+expect_shape "W2 cd <wt> && up with a relative --file" "cd $LW1 && docker compose --file docker-compose.yml up -d" "$MAIN"
+expect_shape "W2 cd <wt> && up -p/--file ./relative" "cd $LW1 && docker compose -p x -f ./docker-compose.yml up -d --wait" "$MAIN"
+expect_shape "W2 cd <wt> && run with a relative in-worktree bind" "cd $LW1 && docker compose run --rm -v ./data:/d web sh" "$MAIN"
+expect_shape "W2 cd <wt> && run with a relative dot-dot bind" "cd $LW1 && docker compose run --rm -v ../main:/d web sh" "$MAIN"
+expect_shape "W2 cd to one worktree, file in another" "cd $LW1 && $(upf "$LW2")" "$MAIN"
 setcfg "$LW1" '.services.web.volumes[0].source = $out'
-expect_block "W2 cd <wt> && up: the cd target's outside bind is checked" bind-outside-worktree \
-  "cd $LW1 && docker compose up -d" "$MAIN"
-expect_block "W2 cd <wt> && up with relative --file: the cd target's outside bind is checked" bind-outside-worktree \
-  "cd $LW1 && docker compose --file docker-compose.yml up -d" "$MAIN"
+expect_block "W2 cd <wt> && shape: the cd target's outside bind is checked" bind-outside-worktree \
+  "cd $LW1 && $(upf "$LW1")" "$MAIN"
 clearcfg; mkcfg_for "$MAIN" '.'
 setcfg "$LW2" '.'
 expect_allow "W2 session in one linked worktree, cd to another linked worktree" \
-  "cd $LW2 && docker compose up -d" "$LW1"
+  "cd $LW2 && $(upf "$LW2")" "$LW1"
+expect_shape "W2 session in one linked worktree, cd to another, file in the first" \
+  "cd $LW2 && $(upf "$LW1")" "$LW1"
 clearcfg
 
 # 3. session in a worktree, target is the main checkout
 mkcfg_for "$MAIN" '.'
-expect_block "W3 cd <main> && up from a linked worktree" path-outside-worktree \
-  "cd $MAIN && docker compose up -d" "$LW1"
-expect_block "W3 --file in the main checkout from a linked worktree" path-outside-worktree \
-  "docker compose -p x --file $MAIN/docker-compose.yml up -d" "$LW1"
-expect_block "W3 --project-directory in the main checkout from a linked worktree" path-outside-worktree \
-  "docker compose -p x --project-directory $MAIN up -d" "$LW1"
+expect_block "W3 cd <main> && shape from a linked worktree" path-outside-worktree \
+  "cd $MAIN && $(upf "$MAIN")" "$LW1"
+expect_block "W3 --file in the main checkout from a linked worktree" path-outside-worktree "$(upf "$MAIN")" "$LW1"
+expect_shape "W3 --project-directory in the main checkout from a linked worktree" \
+  "docker compose -p x --project-directory $MAIN up -d --wait" "$LW1"
+expect_allow "W3 the main checkout is accepted as the session's own toplevel" "$(upf "$MAIN")" "$MAIN"
 
-# 4. --file into a plain (non-worktree) repository or a non-git directory
+# 4. a plain (non-worktree) repository or a non-git directory
 mkcfg_for "$WT2" '.'
-expect_block "W4 --file into a plain git repository from the main checkout" path-outside-worktree \
-  "docker compose -p x --file $WT2/docker-compose.yml up -d" "$MAIN"
-expect_block "W4 --file into a plain git repository from a linked worktree" path-outside-worktree \
-  "docker compose -p x --file $WT2/docker-compose.yml up -d" "$LW1"
-expect_block "W4 --file into a non-git directory" path-outside-worktree \
-  "docker compose -p x --file $OUTSIDE/docker-compose.yml up -d" "$MAIN"
-expect_block "W4 --project-directory in a non-git directory" path-outside-worktree \
-  "docker compose -p x --project-directory $OUTSIDE up -d" "$MAIN"
-expect_block "W4 cd into a plain git repository" path-outside-worktree \
-  "cd $WT2 && docker compose up -d" "$MAIN"
-expect_block "W4 cd into a non-git directory" path-outside-worktree \
-  "cd $OUTSIDE && docker compose up -d" "$MAIN"
+expect_block "W4 file in a plain git repository from the main checkout" path-outside-worktree "$(upf "$WT2")" "$MAIN"
+expect_block "W4 file in a plain git repository from a linked worktree" path-outside-worktree "$(upf "$WT2")" "$LW1"
+expect_block "W4 file in a non-git directory" path-outside-worktree "$(upf "$OUTSIDE")" "$MAIN"
+expect_block "W4 cd into a plain git repository" path-outside-worktree "cd $WT2 && $(upf "$WT2")" "$MAIN"
+expect_block "W4 cd into a non-git directory" path-outside-worktree "cd $OUTSIDE && $(upf "$OUTSIDE")" "$MAIN"
+expect_shape "W4 --project-directory in a non-git directory" "docker compose -p x --project-directory $OUTSIDE up -d --wait" "$MAIN"
 
-# 5. unresolvable cd before a checked subcommand fails closed
-mkcfg_for "$LW1" '.'
-expect_block "W5 cd \$VAR" unresolvable-cd 'cd $X && docker compose up -d' "$LW1"
-expect_block "W5 cd with a command substitution" unresolvable-cd 'cd $(pwd) && docker compose up -d' "$LW1"
-expect_block "W5 cd with backticks" unresolvable-cd 'cd `pwd` && docker compose up -d' "$LW1"
-expect_block "W5 cd -" unresolvable-cd 'cd - && docker compose up -d' "$LW1"
-expect_block "W5 bare cd" unresolvable-cd 'cd && docker compose up -d' "$LW1"
-expect_block "W5 cd to a nonexistent target" unresolvable-cd "cd $TMP/no-such-dir && docker compose up -d" "$LW1"
-expect_block "W5 popd" unresolvable-cd 'popd && docker compose up -d' "$LW1"
-expect_block "W5 cd ~user" unresolvable-cd 'cd ~nobody && docker compose up -d' "$LW1"
-expect_block "W5 cd with a glob" unresolvable-cd "cd $TMP/lw* && docker compose up -d" "$LW1"
-expect_block "W5 cd with a brace expansion" unresolvable-cd "cd $TMP/{lw1,lw2} && docker compose up -d" "$LW1"
-expect_block "W5 pushd to a nonexistent target" unresolvable-cd "pushd $TMP/no-such-dir && docker compose up -d" "$LW1"
-expect_block "W5 unresolvable cd then run" unresolvable-cd 'cd $X && docker compose run --rm web sh' "$LW1"
-
-# 6. chains, no following checked subcommand, other subcommands
-setcfg "$LW1" '.'
-expect_allow "W6 an earlier cd in a longer chain is followed" \
-  "echo a && cd $LW1 && ls && echo b; docker compose up -d" "$MAIN"
-setcfg "$LW1" '.services.web.volumes[0].source = $out'
-expect_block "W6 an earlier cd in a longer chain selects the config that is checked" bind-outside-worktree \
-  "echo a && cd $LW1 && ls && echo b; docker compose up -d" "$MAIN"
-clearcfg; mkcfg_for "$LW1" '.'
-expect_allow "W6 a later cd between two cds wins" \
-  "cd $MAIN && cd $LW1 && docker compose up -d" "$MAIN"
-expect_allow "W6 unresolvable cd with no compose command is allowed" 'cd $X && echo compose' "$LW1"
-expect_allow "W6 unresolvable cd followed by down" 'cd $X && docker compose down' "$LW1"
-expect_allow "W6 unresolvable cd followed by logs" 'cd $X && docker compose logs web' "$LW1"
-expect_allow "W6 unresolvable cd followed by ps" 'cd - && docker compose ps' "$LW1"
-expect_allow "W6 unresolvable cd followed by version" 'popd; docker compose version' "$LW1"
-expect_allow "W6 cd out of the worktree followed by down" "cd $OUTSIDE && docker compose down" "$LW1"
-expect_allow "W6 cd out of the worktree followed by logs" "cd $OUTSIDE && docker compose logs" "$LW1"
-expect_allow "W6 cd out of the worktree followed by ps" "cd $OUTSIDE && docker compose ps" "$LW1"
-expect_allow "W6 unresolvable cd after the compose command is irrelevant" \
-  "docker compose -p x --file $LW1/docker-compose.yml up -d; cd \$X" "$LW1"
-
-# 7. --env-file / --project-directory / extra --file outside the derived boundary
-mkcfg_for "$LW1" '.'
-expect_block "W7 --env-file outside after cd <wt>" path-outside-worktree \
-  "cd $LW1 && docker compose --env-file $OUTSIDE/.e up -d" "$MAIN"
-expect_block "W7 --env-file in another worktree" path-outside-worktree \
-  "docker compose -p x --file $LW1/docker-compose.yml --env-file $LW2/.e up -d" "$MAIN"
-expect_block "W7 --project-directory outside after cd <wt>" path-outside-worktree \
-  "cd $LW1 && docker compose --project-directory $OUTSIDE up -d" "$MAIN"
-expect_block "W7 --project-directory in the main checkout with --file in a worktree" path-outside-worktree \
-  "docker compose -p x --project-directory $MAIN --file $LW1/docker-compose.yml up -d" "$LW1"
-expect_block "W7 second --file in another worktree" path-outside-worktree \
-  "docker compose -p x --file $LW1/docker-compose.yml --file $LW2/docker-compose.yml up -d" "$MAIN"
-expect_block "W7 --env-file relative dot-dot after cd <wt>" path-outside-worktree \
-  "cd $LW1 && docker compose --env-file ../outside/.e up -d" "$MAIN"
-expect_block_any "W7 COMPOSE_FILE in another worktree after cd <wt> (config of the cd target does not match)" \
-  "cd $LW1 && COMPOSE_FILE=$LW2/docker-compose.yml docker compose up -d" "$MAIN"
-
-# 9. directory the command really runs in differs from the tracked one.
-# Session in LW1, whose config has an outside bind; LW2 is compliant. Each
-# command runs compose in LW1, so the LW1 config must be the one that is checked.
+# 5. cwd tricks around the shape
 clearcfg
 setcfg "$LW1" '.services.web.volumes[0].source = $out'
 setcfg "$LW2" '.'
-expect_block "W9 baseline: session directory with an outside bind" bind-outside-worktree \
-  "docker compose up -d" "$LW1"
-expect_block_any "W9 cd inside a subshell group does not move the compose command" \
-  "(cd $LW2 && true); docker compose up -d" "$LW1"
-expect_block_any "W9 cd inside a subshell group, newline separator" \
-  "(cd $LW2)
-docker compose up -d" "$LW1"
-expect_block_any "W9 cd in a skipped || branch" \
-  "true || cd $LW2; docker compose up -d" "$LW1"
-expect_block_any "W9 cd in a skipped && branch" \
-  "false && cd $LW2; docker compose up -d" "$LW1"
-expect_block_any "W9 cd on the left of a pipe runs in a subshell" \
-  "cd $LW2 | cat; docker compose up -d" "$LW1"
-expect_block_any "W9 cd sent to the background" \
-  "cd $LW2 & docker compose up -d" "$LW1"
-expect_block_any "W9 cd inside a command substitution" \
-  "echo \$(cd $LW2 && pwd); docker compose up -d" "$LW1"
-expect_block_any "W9 cd in an if-branch that is not taken" \
-  "if false; then cd $LW2; fi; docker compose up -d" "$LW1"
-expect_block_any "W9 cd then compose inside a bash -c wrapper keeps the session config out of reach" \
-  "bash -c 'true || cd $LW2; docker compose up -d'" "$LW1"
-# Top-level rule: a cd is followed only at top level (not in a subshell group,
-# not in a wrapper body, not after | or ||) with && as the connector. Any other
-# cd before a container-creating compose subcommand is unresolvable.
-expect_block "W9 cd <compliant> || true; up is not followed" unresolvable-cd \
-  "cd $LW2 || true; docker compose up -d" "$LW1"
-expect_block "W9 subshell group that contains the compose command is not followed" unresolvable-cd \
-  "(cd $LW2 && docker compose up -d)" "$LW1"
-expect_block "W9 cd <compliant>; up (semicolon connector) is not followed" unresolvable-cd \
-  "cd $LW2; docker compose up -d" "$LW1"
-expect_allow "W9 cd <compliant> && up -d (top-level && is followed)" \
-  "cd $LW2 && docker compose up -d" "$LW1"
-expect_allow "W9 { cd <compliant> && up -d; } counts as top level and is followed" \
-  "{ cd $LW2 && docker compose up -d; }" "$LW1"
-expect_block "W9 { cd <non-compliant> && up -d; } is followed and its config is checked" bind-outside-worktree \
-  "{ cd $LW1 && docker compose up -d; }" "$LW2"
-expect_allow "W9 down after a cd that is not followed stays allowed" \
-  "cd $LW2; docker compose down" "$LW1"
-expect_allow "W9 logs after a cd inside a subshell group stays allowed" \
-  "(cd $LW2 && docker compose logs web)" "$LW1"
-expect_allow "W9 ps after a cd behind || stays allowed" \
-  "cd $LW2 || true; docker compose ps" "$LW1"
+expect_block "W5 baseline: the session worktree's outside bind is checked" bind-outside-worktree "$(upf "$LW1")" "$LW1"
+expect_shape "W5 cd inside a subshell group does not move the shape" "(cd $LW2 && true); $(upf "$LW1")" "$LW1"
+expect_shape "W5 cd inside a subshell group, newline separator" "(cd $LW2)
+$(upf "$LW1")" "$LW1"
+expect_shape "W5 cd in a skipped || branch" "true || cd $LW2; $(upf "$LW1")" "$LW1"
+expect_shape "W5 cd in a skipped && branch" "false && cd $LW2; $(upf "$LW1")" "$LW1"
+expect_shape "W5 cd on the left of a pipe" "cd $LW2 | cat; $(upf "$LW1")" "$LW1"
+expect_shape "W5 cd sent to the background" "cd $LW2 & $(upf "$LW1")" "$LW1"
+expect_shape "W5 cd inside a command substitution" "echo \$(cd $LW2 && pwd); $(upf "$LW1")" "$LW1"
+expect_shape "W5 cd in an if-branch that is not taken" "if false; then cd $LW2; fi; $(upf "$LW1")" "$LW1"
+expect_shape "W5 cd then the shape inside a bash -c wrapper" "bash -c 'true || cd $LW2; $(upf "$LW1")'" "$LW1"
+expect_shape "W5 cd <compliant> || true; shape" "cd $LW2 || true; $(upf "$LW2")" "$LW1"
+expect_shape "W5 subshell group that contains the cd and the shape" "(cd $LW2 && $(upf "$LW2"))" "$LW1"
+expect_shape "W5 cd <compliant>; shape (semicolon connector)" "cd $LW2; $(upf "$LW2")" "$LW1"
+expect_shape "W5 brace group with cd and the shape" "{ cd $LW2 && $(upf "$LW2"); }" "$LW1"
+expect_allow "W5 down after a cd that is not followed stays allowed" "cd $LW2; docker compose down" "$LW1"
+expect_allow "W5 logs after a cd inside a subshell group stays allowed" "(cd $LW2 && docker compose logs web)" "$LW1"
+expect_allow "W5 ps after a cd behind || stays allowed" "cd $LW2 || true; docker compose ps" "$LW1"
+expect_allow "W5 version after popd stays allowed" 'popd; docker compose version' "$LW1"
+clearcfg
 
 # LEX_CONN records the separator that ended each segment.
 lex_conn() { (
@@ -793,56 +902,12 @@ c="$(lex_conn 'a; b')"; [ "$c" = ';' ] && pass "W9 LEX_CONN of 'a; b' is ';'" ||
 c="$(lex_conn 'a | b')"; [ "$c" = '|' ] && pass "W9 LEX_CONN of 'a | b' is '|'" || fail "W9 LEX_CONN of 'a | b' is '$c', want '|'"
 clearcfg
 
-# --- substitutions, depth cap, build/env_file sources, cp (review cycle 2) ---
-echo "-- substitutions / sources / cp"
-mkcfg '.services.web.privileged = true'
-expect_block "H11 violating up inside \$(...)" privileged "echo \$($UP)"
-expect_block "H11 violating up inside backticks" privileged "echo \`$UP\`"
-expect_block "H11 violating up in x=\$(...)" privileged "x=\$($UP)"
-expect_block "H11 violating up in a double-quoted substitution" privileged "echo \"out: \$($UP) done\""
-expect_block "H11 violating up in a nested substitution" privileged "echo \$(echo \$($UP))"
-expect_block "H11 violating up in a substitution inside bash -c" privileged "bash -c 'echo \$($UP)'"
-expect_block "H11 violating up in single quotes (scanned as implemented)" privileged "echo '\$($UP)'"
-mkcfg '.'
-expect_allow "H11 compliant up inside \$(...)" "echo \$($UP)"
-expect_allow "H11 compliant up inside backticks" "echo \`$UP\`"
-expect_allow "H11 substitution mentioning compose as a literal word, no compose command" 'echo $(echo compose) done'
-expect_allow "H11 substitution without compose" 'x=$(date +%s); echo "$x"'
-expect_allow "H11 cd inside a substitution without compose does not move a later compose" \
-  "echo \$(cd $WT && true) && $UP"
-expect_block "H11 cd and compose inside one substitution is unresolvable-cd" unresolvable-cd \
-  "x=\$(cd $WT && $UP)"
-
-# Depth cap: a violating command nested beyond three levels must not be allowed.
-mkcfg '.services.web.privileged = true'
-expect_block "H12 eval nested 3 levels (control)" privileged "eval eval eval $UP"
-expect_block "H12 eval nested 4 levels is not allowed" nesting-too-deep "eval eval eval eval $UP"
-expect_block "H12 substitution nested 3 levels (control)" privileged "echo \$(echo \$(echo \$($UP)))"
-expect_block "H12 substitution nested 4 levels is not allowed" nesting-too-deep \
-  "echo \$(echo \$(echo \$(echo \$($UP))))"
-q1="$(printf '%q' "$UP")"; b1="bash -c $q1"
-q2="$(printf '%q' "$b1")"; b2="bash -c $q2"
-q3="$(printf '%q' "$b2")"; b3="bash -c $q3"
-q4="$(printf '%q' "$b3")"; b4="bash -c $q4"
-expect_block "H12 bash -c nested 3 levels (control)" privileged "$b3"
-expect_block "H12 bash -c nested 4 levels is not allowed" nesting-too-deep "$b4"
-# Fail closed at the cap regardless of the fixture: a compliant config is blocked too.
-mkcfg '.'
-expect_block "H12 eval nested 4 levels on a compliant fixture is blocked" nesting-too-deep "eval eval eval eval $UP"
-expect_block "H12 bash -c nested 4 levels on a compliant fixture is blocked" nesting-too-deep "$b4"
-# A deep body without any compose word is not subject to the cap.
-expect_allow "H12 eval nested 4 levels without compose is allowed" "eval eval eval eval true"
-expect_allow "H12 substitution nested 4 levels without compose is allowed" \
-  'echo $(echo $(echo $(echo $(date))))'
-mkcfg '.services.web.privileged = true'
-expect_block "H12 bash -c wrapping a substitution wrapping eval" privileged \
-  "bash -c 'echo \$(eval eval $UP)'"
-
-# build.additional_contexts
+# --- config fields on the allowed shape ---
+echo "-- config fields"
 mkcfg '.services.web.build = {context:($wt + "/data"), additional_contexts:{lib:$home}}'
 expect_block "H13 additional_contexts absolute outside path (map)" bind-outside-worktree "$UP"
 mkcfg '.services.web.build = {context:($wt + "/data"), additional_contexts:["lib=" + $home]}'
-expect_block "H13 additional_contexts outside path in list form is not allowed" bind-outside-worktree "$UP"
+expect_block "H13 additional_contexts outside path in list form" bind-outside-worktree "$UP"
 mkcfg '.services.web.build = {context:($wt + "/data"), additional_contexts:{lib:($wt + "/data")}}'
 expect_allow "H13 additional_contexts inside the worktree" "$UP"
 mkcfg '.services.web.build = {context:($wt + "/data"), additional_contexts:{a:"docker-image://alpine:3", b:"service:base", c:"https://example.invalid/r.git"}}'
@@ -850,7 +915,6 @@ expect_allow "H13 additional_contexts docker-image:// service: https: are allowe
 mkcfg '.services.web.build = {context:($wt + "/data"), additional_contexts:{lib:($wt + "/linkdir")}}'
 expect_block "H13 additional_contexts symlinked source" symlinked-bind-source "$UP"
 
-# build.ssh
 mkcfg '.services.web.build = {context:($wt + "/data"), ssh:["default"]}'
 expect_block "H14 build.ssh list [default]" build-ssh "$UP"
 mkcfg '.services.web.build = {context:($wt + "/data"), ssh:{default:null}}'
@@ -864,7 +928,6 @@ expect_allow "H14 build.ssh empty list" "$UP"
 mkcfg '.services.web.build = {context:($wt + "/data"), ssh:{}}'
 expect_allow "H14 build.ssh empty object" "$UP"
 
-# service variables file (env_file)
 mkcfg '.services.web.env_file = ($home + "/vars.list")'
 expect_block "H15 env_file outside path as a string" bind-outside-worktree "$UP"
 mkcfg '.services.web.env_file = [($wt + "/data"), ($home + "/vars.list")]'
@@ -877,121 +940,39 @@ mkcfg '.services.web.env_file = [{path:($wt + "/data"), required:false}]'
 expect_allow "H15 env_file inside the worktree (object)" "$UP"
 mkcfg '.services.web.env_file = ($wt + "/linkdir")'
 expect_block "H15 env_file symlinked source" symlinked-bind-source "$UP"
-mkcfg '.'
-STUB_REJECT_NOENV=1 expect_block "H15 compose without --no-env-resolution fails closed" unresolved-config "$UP"
-run_hook "$UP"
-if grep -qF -- '--no-env-resolution' "$STUB_LOGF"; then pass "H15 config call passes --no-env-resolution"
-else fail "H15 config call lacks --no-env-resolution: $(cat "$STUB_LOGF")"; fi
-STUB_FAIL_PROFILE=1 run_hook "$UP"
-if [ "$(grep -c -- '--no-env-resolution' "$STUB_LOGF")" -eq 2 ]; then pass "H15 fallback config call also passes --no-env-resolution"
-else fail "H15 fallback config call args: $(cat "$STUB_LOGF")"; fi
 
-# cp
-mkcfg '.'
-CPB="docker compose -p demo --file $WT/docker-compose.yml"
-expect_block "H16 cp host copy" cp-host-copy "$CPB cp web:/etc/passwd $WT/data/passwd"
-expect_block "H16 cp into a container from outside" cp-host-copy "$CPB cp $FH/.ssh web:/root"
-expect_block "H16 cp inside a substitution" cp-host-copy "echo \$($CPB cp web:/a $WT/data/a)"
-expect_allow "H16 down still allowed" "$CPB down"
-expect_allow "H16 logs still allowed" "$CPB logs web"
-expect_allow "H16 ps still allowed" "$CPB ps"
-
-# ---------------------------------------------------------------------------
-# F. Profile fallback, reserved words, exec flags, extra config fields
-# ---------------------------------------------------------------------------
-echo "-- fallback, keywords, exec, config fields"
-PCFGF="$TMP/pcfg.json"
-CPB="docker compose -p demo --file $WT/docker-compose.yml"
-UPD="$CPB up -d"
-VIOL='.services.web.privileged = true'
-
-# Fallback: the `--profile *` call fails; the default config is compliant and
-# the config for profile p is privileged.
-mkcfg '.'
-mkcfg "$VIOL"; cp "$CFGF" "$PCFGF"
-mkcfg '.'
-STUB_FAIL_STAR=1; STUB_PCFG="$PCFGF"
-expect_allow "F1 fallback: up -d with no profile resolves the default services" "$UPD"
-expect_block "F1 fallback: --profile p up -d" privileged "$CPB --profile p up -d"
-expect_block "F1 fallback: --profile=p up -d" privileged "$CPB --profile=p up -d"
-expect_block "F1 fallback: inline COMPOSE_PROFILES=p" privileged "COMPOSE_PROFILES=p $UPD"
-expect_block "F1 fallback: exported COMPOSE_PROFILES=p" privileged "export COMPOSE_PROFILES=p; $UPD"
-expect_block "F1 fallback: an explicit service fails closed" unresolved-config "$UPD web"
-STUB_FAIL_PNAME=bad
-expect_block "F1 fallback: a failing selected profile fails closed" unresolved-config "$CPB --profile bad up -d"
-STUB_FAIL_PNAME=""
-run_hook "$CPB --profile p up -d"
-if grep -q -- "--profile p config" <<<"$(cat "$STUB_LOGF")"; then pass "F1 fallback call received the --profile p args"
-else fail "F1 fallback call did not receive --profile p (log: $(tr '\n' '|' < "$STUB_LOGF"))"; fi
-run_hook "$UPD"
-if grep -q -- "--profile" <<<"$(grep -v -F -- "--profile *" "$STUB_LOGF")"; then fail "F1 fallback for a no-profile command passed a profile (log: $(tr '\n' '|' < "$STUB_LOGF"))"
-else pass "F1 fallback for a no-profile command passes no profile"; fi
-run_hook "export COMPOSE_PROFILES=p; $UPD"
-if grep -q -- "COMPOSE_PROFILES=p" <<<"$(cat "$STUB_LOGF")" || [ "$HOOK_RC" -eq 2 ]; then pass "F1 exported COMPOSE_PROFILES reached the fallback (blocked by the profile config)"
-else fail "F1 exported COMPOSE_PROFILES did not reach the fallback"; fi
-STUB_FAIL_STAR=""; STUB_PCFG=""
-
-# Reserved words before the command word.
-mkcfg "$VIOL"
-expect_block "F2 if/then" privileged "if true; then $UPD; fi"
-expect_block "F2 negation" privileged "! $UPD"
-expect_block "F2 for/do" privileged "for i in 1; do $UPD; done"
-expect_block "F2 while ... done then up" privileged "while false; do :; done; $UPD"
-expect_block "F2 case/esac" privileged "case x in x) $UPD ;; esac"
-expect_block "F2 brace group" privileged "{ $UPD; }"
-expect_block "F2 time prefix" privileged "time $UPD"
-mkcfg '.'
-expect_allow "F2 keyword-prefixed compliant up" "if true; then $UPD; fi"
-expect_allow "F2 keyword-only command without compose" "if true; then echo hi; fi"
-
-# exec: flags only, no config resolution.
-mkcfg '.'
-EXB="$CPB exec"
-expect_block "F3 exec --privileged" elevated-flag "$EXB --privileged web sh"
-expect_block "F3 exec --index 1 --privileged" elevated-flag "$EXB --index 1 --privileged web sh"
-expect_block "F3 exec --privileged=true" elevated-flag "$EXB --privileged=true web sh"
-expect_block "F3 exec --cap-add=ALL" elevated-flag "$EXB --cap-add=ALL web sh"
-expect_allow "F3 exec plain" "$EXB web sh"
-expect_allow "F3 exec: flag-looking args after the service" "$EXB web sh --privileged"
-expect_allow "F3 exec: args after --" "$EXB -- web sh --privileged"
-run_hook "$EXB web sh"
-if grep -q -- " config " <<<" $(cat "$STUB_LOGF") "; then fail "F3 exec resolved a config (log: $(tr '\n' '|' < "$STUB_LOGF"))"
-else pass "F3 exec never calls config"; fi
-
-# Config fields on an otherwise clean fixture.
 mkcfg '.services.web.post_start = [{command:"x", privileged:true}]'
-expect_block "F4 post_start privileged" privileged "$UPD"
+expect_block "F4 post_start privileged" privileged "$UP"
 mkcfg '.services.web.pre_stop = [{command:"x", privileged:true}]'
-expect_block "F4 pre_stop privileged" privileged "$UPD"
+expect_block "F4 pre_stop privileged" privileged "$UP"
 mkcfg '.services.web.use_api_socket = true'
-expect_block "F4 use_api_socket" runtime-socket "$UPD"
+expect_block "F4 use_api_socket" runtime-socket "$UP"
 mkcfg '.services.web.provider = {type:"model"}'
-expect_block "F4 provider service" provider-service "$UPD"
+expect_block "F4 provider service" provider-service "$UP"
 mkcfg '.services.web.build = {context:$wt, privileged:true}'
-expect_block "F4 build.privileged" elevated-build "$UPD"
+expect_block "F4 build.privileged" elevated-build "$UP"
 mkcfg '.services.web.build = {context:$wt, entitlements:["security.insecure"]}'
-expect_block "F4 build.entitlements" elevated-build "$UPD"
+expect_block "F4 build.entitlements" elevated-build "$UP"
 mkcfg '.services.web.build = {context:$wt, network:"host"}'
-expect_block "F4 build.network host" host-namespace "$UPD"
+expect_block "F4 build.network host" host-namespace "$UP"
 mkcfg '.services.web.post_start = [{command:"x"}] | .services.web.pre_stop = [{command:"y", privileged:false}] | .services.web.use_api_socket = false | .services.web.build = {context:$wt, network:"default", entitlements:[]}'
-expect_allow "F4 clean fixture with none of these" "$UPD"
-
-# Subcommands.
-mkcfg "$VIOL"
-expect_block "F5 build on a violating fixture" privileged "$CPB build"
-expect_block "F5 alpha watch on a violating fixture" privileged "$CPB alpha watch"
-expect_allow "F5 alpha other subcommand on a violating fixture" "$CPB alpha ls"
-mkcfg '.'
-expect_allow "F5 build on a clean fixture" "$CPB build"
+expect_allow "F4 clean fixture with none of these" "$UP"
 
 # --- decision log ---
 mkcfg '.services.web.privileged = true'
 rm -rf "$WT/.task-log"
 run_hook "$UP"
 if [ "$HOOK_RC" -eq 2 ] && jq -e -s 'map(select(.hook == "block-compose-escape" and .action == "block")) | length >= 1' "$WT/.task-log/hook-decisions.jsonl" >/dev/null 2>&1; then
-  pass "H10 a block is recorded in hook-decisions.jsonl"
+  pass "H12 a config block is recorded in hook-decisions.jsonl"
 else
-  fail "H10 no block record in the decision log ($(cat "$WT/.task-log/hook-decisions.jsonl" 2>/dev/null | head -1))"
+  fail "H12 no block record in the decision log ($(cat "$WT/.task-log/hook-decisions.jsonl" 2>/dev/null | head -1))"
+fi
+rm -rf "$WT/.task-log"
+run_hook "$CPB run web"
+if [ "$HOOK_RC" -eq 2 ] && jq -e -s 'map(select(.hook == "block-compose-escape" and .action == "block")) | length >= 1' "$WT/.task-log/hook-decisions.jsonl" >/dev/null 2>&1; then
+  pass "H12 a shape block is recorded in hook-decisions.jsonl"
+else
+  fail "H12 no shape block record in the decision log ($(cat "$WT/.task-log/hook-decisions.jsonl" 2>/dev/null | head -1))"
 fi
 
 echo ""

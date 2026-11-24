@@ -78,7 +78,7 @@ docker compose version >/dev/null 2>&1 || {
 docker compose -p "<project_name>" --file "<worktree>/docker-compose.yml" up -d --wait
 ```
 
-The `block-compose-escape` hook reads the resolved compose config before `up` (and `run`, `create`, `start`, `restart`) and blocks it when it reaches outside the worktree (bind mounts, privileged mode, host namespaces, devices, runtime sockets).
+The `block-compose-escape` hook allows container-starting compose calls only in exactly this shape (optionally after `cd <worktree> &&`, nothing else on the line) and reads its resolved compose config first, blocking it when it reaches outside the worktree (bind mounts, privileged mode, host namespaces, devices, runtime sockets). Any other form that starts containers is blocked.
 
 `--wait` makes the command block until every service with a `healthcheck:` reports `healthy`. Without it, services with slow start (Postgres takes ~3-5 seconds to accept connections) would silently fail the next step's connection.
 

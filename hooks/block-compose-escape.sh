@@ -1,44 +1,42 @@
 #!/usr/bin/env bash
 #
-# atelier — PreToolUse hook on Bash. Blocks container-creating `docker compose`
-# commands whose effective configuration (or command-line flags) would reach
-# outside the task worktree (#811).
+# atelier — PreToolUse hook on Bash. Allows a container-creating or
+# container-starting `docker compose` command only in the exact shape the
+# docker-env skill issues, and checks that shape's effective configuration
+# (#811).
 #
-# The static permission matrix only allows the compose shapes the docker-env
-# skill issues (`-p <name> --file <worktree>/docker-compose.yml ...`). A compose
-# file lives in the worktree and is project code, so what it asks the daemon to
-# start must be checked at run time, not by a path glob.
+# Closed allowlist. When the lexed command (hooks/lib/shell-lex.sh; quotes
+# removed, heredoc prose dropped) names `compose`/`docker-compose` together with
+# `up`, `run`, `create`, `start`, `restart`, `watch` (also `alpha watch`),
+# `scale`, `build`, `exec` or `cp`, it must be exactly one of:
+#   docker compose -p <name> --file <worktree>/docker-compose.yml up -d --wait
+#   cd <worktree> && docker compose -p <name> --file <worktree>/docker-compose.yml up -d --wait
+# with nothing else on the line. <worktree> is the task worktree: a linked git
+# worktree (which covers the `<repo>-worktrees/**` layout) or the toplevel the
+# session started in; the compose file sits directly in it and is not a symlink;
+# <name> is a plain project-name word. Anything else that names such a
+# subcommand (a wrapper in front, extra or reordered flags, another connector, a
+# subshell or substitution, a `-c` or eval body, unparseable text) is blocked.
 #
-# Rule: for `up`, `run`, `create`, `start`, `restart` (and `watch`, `scale`),
-# resolve the effective config read-only with
-#   docker compose [-p N] [-f F]... [--project-directory D] [--env-file E]...
-#                  [--profile P]... config --format json
-# (same project/file/directory/env arguments as the command) and block when:
-#   - a `--file` / `--project-directory` / COMPOSE_FILE path is outside the
-#     worktree (or is a symlink, `-`, or not a plain word);
-#   - a service asks for privileged mode, host/foreign namespaces, devices,
-#     capability or weakened security grants, or volumes from another container;
-#   - a bind source (service volume, volume driver option, secret/config file,
-#     build context) is outside the worktree, is a symlink, or is a socket;
-#   - `run`/`create` flags (`-v`, `--volume`, `--mount`, `--privileged`,
-#     `--cap-add`, `--device`, `--security-opt`, `--pid`/`--ipc`/`--uts`/
-#     `--network host`...) ask for the same.
-# Fail closed when the config cannot be resolved (error, timeout, not JSON).
-# Relative paths and the `config` call follow a literal `cd <dir>` only when it
-# is at top level and every connector up to the compose command is `&&`; any
-# other `cd`/`pushd`/`popd` before a checked compose command (subshell, `||`
-# branch, pipe, background job, `-c` body, unresolvable target) blocks it. The
-# boundary is the git toplevel of that effective location (--project-directory,
-# else first --file, else the directory), accepted only when it is a linked task
-# worktree or the toplevel the session started in.
-# `$(...)` / backtick bodies inside words are scanned one level deeper, like
-# `bash -c` bodies. Service `env_file` paths (read via `config
-# --no-env-resolution`, which needs a recent compose; older ones fail closed),
-# `build.additional_contexts` sources and `build.ssh` are checked as well, and
-# `docker compose cp` is blocked outright.
-# Exit 0 for every other subcommand (down/logs/ps/version/config/...), for text
-# that only mentions compose (heredoc prose and quoted strings are not
-# commands), and when `docker` is not on PATH or jq is missing.
+# The allowed shape's effective config is then resolved read-only with
+#   docker compose -p <name> --file <file> --profile '*' config --no-env-resolution --format json
+# (time-bounded, fail closed) and blocked when a service asks for privileged
+# mode, host/foreign namespaces, devices, capability or weakened security
+# grants, or volumes from another container, or when a bind source (service
+# volume, volume driver option, secret/config file, build context, env_file,
+# additional context) is outside the worktree, is a symlink, or is a socket.
+#
+# Any non-inert segment that holds an expansion ($X, ${X}, $(...), backticks,
+# arithmetic) together with a docker/compose word, a subcommand word, or an
+# expansion in command position is treated the same way, since the program or
+# subcommand cannot be read from the text. A command that mentions neither
+# docker nor compose is not examined.
+#
+# Exit 0 for read-only subcommands (down/logs/ps/version/config/...), for text
+# that only mentions compose (echo, quoted prose, heredoc, commit messages,
+# searches), and when `docker` is not on PATH or jq is missing. Text that only
+# mentions compose is still treated as naming it when it is piped into another
+# interpreter.
 #
 # Defense in depth, not a sandbox: a script written first and run later, indirect
 # runs (package scripts, Makefiles), obfuscated invocations and a daemon reached
@@ -74,8 +72,8 @@ command_str="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/de
 [ "$tool_name" = "Bash" ] || exit 0
 [ -n "$command_str" ] || exit 0
 
-# Fast path: no compose word anywhere.
-case "$command_str" in *compose*) ;; *) exit 0 ;; esac
+# Fast path: no compose or docker word anywhere.
+case "$command_str" in *compose*|*docker*) ;; *) exit 0 ;; esac
 command -v docker >/dev/null 2>&1 || exit 0
 
 hook_cwd="$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)"
@@ -85,10 +83,7 @@ CWD="$(cd -P "$hook_cwd" 2>/dev/null && pwd -P)" || CWD="$hook_cwd"
 START_WT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)"
 [ -n "$START_WT" ] || START_WT="$CWD"
 START_WT="$(cd -P "$START_WT" 2>/dev/null && pwd -P)" || START_WT="${START_WT%/}"
-WT="$START_WT"   # task boundary; re-derived per compose command in set_boundary
-CUR="$CWD"       # directory the next command runs in; follows literal `cd` segments
-CD_BAD=0         # set when a `cd` cannot be followed with certainty
-CD_OK=0; CD_AND=0 # per segment: at top level / joined to the next command by &&
+WT="$START_WT"   # task boundary; set from the compose file in set_boundary
 
 deny() { # tag
   log_decision "$HOOK_NAME" "Bash" "$1" "block" "compose config reaches outside the task worktree: $1"
@@ -156,36 +151,32 @@ _is_linked_wt() {
   return 1
 }
 
-# Derive the worktree boundary for a compose command from where it really runs:
-# the --project-directory, else the first --file, else the current directory
-# (after any literal `cd`). The boundary is that path's git toplevel, accepted
-# only when it is a linked task worktree or the toplevel the session started in.
-set_boundary() { # anchor-or-empty
-  local a="$1" r dir top
-  if [ -n "$a" ]; then
-    _unresolvable "$a" && deny "unresolvable-path"
-    r="$(_phys "$CUR" "$a")"
-    [ "$r" = "SYMLINK" ] && deny "symlinked-path"
-    dir="$r"; [ -d "$dir" ] || dir="$(dirname "$r")"
-    [ -d "$dir" ] || deny "unresolvable-path"
-    top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
-    [ -n "$top" ] || deny "path-outside-worktree"
-  else
-    top="$(git -C "$CUR" rev-parse --show-toplevel 2>/dev/null || true)"
-    [ -n "$top" ] || top="$CUR"
-  fi
+block_shape() {
+  log_decision "$HOOK_NAME" "Bash" "not-allowlisted-shape" "block" "container-starting compose command is not the docker-env skill's exact shape"
+  cat >&2 <<MSG
+🛑 atelier:${HOOK_NAME} — blocked a docker compose command that would create or start containers: it is not the exact form the docker-env skill issues.
+   Only this shape is allowed, with nothing else on the line (an optional leading "cd <worktree> &&" is accepted):
+     docker compose -p <name> --file <worktree>/docker-compose.yml up -d --wait
+MSG
+  exit 2
+}
+
+# The task boundary is the git toplevel of the compose file's directory,
+# accepted only when it is a linked task worktree or the toplevel the session
+# started in.
+set_boundary() { # compose-file
+  local r dir top
+  _unresolvable "$1" && deny "unresolvable-path"
+  r="$(_phys / "$1")"
+  [ "$r" = "SYMLINK" ] && deny "symlinked-path"
+  dir="$(dirname "$r")"
+  [ -d "$dir" ] || deny "unresolvable-path"
+  top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$top" ] || deny "path-outside-worktree"
   top="$(cd -P "$top" 2>/dev/null && pwd -P)" || deny "unresolvable-path"
   if [ "$top" != "$START_WT" ] && ! _is_linked_wt "$top"; then deny "path-outside-worktree"; fi
   WT="$top"
-}
-
-# Require a path to be a plain, in-worktree, non-symlink location. $1 base.
-require_in_wt() {
-  local base="$1" p="$2" r
-  _unresolvable "$p" && deny "unresolvable-path"
-  r="$(_phys "$base" "$p")"
-  [ "$r" = "SYMLINK" ] && deny "symlinked-path"
-  _in_wt "$r" || deny "path-outside-worktree"
+  [ "$dir" = "$WT" ] || block_shape
 }
 
 # Bind source named on the command line or in the resolved config.
@@ -198,96 +189,6 @@ check_bind_source() { # base src
   [ -S "$r" ] && deny "runtime-socket"
   case "$r" in *docker.sock|*containerd.sock|*podman.sock|*crio.sock) deny "runtime-socket" ;; esac
   return 0
-}
-
-# One volume/mount/volumes-from value. $1 kind (volume|mount|from), $2 base, $3 spec.
-check_mount_spec() {
-  local kind="$1" base="$2" spec="$3" src
-  [ -n "$spec" ] || return 0
-  case "$kind" in
-    from) deny "container-volumes" ;;
-    mount)
-      case ",$spec," in
-        *,type=tmpfs,*|*,type=volume,*|*,type=image,*) ;;
-        *)
-          src=""
-          case ",$spec," in
-            *,source=*) src="${spec#*source=}"; src="${src%%,*}" ;;
-            *,src=*) src="${spec#*src=}"; src="${src%%,*}" ;;
-          esac
-          [ -n "$src" ] && check_bind_source "$base" "$src" ;;
-      esac ;;
-    *)
-      src="${spec%%:*}"
-      case "$src" in
-        /*|.*|'~'*|*'$'*|*'`'*) check_bind_source "$base" "$src" ;;
-      esac ;;
-  esac
-  return 0
-}
-
-# Flags of `run` / `create` that grant access beyond the worktree. Parsed the
-# way the compose CLI (pflag) does: `--flag v`, `--flag=v`, `-x v`, `-xv`,
-# `-x=v`, and grouped short flags (`-dv v`) where the first value-taking short
-# flag takes the rest of the word (minus one leading `=`) or the next word.
-# Short flags taking a value (`docker compose run --help`): -e -l -p -u -v -w.
-# `run` and `exec` stop at `--` and at their first positional (the service);
-# other subcommands keep scanning. `-u/--user` is not denied: it only picks the
-# user inside an unprivileged container, same as for `run`.
-check_flags() { # sub base tokens...
-  local sub="$1" base="$2" k=3 n=$# tok val rest i c
-  local -a a=("$@")
-  while [ "$k" -le "$n" ]; do
-    tok="${a[$((k - 1))]}"
-    k=$((k + 1))
-    case "$tok" in
-      --) case "$sub" in run|exec) return 0 ;; esac; continue ;;
-      --privileged|--privileged=*|--cap-add|--cap-add=*|--device|--device=*|--security-opt|--security-opt=*)
-        deny "elevated-flag" ;;
-      --pid|--ipc|--uts|--userns|--cgroupns|--network|--net)
-        [ "$k" -le "$n" ] || deny "unresolvable-flag-value"
-        val="${a[$((k - 1))]}"
-        k=$((k + 1))
-        case "$val" in host|host:*|container:*) deny "host-namespace-flag" ;; esac ;;
-      --pid=*|--ipc=*|--uts=*|--userns=*|--cgroupns=*|--network=*|--net=*)
-        val="${tok#*=}"
-        case "$val" in host|host:*|container:*) deny "host-namespace-flag" ;; esac ;;
-      --volume|--mount|--volumes-from)
-        [ "$k" -le "$n" ] || deny "unresolvable-flag-value"
-        val="${a[$((k - 1))]}"
-        k=$((k + 1))
-        case "$tok" in
-          --volume) check_mount_spec volume "$base" "$val" ;;
-          --mount) check_mount_spec mount "$base" "$val" ;;
-          *) check_mount_spec from "$base" "$val" ;;
-        esac ;;
-      --volume=*) check_mount_spec volume "$base" "${tok#*=}" ;;
-      --mount=*) check_mount_spec mount "$base" "${tok#*=}" ;;
-      --volumes-from=*) check_mount_spec from "$base" "${tok#*=}" ;;
-      --cap-drop|--entrypoint|--env|--env-from-file|--label|--name|--pull|--publish|--user|--workdir|--scale|--index)
-        k=$((k + 1)) ;;
-      --*) ;;
-      -?*)
-        i=1
-        while [ "$i" -lt "${#tok}" ]; do
-          c="${tok:$i:1}"
-          case "$c" in
-            e|l|p|u|v|w)
-              rest="${tok:$((i + 1))}"
-              rest="${rest#=}"
-              if [ -z "$rest" ]; then
-                [ "$k" -le "$n" ] || deny "unresolvable-flag-value"
-                rest="${a[$((k - 1))]}"
-                k=$((k + 1))
-              fi
-              [ "$c" = "v" ] && check_mount_spec volume "$base" "$rest"
-              break ;;
-          esac
-          i=$((i + 1))
-        done ;;
-      *) case "$sub" in run|exec) return 0 ;; esac ;;
-    esac
-  done
 }
 
 CFG_JQ='
@@ -335,253 +236,181 @@ def bindsrc($p):
 ] | unique | .[]
 '
 
-ENVV=()
-check_compose() { # sub, then compose-level facts in globals, then rest tokens
-  local sub="$1"; shift
-  local f d e p remaining out rc line cfg base0 tk
-  local -a cargs=() penv=() pargs=()
-  # `cp` moves files between a container and a host path; blocked outright.
-  [ "$sub" = "cp" ] && deny "cp-host-copy"
-  # `alpha watch` starts processes like `watch`; other alpha commands do not.
-  if [ "$sub" = "alpha" ]; then sub="${1:-}"; [ "$#" -gt 0 ] && shift; [ "$sub" = "watch" ] || return 0; fi
-  # `exec` starts a process in an existing container: only its flags matter.
-  if [ "$sub" = "exec" ]; then check_flags exec "$CUR" "$@"; return 0; fi
-  case "$sub" in up|run|create|start|restart|watch|scale|build) ;; *) return 0 ;; esac
-
-  [ "$CD_BAD" -eq 0 ] || deny "unresolvable-cd"
-  if [ -n "$C_PDIR" ]; then set_boundary "$C_PDIR"
-  elif [ "${#C_FILES[@]}" -gt 0 ]; then set_boundary "${C_FILES[0]}"
-  else set_boundary ""; fi
-
-  base0="$CUR"
-  if [ -n "$C_PDIR" ]; then require_in_wt "$CUR" "$C_PDIR"; base0="$(_phys "$CUR" "$C_PDIR")"; fi
-  for f in ${C_FILES[@]+"${C_FILES[@]}"}; do require_in_wt "$CUR" "$f"; done
-  for e in ${C_ENVF[@]+"${C_ENVF[@]}"}; do require_in_wt "$CUR" "$e"; done
-  if [ -z "$C_PDIR" ] && [ "${#C_FILES[@]}" -gt 0 ]; then
-    base0="$(dirname "$(_phys "$CUR" "${C_FILES[0]}")")"
-  fi
-
-  case "$sub" in run|create) check_flags "$sub" "$base0" "$@" ;; esac
-
-  [ -n "$C_PROJ" ] && cargs+=(-p "$C_PROJ")
-  for f in ${C_FILES[@]+"${C_FILES[@]}"}; do cargs+=(--file "$f"); done
-  [ -n "$C_PDIR" ] && cargs+=(--project-directory "$C_PDIR")
-  for e in ${C_ENVF[@]+"${C_ENVF[@]}"}; do cargs+=(--env-file "$e"); done
-  for d in ${ENVV[@]+"${ENVV[@]}"}; do penv+=("$d"); done
-  for d in ${C_PROFILES[@]+"${C_PROFILES[@]}"}; do pargs+=(--profile "$d"); done
-
+# Effective config of the allowed shape; blocks on any escape, fails closed.
+check_config() { # project-name compose-file
+  local remaining out rc=0 cfg line
   remaining=$((BUDGET_SECS - SECONDS))
   [ "$remaining" -ge 2 ] || deny "unresolved-config"
-  rc=0
-  out="$(cd "$CUR" 2>/dev/null && atelier_timeout "$remaining" env ${penv[@]+"${penv[@]}"} \
-    docker compose ${cargs[@]+"${cargs[@]}"} --profile '*' config --no-env-resolution --format json 2>/dev/null)" || rc=$?
+  out="$(cd "$WT" 2>/dev/null && atelier_timeout "$remaining" \
+    docker compose -p "$1" --file "$2" --profile '*' config --no-env-resolution --format json 2>/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
-    # The fallback must resolve the command's own service selection: the
-    # command's --profile values (COMPOSE_PROFILES rides in penv), and services
-    # named as positionals auto-enable their profile. Positionals cannot be told
-    # from flag values here, so any non-flag word fails closed.
-    for tk in "$@"; do
-      case "$tk" in -*) ;; *) deny "unresolved-config" ;; esac
-    done
     remaining=$((BUDGET_SECS - SECONDS))
     [ "$remaining" -ge 2 ] || deny "unresolved-config"
     rc=0
-    out="$(cd "$CUR" 2>/dev/null && atelier_timeout "$remaining" env ${penv[@]+"${penv[@]}"} \
-      docker compose ${cargs[@]+"${cargs[@]}"} ${pargs[@]+"${pargs[@]}"} config --no-env-resolution --format json 2>/dev/null)" || rc=$?
+    out="$(cd "$WT" 2>/dev/null && atelier_timeout "$remaining" \
+      docker compose -p "$1" --file "$2" config --no-env-resolution --format json 2>/dev/null)" || rc=$?
   fi
   [ "$rc" -eq 0 ] || deny "unresolved-config"
   cfg="$out"
   printf '%s' "$cfg" | jq -e 'type == "object"' >/dev/null 2>&1 || deny "unresolved-config"
-
   out="$(printf '%s' "$cfg" | jq -r --arg wt "$WT" "$CFG_JQ" 2>/dev/null)" || deny "unresolved-config"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     case "$line" in
-      BIND:*) check_bind_source "$base0" "${line#BIND:}" ;;
+      BIND:*) check_bind_source "$WT" "${line#BIND:}" ;;
       *) deny "$line" ;;
     esac
   done <<< "$out"
   return 0
 }
 
-# Past the nesting cap a body is not scanned: deny it when it names compose.
-_cap_deny() { # text...
-  local re='(^|[^[:alnum:]_-])(docker-)?compose($|[^[:alnum:]_-])'
-  if [[ "$*" =~ $re ]]; then deny "nesting-too-deep"; fi
-  return 0
+# --- naming detection ----------------------------------------------------------
+RE_COMPOSE='(^|[^[:alnum:]_.-])(docker-)?compose($|[^[:alnum:]_./-])'
+RE_SUB='(^|[^[:alnum:]_./-])(up|run|create|start|restart|watch|scale|build|exec|cp)($|[^[:alnum:]_./-])'
+RE_DOCK='(^|[^[:alnum:]_.-])(docker(-compose)?|compose)($|[^[:alnum:]_.-])'
+RE_ASSIGN='^[A-Za-z_][A-Za-z0-9_]*='
+RE_EXPAND='^(\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$\(.*\)|`.*`|\$['"'"'"].*)$'
+RE_NAME='^[A-Za-z0-9][A-Za-z0-9_.-]*$'
+RE_PATH='^/[A-Za-z0-9_./@+-]*$'
+
+# Text names a container-creating compose call (compose word + subcommand word).
+names_container() {
+  [[ "$1" =~ $RE_COMPOSE ]] && [[ "$1" =~ $RE_SUB ]]
 }
 
-# Scan the bodies of $(...) / `...` substitutions kept inside words, one level
-# deeper (so a `cd` inside counts as non-top-level), like bash -c / eval bodies.
-scan_substitutions() { # depth tokens...
-  local depth="$1"; shift
-  local tok rest pre1 pre2 pre kind len body ok="$CD_OK" and="$CD_AND"
-  if [ "$depth" -ge 3 ]; then
-    case "$*" in *'$('*|*'`'*) _cap_deny "$@" ;; esac
-    return 0
-  fi
-  for tok in "$@"; do
-    rest="$tok"
-    while :; do
-      case "$rest" in *'$('*|*'`'*) ;; *) break ;; esac
-      pre1="${rest%%'$('*}"; pre2="${rest%%'`'*}"
-      if [ "${#pre1}" -le "${#pre2}" ]; then pre="$pre1"; kind='$'; else pre="$pre2"; kind='`'; fi
-      rest="${rest:${#pre}}"
-      len="$(_subst_len "$kind" "$rest")"
-      if [ "$len" -eq 0 ]; then
-        if [ "$kind" = '$' ]; then body="${rest:2}"; else body="${rest:1}"; fi
-        rest=""
-      elif [ "$kind" = '$' ]; then
-        body="${rest:2:$((len - 3))}"; rest="${rest:$len}"
-      else
-        body="${rest:1:$((len - 2))}"; rest="${rest:$len}"
-      fi
-      scan_script "$body" $((depth + 1))
-    done
-  done
-  CD_OK="$ok"; CD_AND="$and"
-}
-
-scan_segment() { # depth tokens...
-  local depth="$1"; shift
-  local -a t=("$@")
-  local n=$# i=0 tok base
-  local j k
-
-  scan_substitutions "$depth" "$@"
-
-  # Command word after harmless prefixes; COMPOSE_* / DOCKER_HOST assignments
-  # in the prefix region reach the compose process.
-  while [ "$i" -lt "$n" ]; do
-    tok="${t[$i]}"
-    case "$tok" in
-      COMPOSE_*=*|DOCKER_HOST=*|DOCKER_CONTEXT=*) ENVV+=("$tok"); i=$((i + 1)) ;;
-      '{'|'}'|'!'|'[['|'if'|'then'|'elif'|'else'|'fi'|'do'|'done'|'while'|'until'|'for'|'in'|'case'|'esac'|'select'|'coproc'|'function'|*=*|env|command|builtin|exec|nohup|time|sudo|nice|stdbuf|ionice|timeout|setsid|caffeinate|xargs|-*) i=$((i + 1)) ;;
-      *[!0-9.smhd]*|'') break ;;
-      [0-9]*|.[0-9]*) i=$((i + 1)) ;;
-      *) break ;;
+# The word in command position (after assignments and common wrappers) holds
+# an expansion, so the program that runs is not known from the text.
+cmdpos_expands() {
+  local t base wrapped=0
+  for t in "$@"; do
+    [[ "$t" =~ $RE_ASSIGN ]] && continue
+    if [ "$wrapped" -eq 1 ]; then
+      case "$t" in -*|[0-9]*) continue ;; esac
+    fi
+    case "$t" in *'$'*|*'`'*) return 0 ;; esac
+    base="${t#\\}"; base="${base##*/}"
+    case "$base" in
+      env|command|builtin|exec|sudo|time|nohup|nice|timeout|xargs) wrapped=1; continue ;;
     esac
+    return 1
   done
-  [ "$i" -lt "$n" ] || return 0
-  tok="${t[$i]#\\}"
-  base="${tok##*/}"
+  return 1
+}
 
-  case "$base" in
-    export|declare|typeset|readonly|local)
-      for ((j = i + 1; j < n; j++)); do
-        case "${t[$j]}" in COMPOSE_*=*|DOCKER_HOST=*|DOCKER_CONTEXT=*) ENVV+=("${t[$j]}") ;; esac
+# Commands whose arguments are data, not code: text that mentions compose is
+# prose there. $1 is the command word, the rest its arguments.
+is_inert() {
+  local first="${1#\\}"; first="${first##*/}"
+  shift
+  local tok
+  case "$first" in
+    echo|printf|cat|head|tail|wc|ls) return 0 ;;
+    rg|grep)
+      for tok in "$@"; do
+        case "$tok" in --pre|--pre=*|--hostname-bin|--hostname-bin=*) return 1 ;; esac
       done
       return 0 ;;
-    bash|sh|zsh|dash|ksh)
-      for ((j = i + 1; j < n - 1; j++)); do
-        case "${t[$j]}" in
-          -c|-[a-z]c|-[a-z][a-z]c)
-            if [ "$depth" -lt 3 ]; then scan_script "${t[$((j + 1))]}" $((depth + 1)); else _cap_deny "${t[$((j + 1))]}"; fi
-            break ;;
+    git|gh)
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -C|-R|--repo|--git-dir|--work-tree) shift; [ "$#" -gt 0 ] && shift ;;
+          -c*|--config-env*) return 1 ;;
+          -*) shift ;;
+          *) break ;;
         esac
       done
-      return 0 ;;
-    eval)
-      local joined=""
-      for ((j = i + 1; j < n; j++)); do joined+="${t[$j]} "; done
-      [ "$depth" -lt 3 ] || { _cap_deny "$joined"; return 0; }
-      scan_script "$joined" $((depth + 1))
-      return 0 ;;
-    cd|pushd)
-      local tgt="" r
-      # Followed only when it surely changes the compose directory: top level
-      # (scan_script sets CD_OK) and joined to what follows by `&&` (CD_AND).
-      if [ "$CD_OK" -ne 1 ]; then CD_BAD=1; return 0; fi
-      for ((j = i + 1; j < n; j++)); do
-        case "${t[$j]}" in -P|-L|-e|-@|--) ;; *) tgt="${t[$j]}"; break ;; esac
-      done
-      case "$tgt" in
-        ''|-|*'$'*|*'`'*|*'*'*|*'?'*|*'{'*|*'['*) CD_BAD=1; return 0 ;;
-        '~') tgt="${HOME:-/nonexistent}" ;;
-        '~/'*) tgt="${HOME:-/nonexistent}/${tgt#'~/'}" ;;
-        '~'*) CD_BAD=1; return 0 ;;
+      case "$first:${1:-}" in
+        git:commit|git:log|git:show|git:diff|git:status|git:add|git:tag|git:branch|git:stash|git:grep|git:blame) return 0 ;;
+        gh:pr|gh:issue|gh:api|gh:release|gh:gist) return 0 ;;
       esac
-      r="$(cd -P "$CUR" 2>/dev/null && cd -P -- "$tgt" 2>/dev/null && pwd -P)" || r=""
-      if [ -n "$r" ] && [ "$CD_AND" -eq 1 ]; then CUR="$r"; else CD_BAD=1; fi
-      return 0 ;;
-    popd) CD_BAD=1; return 0 ;;
-    docker|docker-compose) ;;
-    *) return 0 ;;
+      return 1 ;;
   esac
-
-  j=$((i + 1))
-  if [ "$base" = "docker" ]; then
-    while [ "$j" -lt "$n" ]; do
-      case "${t[$j]}" in
-        compose) break ;;
-        -H|--host|--context|-c|--config|-l|--log-level|--tlscacert|--tlscert|--tlskey) j=$((j + 2)) ;;
-        -*) j=$((j + 1)) ;;
-        *) return 0 ;;
-      esac
-    done
-    [ "$j" -lt "$n" ] || return 0
-    j=$((j + 1))
-  fi
-
-  C_PROJ=""; C_PDIR=""; C_FILES=(); C_ENVF=(); C_PROFILES=()
-  local sub="" cf
-  if [ -n "${COMPOSE_FILE:-}" ]; then
-    IFS=: read -r -a cf <<< "$COMPOSE_FILE"; C_FILES+=("${cf[@]}")
-  fi
-  for tok in ${ENVV[@]+"${ENVV[@]}"}; do
-    case "$tok" in
-      COMPOSE_FILE=*) IFS=: read -r -a cf <<< "${tok#COMPOSE_FILE=}"; C_FILES+=("${cf[@]}") ;;
-      COMPOSE_PROJECT_NAME=*) C_PROJ="${tok#*=}" ;;
-    esac
-  done
-  while [ "$j" -lt "$n" ]; do
-    tok="${t[$j]}"
-    case "$tok" in
-      -p|--project-name) C_PROJ="${t[$((j + 1))]:-}"; j=$((j + 2)) ;;
-      --project-name=*) C_PROJ="${tok#*=}"; j=$((j + 1)) ;;
-      -f|--file) C_FILES+=("${t[$((j + 1))]:--}"); j=$((j + 2)) ;;
-      --file=*) C_FILES+=("${tok#*=}"); j=$((j + 1)) ;;
-      -f?*) C_FILES+=("${tok#-f}"); j=$((j + 1)) ;;
-      --project-directory) C_PDIR="${t[$((j + 1))]:--}"; j=$((j + 2)) ;;
-      --project-directory=*) C_PDIR="${tok#*=}"; j=$((j + 1)) ;;
-      --env-file) C_ENVF+=("${t[$((j + 1))]:--}"); j=$((j + 2)) ;;
-      --env-file=*) C_ENVF+=("${tok#*=}"); j=$((j + 1)) ;;
-      --profile) C_PROFILES+=("${t[$((j + 1))]:-}"); j=$((j + 2)) ;;
-      --profile=*) C_PROFILES+=("${tok#*=}"); j=$((j + 1)) ;;
-      --parallel|--ansi|--progress) j=$((j + 2)) ;;
-      -*) j=$((j + 1)) ;;
-      *) sub="$tok"; break ;;
-    esac
-  done
-  [ -n "$sub" ] || return 0
-  k=$((j + 1))
-  check_compose "$sub" ${t[@]+"${t[@]:$k}"}
+  return 1
 }
 
-scan_script() { # script depth
-  local script="$1" depth="$2" stripped seg conn k nseg pd=0 prev
-  local -a segs
-  case "$script" in *compose*) ;; *) return 0 ;; esac
-  stripped="$(strip_heredocs "$script")" || stripped="$script"
-  lex "$stripped"
-  conn="$LEX_CONN"
-  IFS="$RS" read -r -d '' -a segs <<< "$LEX_OUT" || true
-  nseg=${#segs[@]}
-  for ((k = 0; k < nseg; k++)); do
-    seg="${segs[k]}"
-    if [ -n "$seg" ]; then
-      prev=""; [ "$k" -gt 0 ] && prev="${conn:$((k - 1)):1}"
-      CD_OK=0; CD_AND=0
-      if [ "$depth" -eq 0 ] && [ "$pd" -eq 0 ] && [ "$prev" != "|" ]; then CD_OK=1; fi
-      if [ "${conn:$k:1}" = "&" ] && [ "$((k + 1))" -lt "$nseg" ] \
-         && [ -z "${segs[k + 1]}" ] && [ "${conn:$((k + 1)):1}" = "&" ]; then CD_AND=1; fi
-      split_tokens "$seg"
-      scan_segment "$depth" ${TOKS[@]+"${TOKS[@]}"}
-    fi
-    case "${conn:$k:1}" in '(') pd=$((pd + 1)) ;; ')') [ "$pd" -gt 0 ] && pd=$((pd - 1)) ;; esac
-  done
+# Pure filters that cannot run text as code.
+is_filter() {
+  local first="${1#\\}"; first="${first##*/}"
+  case "$first" in head|tail|wc|cat|grep|rg|jq|sort|uniq|cut|tr|ls|less) return 0 ;; esac
+  return 1
+}
+
+# The whole command is exactly one allowed shape: [cd <wt> &&] docker compose
+# -p <name> --file <wt>/docker-compose.yml up -d --wait
+check_shape() {
+  local k idx=() T file name r
+  for ((k = 0; k < nseg; k++)); do [ -n "${segs[k]//$'\n'/}" ] && idx+=("$k"); done
+  case "${#idx[@]}" in
+    1) [ "$conn" = "" ] || block_shape ;;
+    2) [ "$conn" = "&&" ] && [ "${idx[0]}" -eq 0 ] && [ "${idx[1]}" -eq 2 ] || block_shape ;;
+    *) block_shape ;;
+  esac
+  split_tokens "${segs[${idx[${#idx[@]} - 1]}]}"
+  T=("${TOKS[@]}")
+  [ "${#T[@]}" -eq 9 ] || block_shape
+  [ "${T[0]}" = docker ] && [ "${T[1]}" = compose ] && [ "${T[2]}" = -p ] && [ "${T[4]}" = --file ] \
+    && [ "${T[6]}" = up ] && [ "${T[7]}" = -d ] && [ "${T[8]}" = --wait ] || block_shape
+  name="${T[3]}"; file="${T[5]}"
+  [[ "$name" =~ $RE_NAME ]] || block_shape
+  [[ "$file" =~ $RE_PATH ]] && [ "${file##*/}" = docker-compose.yml ] || block_shape
+  set_boundary "$file"
+  if [ "${#idx[@]}" -eq 2 ]; then
+    split_tokens "${segs[${idx[0]}]}"
+    [ "${#TOKS[@]}" -eq 2 ] && [ "${TOKS[0]}" = cd ] && [[ "${TOKS[1]}" =~ $RE_PATH ]] || block_shape
+    r="$(cd -P -- "${TOKS[1]}" 2>/dev/null && pwd -P)" || block_shape
+    [ "$r" = "$WT" ] || block_shape
+  fi
+  check_config "$name" "$file"
 }
 
 SECONDS=0
-scan_script "$command_str" 0
+command_str="${command_str#"${command_str%%[![:space:]]*}"}"
+command_str="${command_str%"${command_str##*[![:space:]]}"}"
+stripped="$(strip_heredocs "$command_str")" || stripped="$command_str"
+stripped="${stripped%"${stripped##*[![:space:]]}"}"
+lex "$stripped"
+conn="$LEX_CONN"
+IFS="$RS" read -r -d '' -a segs <<< "$LEX_OUT" || true
+nseg=${#segs[@]}
+
+named=0; text_named=0; unsafe_sink=0
+case "$stripped" in *'<('*|*'>('*) unsafe_sink=1 ;; esac
+for ((k = 0; k < nseg; k++)); do
+  [ -n "${segs[k]}" ] || continue
+  split_tokens "${segs[k]}"
+  [ "${#TOKS[@]}" -gt 0 ] || continue
+  txt=" ${TOKS[*]} "
+  if is_inert "${TOKS[@]}"; then
+    # Prose in an inert command; only an embedded substitution can run.
+    for tok in "${TOKS[@]}"; do
+      case "$tok" in
+        *'$('*|*'`'*)
+          names_container " $tok " && named=1
+          inner="${tok#*[\`(]}"
+          case "$inner" in *'$'*|*'`'*) { [[ " $inner " =~ $RE_DOCK ]] || [[ " $inner " =~ $RE_SUB ]]; } && named=1 ;; esac ;;
+      esac
+    done
+    names_container "$txt" && text_named=1
+    continue
+  fi
+  names_container "$txt" && named=1
+  if [[ "$txt" =~ $RE_COMPOSE ]]; then
+    # A bare expansion could stand where the subcommand is.
+    for tok in "${TOKS[@]}"; do [[ "$tok" =~ $RE_EXPAND ]] && named=1; done
+  fi
+  # An expansion could stand for the program or the subcommand: only the exact
+  # allowed shape (no expansion in it) passes.
+  case "$txt" in
+    *'$'*|*'`'*)
+      if [[ "$txt" =~ $RE_DOCK ]] || [[ "$txt" =~ $RE_SUB ]] || cmdpos_expands "${TOKS[@]}"; then named=1; fi ;;
+  esac
+  # An alias can bind a container command to a short name.
+  if [ "${TOKS[0]}" = alias ] && [[ "$txt" =~ $RE_DOCK ]]; then named=1; fi
+  prev=""; [ "$k" -gt 0 ] && prev="${conn:$((k - 1)):1}"
+  if [ "$prev" = "|" ] && ! is_filter "${TOKS[0]}"; then unsafe_sink=1; fi
+done
+if [ "$text_named" -eq 1 ] && [ "$unsafe_sink" -eq 1 ]; then named=1; fi
+[ "$named" -eq 1 ] || exit 0
+
+check_shape
 exit 0
