@@ -273,7 +273,8 @@ case " $* " in
       case " $* " in *" --profile "*) exit 1 ;; esac
     fi
     [ -n "${STUB_SLEEP:-}" ] && sleep "$STUB_SLEEP"
-    [ -n "${STUB_CFG:-}" ] && [ -f "$STUB_CFG" ] && cat "$STUB_CFG"
+    if [ -f "$PWD/.stub-cfg.json" ]; then cat "$PWD/.stub-cfg.json"
+    elif [ -n "${STUB_CFG:-}" ] && [ -f "$STUB_CFG" ]; then cat "$STUB_CFG"; fi
     exit "${STUB_RC:-0}" ;;
   *" version "*|*" version") echo "Docker Compose version v2.0.0-stub"; exit 0 ;;
 esac
@@ -540,6 +541,211 @@ fi
 HOOK_PATH="$SBX_NODOCKER" expect_allow "H9 docker absent from PATH: exits 0" "$UP"
 mkcfg '.services.web.privileged = true'
 HOOK_PATH="$SBX_NODOCKER" expect_allow "H9 docker absent from PATH: exits 0 even for a bad fixture" "$UP"
+
+# --- linked worktrees: boundary and directory tracking ---
+# A temp main checkout with two linked worktrees. The stub prints
+# <cwd>/.stub-cfg.json when present (so the directory the config is resolved
+# from is observable), else the shared fixture.
+MAIN="$TMP/main"; LW1="$TMP/lw1"; LW2="$TMP/lw2"
+mkdir -p "$MAIN" && git -C "$MAIN" init -q 2>/dev/null
+git -C "$MAIN" -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.name=t -c user.email=t@example.invalid \
+  commit -q --allow-empty -m init 2>/dev/null
+git -C "$MAIN" worktree add -q -b lw1 "$LW1" 2>/dev/null
+git -C "$MAIN" worktree add -q -b lw2 "$LW2" 2>/dev/null
+mkdir -p "$LW1/data" "$LW2/data"
+: > "$MAIN/docker-compose.yml"; : > "$LW1/docker-compose.yml"; : > "$LW2/docker-compose.yml"
+if [ -f "$LW1/.git" ] && [ -f "$LW2/.git" ] && [ -d "$MAIN/.git" ]; then pass "W0 fixture: two linked worktrees of a main checkout"
+else fail "W0 fixture: linked worktrees were not created"; fi
+
+cfg_for() { # dir jq-expr -> compliant-by-default config rooted at dir, to stdout
+  jq -n --arg wt "$1" --arg home "$FH" --arg out "$OUTSIDE" \
+    '{name:"demo",services:{web:{image:"nginx:1",volumes:[{type:"bind",source:($wt+"/data"),target:"/d"}]}}} | '"$2"
+}
+mkcfg_for() { cfg_for "$1" "$2" > "$CFGF"; }
+setcfg() { cfg_for "$1" "$2" > "$1/.stub-cfg.json"; }
+clearcfg() { rm -f "$MAIN/.stub-cfg.json" "$LW1/.stub-cfg.json" "$LW2/.stub-cfg.json"; }
+expect_block_any() { # label command [cwd]
+  run_hook "$2" "${3:-$WT}"
+  if [ "$HOOK_RC" -eq 2 ]; then pass "$1"
+  else fail "$1 (rc=$HOOK_RC, want 2 with any tag; stderr: $(printf '%s' "$HOOK_ERR" | head -2 | tr '\n' ' '))"; fi
+}
+
+# 1. --file / --project-directory into a linked worktree, session in the main checkout
+clearcfg; mkcfg_for "$LW1" '.'
+expect_allow "W1 --file into a linked worktree from the main checkout" \
+  "docker compose -p x --file $LW1/docker-compose.yml up -d --wait" "$MAIN"
+expect_allow "W1 quoted -p and --file into a linked worktree" \
+  "docker compose -p \"x\" --file \"$LW1/docker-compose.yml\" up -d --wait" "$MAIN"
+expect_allow "W1 --project-directory into a linked worktree" \
+  "docker compose -p x --project-directory $LW1 up -d --wait" "$MAIN"
+expect_allow "W1 --project-directory with --file into a linked worktree" \
+  "docker compose -p x --project-directory $LW1 --file $LW1/docker-compose.yml up -d" "$MAIN"
+mkcfg_for "$LW1" '.services.web.privileged = true'
+expect_block "W1 a privileged service in a linked worktree is still blocked" privileged \
+  "docker compose -p x --file $LW1/docker-compose.yml up -d" "$MAIN"
+mkcfg_for "$LW1" '.services.web.volumes[0].source = $home'
+expect_block "W1 an outside bind in a linked worktree is still blocked" bind-outside-worktree \
+  "docker compose -p x --file $LW1/docker-compose.yml up -d" "$MAIN"
+
+# 2. cd into a worktree: its compose file, not the start directory's, is checked
+clearcfg; mkcfg_for "$MAIN" '.'
+setcfg "$LW1" '.'
+expect_allow "W2 cd <wt> && up without --file" "cd $LW1 && docker compose up -d" "$MAIN"
+expect_allow "W2 cd <wt> && up with a relative --file" \
+  "cd $LW1 && docker compose --file docker-compose.yml up -d" "$MAIN"
+expect_allow "W2 cd <wt> && up -p/--file ./relative" \
+  "cd $LW1 && docker compose -p x -f ./docker-compose.yml up -d --wait" "$MAIN"
+expect_allow "W2 cd <wt> && run with a relative in-worktree bind" \
+  "cd $LW1 && docker compose run --rm -v ./data:/d web sh" "$MAIN"
+expect_block "W2 cd <wt> && run with a relative dot-dot bind" bind-outside-worktree \
+  "cd $LW1 && docker compose run --rm -v ../main:/d web sh" "$MAIN"
+setcfg "$LW1" '.services.web.volumes[0].source = $out'
+expect_block "W2 cd <wt> && up: the cd target's outside bind is checked" bind-outside-worktree \
+  "cd $LW1 && docker compose up -d" "$MAIN"
+expect_block "W2 cd <wt> && up with relative --file: the cd target's outside bind is checked" bind-outside-worktree \
+  "cd $LW1 && docker compose --file docker-compose.yml up -d" "$MAIN"
+clearcfg; mkcfg_for "$MAIN" '.'
+setcfg "$LW2" '.'
+expect_allow "W2 session in one linked worktree, cd to another linked worktree" \
+  "cd $LW2 && docker compose up -d" "$LW1"
+clearcfg
+
+# 3. session in a worktree, target is the main checkout
+mkcfg_for "$MAIN" '.'
+expect_block "W3 cd <main> && up from a linked worktree" path-outside-worktree \
+  "cd $MAIN && docker compose up -d" "$LW1"
+expect_block "W3 --file in the main checkout from a linked worktree" path-outside-worktree \
+  "docker compose -p x --file $MAIN/docker-compose.yml up -d" "$LW1"
+expect_block "W3 --project-directory in the main checkout from a linked worktree" path-outside-worktree \
+  "docker compose -p x --project-directory $MAIN up -d" "$LW1"
+
+# 4. --file into a plain (non-worktree) repository or a non-git directory
+mkcfg_for "$WT2" '.'
+expect_block "W4 --file into a plain git repository from the main checkout" path-outside-worktree \
+  "docker compose -p x --file $WT2/docker-compose.yml up -d" "$MAIN"
+expect_block "W4 --file into a plain git repository from a linked worktree" path-outside-worktree \
+  "docker compose -p x --file $WT2/docker-compose.yml up -d" "$LW1"
+expect_block "W4 --file into a non-git directory" path-outside-worktree \
+  "docker compose -p x --file $OUTSIDE/docker-compose.yml up -d" "$MAIN"
+expect_block "W4 --project-directory in a non-git directory" path-outside-worktree \
+  "docker compose -p x --project-directory $OUTSIDE up -d" "$MAIN"
+expect_block "W4 cd into a plain git repository" path-outside-worktree \
+  "cd $WT2 && docker compose up -d" "$MAIN"
+expect_block "W4 cd into a non-git directory" path-outside-worktree \
+  "cd $OUTSIDE && docker compose up -d" "$MAIN"
+
+# 5. unresolvable cd before a checked subcommand fails closed
+mkcfg_for "$LW1" '.'
+expect_block "W5 cd \$VAR" unresolvable-cd 'cd $X && docker compose up -d' "$LW1"
+expect_block "W5 cd with a command substitution" unresolvable-cd 'cd $(pwd) && docker compose up -d' "$LW1"
+expect_block "W5 cd with backticks" unresolvable-cd 'cd `pwd` && docker compose up -d' "$LW1"
+expect_block "W5 cd -" unresolvable-cd 'cd - && docker compose up -d' "$LW1"
+expect_block "W5 bare cd" unresolvable-cd 'cd && docker compose up -d' "$LW1"
+expect_block "W5 cd to a nonexistent target" unresolvable-cd "cd $TMP/no-such-dir && docker compose up -d" "$LW1"
+expect_block "W5 popd" unresolvable-cd 'popd && docker compose up -d' "$LW1"
+expect_block "W5 cd ~user" unresolvable-cd 'cd ~nobody && docker compose up -d' "$LW1"
+expect_block "W5 cd with a glob" unresolvable-cd "cd $TMP/lw* && docker compose up -d" "$LW1"
+expect_block "W5 cd with a brace expansion" unresolvable-cd "cd $TMP/{lw1,lw2} && docker compose up -d" "$LW1"
+expect_block "W5 pushd to a nonexistent target" unresolvable-cd "pushd $TMP/no-such-dir && docker compose up -d" "$LW1"
+expect_block "W5 unresolvable cd then run" unresolvable-cd 'cd $X && docker compose run --rm web sh' "$LW1"
+
+# 6. chains, no following checked subcommand, other subcommands
+setcfg "$LW1" '.'
+expect_allow "W6 an earlier cd in a longer chain is followed" \
+  "echo a && cd $LW1 && ls && echo b; docker compose up -d" "$MAIN"
+setcfg "$LW1" '.services.web.volumes[0].source = $out'
+expect_block "W6 an earlier cd in a longer chain selects the config that is checked" bind-outside-worktree \
+  "echo a && cd $LW1 && ls && echo b; docker compose up -d" "$MAIN"
+clearcfg; mkcfg_for "$LW1" '.'
+expect_allow "W6 a later cd between two cds wins" \
+  "cd $MAIN && cd $LW1 && docker compose up -d" "$MAIN"
+expect_allow "W6 unresolvable cd with no compose command is allowed" 'cd $X && echo compose' "$LW1"
+expect_allow "W6 unresolvable cd followed by down" 'cd $X && docker compose down' "$LW1"
+expect_allow "W6 unresolvable cd followed by logs" 'cd $X && docker compose logs web' "$LW1"
+expect_allow "W6 unresolvable cd followed by ps" 'cd - && docker compose ps' "$LW1"
+expect_allow "W6 unresolvable cd followed by version" 'popd; docker compose version' "$LW1"
+expect_allow "W6 cd out of the worktree followed by down" "cd $OUTSIDE && docker compose down" "$LW1"
+expect_allow "W6 cd out of the worktree followed by logs" "cd $OUTSIDE && docker compose logs" "$LW1"
+expect_allow "W6 cd out of the worktree followed by ps" "cd $OUTSIDE && docker compose ps" "$LW1"
+expect_allow "W6 unresolvable cd after the compose command is irrelevant" \
+  "docker compose -p x --file $LW1/docker-compose.yml up -d; cd \$X" "$LW1"
+
+# 7. --env-file / --project-directory / extra --file outside the derived boundary
+mkcfg_for "$LW1" '.'
+expect_block "W7 --env-file outside after cd <wt>" path-outside-worktree \
+  "cd $LW1 && docker compose --env-file $OUTSIDE/.e up -d" "$MAIN"
+expect_block "W7 --env-file in another worktree" path-outside-worktree \
+  "docker compose -p x --file $LW1/docker-compose.yml --env-file $LW2/.e up -d" "$MAIN"
+expect_block "W7 --project-directory outside after cd <wt>" path-outside-worktree \
+  "cd $LW1 && docker compose --project-directory $OUTSIDE up -d" "$MAIN"
+expect_block "W7 --project-directory in the main checkout with --file in a worktree" path-outside-worktree \
+  "docker compose -p x --project-directory $MAIN --file $LW1/docker-compose.yml up -d" "$LW1"
+expect_block "W7 second --file in another worktree" path-outside-worktree \
+  "docker compose -p x --file $LW1/docker-compose.yml --file $LW2/docker-compose.yml up -d" "$MAIN"
+expect_block "W7 --env-file relative dot-dot after cd <wt>" path-outside-worktree \
+  "cd $LW1 && docker compose --env-file ../outside/.e up -d" "$MAIN"
+expect_block_any "W7 COMPOSE_FILE in another worktree after cd <wt> (config of the cd target does not match)" \
+  "cd $LW1 && COMPOSE_FILE=$LW2/docker-compose.yml docker compose up -d" "$MAIN"
+
+# 9. directory the command really runs in differs from the tracked one.
+# Session in LW1, whose config has an outside bind; LW2 is compliant. Each
+# command runs compose in LW1, so the LW1 config must be the one that is checked.
+clearcfg
+setcfg "$LW1" '.services.web.volumes[0].source = $out'
+setcfg "$LW2" '.'
+expect_block "W9 baseline: session directory with an outside bind" bind-outside-worktree \
+  "docker compose up -d" "$LW1"
+expect_block_any "W9 cd inside a subshell group does not move the compose command" \
+  "(cd $LW2 && true); docker compose up -d" "$LW1"
+expect_block_any "W9 cd inside a subshell group, newline separator" \
+  "(cd $LW2)
+docker compose up -d" "$LW1"
+expect_block_any "W9 cd in a skipped || branch" \
+  "true || cd $LW2; docker compose up -d" "$LW1"
+expect_block_any "W9 cd in a skipped && branch" \
+  "false && cd $LW2; docker compose up -d" "$LW1"
+expect_block_any "W9 cd on the left of a pipe runs in a subshell" \
+  "cd $LW2 | cat; docker compose up -d" "$LW1"
+expect_block_any "W9 cd sent to the background" \
+  "cd $LW2 & docker compose up -d" "$LW1"
+expect_block_any "W9 cd inside a command substitution" \
+  "echo \$(cd $LW2 && pwd); docker compose up -d" "$LW1"
+expect_block_any "W9 cd in an if-branch that is not taken" \
+  "if false; then cd $LW2; fi; docker compose up -d" "$LW1"
+expect_block_any "W9 cd then compose inside a bash -c wrapper keeps the session config out of reach" \
+  "bash -c 'true || cd $LW2; docker compose up -d'" "$LW1"
+# Top-level rule: a cd is followed only at top level (not in a subshell group,
+# not in a wrapper body, not after | or ||) with && as the connector. Any other
+# cd before a container-creating compose subcommand is unresolvable.
+expect_block "W9 cd <compliant> || true; up is not followed" unresolvable-cd \
+  "cd $LW2 || true; docker compose up -d" "$LW1"
+expect_block "W9 subshell group that contains the compose command is not followed" unresolvable-cd \
+  "(cd $LW2 && docker compose up -d)" "$LW1"
+expect_block "W9 cd <compliant>; up (semicolon connector) is not followed" unresolvable-cd \
+  "cd $LW2; docker compose up -d" "$LW1"
+expect_allow "W9 cd <compliant> && up -d (top-level && is followed)" \
+  "cd $LW2 && docker compose up -d" "$LW1"
+expect_allow "W9 { cd <compliant> && up -d; } counts as top level and is followed" \
+  "{ cd $LW2 && docker compose up -d; }" "$LW1"
+expect_block "W9 { cd <non-compliant> && up -d; } is followed and its config is checked" bind-outside-worktree \
+  "{ cd $LW1 && docker compose up -d; }" "$LW2"
+expect_allow "W9 down after a cd that is not followed stays allowed" \
+  "cd $LW2; docker compose down" "$LW1"
+expect_allow "W9 logs after a cd inside a subshell group stays allowed" \
+  "(cd $LW2 && docker compose logs web)" "$LW1"
+expect_allow "W9 ps after a cd behind || stays allowed" \
+  "cd $LW2 || true; docker compose ps" "$LW1"
+
+# LEX_CONN records the separator that ended each segment.
+lex_conn() { (
+  # shellcheck disable=SC1091
+  . "$REPO_ROOT/hooks/lib/shell-lex.sh"; lex "$1"; printf '%s' "$LEX_CONN"
+); }
+c="$(lex_conn 'a && b')"; [ "$c" = '&&' ] && pass "W9 LEX_CONN of 'a && b' is '&&'" || fail "W9 LEX_CONN of 'a && b' is '$c', want '&&'"
+c="$(lex_conn 'a || b')"; [ "$c" = '||' ] && pass "W9 LEX_CONN of 'a || b' is '||'" || fail "W9 LEX_CONN of 'a || b' is '$c', want '||'"
+c="$(lex_conn 'a; b')"; [ "$c" = ';' ] && pass "W9 LEX_CONN of 'a; b' is ';'" || fail "W9 LEX_CONN of 'a; b' is '$c', want ';'"
+c="$(lex_conn 'a | b')"; [ "$c" = '|' ] && pass "W9 LEX_CONN of 'a | b' is '|'" || fail "W9 LEX_CONN of 'a | b' is '$c', want '|'"
+clearcfg
 
 # --- decision log ---
 mkcfg '.services.web.privileged = true'

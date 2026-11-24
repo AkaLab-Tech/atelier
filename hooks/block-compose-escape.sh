@@ -24,6 +24,13 @@
 #     `--cap-add`, `--device`, `--security-opt`, `--pid`/`--ipc`/`--uts`/
 #     `--network host`...) ask for the same.
 # Fail closed when the config cannot be resolved (error, timeout, not JSON).
+# Relative paths and the `config` call follow a literal `cd <dir>` only when it
+# is at top level and every connector up to the compose command is `&&`; any
+# other `cd`/`pushd`/`popd` before a checked compose command (subshell, `||`
+# branch, pipe, background job, `-c` body, unresolvable target) blocks it. The
+# boundary is the git toplevel of that effective location (--project-directory,
+# else first --file, else the directory), accepted only when it is a linked task
+# worktree or the toplevel the session started in.
 # Exit 0 for every other subcommand (down/logs/ps/version/config/...), for text
 # that only mentions compose (heredoc prose and quoted strings are not
 # commands), and when `docker` is not on PATH or jq is missing.
@@ -70,9 +77,13 @@ hook_cwd="$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)"
 [ -n "$hook_cwd" ] || hook_cwd="$PWD"
 [ -d "$hook_cwd" ] || hook_cwd="$PWD"
 CWD="$(cd -P "$hook_cwd" 2>/dev/null && pwd -P)" || CWD="$hook_cwd"
-WT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)"
-[ -n "$WT" ] || WT="$CWD"
-WT="$(cd -P "$WT" 2>/dev/null && pwd -P)" || WT="${WT%/}"
+START_WT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$START_WT" ] || START_WT="$CWD"
+START_WT="$(cd -P "$START_WT" 2>/dev/null && pwd -P)" || START_WT="${START_WT%/}"
+WT="$START_WT"   # task boundary; re-derived per compose command in set_boundary
+CUR="$CWD"       # directory the next command runs in; follows literal `cd` segments
+CD_BAD=0         # set when a `cd` cannot be followed with certainty
+CD_OK=0; CD_AND=0 # per segment: at top level / joined to the next command by &&
 
 deny() { # tag
   log_decision "$HOOK_NAME" "Bash" "$1" "block" "compose config reaches outside the task worktree: $1"
@@ -131,6 +142,36 @@ _in_wt() { case "$1" in "$WT"|"$WT"/*) return 0 ;; esac; return 1; }
 _unresolvable() {
   case "$1" in ''|-|*'$'*|*'`'*|*'*'*|*'?'*|*'{'*) return 0 ;; esac
   return 1
+}
+
+# A linked git worktree has a `.git` file pointing into <common>/worktrees/.
+_is_linked_wt() {
+  [ -f "$1/.git" ] || return 1
+  case "$(head -c 4096 "$1/.git" 2>/dev/null)" in *"/worktrees/"*) return 0 ;; esac
+  return 1
+}
+
+# Derive the worktree boundary for a compose command from where it really runs:
+# the --project-directory, else the first --file, else the current directory
+# (after any literal `cd`). The boundary is that path's git toplevel, accepted
+# only when it is a linked task worktree or the toplevel the session started in.
+set_boundary() { # anchor-or-empty
+  local a="$1" r dir top
+  if [ -n "$a" ]; then
+    _unresolvable "$a" && deny "unresolvable-path"
+    r="$(_phys "$CUR" "$a")"
+    [ "$r" = "SYMLINK" ] && deny "symlinked-path"
+    dir="$r"; [ -d "$dir" ] || dir="$(dirname "$r")"
+    [ -d "$dir" ] || deny "unresolvable-path"
+    top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "$top" ] || deny "path-outside-worktree"
+  else
+    top="$(git -C "$CUR" rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "$top" ] || top="$CUR"
+  fi
+  top="$(cd -P "$top" 2>/dev/null && pwd -P)" || deny "unresolvable-path"
+  if [ "$top" != "$START_WT" ] && ! _is_linked_wt "$top"; then deny "path-outside-worktree"; fi
+  WT="$top"
 }
 
 # Require a path to be a plain, in-worktree, non-symlink location. $1 base.
@@ -236,12 +277,17 @@ check_compose() { # sub, then compose-level facts in globals, then rest tokens
   local -a cargs=() penv=()
   case "$sub" in up|run|create|start|restart|watch|scale) ;; *) return 0 ;; esac
 
-  base0="$CWD"
-  if [ -n "$C_PDIR" ]; then require_in_wt "$CWD" "$C_PDIR"; base0="$(_phys "$CWD" "$C_PDIR")"; fi
-  for f in ${C_FILES[@]+"${C_FILES[@]}"}; do require_in_wt "$CWD" "$f"; done
-  for e in ${C_ENVF[@]+"${C_ENVF[@]}"}; do require_in_wt "$CWD" "$e"; done
+  [ "$CD_BAD" -eq 0 ] || deny "unresolvable-cd"
+  if [ -n "$C_PDIR" ]; then set_boundary "$C_PDIR"
+  elif [ "${#C_FILES[@]}" -gt 0 ]; then set_boundary "${C_FILES[0]}"
+  else set_boundary ""; fi
+
+  base0="$CUR"
+  if [ -n "$C_PDIR" ]; then require_in_wt "$CUR" "$C_PDIR"; base0="$(_phys "$CUR" "$C_PDIR")"; fi
+  for f in ${C_FILES[@]+"${C_FILES[@]}"}; do require_in_wt "$CUR" "$f"; done
+  for e in ${C_ENVF[@]+"${C_ENVF[@]}"}; do require_in_wt "$CUR" "$e"; done
   if [ -z "$C_PDIR" ] && [ "${#C_FILES[@]}" -gt 0 ]; then
-    base0="$(dirname "$(_phys "$CWD" "${C_FILES[0]}")")"
+    base0="$(dirname "$(_phys "$CUR" "${C_FILES[0]}")")"
   fi
 
   case "$sub" in run|create) check_flags "$base0" "$@" ;; esac
@@ -255,13 +301,13 @@ check_compose() { # sub, then compose-level facts in globals, then rest tokens
   remaining=$((BUDGET_SECS - SECONDS))
   [ "$remaining" -ge 2 ] || deny "unresolved-config"
   rc=0
-  out="$(cd "$CWD" 2>/dev/null && atelier_timeout "$remaining" env ${penv[@]+"${penv[@]}"} \
+  out="$(cd "$CUR" 2>/dev/null && atelier_timeout "$remaining" env ${penv[@]+"${penv[@]}"} \
     docker compose ${cargs[@]+"${cargs[@]}"} --profile '*' config --format json 2>/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
     remaining=$((BUDGET_SECS - SECONDS))
     [ "$remaining" -ge 2 ] || deny "unresolved-config"
     rc=0
-    out="$(cd "$CWD" 2>/dev/null && atelier_timeout "$remaining" env ${penv[@]+"${penv[@]}"} \
+    out="$(cd "$CUR" 2>/dev/null && atelier_timeout "$remaining" env ${penv[@]+"${penv[@]}"} \
       docker compose ${cargs[@]+"${cargs[@]}"} config --format json 2>/dev/null)" || rc=$?
   fi
   [ "$rc" -eq 0 ] || deny "unresolved-config"
@@ -291,7 +337,7 @@ scan_segment() { # depth tokens...
     tok="${t[$i]}"
     case "$tok" in
       COMPOSE_*=*|DOCKER_HOST=*|DOCKER_CONTEXT=*) ENVV+=("$tok"); i=$((i + 1)) ;;
-      *=*|env|command|builtin|exec|nohup|time|sudo|nice|stdbuf|ionice|timeout|setsid|caffeinate|xargs|-*) i=$((i + 1)) ;;
+      '{'|*=*|env|command|builtin|exec|nohup|time|sudo|nice|stdbuf|ionice|timeout|setsid|caffeinate|xargs|-*) i=$((i + 1)) ;;
       *[!0-9.smhd]*|'') break ;;
       [0-9]*|.[0-9]*) i=$((i + 1)) ;;
       *) break ;;
@@ -320,6 +366,24 @@ scan_segment() { # depth tokens...
       for ((j = i + 1; j < n; j++)); do joined+="${t[$j]} "; done
       scan_script "$joined" $((depth + 1))
       return 0 ;;
+    cd|pushd)
+      local tgt="" r
+      # Followed only when it surely changes the compose directory: top level
+      # (scan_script sets CD_OK) and joined to what follows by `&&` (CD_AND).
+      if [ "$CD_OK" -ne 1 ]; then CD_BAD=1; return 0; fi
+      for ((j = i + 1; j < n; j++)); do
+        case "${t[$j]}" in -P|-L|-e|-@|--) ;; *) tgt="${t[$j]}"; break ;; esac
+      done
+      case "$tgt" in
+        ''|-|*'$'*|*'`'*|*'*'*|*'?'*|*'{'*|*'['*) CD_BAD=1; return 0 ;;
+        '~') tgt="${HOME:-/nonexistent}" ;;
+        '~/'*) tgt="${HOME:-/nonexistent}/${tgt#'~/'}" ;;
+        '~'*) CD_BAD=1; return 0 ;;
+      esac
+      r="$(cd -P "$CUR" 2>/dev/null && cd -P -- "$tgt" 2>/dev/null && pwd -P)" || r=""
+      if [ -n "$r" ] && [ "$CD_AND" -eq 1 ]; then CUR="$r"; else CD_BAD=1; fi
+      return 0 ;;
+    popd) CD_BAD=1; return 0 ;;
     docker|docker-compose) ;;
     *) return 0 ;;
   esac
@@ -372,16 +436,26 @@ scan_segment() { # depth tokens...
 }
 
 scan_script() { # script depth
-  local script="$1" depth="$2" stripped seg
+  local script="$1" depth="$2" stripped seg conn k nseg pd=0 prev
   local -a segs
   case "$script" in *compose*) ;; *) return 0 ;; esac
   stripped="$(strip_heredocs "$script")" || stripped="$script"
   lex "$stripped"
+  conn="$LEX_CONN"
   IFS="$RS" read -r -d '' -a segs <<< "$LEX_OUT" || true
-  for seg in ${segs[@]+"${segs[@]}"}; do
-    [ -n "$seg" ] || continue
-    split_tokens "$seg"
-    scan_segment "$depth" ${TOKS[@]+"${TOKS[@]}"}
+  nseg=${#segs[@]}
+  for ((k = 0; k < nseg; k++)); do
+    seg="${segs[k]}"
+    if [ -n "$seg" ]; then
+      prev=""; [ "$k" -gt 0 ] && prev="${conn:$((k - 1)):1}"
+      CD_OK=0; CD_AND=0
+      if [ "$depth" -eq 0 ] && [ "$pd" -eq 0 ] && [ "$prev" != "|" ]; then CD_OK=1; fi
+      if [ "${conn:$k:1}" = "&" ] && [ "$((k + 1))" -lt "$nseg" ] \
+         && [ -z "${segs[k + 1]}" ] && [ "${conn:$((k + 1)):1}" = "&" ]; then CD_AND=1; fi
+      split_tokens "$seg"
+      scan_segment "$depth" ${TOKS[@]+"${TOKS[@]}"}
+    fi
+    case "${conn:$k:1}" in '(') pd=$((pd + 1)) ;; ')') [ "$pd" -gt 0 ] && pd=$((pd - 1)) ;; esac
   done
 }
 

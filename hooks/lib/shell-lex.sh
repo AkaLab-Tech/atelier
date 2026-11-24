@@ -43,13 +43,14 @@ _subst_len() {
 }
 
 LEX_OUT=""
+LEX_CONN=""   # the separator character that ended each segment, in order
 lex() {
   # bash 3.2 copies the string tail on every ${s:$i:1}, so a per-character walk
   # is quadratic. Index a small sliding window instead and jump quoted runs.
   local LC_ALL=C
   local s="$1" n i=0 c nx sub_end cur="" have=0 q="" rest run win="" b=-1000 o
   n=${#s}
-  LEX_OUT=""
+  LEX_OUT=""; LEX_CONN=""
   _flush() {
     if [ -n "$cur" ] || [ "$have" -eq 1 ]; then LEX_OUT+="$cur$US"; fi
     cur=""; have=0
@@ -111,7 +112,7 @@ lex() {
             cur+="$c"; have=1
           fi ;;
         ' '|$'\t') _flush ;;
-        $'\n'|';'|'&'|'|'|'('|')') _flush; LEX_OUT+="$RS" ;;
+        $'\n'|';'|'&'|'|'|'('|')') _flush; LEX_OUT+="$RS"; LEX_CONN+="$c" ;;
         *) cur+="$c"; have=1 ;;
       esac
     fi
