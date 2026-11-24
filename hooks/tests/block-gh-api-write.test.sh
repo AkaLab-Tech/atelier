@@ -647,6 +647,56 @@ else
 fi
 
 # =============================================================================
+group "G1: brace / glob shaped gh subcommand, gh word and -R value (block)"
+# =============================================================================
+block "braced subcommand {api,} REST write"   'gh {api,} -X POST repos/o/r/issues -f title=x'
+block "braced subcommand {a,-}pi REST write"  'gh {a,-}pi -X POST repos/o/r/issues -f title=x'
+block "braced subcommand {a,-}pi graphql"     'gh {a,-}pi graphql -f query='"'"'mutation{deleteIssue(input:{issueId:"x"}){clientMutationId}}'"'"
+block "braced subcommand {alias,} set"        "gh {alias,} set x 'api -X POST repos/o/r/issues'"
+block "braced subcommand {api,} plain read"   'gh {api,} repos/o/r/issues'
+block "globbed subcommand ap?"                'gh ap? -X POST repos/o/r/issues -f title=x'
+block "globbed subcommand a*"                 'gh a* -X POST repos/o/r/issues -f title=x'
+block "globbed subcommand [a]pi"              'gh [a]pi -X POST repos/o/r/issues -f title=x'
+block "globbed subcommand ap* graphql"        'gh ap* graphql -f query='"'"'mutation{deleteIssue(input:{issueId:"x"}){clientMutationId}}'"'"
+block "globbed subcommand al?as set"          "gh al?as set x 'api -X POST repos/o/r/issues'"
+block "globbed subcommand [a]lias set"        "gh [a]lias set x 'api -X POST repos/o/r/issues'"
+block "braced -R value hiding the subcommand" 'gh -R {o/r,} {api,} -X POST repos/o/r/issues -f title=x'
+block "braced -R value, plain api write"      'gh -R {o,p}/r api -X POST repos/o/r/issues -f title=x'
+block "globbed -R value, plain api write"     'gh --repo o/* api -X POST repos/o/r/issues -f title=x'
+block "globbed gh command word g?"            'g? api -X POST repos/o/r/issues -f title=x'
+block "globbed gh command word g*"            'g* api -X POST repos/o/r/issues -f title=x'
+block "globbed gh command word [g]h"          '[g]h api -X POST repos/o/r/issues -f title=x'
+block "globbed gh command word after &&"      'true && g? api -X POST repos/o/r/issues -f title=x'
+block "braced gh command word {gh,}"          '{gh,} api -X POST repos/o/r/issues -f title=x'
+block "braced gh command word g{h,}"          'g{h,} api -X POST repos/o/r/issues -f title=x'
+block "braced gh command word {g,}h"          '{g,}h api -X POST repos/o/r/issues -f title=x'
+block "braced gh command word after ;"        'true; g{h,} api -X POST repos/o/r/issues -f title=x'
+
+# =============================================================================
+group "G2: brace groups, tests, globs and quoted metacharacters (no false refusals)"
+# =============================================================================
+allow "brace group { cmd; }"                  '{ echo hi; }'
+allow "brace group { gh pr list; }"           '{ gh pr list; }'
+allow "brace group with && and gh read"       'true && { gh pr list; echo done; }'
+allow "brace group multi-line"                $'{\n  gh pr list\n  echo done\n}'
+allow "test [ -f x ]"                         '[ -f x ]'
+allow "test [ -f x ] && gh pr list"           '[ -f x ] && gh pr list'
+allow "test [[ ... ]]"                        '[[ -f x && -d y ]]'
+allow "if [[ ]] then gh pr list"              'if [[ -n x ]]; then gh pr list; fi'
+allow "ls *.txt"                              'ls *.txt'
+allow "ls with ? and [] globs"                'ls f?.txt [ab]*.log'
+allow "echo with brace expansion"             'echo {a,b}.txt'
+allow "gh issue view --jq object construct"  "gh issue view 1 --jq '.[] | {a:.b}'"
+allow "gh pr list --search quoted"            'gh pr list --search "is:open"'
+allow "gh pr list --search quoted glob"       "gh pr list --search 'is:open label:*bug*'"
+allow "gh pr list --json fields"              'gh pr list --json number,title --jq '"'"'.[] | {n:.number}'"'"
+allow "gh issue list --json + --jq brackets"  "gh issue list --json number --jq '.[].number'"
+allow "gh api endpoint --jq '.[]'"            "gh api repos/o/r/issues --jq '.[]'"
+allow "gh api endpoint --jq object"           "gh api repos/o/r/issues --jq '.[] | {n:.number}'"
+allow "git log --format with braces"          "git log --format='%h {x}'"
+allow "git log --format double-quoted braces" 'git log --format="%h {x} [y] *z?"'
+
+# =============================================================================
 group "F: lexer default-output invariance (origin/main vs working copy)"
 # =============================================================================
 OLD_LEX="$TMP/shell-lex.old.sh"

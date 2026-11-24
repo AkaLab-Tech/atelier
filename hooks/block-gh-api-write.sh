@@ -82,6 +82,8 @@ shopt -s nocasematch
 case "$plain" in
   *gh*) case "$plain" in *api*|*alias*|*'$'*|*'`'*) need=1 ;; esac ;;
 esac
+# A brace or glob can spell `gh`, `api` or `alias` without the words appearing.
+case "$plain" in *'{'*|*'*'*|*'?'*|*'['*) need=1 ;; esac
 case "$plain" in
   *api*) case "$plain" in *'$'*|*'`'*) need=1 ;; esac ;;
 esac
@@ -132,6 +134,10 @@ is_redir() { # sets REDIR: 0 not a redirection, 1 this token, 2 this token and i
 
 # Brace expansion that could rewrite a flag or endpoint word.
 braced() { case "$1" in *'{'*,*'}'*|*'{'*..*'}'*) return 0 ;; esac; return 1; }
+
+# Any brace or glob metacharacter; none belongs in a word that picks the command
+# or the gh subcommand.
+meta() { case "$1" in *'{'*|*'*'*|*'?'*|*'['*) return 0 ;; esac; return 1; }
 
 # --- GraphQL document scanner ---------------------------------------------
 GQL_T=()
@@ -494,8 +500,11 @@ handle_gh() { # command word is gh at T[CI]
     t="${T[j]}"
     if is_redir "$t"; then j=$((j + REDIR)); continue; fi
     [ "${F:j:1}" = 0 ] || deny_unread "a word before the subcommand holds an expansion"
+    ! meta "$t" || deny_unread "a word before or at the subcommand holds a brace or glob pattern"
     case "$t" in
-      -R|--repo) j=$((j + 2)) ;;
+      -R|--repo)
+        [ "${F:j+1:1}" = 0 ] && ! meta "${T[j+1]:-}" || deny_unread "the repository value holds an expansion or pattern"
+        j=$((j + 2)) ;;
       -R?*|--repo=*|-h|--help|--version) j=$((j + 1)) ;;
       -*) deny_unread "a global flag outside the supported set" ;;
       *) break ;;
@@ -525,7 +534,7 @@ analyze_segment() { # segment, flags, previous connector, depth
   T=(${TOKS[@]+"${TOKS[@]}"}); F="${flags//[^01]/}"; N=${#T[@]}
   [ "$N" -gt 0 ] || return 0
   local -a LT=(${T[@]+"${T[@]}"})
-  local LF="$F" LN="$N" txt=" ${T[*]} "
+  local LF="$F" LN="$N" txt=" ${T[*]} " cw
 
   # Substitutions that sit inside any word are analysed as commands of their own.
   for ((x = 0; x < LN; x++)); do
@@ -550,8 +559,17 @@ analyze_segment() { # segment, flags, previous connector, depth
 
   lcase "$txt"; ltxt="$LC"
   if [[ "$ltxt" =~ $RE_GH ]] && [[ "$LF" == *1* ]]; then ghx=1; fi
-  [[ "$ltxt" =~ $RE_API ]] || [[ "$ltxt" =~ $RE_ALIAS ]] || [ "$ghx" -eq 1 ] || { sink_check "$prev"; return 0; }
+  [[ "$ltxt" =~ $RE_API ]] || [[ "$ltxt" =~ $RE_ALIAS ]] || [ "$ghx" -eq 1 ] || meta "$txt" || { sink_check "$prev"; return 0; }
   resolve_cmd
+  if [ "$CSTAT" = ok ] && [ "$CI" -ge 0 ]; then
+    cw="${T[CI]}"
+    if braced "$cw"; then deny_unread "the command word holds a brace expansion"; fi
+    if meta "$cw" && [ "$cw" != "[" ] && [ "$cw" != "[[" ]; then
+      lcase "${cw##*/}"
+      # shellcheck disable=SC2053  # the pattern on the right is intended
+      if [[ gh == $LC ]] || [[ gh.exe == $LC ]]; then deny_unread "the command word is a pattern that can name gh"; fi
+    fi
+  fi
   if [ "$CSTAT" = exp ]; then
     [[ "$ltxt" =~ $RE_API ]] && deny_unread "the command word holds an expansion"
     return 0
