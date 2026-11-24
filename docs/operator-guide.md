@@ -398,6 +398,14 @@ Since v0.8.0, atelier-launched Claude Code sessions run with Claude Code's nativ
 
 The setting lives in `~/.claude-work/settings.json` (the atelier config dir, not your personal `~/.claude/`). Your non-atelier `claude` sessions are unaffected. `atelier-doctor` verifies the setting is in place; `atelier-doctor --fix` enables it if missing.
 
+#### What the safety hooks can and cannot do
+
+atelier allows your project's test runners and its lint, typecheck and test scripts without asking. Those run *your project's own code*, so atelier's safety hooks can only inspect the command that starts them, not what the code does afterwards. The hooks are an extra layer, not a wall: the real boundary is on the server side (branch protection, required reviews, scoped credentials), so keep those switched on.
+
+Other package scripts and other `pnpm exec` programs are no longer allowed ahead of time; auto-mode judges them, and you may see an occasional prompt for a script with an unusual name. Inline code evaluation through `pnpm exec` is refused.
+
+Docker Compose is allowed only in the form atelier's own docker flow uses (explicit project name and the task's `docker-compose.yml`). A hook lets a compose command that starts containers through only in that exact form (optionally after a `cd` into the task's folder), and reads the resulting configuration first; it refuses it when it would reach outside the task's folder, ask for extra privileges, or mount the container runtime itself. If it refuses, fix the compose file or use the exact form rather than working around the check.
+
 #### atelier's own `autoMode.allow` entry
 
 Auto-mode has its own prose rules under `autoMode.allow` in your user settings. atelier adds one entry there so the classifier lets a project's test scripts (including browser/Storybook runs) proceed inside task worktrees. Things to know:
