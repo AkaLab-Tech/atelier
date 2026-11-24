@@ -81,7 +81,13 @@ Draft PRs (`isDraft: true`) are **skipped** — note them as `skipped (draft)` a
 
 If `gh pr list` fails (unauthenticated, network error, repo not found), report `<owner/repo>: enumeration failed — <error>` and continue with the remaining repos.
 
-Collect the surviving (non-draft, `task/*`) records into a **triage list**.
+For each PR that survives the `task/` and non-draft filter, run `atelier-pr-origin <owner/repo> <NN>`. The selection is not based on `headRefName` alone.
+
+- Exit 0 (`origin=trusted`) → keep it.
+- Exit 1 → `held (untrusted origin) — <reason>`. Terminal: never dispatch the PR, and never ask the size-waiver question for it.
+- Exit 2 → `waiting (origin unreadable)`; skip the PR on this pass.
+
+Collect the surviving (non-draft, `task/*`, trusted-origin) records into a **triage list**.
 
 ### 4. Triage each PR — read-only guardrail lens
 

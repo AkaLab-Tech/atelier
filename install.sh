@@ -1720,6 +1720,8 @@ phase_c_1_setup_project_helper() {
   # auto-merge gate and /atelier:babysit-prs read verdicts through it.
   _phase_c_1_symlink_helper atelier-review-verdict
   _phase_c_1_symlink_helper atelier-size-waiver
+  # #810: read-only PR origin/author check used by auto-merge and babysit-prs.
+  _phase_c_1_symlink_helper atelier-pr-origin
   # #748: operator baseline-override question builder/verifier.
   _phase_c_1_symlink_helper atelier-baseline-override
   _phase_c_1_symlink_helper atelier-subagent-ledger
