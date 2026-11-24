@@ -200,48 +200,92 @@ check_bind_source() { # base src
   return 0
 }
 
-# Flags of `run` / `create` that grant access beyond the worktree.
-check_flags() { # base tokens...
-  local base="$1" k=2 n=$# tok val spec src
+# One volume/mount/volumes-from value. $1 kind (volume|mount|from), $2 base, $3 spec.
+check_mount_spec() {
+  local kind="$1" base="$2" spec="$3" src
+  [ -n "$spec" ] || return 0
+  case "$kind" in
+    from) deny "container-volumes" ;;
+    mount)
+      case ",$spec," in
+        *,type=tmpfs,*|*,type=volume,*|*,type=image,*) ;;
+        *)
+          src=""
+          case ",$spec," in
+            *,source=*) src="${spec#*source=}"; src="${src%%,*}" ;;
+            *,src=*) src="${spec#*src=}"; src="${src%%,*}" ;;
+          esac
+          [ -n "$src" ] && check_bind_source "$base" "$src" ;;
+      esac ;;
+    *)
+      src="${spec%%:*}"
+      case "$src" in
+        /*|.*|'~'*|*'$'*|*'`'*) check_bind_source "$base" "$src" ;;
+      esac ;;
+  esac
+  return 0
+}
+
+# Flags of `run` / `create` that grant access beyond the worktree. Parsed the
+# way the compose CLI (pflag) does: `--flag v`, `--flag=v`, `-x v`, `-xv`,
+# `-x=v`, and grouped short flags (`-dv v`) where the first value-taking short
+# flag takes the rest of the word (minus one leading `=`) or the next word.
+# Short flags taking a value (`docker compose run --help`): -e -l -p -u -v -w.
+# `run` stops at `--` and at its first positional (the service); other
+# subcommands keep scanning.
+check_flags() { # sub base tokens...
+  local sub="$1" base="$2" k=3 n=$# tok val rest i c
   local -a a=("$@")
   while [ "$k" -le "$n" ]; do
     tok="${a[$((k - 1))]}"
-    val="${a[$k]:-}"
+    k=$((k + 1))
     case "$tok" in
+      --) [ "$sub" = "run" ] && return 0; continue ;;
       --privileged|--privileged=*|--cap-add|--cap-add=*|--device|--device=*|--security-opt|--security-opt=*)
         deny "elevated-flag" ;;
       --pid|--ipc|--uts|--userns|--cgroupns|--network|--net)
+        [ "$k" -le "$n" ] || deny "unresolvable-flag-value"
+        val="${a[$((k - 1))]}"
+        k=$((k + 1))
         case "$val" in host|host:*|container:*) deny "host-namespace-flag" ;; esac ;;
       --pid=*|--ipc=*|--uts=*|--userns=*|--cgroupns=*|--network=*|--net=*)
         val="${tok#*=}"
         case "$val" in host|host:*|container:*) deny "host-namespace-flag" ;; esac ;;
-      -v|--volume|--mount|--volumes-from) spec="$val" ;;
-      --volume=*|--mount=*|--volumes-from=*) spec="${tok#*=}" ;;
-      -v?*) case "$tok" in --*) spec="" ;; *) spec="${tok#-v}" ;; esac ;;
-      *) spec="" ;;
+      --volume|--mount|--volumes-from)
+        [ "$k" -le "$n" ] || deny "unresolvable-flag-value"
+        val="${a[$((k - 1))]}"
+        k=$((k + 1))
+        case "$tok" in
+          --volume) check_mount_spec volume "$base" "$val" ;;
+          --mount) check_mount_spec mount "$base" "$val" ;;
+          *) check_mount_spec from "$base" "$val" ;;
+        esac ;;
+      --volume=*) check_mount_spec volume "$base" "${tok#*=}" ;;
+      --mount=*) check_mount_spec mount "$base" "${tok#*=}" ;;
+      --volumes-from=*) check_mount_spec from "$base" "${tok#*=}" ;;
+      --cap-drop|--entrypoint|--env|--env-from-file|--label|--name|--pull|--publish|--user|--workdir|--scale)
+        k=$((k + 1)) ;;
+      --*) ;;
+      -?*)
+        i=1
+        while [ "$i" -lt "${#tok}" ]; do
+          c="${tok:$i:1}"
+          case "$c" in
+            e|l|p|u|v|w)
+              rest="${tok:$((i + 1))}"
+              rest="${rest#=}"
+              if [ -z "$rest" ]; then
+                [ "$k" -le "$n" ] || deny "unresolvable-flag-value"
+                rest="${a[$((k - 1))]}"
+                k=$((k + 1))
+              fi
+              [ "$c" = "v" ] && check_mount_spec volume "$base" "$rest"
+              break ;;
+          esac
+          i=$((i + 1))
+        done ;;
+      *) [ "$sub" = "run" ] && return 0 ;;
     esac
-    if [ -n "$spec" ]; then
-      case "$tok" in
-        --volumes-from*) deny "container-volumes" ;;
-        --mount|--mount=*)
-          case ",$spec," in
-            *,type=tmpfs,*|*,type=volume,*|*,type=image,*) ;;
-            *)
-              src=""
-              case ",$spec," in
-                *,source=*) src="${spec#*source=}"; src="${src%%,*}" ;;
-                *,src=*) src="${spec#*src=}"; src="${src%%,*}" ;;
-              esac
-              [ -n "$src" ] && check_bind_source "$base" "$src" ;;
-          esac ;;
-        *)
-          src="${spec%%:*}"
-          case "$src" in
-            /*|.*|'~'*|*'$'*|*'`'*) check_bind_source "$base" "$src" ;;
-          esac ;;
-      esac
-    fi
-    k=$((k + 1))
   done
 }
 
@@ -305,7 +349,7 @@ check_compose() { # sub, then compose-level facts in globals, then rest tokens
     base0="$(dirname "$(_phys "$CUR" "${C_FILES[0]}")")"
   fi
 
-  case "$sub" in run|create) check_flags "$base0" "$@" ;; esac
+  case "$sub" in run|create) check_flags "$sub" "$base0" "$@" ;; esac
 
   [ -n "$C_PROJ" ] && cargs+=(-p "$C_PROJ")
   for f in ${C_FILES[@]+"${C_FILES[@]}"}; do cargs+=(--file "$f"); done

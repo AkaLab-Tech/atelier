@@ -483,6 +483,39 @@ expect_allow "H5 run with a tmpfs mount" "$RUN --mount type=tmpfs,target=/t web 
 expect_allow "H5 run with a bridge network" "$RUN --network bridge web sh"
 expect_allow "H5 run with plain flags" "$RUN -e FOO=1 -T web echo hi"
 
+# --- flag-form parsing: attached, grouped and `=` forms; both subcommands ---
+CB="docker compose -p demo --file $WT/docker-compose.yml"
+for sub in run create; do
+  expect_block "H5f $sub -v SRC" bind-outside-worktree "$CB $sub -v $FH:/x web"
+  expect_block "H5f $sub -vSRC" bind-outside-worktree "$CB $sub -v$FH:/x web"
+  expect_block "H5f $sub -v=SRC" bind-outside-worktree "$CB $sub -v=$FH:/x web"
+  expect_block "H5f $sub -dv SRC" bind-outside-worktree "$CB $sub -dv $FH:/x web"
+  expect_block "H5f $sub -dvSRC" bind-outside-worktree "$CB $sub -dv$FH:/x web"
+  expect_block "H5f $sub -dv=SRC" bind-outside-worktree "$CB $sub -dv=$FH:/x web"
+  expect_block "H5f $sub -itv SRC" bind-outside-worktree "$CB $sub -itv $FH:/x web"
+  expect_block "H5f $sub -e A=1 -v SRC" bind-outside-worktree "$CB $sub -e A=1 -v $FH:/x web"
+  expect_block "H5f $sub -T -v SRC" bind-outside-worktree "$CB $sub -T -v $FH:/x web"
+  expect_block "H5f $sub --volume SRC" bind-outside-worktree "$CB $sub --volume $FH:/x web"
+  expect_block "H5f $sub --volume=SRC" bind-outside-worktree "$CB $sub --volume=$FH:/x web"
+  expect_block "H5f $sub --mount type=bind,src=" bind-outside-worktree "$CB $sub --mount type=bind,src=$FH,dst=/x web"
+  expect_block "H5f $sub --mount=type=bind,source=" bind-outside-worktree "$CB $sub --mount=type=bind,source=$FH,target=/x web"
+  expect_block "H5f $sub --network host" host-namespace-flag "$CB $sub --network host web"
+  expect_block "H5f $sub --network=host" host-namespace-flag "$CB $sub --network=host web"
+  expect_block "H5f $sub --pid=host" host-namespace-flag "$CB $sub --pid=host web"
+  expect_block "H5f $sub --cap-add ALL" elevated-flag "$CB $sub --cap-add ALL web"
+  expect_block "H5f $sub --privileged" elevated-flag "$CB $sub --privileged web"
+  expect_allow "H5f $sub -dv in-worktree bind" "$CB $sub -dv $WT/data:/d web"
+  expect_allow "H5f $sub -v named volume" "$CB $sub -v data:/d web"
+  expect_allow "H5f $sub -e takes -v as its value" "$CB $sub -e -v web"
+done
+expect_block "H5f run -dv with no value" unresolvable-flag-value "$CB run -dv"
+expect_block "H5f run --volume with no value" unresolvable-flag-value "$CB run --volume"
+expect_block "H5f create -dv with no value" unresolvable-flag-value "$CB create -dv"
+expect_block "H5f create --volume with no value" unresolvable-flag-value "$CB create --volume"
+expect_block "H5f create scans past the positional" bind-outside-worktree "$CB create web -v $FH:/x"
+expect_allow "H5f run: command args after the service are not flags" "$CB run web sh -v $FH:/x"
+expect_allow "H5f run: args after -- are not flags" "$CB run -- web sh -v $FH:/x"
+
 # --- text that only mentions compose, other subcommands, the repo's runner ---
 mkcfg '.services.web.privileged = true'
 expect_allow "H6 echo that names a compose command" "echo \"docker compose -p demo --file $WT/docker-compose.yml up -d\""
