@@ -465,10 +465,10 @@ allow "updateProjectV2DraftIssue" \
 allow "updateIssue" \
   "$(gql 'mutation($i:ID!,$b:String!){updateIssue(input:{id:$i,body:$b}){issue{id}}}' '-f i=I -f b=B')"
 allow "addComment" "$(gql "$MUT_OK" '-f i=I -f b=B')"
-allow "-F query flag" \
-  "gh api graphql -F query='$MUT_OK' -f i=I -f b=B"
-allow "--field query flag" \
-  "gh api graphql --field query='$MUT_OK' -f i=I -f b=B"
+allow "raw-field query flag spelled --raw-field" \
+  "gh api graphql --raw-field query='$MUT_OK' -f i=I -f b=B"
+allow "-f query with typed non-query variables" \
+  "gh api graphql -f query='$MUT_OK' -F i=I -F b=B"
 allow "named operation" \
   "$(gql 'mutation SetStatus($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){projectV2Item{id}}}' '-f p=P -f i=I -f f=F -f o=O')"
 allow "aliased field" \
@@ -521,6 +521,48 @@ block "forbidden field in a second -f query" \
   "gh api graphql -f query='mutation{addComment(input:{subjectId:\"x\",body:\"y\"}){clientMutationId}}' -f query='mutation{deleteRef(input:{refId:\"x\"}){clientMutationId}}'"
 block "forbidden field nested only in the selection is not enough" \
   "gh api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:\"x\"}){addComment{id}}}'"
+
+# =============================================================================
+group "D3: typed query field on the GraphQL endpoint (placeholder substitution)"
+# =============================================================================
+# gh substitutes {owner}/{repo}/{branch} and :owner/:repo inside typed -F/--field
+# values, so a query sent typed can become a mutation the hook never saw.
+RQ='query{viewer{login}}'
+block "-F query holding a mutation (old allow case)" \
+  "gh api graphql -F query='$MUT_OK' -f i=I -f b=B"
+block "--field query holding a mutation (old allow case)" \
+  "gh api graphql --field query='$MUT_OK' -f i=I -f b=B"
+block "-F query, harmless read query" "gh api graphql -F query='$RQ'"
+block "--field query, harmless read query" "gh api graphql --field query='$RQ'"
+block "-Fquery= clustered, harmless read query" "gh api graphql -Fquery='$RQ'"
+block "--field=query= joined, harmless read query" "gh api graphql --field=query='$RQ'"
+block "-F query after other fields" "gh api graphql -f n=1 -F query='$RQ'"
+block "-F query before the endpoint" "gh api -F query='$RQ' graphql"
+block "-F query on /graphql endpoint" "gh api /graphql -F query='$RQ'"
+block "-F query on api.github.com/graphql" "gh api https://api.github.com/graphql -F query='$RQ'"
+block "-F query with brace {owner}" "gh api graphql -F query='query{repository(owner:\"x\",name:\"{owner}\"){id}}'"
+block "-F query with brace {repo}" "gh api graphql -F query='query{repository(owner:\"x\",name:\"{repo}\"){id}}'"
+block "-F query with brace {branch}" "gh api graphql -F query='query{repository(owner:\"x\",name:\"{branch}\"){id}}'"
+block "-F query with colon :owner" "gh api graphql -F query='query{repository(owner:\"x\",name:\":owner\"){id}}'"
+block "-F query with colon :repo" "gh api graphql -F query='query{repository(owner:\"x\",name:\":repo\"){id}}'"
+block "--field query with brace {owner}" "gh api graphql --field query='query{repository(owner:\"x\",name:\"{owner}\"){id}}'"
+block "--field query with colon :repo" "gh api graphql --field query='query{repository(owner:\"x\",name:\":repo\"){id}}'"
+block "-Fquery with brace {branch}" "gh api graphql -Fquery='query{repository(owner:\"x\",name:\"{branch}\"){id}}'"
+block "--field=query with colon :owner" "gh api graphql --field=query='query{repository(owner:\"x\",name:\":owner\"){id}}'"
+block "-F query with placeholder, no mutation token, extra raw field" \
+  "gh api graphql -f n=1 -F query='query{repository(owner:\"x\",name:\"{repo}\"){id}}'"
+allow "-f query read plus -F n=1" "gh api graphql -f query='$RQ' -F n=1"
+allow "-f query read plus -F owner=" "gh api graphql -f query='$RQ' -F owner=x"
+allow "--raw-field query read" "gh api graphql --raw-field query='$RQ'"
+allow "--raw-field query read plus --field n=1" "gh api graphql --raw-field query='$RQ' --field n=1"
+allow "-fquery= clustered raw read" "gh api graphql -fquery='$RQ'"
+allow "--raw-field=query= joined raw read" "gh api graphql --raw-field=query='$RQ'"
+allow "-f query with placeholder text, raw" \
+  "gh api graphql -f query='query{repository(owner:\"x\",name:\"{owner}\"){id}}'"
+allow "raw-field board mutation with typed variables" \
+  "gh api graphql -f query='mutation(\$p:ID!,\$i:ID!,\$f:ID!,\$o:String!){updateProjectV2ItemFieldValue(input:{projectId:\$p,itemId:\$i,fieldId:\$f,value:{singleSelectOptionId:\$o}}){projectV2Item{id}}}' -F p=P -F i=I -F f=F -F o=O"
+allow "raw-field board mutation with typed owner variable" \
+  "gh api graphql --raw-field query='$MUT_OK' -F owner=x -f i=I -f b=B"
 
 # =============================================================================
 group "E1: allow-listed helper invocations and unrelated commands"

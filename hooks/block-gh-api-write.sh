@@ -421,7 +421,7 @@ SRC=""
 api_check() { # $1: index of the first word after `api`
   local j="$1" posonly=0 t f name val vf hasval c rest r2
   local npos=0 endpoint="" endf=0 nmeth=0 methbad=0 have_field=0 have_input=0 help=0
-  local hdrbad=0 q k fbad=0
+  local hdrbad=0 q k fbad=0 qtyped=0
   local -a qv=() qfl=()
   API_SEEN=1
   while [ "$j" -lt "$N" ]; do
@@ -493,6 +493,7 @@ api_check() { # $1: index of the first word after `api`
     [ "${#qv[@]}" -gt 0 ] || deny_unread "no inline GraphQL query"
     [ "$fbad" -eq 0 ] || deny_unread "a GraphQL field has a key that cannot be read or can split into more fields"
     [ "${#qv[@]}" -eq 1 ] || deny_unread "more than one GraphQL query field"
+    [ "$qtyped" -eq 0 ] || deny_unread "the GraphQL query is a typed field, which the CLI rewrites before sending"
     for ((k = 0; k < ${#qv[@]}; k++)); do
       q="${qv[k]}"
       [ "${qfl[k]}" = 0 ] || deny_unread "the GraphQL query holds an expansion"
@@ -526,7 +527,9 @@ rec_flag() {
     --field|--raw-field)
       have_field=1
       if [ "$vf" != 0 ] || [[ "$val" != *=* ]] || ! [[ "${val%%=*}" =~ ^[A-Za-z0-9_.-]+$ ]]; then fbad=1
-      elif [ "${val%%=*}" = query ]; then qv+=("${val#*=}"); qfl+=("$vf")
+      elif [ "${val%%=*}" = query ]; then
+        qv+=("${val#*=}"); qfl+=("$vf")
+        [ "$name" = --raw-field ] || qtyped=1
       fi
       case "$val" in *'{'*|*'*'*|*'?'*|*'['*) ! unquoted_meta "$val" || fbad=1 ;; esac ;;
     --input) have_input=1 ;;
