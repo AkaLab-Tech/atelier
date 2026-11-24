@@ -804,6 +804,110 @@ else
 fi
 
 # =============================================================================
+group "H1: GraphQL endpoint, unreadable fields and tokenizer edges (block)"
+# =============================================================================
+HQ='query{viewer{login}}'
+BAD='mutation{mergePullRequest(input:{pullRequestId:"x"}){clientMutationId}}'
+CR=$'\r'
+BOM=$'\xef\xbb\xbf'
+block "expansion key beside a harmless query" \
+  "gh api graphql -f query='$HQ' -f \$K=v"
+block "command-substitution key beside a harmless query" \
+  "gh api graphql -f query='$HQ' -f \$(echo query)=v"
+block "brace-group key beside a harmless query" \
+  "gh api graphql -f query='$HQ' -f {query,x}=v"
+block "glob key beside a harmless query" \
+  "gh api graphql -f query='$HQ' -f qu?ry=v"
+block "bracket key beside a harmless query" \
+  "gh api graphql -f query='$HQ' -f quer[y]=v"
+block "field word with no equals sign" \
+  "gh api graphql -f query='$HQ' -f novalue"
+block "key outside the allowed characters" \
+  "gh api graphql -f query='$HQ' -f 'a b=v'"
+block "unquoted brace group in the query value" \
+  "gh api graphql -f query={$HQ,$BAD}"
+block "unquoted brace group in the query value (-F)" \
+  "gh api graphql -F query={query{a},query{b}}"
+block "two plain query fields" \
+  "gh api graphql -f query='$HQ' -f query='$HQ'"
+block "two query fields, -f and -F" \
+  "gh api graphql -f query='$HQ' -F query='$HQ'"
+block "harmless query plus a field with an expansion value" \
+  "gh api graphql -f query='$HQ' -f owner=\$OWNER"
+block "harmless query plus a field with a substitution value" \
+  "gh api graphql -f query='$HQ' -f owner=\$(whoami)"
+block "mutation hidden behind a raw CR in a comment" \
+  "gh api graphql -f query='query{a} # note${CR}${BAD}'"
+block "mutation hidden behind a raw CR in a leading comment" \
+  "gh api graphql -f query='# note${CR}${BAD}'"
+# The tokenizer runs on any document holding the word `mutation`; each case
+# below is an otherwise allowlisted mutation, so only the edge under test blocks.
+AM='mutation{addComment(input:{subjectId:"x",body:"y"}){clientMutationId}}'
+block "vertical tab in a mutation" \
+  "gh api graphql -f query='mutation$(printf '\v'){addComment(input:{subjectId:\"x\",body:\"y\"}){clientMutationId}}'"
+block "form feed in a mutation" \
+  "gh api graphql -f query='mutation$(printf '\f'){addComment(input:{subjectId:\"x\",body:\"y\"}){clientMutationId}}'"
+block "form feed in a comment before a mutation" \
+  "gh api graphql -f query='# c$(printf '\f')
+$AM'"
+block "control character inside a string" \
+  "gh api graphql -f query='mutation{addComment(input:{subjectId:\"x\",body:\"a$(printf '\001')b\"}){clientMutationId}}'"
+block "other control character between tokens" \
+  "gh api graphql -f query='mutation{$(printf '\002')addComment(input:{subjectId:\"x\",body:\"y\"}){clientMutationId}}'"
+block "raw newline inside a regular string" \
+  "gh api graphql -f query='mutation{addComment(input:{subjectId:\"x\",body:\"a
+b\"}){clientMutationId}}'"
+block "raw CR inside a regular string" \
+  "gh api graphql -f query='mutation{addComment(input:{subjectId:\"x\",body:\"a${CR}b\"}){clientMutationId}}'"
+block "BOM in the middle of the document" \
+  "gh api graphql -f query='query{a}${BOM}${BAD}'"
+block "BOM after a leading BOM" \
+  "gh api graphql -f query='${BOM}${BOM}$AM'"
+block "BOM in the middle of a mutation" \
+  "gh api graphql -f query='mutation{${BOM}addComment(input:{subjectId:\"x\",body:\"y\"}){clientMutationId}}'"
+
+# =============================================================================
+group "H2: GraphQL endpoint, readable shapes that must still allow"
+# =============================================================================
+allow "quoted braces in a query" \
+  "gh api graphql -f query='{ a(x:1, y:2) }'"
+allow "leading BOM" \
+  "gh api graphql -f query='${BOM}query{viewer{login}}'"
+allow "leading BOM before an allowlisted mutation" \
+  "gh api graphql -f query='${BOM}$AM'"
+allow "CRLF line endings in an allowlisted mutation" \
+  "gh api graphql -f query='mutation{${CR}
+addComment(input:{subjectId:\"x\",body:\"y\"}){${CR}
+clientMutationId${CR}
+}${CR}
+}'"
+allow "CRLF line endings, no comments" \
+  "gh api graphql -f query='query{${CR}
+viewer{${CR}
+login${CR}
+}${CR}
+}'"
+allow "literal -f owner and -F number beside a read query" \
+  "gh api graphql -f query='query(\$owner:String!,\$number:Int!){repository(owner:\$owner,name:\"r\"){issue(number:\$number){title}}}' -f owner=a -F number=3"
+allow "comment ended by a newline, query after it" \
+  "gh api graphql -f query='# note
+query{viewer{login}}'"
+allow "CRLF after a comment on its own line" \
+  "gh api graphql -f query='# note${CR}
+query{viewer{login}}'"
+allow "allowlisted board mutation with literal fields" \
+  "gh api graphql -f query='$MUT_OK' -f i=I -F b=B"
+allow "block string holding # and newlines" \
+  "gh api graphql -f query='mutation{addProjectV2DraftIssue(input:{projectId:\"P\",title:\"t\",body:\"\"\"line # one
+two # }
+\"\"\"}){projectItem{id}}}'"
+allow "block string with # in a read query" \
+  "gh api graphql -f query='query{search(query:\"\"\"a # b
+c\"\"\",type:ISSUE,first:1){issueCount}}'"
+allow "# inside a regular string" \
+  "gh api graphql -f query='query{search(query:\"a # b\",type:ISSUE,first:1){issueCount}}'"
+
+# =============================================================================
 echo
 echo "Case counts per group:"
 total=0

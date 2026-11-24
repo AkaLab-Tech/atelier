@@ -139,6 +139,44 @@ braced() { case "$1" in *'{'*,*'}'*|*'{'*..*'}'*) return 0 ;; esac; return 1; }
 # or the gh subcommand.
 meta() { case "$1" in *'{'*|*'*'*|*'?'*|*'['*) return 0 ;; esac; return 1; }
 
+# 0 when the script text holds, outside quotes, a character of the kinds the
+# word $1 carries that the shell would expand into more than one word: a brace
+# group (`{` not followed by whitespace), `*`, `?` or `[`. Quote state is
+# tracked here because the lexer drops it. Unbalanced input counts as unquoted.
+unquoted_meta() {
+  local LC_ALL=C w="$1" c st=0 esc=0 cm=0 pb=0 prev=" " wb=0 wg=0 wq=0 wr=0
+  case "$w" in *'{'*) wb=1 ;; esac
+  case "$w" in *'*'*) wg=1 ;; esac
+  case "$w" in *'?'*) wq=1 ;; esac
+  case "$w" in *'['*) wr=1 ;; esac
+  while IFS= read -r -d '' -n 1 c; do
+    if [ "$cm" = 1 ]; then [ "$c" = $'\n' ] && cm=0; prev="$c"; continue; fi
+    if [ "$pb" = 1 ]; then
+      pb=0
+      case "$c" in ' '|$'\t'|$'\n'|$'\r') ;; *) return 0 ;; esac
+    fi
+    if [ "$esc" = 1 ]; then esc=0; prev="$c"; continue; fi
+    case "$st" in
+      1) [ "$c" = "'" ] && st=0 ;;
+      2) case "$c" in '\') esc=1 ;; '"') st=0 ;; esac ;;
+      3) case "$c" in '\') esc=1 ;; "'") st=0 ;; esac ;;
+      0) case "$c" in
+           '\') esc=1 ;;
+           "'") if [ "$prev" = '$' ]; then st=3; else st=1; fi ;;
+           '"') st=2 ;;
+           '#') case "$prev" in ' '|$'\t'|$'\n'|';'|'&'|'|'|'('|')') cm=1 ;; esac ;;
+           '{') if [ "$wb" = 1 ] && [ "$prev" != '$' ]; then pb=1; fi ;;
+           '*') [ "$wg" = 0 ] || return 0 ;;
+           '?') [ "$wq" = 0 ] || return 0 ;;
+           '[') [ "$wr" = 0 ] || return 0 ;;
+         esac ;;
+    esac
+    prev="$c"
+  done <<< "$SRC"
+  [ "$st" -eq 0 ] || return 0
+  return 1
+}
+
 # --- GraphQL document scanner ---------------------------------------------
 GQL_T=()
 GQL_FIELDS=()
@@ -146,11 +184,15 @@ GQL_P=0
 
 gql_tokenize() {
   local LC_ALL=C r="$1" rest pre m
-  local nl=$'\n'
-  local re_ws='^[[:space:],]+' re_com="^#[^$nl]*" re_name='^[_A-Za-z][_0-9A-Za-z]*'
-  local re_num='^-?[0-9][-+._0-9A-Za-z]*' re_str='^"([^"\\]|\\.)*"'
+  local lt=$'\n\r' tab=$'\t'
+  local re_ws="^[ $tab$lt,]+" re_com="^#[^$lt]*" re_name='^[_A-Za-z][_0-9A-Za-z]*'
+  local re_num='^-?[0-9][-+._0-9A-Za-z]*' re_str="^\"([^\"\\\\$lt]|\\\\[^$lt])*\""
   GQL_T=()
   r="${r#$'\xef\xbb\xbf'}"
+  # Control characters other than tab and line terminators are not valid
+  # anywhere in a document (strings and comments included); refuse them.
+  m="${r//[$tab$lt]/}"
+  case "$m" in *[[:cntrl:]]*) return 1 ;; esac
   while [ -n "$r" ]; do
     if [[ "$r" =~ $re_ws ]]; then r="${r:${#BASH_REMATCH[0]}}"; continue; fi
     if [[ "$r" =~ $re_com ]]; then r="${r:${#BASH_REMATCH[0]}}"; continue; fi
@@ -374,11 +416,12 @@ is_inert() {
 
 # --- gh api ---------------------------------------------------------------
 API_SEEN=0
+SRC=""
 
 api_check() { # $1: index of the first word after `api`
   local j="$1" posonly=0 t f name val vf hasval c rest r2
   local npos=0 endpoint="" endf=0 nmeth=0 methbad=0 have_field=0 have_input=0 help=0
-  local hdrbad=0 q k
+  local hdrbad=0 q k fbad=0
   local -a qv=() qfl=()
   API_SEEN=1
   while [ "$j" -lt "$N" ]; do
@@ -448,6 +491,8 @@ api_check() { # $1: index of the first word after `api`
   if [ "$name" = graphql ] || [[ "$name" == */graphql ]]; then
     [ "$have_input" -eq 0 ] || deny_unread "the GraphQL body comes from an input source"
     [ "${#qv[@]}" -gt 0 ] || deny_unread "no inline GraphQL query"
+    [ "$fbad" -eq 0 ] || deny_unread "a GraphQL field has a key that cannot be read or can split into more fields"
+    [ "${#qv[@]}" -eq 1 ] || deny_unread "more than one GraphQL query field"
     for ((k = 0; k < ${#qv[@]}; k++)); do
       q="${qv[k]}"
       [ "${qfl[k]}" = 0 ] || deny_unread "the GraphQL query holds an expansion"
@@ -480,7 +525,10 @@ rec_flag() {
       shopt -u nocasematch ;;
     --field|--raw-field)
       have_field=1
-      if [[ "$val" == *=* ]] && [ "${val%%=*}" = query ]; then qv+=("${val#*=}"); qfl+=("$vf"); fi ;;
+      if [ "$vf" != 0 ] || [[ "$val" != *=* ]] || ! [[ "${val%%=*}" =~ ^[A-Za-z0-9_.-]+$ ]]; then fbad=1
+      elif [ "${val%%=*}" = query ]; then qv+=("${val#*=}"); qfl+=("$vf")
+      fi
+      case "$val" in *'{'*|*'*'*|*'?'*|*'['*) ! unquoted_meta "$val" || fbad=1 ;; esac ;;
     --input) have_input=1 ;;
     --header)
       [ "$vf" = 0 ] || { hdrbad=1; return 0; }
@@ -640,6 +688,7 @@ ps_check() { # previous segment, its flags, this segment
 MENTION=0
 analyze_script() { # text, depth
   local text="$1" depth="$2" stripped lo lx lc k prev
+  local SRC
   local -a segs=() xs=()
   [ "$depth" -le "$MAX_DEPTH" ] || deny_unread "substitutions are nested too deeply"
   SCRIPTS=$((SCRIPTS + 1))
@@ -647,6 +696,7 @@ analyze_script() { # text, depth
   local MENTION=0
   stripped="$(strip_heredocs "$text")" || stripped="$text"
   [ "${#stripped}" -le "$MAX_LEN" ] || deny_unread "the command is over the size cap"
+  SRC="$stripped"
   lex "$stripped"
   lo="$LEX_OUT"; lx="$LEX_EXP"; lc="$LEX_CONN"
   IFS="$RS" read -r -d '' -a segs <<< "$lo" || true
