@@ -278,6 +278,45 @@ block "ssh remote command"         "ssh host 'gh api repos/o/r/issues -X POST'"
 block "deep nesting past the cap"  'echo $(echo $(echo $(echo $(echo gh api x))))'
 
 # =============================================================================
+group "A5: gh launched by a program that forwards arguments (no api word in view)"
+# =============================================================================
+block "stdin-fed xargs"            $'printf \'api\\nrepos/o/r/issues\\n-f\\ntitle=x\\n\' | xargs gh'
+block "echo-fed xargs"             'echo api repos/o/r/issues -f title=x | xargs gh'
+block "xargs replacement string"   "printf 'x\\n' | xargs -I{} gh {} repos/o/r/issues -f title=x"
+block "find -exec gh no api word"  "find . -maxdepth 0 -exec gh pr list ';'"
+block "parallel-style program"     "printf 'x\\n' | parallel gh {}"
+block "xargs with input redirect"  'xargs gh < list.txt'
+block "xargs count-limited"        "printf 'pr\\nlist\\n' | xargs -L10 gh"
+block "privilege wrapper off-list" 'sudo gh pr list'
+block "command gh api write"       'command gh api repos/o/r/issues -X POST'
+block "role config dir prefix write" 'GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh api repos/o/r/issues -X POST'
+block "abs-path gh basename write" 'nice /usr/local/bin/gh api repos/o/r/issues -X POST'
+block "lookup then gh api write"   'command -v gh; gh api repos/o/r/issues -X POST'
+block "exec -v gh api write"       'exec -v gh api repos/o/r/issues -X POST'
+block "then + xargs gh"          $'if true; then printf \'x\\n\' | xargs gh; fi'
+block "then + xargs gh, one line"  'if true; then xargs gh < list.txt; fi'
+
+allow "command -v gh"              'command -v gh'
+allow "command -V gh"              'command -V gh'
+allow "type gh"                    'type gh'
+allow "which gh"                   'which gh'
+allow "mkdir under gh dir"         'mkdir -p "$ATELIER_CONFIG_DIR/gh/author"'
+allow "ls file under gh dir"       'ls "$ATELIER_CONFIG_DIR/gh/author/hosts.yml"'
+allow "gh pr list"                 'gh pr list'
+allow "absolute-path gh"           '/usr/local/bin/gh pr list'
+allow "env GH_CONFIG_DIR prefix"   'env GH_CONFIG_DIR=/x gh pr view 1'
+allow "reviewer role config dir"   'GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer" gh pr review 5 --approve --body-file x.md'
+allow "author role config dir"     'GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/author" gh pr create --repo o/r --base main --head h --title t --body-file b.md'
+allow "gh pr checks --watch"       'gh pr checks 5 --watch --interval 30 --fail-fast'
+allow "bash -c gh pr list"         "bash -c 'gh pr list'"
+allow "brace group gh pr list"     '{ gh pr list; }'
+allow "echo naming gh"             'echo gh api repos/o/r/issues -f title=x'
+allow "echo naming gh in bash -c"  "bash -c 'echo gh'"
+allow "git commit message"         'git commit -m "fix gh thing"'
+allow "rg pattern naming gh"       'rg gh hooks'
+allow "cd then gh issue list"      'cd /x && gh issue list'
+
+# =============================================================================
 group "B1: fail-closed — unknown flag / wrapper / shape"
 # =============================================================================
 block "unknown long flag"          'gh api repos/o/r/issues --frobnicate'

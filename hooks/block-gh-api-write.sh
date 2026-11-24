@@ -11,9 +11,13 @@
 # segments. In each non-inert segment the command word is found after leading
 # NAME=value assignments and a closed set of transparent wrappers (env,
 # command, exec, time, nice, nohup, timeout). A segment that holds a `gh` word
-# and an `api` word is blocked when the command word holds an expansion, sits
-# behind an unknown wrapper or program, or is an interpreter body that cannot be
-# re-lexed; `-c`/eval bodies and `$(...)` substitutions are re-lexed (bounded
+# (the token `gh`, or a path whose last component is `gh`) anywhere other than
+# the command word is blocked, whether or not an `api` word appears (the
+# subcommand can reach `gh` from outside the segment text), unless the command
+# word is inert or a lookup (`command -v|-V`, `type`, `which`); so is a
+# segment whose command word holds an expansion, sits behind an unknown wrapper,
+# or is an interpreter body that cannot be re-lexed (a leading `{`, `then`, `do`
+# and similar keyword is skipped when no `api` word is present); `-c`/eval bodies and `$(...)` substitutions are re-lexed (bounded
 # depth). Echo/printf, commit messages, searches, heredoc prose and the like
 # are inert, unless that text is piped into an interpreter.
 #
@@ -89,13 +93,13 @@ command_str="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/de
 [ "$tool_name" = "Bash" ] || exit 0
 [ -n "$command_str" ] || exit 0
 
-# Fast path: a `gh` word next to `api`/`alias` or an expansion, or an `api` word
-# next to an expansion. Quotes are dropped first so a word split by quoting still counts.
+# Fast path: the text holds `gh`, or an `api` word next to an expansion. Quotes
+# are dropped first so a word split by quoting still counts.
 plain="$(printf '%s' "$command_str" | tr -d "'\"\\\\")"
 need=0
 shopt -s nocasematch
 case "$plain" in
-  *gh*) case "$plain" in *api*|*alias*|*'$'*|*'`'*) need=1 ;; esac ;;
+  *gh*) need=1 ;;
 esac
 # A brace or glob can spell `gh`, `api` or `alias` without the words appearing.
 case "$plain" in *'{'*|*'*'*|*'?'*|*'['*) need=1 ;; esac
@@ -126,6 +130,9 @@ lcase() { LC="$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]')"; }
 
 RE_ASSIGN='^[A-Za-z_][A-Za-z0-9_]*='
 RE_GH='(^|[^[:alnum:]_.-])gh(\.exe)?($|[^[:alnum:]_.-])'
+# A gh word proper: the token `gh` or a path whose last component is `gh`; a path
+# that only has a `gh` directory component is not one.
+RE_GHW='(^|[^[:alnum:]_.-])gh(\.exe)?($|[^[:alnum:]_./-])'
 RE_API='(^|[^[:alnum:]_.-])api($|[^[:alnum:]_.-])'
 RE_ALIAS='(^|[^[:alnum:]_.-])alias($|[^[:alnum:]_.-])'
 RE_MUT='(^|[^[:alnum:]_])mutation($|[^[:alnum:]_])'
@@ -363,7 +370,7 @@ CI=-1; CSTAT=ok
 # Sets CI (index of the command word, -1 when only assignments), CSTAT
 # (ok | exp: the word holds an expansion | unreadable: unknown wrapper grammar).
 resolve_cmd() {
-  local i=0 t b
+  local i=0 t b st=0
   CI=-1; CSTAT=ok
   while [ "$i" -lt "$N" ]; do
     t="${T[i]}"
@@ -373,11 +380,12 @@ resolve_cmd() {
     case "$b" in
       nohup|builtin) i=$((i + 1)); continue ;;
       command|exec|time)
-        i=$((i + 1))
+        i=$((i + 1)); st=$i
         while [ "$i" -lt "$N" ]; do
           case "${T[i]}" in
             --) i=$((i + 1)); break ;;
             -p) i=$((i + 1)) ;;
+            -v|-V) [ "$b" = command ] || { CSTAT=unreadable; return; }; CI=$((st - 1)); return ;;
             -c|-l) [ "$b" = exec ] || { CSTAT=unreadable; return; }; i=$((i + 1)) ;;
             -a) [ "$b" = exec ] || { CSTAT=unreadable; return; }; i=$((i + 2)) ;;
             -*) CSTAT=unreadable; return ;;
@@ -437,6 +445,8 @@ is_inert() {
   local b="$1" k t sub
   case "$b" in
     echo|printf|cat|head|tail|wc|ls|sed|jq|sort|uniq|cut|tr|less|tee|diff|true|false|:|test|'[') return 0 ;;
+    # `command -v|-V` (resolve_cmd leaves CI on `command` only for those), type, which: lookups, never run the name.
+    command|type|which) return 0 ;;
     rg|grep)
       for ((k = CI + 1; k < N; k++)); do
         case "${T[k]}" in --pre|--pre=*|--hostname-bin|--hostname-bin=*) return 1 ;; esac
@@ -626,7 +636,7 @@ handle_gh() { # command word is gh at T[CI]
 
 # --- segment / script analysis ----------------------------------------------
 analyze_segment() { # segment, flags, operator before it, depth
-  local prev="$3" depth="$4" x tok inner b k rest ltxt ghx=0 tm
+  local prev="$3" depth="$4" x tok inner b k rest ltxt hasgh=0 tm
   load_seg "$1" "$2"
   [ "$N" -gt 0 ] || return 0
   local -a LT=(${T[@]+"${T[@]}"})
@@ -665,8 +675,8 @@ analyze_segment() { # segment, flags, operator before it, depth
   done
   T=(${LT[@]+"${LT[@]}"}); F="$LF"; N="$LN"
 
-  if [[ "$ltxt" =~ $RE_GH ]] && [[ "$LF" == *1* ]]; then ghx=1; fi
-  [[ "$ltxt" =~ $RE_API ]] || [[ "$ltxt" =~ $RE_ALIAS ]] || [ "$ghx" -eq 1 ] || meta "$txt" || { sink_check "$prev"; return 0; }
+  if [[ "$ltxt" =~ $RE_GH ]]; then hasgh=1; fi
+  [[ "$ltxt" =~ $RE_API ]] || [ "$hasgh" -eq 1 ] || meta "$txt" || { sink_check "$prev"; return 0; }
   resolve_cmd
   if [ "$CSTAT" = ok ] && [ "$CI" -ge 0 ]; then
     cw="${T[CI]}"
@@ -681,12 +691,16 @@ analyze_segment() { # segment, flags, operator before it, depth
     [[ "$ltxt" =~ $RE_API ]] && deny_unread "the command word holds an expansion"
     return 0
   fi
-  if ! mentions "$txt"; then
-    if [ "$CSTAT" = ok ] && [ "$CI" -ge 0 ]; then
-      lcase "${T[CI]##*/}"
-      case "$LC" in gh|gh.exe) handle_gh; return 0 ;; esac
-    fi
+  if [ "$hasgh" -eq 0 ]; then
     sink_check "$prev"; return 0
+  fi
+  # Without an api word, a leading compound-command keyword is not the command.
+  if ! [[ "$ltxt" =~ $RE_API ]] && ! [[ "$ltxt" =~ $RE_ALIAS ]]; then
+    while [ "$CSTAT" = ok ] && [ "$CI" -eq 0 ] && [ "$N" -gt 1 ]; do
+      case "${T[0]}" in '{'|then|do|else|elif|if|while|until|'!') ;; *) break ;; esac
+      T=("${T[@]:1}"); F="${F:1}"; N=$((N - 1))
+      resolve_cmd
+    done
   fi
   [ "$CSTAT" = ok ] || deny_unread "an unrecognised wrapper stands before the command"
   [ "$CI" -ge 0 ] || return 0
@@ -694,14 +708,17 @@ analyze_segment() { # segment, flags, operator before it, depth
   case "$b" in
     gh|gh.exe) handle_gh; return 0 ;;
   esac
-  if is_inert "$b"; then MENTION=1; return 0; fi
+  if is_inert "$b"; then
+    if mentions "$txt"; then MENTION=1; else sink_check "$prev"; fi
+    return 0
+  fi
   if is_shell_word "$b"; then
     local ci="$CI"
     for ((k = ci + 1; k < LN; k++)); do
       [ "${LF:k:1}" = 0 ] || deny_unread "an interpreter body holds an expansion"
     done
     for ((k = ci + 1; k < LN; k++)); do
-      mentions "${LT[k]}" || continue
+      lcase "${LT[k]}"; [[ "$LC" =~ $RE_GH ]] || continue
       [ "${LF:k:1}" = 0 ] || deny_unread "an interpreter body holds an expansion"
       analyze_script "${LT[k]}" $((depth + 1))
     done
@@ -712,6 +729,7 @@ analyze_segment() { # segment, flags, operator before it, depth
     fi
     return 0
   fi
+  [[ "$ltxt" =~ $RE_GHW ]] || { sink_check "$prev"; return 0; }
   deny_unread "gh is not in a command position the hook can read"
 }
 
