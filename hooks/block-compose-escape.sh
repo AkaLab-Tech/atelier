@@ -152,6 +152,14 @@ _is_linked_wt() {
 }
 
 block_shape() {
+  if [ "${explicit:-1}" -eq 0 ]; then
+    log_decision "$HOOK_NAME" "Bash" "not-allowlisted-shape" "block" "docker command holds an expansion where the program or subcommand cannot be read from the text"
+    cat >&2 <<MSG
+🛑 atelier:${HOOK_NAME} — blocked a docker command whose program or subcommand is hidden behind a shell expansion (\$VAR, \$(...), backticks), so it cannot be checked.
+   Write the program and subcommand out literally. Expansions are fine in the arguments of down/logs/ps/version/config.
+MSG
+    exit 2
+  fi
   log_decision "$HOOK_NAME" "Bash" "not-allowlisted-shape" "block" "container-starting compose command is not the docker-env skill's exact shape"
   cat >&2 <<MSG
 🛑 atelier:${HOOK_NAME} — blocked a docker compose command that would create or start containers: it is not the exact form the docker-env skill issues.
@@ -297,6 +305,62 @@ cmdpos_expands() {
   return 1
 }
 
+# Backslash-escaped backticks and dollar signs are literal text outside single
+# quotes (inside real backticks an escaped backtick is a nested substitution, so
+# it is kept). Replace them with inert placeholder bytes before lexing so the
+# lexed token text never shows a literal as a substitution.
+neutralize_escaped() {
+  local LC_ALL=C s="$1" n=${#1} i=0 c nx out="" sq=0 dq=0 bt=0
+  while [ "$i" -lt "$n" ]; do
+    c="${s:i:1}"
+    if [ "$sq" -eq 1 ]; then
+      out+="$c"; [ "$c" = "'" ] && sq=0
+    else
+      case "$c" in
+        '\')
+          nx="${s:i+1:1}"
+          if [ "$bt" -eq 0 ] && [ "$nx" = '`' ]; then out+=$'\x01'
+          elif [ "$bt" -eq 0 ] && [ "$nx" = '$' ]; then out+=$'\x02'
+          else out+="$c$nx"; fi
+          i=$((i + 2)); continue ;;
+        "'") [ "$dq" -eq 0 ] && sq=1; out+="$c" ;;
+        '"') dq=$((1 - dq)); out+="$c" ;;
+        '`') bt=$((1 - bt)); out+="$c" ;;
+        *) out+="$c" ;;
+      esac
+    fi
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+
+# A literal `docker compose [flags] <read-only subcommand> ...` whose words up to
+# and including the subcommand hold no expansion, with no container-starting
+# word anywhere and no command substitution after the subcommand: expansions in
+# its arguments cannot start containers.
+readonly_compose() {
+  local t
+  [ "$1" = docker ] && [ "${2:-}" = compose ] || return 1
+  shift 2
+  while [ "$#" -gt 0 ]; do
+    t="$1"
+    case "$t" in *'$'*|*'`'*) return 1 ;; esac
+    case "$t" in
+      -p|--project-name|-f|--file|--project-directory|--profile|--env-file|--ansi|--parallel|-H|--host|--context|-c)
+        shift; [ "$#" -gt 0 ] || return 1
+        case "$1" in *'$'*|*'`'*) return 1 ;; esac
+        shift ;;
+      -*) shift ;;
+      down|logs|ps|version|config) shift; break ;;
+      *) return 1 ;;
+    esac
+  done
+  for t in "$@"; do
+    case "$t" in *'$('*|*'`'*) return 1 ;; esac
+  done
+  return 0
+}
+
 # Commands whose arguments are data, not code: text that mentions compose is
 # prose there. $1 is the command word, the rest its arguments.
 is_inert() {
@@ -368,12 +432,13 @@ command_str="${command_str#"${command_str%%[![:space:]]*}"}"
 command_str="${command_str%"${command_str##*[![:space:]]}"}"
 stripped="$(strip_heredocs "$command_str")" || stripped="$command_str"
 stripped="${stripped%"${stripped##*[![:space:]]}"}"
+case "$stripped" in *'\`'*|*'\$'*) stripped="$(neutralize_escaped "$stripped")" ;; esac
 lex "$stripped"
 conn="$LEX_CONN"
 IFS="$RS" read -r -d '' -a segs <<< "$LEX_OUT" || true
 nseg=${#segs[@]}
 
-named=0; text_named=0; unsafe_sink=0
+named=0; text_named=0; unsafe_sink=0; explicit=0
 case "$stripped" in *'<('*|*'>('*) unsafe_sink=1 ;; esac
 for ((k = 0; k < nseg; k++)); do
   [ -n "${segs[k]}" ] || continue
@@ -385,25 +450,31 @@ for ((k = 0; k < nseg; k++)); do
     for tok in "${TOKS[@]}"; do
       case "$tok" in
         *'$('*|*'`'*)
-          names_container " $tok " && named=1
-          inner="${tok#*[\`(]}"
-          case "$inner" in *'$'*|*'`'*) { [[ " $inner " =~ $RE_DOCK ]] || [[ " $inner " =~ $RE_SUB ]]; } && named=1 ;; esac ;;
+          names_container " $tok " && { named=1; explicit=1; }
+          for inner in "${tok#*'$('}" "${tok#*'`'}"; do
+            [ "$inner" = "$tok" ] && continue
+            case "$inner" in *'$'*|*'`'*) { [[ " $inner " =~ $RE_DOCK ]] || [[ " $inner " =~ $RE_SUB ]]; } && named=1 ;; esac
+          done ;;
       esac
     done
     names_container "$txt" && text_named=1
     continue
   fi
-  names_container "$txt" && named=1
-  if [[ "$txt" =~ $RE_COMPOSE ]]; then
-    # A bare expansion could stand where the subcommand is.
-    for tok in "${TOKS[@]}"; do [[ "$tok" =~ $RE_EXPAND ]] && named=1; done
+  if names_container "$txt"; then named=1; explicit=1; fi
+  if ! names_container "$txt" && readonly_compose "${TOKS[@]}"; then
+    : # read-only subcommand: expansions in its arguments cannot start containers
+  else
+    if [[ "$txt" =~ $RE_COMPOSE ]]; then
+      # A bare expansion could stand where the subcommand is.
+      for tok in "${TOKS[@]}"; do [[ "$tok" =~ $RE_EXPAND ]] && named=1; done
+    fi
+    # An expansion could stand for the program or the subcommand: only the exact
+    # allowed shape (no expansion in it) passes.
+    case "$txt" in
+      *'$'*|*'`'*)
+        if [[ "$txt" =~ $RE_DOCK ]] || [[ "$txt" =~ $RE_SUB ]] || cmdpos_expands "${TOKS[@]}"; then named=1; fi ;;
+    esac
   fi
-  # An expansion could stand for the program or the subcommand: only the exact
-  # allowed shape (no expansion in it) passes.
-  case "$txt" in
-    *'$'*|*'`'*)
-      if [[ "$txt" =~ $RE_DOCK ]] || [[ "$txt" =~ $RE_SUB ]] || cmdpos_expands "${TOKS[@]}"; then named=1; fi ;;
-  esac
   # An alias can bind a container command to a short name.
   if [ "${TOKS[0]}" = alias ] && [[ "$txt" =~ $RE_DOCK ]]; then named=1; fi
   prev=""; [ "$k" -gt 0 ] && prev="${conn:$((k - 1)):1}"

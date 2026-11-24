@@ -700,6 +700,54 @@ expect_allow "H7 hooks/tests/run-all.sh shard run" "hooks/tests/run-all.sh -j 8 
 expect_allow "H7 run-all.sh with a compose-named filter" "hooks/tests/run-all.sh --only 'docker-compose*'"
 expect_allow "H7 bash run-all.sh with a compose-named filter" "bash hooks/tests/run-all.sh --serial --only '*compose*'"
 run_hook "hooks/tests/run-all.sh -j 8 --shard 2/8"
+
+# --- the docker-env skill's own command lines (read from SKILL.md) ---
+SKILL_MD="$REPO_ROOT/skills/docker-env/SKILL.md"
+skill_block() { # fixed-string needle that identifies the fenced bash block
+  awk -v n="$1" '
+    /^```bash$/ {b=""; inb=1; next}
+    /^```$/ && inb {inb=0; if (index(b, n)) {printf "%s", b; exit} next}
+    inb {b = b $0 "\n"}' "$SKILL_MD"
+}
+skill_fill() { # stdin -> placeholders filled
+  sed -e "s|<project_name>|demo|g" -e "s|<worktree>|$WT|g" -e "s|<service>|web|g"
+}
+mkcfg '.'
+S_UP="$(skill_block 'up -d --wait' | skill_fill)"
+S_DOWN="$(skill_block '" down' | skill_fill)"
+S_LOGS="$(skill_block ' logs ' | skill_fill)"
+S_PS="$(skill_block ' ps --format json' | skill_fill)"
+for v in S_UP S_DOWN S_LOGS S_PS; do
+  [ -n "${!v}" ] && pass "H8 SKILL.md block for $v extracted" || fail "H8 SKILL.md block for $v not found"
+done
+case "$S_UP" in *'docker info'*'docker compose version'*'up -d --wait'*) pass "H8 up block carries the availability probes" ;; *) fail "H8 up block lacks the probes" ;; esac
+# The block is two parts: the availability probes, then the one up line (the
+# up line must stand alone in the allowed shape; the probes run verbatim).
+S_PROBES="${S_UP%%$'\n'# Bring up*}"
+S_UPLINE="$(printf '%s\n' "$S_UP" | grep -E '^docker compose -p .* up -d --wait$')"
+[ -n "$S_UPLINE" ] && [ "$S_PROBES" != "$S_UP" ] && pass "H8 up block split into probes and the up line" || fail "H8 could not split the up block"
+expect_allow "H8 skill availability/compose v2 probe block, verbatim" "$S_PROBES"
+expect_allow "H8 skill up line, verbatim" "$S_UPLINE"
+expect_allow "H8 skill up line behind a cd to the worktree" "cd $WT && $S_UPLINE"
+expect_allow "H8 skill down, verbatim" "$S_DOWN"
+expect_allow "H8 skill logs with --tail \"\${tail:-50}\", verbatim" "$S_LOGS"
+expect_allow "H8 skill ps, verbatim" "$S_PS"
+case "$S_LOGS" in *'${tail:-50}'*) pass "H8 logs block still carries the \${tail:-50} expansion" ;; *) fail "H8 logs block lost \${tail:-50}" ;; esac
+expect_allow "H8 skill down behind a cd to the worktree" "cd $WT && $S_DOWN"
+expect_allow "H8 escaped backticks in a double-quoted echo" 'echo "x (\`docker compose up\`)"'
+expect_allow "H8 escaped dollar in a double-quoted echo" 'echo "x \$(docker compose up -d)"'
+expect_allow "H8 down with a trailing expansion" "$CPB down \$X"
+expect_allow "H8 logs with \${tail:-50} and a service" "$CPB logs --tail \"\${tail:-50}\" web"
+
+# expansions that can still start containers stay blocked
+expect_shape "H8 backticks around compose up" 'echo `docker compose up -d`'
+expect_shape "H8 command substitution inside a double-quoted echo" 'echo "$(docker compose up -d)"'
+expect_shape "H8 down followed by a compose-up substitution" "$CPB down \$(docker compose up)"
+expect_shape "H8 down followed by a variable-command substitution" "$CPB down \$(\$DC)"
+expect_shape "H8 variable before the subcommand" "docker compose -p demo \$S down"
+expect_shape "H8 variable as the docker subcommand" 'docker $S'
+expect_shape "H8 variable as the compose subcommand" 'docker compose $S'
+expect_shape "H8 expansion before the subcommand after -p" "docker compose -p \$P --file $WT/docker-compose.yml down"
 [ ! -s "$STUB_LOGF" ] && pass "H7 run-all.sh never reaches docker" || fail "H7 run-all.sh invoked docker"
 payload="$(jq -n --arg c "$UP" --arg d "$WT" '{tool_name:"Read",tool_input:{command:$c},cwd:$d}')"
 printf '%s' "$payload" | env -i PATH="$SBX" HOME="$FH" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" STUB_LOG="$STUB_LOGF" \
