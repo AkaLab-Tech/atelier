@@ -580,7 +580,7 @@ handle_gh() { # command word is gh at T[CI]
 
 # --- segment / script analysis ----------------------------------------------
 analyze_segment() { # segment, flags, previous connector, depth
-  local seg="$1" flags="$2" prev="$3" depth="$4" x tok inner b k rest ltxt ghx=0
+  local seg="$1" flags="$2" prev="$3" depth="$4" x tok inner b k rest ltxt ghx=0 tm
   split_tokens "$seg"
   T=(${TOKS[@]+"${TOKS[@]}"}); F="${flags//[^01]/}"; N=${#T[@]}
   [ "$N" -gt 0 ] || return 0
@@ -588,27 +588,38 @@ analyze_segment() { # segment, flags, previous connector, depth
   local LF="$F" LN="$N" txt=" ${T[*]} " cw
 
   # Substitutions that sit inside any word are analysed as commands of their own.
+  # A substitution that does not close, in a segment that names gh, cannot be read.
+  lcase "$txt"; ltxt="$LC"
   for ((x = 0; x < LN; x++)); do
     [ "${LF:x:1}" = 1 ] || continue
     tok="${LT[x]}"
     case "$tok" in *'$('*|*'`'*) ;; *) continue ;; esac
-    mentions "$tok" || continue
+    tm=0; ! mentions "$tok" || tm=1
     rest="$tok"
     while [[ "$rest" == *'$('* ]]; do
-      rest="${rest#*'$('}"; inner="$rest"
-      case "$inner" in *')'*) inner="${inner%')'*}" ;; esac
-      analyze_script "$inner" $((depth + 1))
+      rest="\$(${rest#*'$('}"
+      k=$(_subst_len '$' "$rest")
+      if [ "$k" -eq 0 ]; then
+        ! [[ "$ltxt" =~ $RE_GH ]] || deny_unread "a command substitution is not closed"
+        break
+      fi
+      inner="${rest:2:k-3}"; rest="${rest:k}"
+      [ "$tm" -eq 0 ] || analyze_script "$inner" $((depth + 1))
     done
     rest="$tok"
     while [[ "$rest" == *'`'* ]]; do
-      rest="${rest#*'`'}"; inner="${rest%%'`'*}"
-      analyze_script "$inner" $((depth + 1))
-      case "$rest" in *'`'*) rest="${rest#*'`'}" ;; *) break ;; esac
+      rest="\`${rest#*'`'}"
+      k=$(_subst_len '`' "$rest")
+      if [ "$k" -eq 0 ]; then
+        ! [[ "$ltxt" =~ $RE_GH ]] || deny_unread "a backtick substitution is not closed"
+        break
+      fi
+      inner="${rest:1:k-2}"; rest="${rest:k}"
+      [ "$tm" -eq 0 ] || analyze_script "$inner" $((depth + 1))
     done
   done
   T=(${LT[@]+"${LT[@]}"}); F="$LF"; N="$LN"
 
-  lcase "$txt"; ltxt="$LC"
   if [[ "$ltxt" =~ $RE_GH ]] && [[ "$LF" == *1* ]]; then ghx=1; fi
   [[ "$ltxt" =~ $RE_API ]] || [[ "$ltxt" =~ $RE_ALIAS ]] || [ "$ghx" -eq 1 ] || meta "$txt" || { sink_check "$prev"; return 0; }
   resolve_cmd
@@ -721,6 +732,8 @@ fi
 
 # shellcheck disable=SC2034  # read by lex() in lib/shell-lex.sh
 LEX_MARK=1
+# shellcheck disable=SC2034  # read by lex() in lib/shell-lex.sh
+LEX_NEST=1
 analyze_script "$command_str" 0
 if [ "$API_SEEN" -eq 1 ]; then
   log_decision "$HOOK_NAME" "Bash" "" "allow" "gh api call proven read-only or a board-item mutation"

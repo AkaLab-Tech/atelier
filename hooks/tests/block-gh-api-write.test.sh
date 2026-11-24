@@ -840,6 +840,21 @@ DRV
   check_flags "\$(...) is flagged" 'echo $(date)' "01/"
   check_flags "backticks are flagged" 'echo `date`' "01/"
   check_flags "flags reset per segment" 'a $X; b c' "01/00/"
+
+  # LEX_NEST=1 (opt-in on top of LEX_MARK=1): a substitution with nested quoted
+  # arguments stays one token and one segment (no split at the inner space or pipe).
+  check_nest() { # description command expected
+    local got
+    count_case
+    got="$(bash -c 'source "$1"; LEX_MARK=1; LEX_NEST=1; lex "$2"; printf "%s" "$LEX_EXP" | tr "\036" "/"' _ "$NEW_LEX" "$2")"
+    if [ "$got" = "$3" ]; then pass "LEX_NEST=1: $1"; else fail "LEX_NEST=1: $1 (flags=$got, want $3)"; fi
+  }
+  check_nest "nested quoted arg with a space stays one token" 'echo "$(gh api x -X POST | jq ".a b")"' "01/"
+  check_nest "backtick body with a nested quoted arg stays one token" 'echo "`gh api x -X POST | jq ".a b"`"' "01/"
+  check_nest "doubly nested substitution stays one token" 'echo "$(echo "$(gh api x -X POST)")"' "01/"
+  check_nest "braced expansion with a nested quote stays one token" 'echo "${x:-"a b"}"' "01/"
+  check_nest "arithmetic expansion stays one token" 'echo "$((1+2))" tail' "010/"
+  check_nest "ANSI-C string with an escaped quote stays one token" $'echo $\'a\\\'b c\' tail' "010/"
 else
   count_case
   pass "SKIP: origin/main:hooks/lib/shell-lex.sh not available in this checkout"
@@ -948,6 +963,68 @@ allow "block string with # in a read query" \
 c\"\"\",type:ISSUE,first:1){issueCount}}'"
 allow "# inside a regular string" \
   "gh api graphql -f query='query{search(query:\"a # b\",type:ISSUE,first:1){issueCount}}'"
+
+# =============================================================================
+group "I1: nested quotes inside substitutions (block)"
+# =============================================================================
+block "implicit POST, nested quoted jq arg with a space after the write flag" \
+  'echo "$(gh api repos/o/r/issues --jq ".[] | .a" -X POST)"'
+block "implicit POST, nested quoted arg with a space before the write flags" \
+  'x="$(gh api repos/o/r/issues -X POST -f a=b | jq ".a b")"'
+block "explicit method, backtick capture with a nested quoted arg" \
+  'x="`gh api repos/o/r/issues -X POST -f a=b | jq ".a b"`"'
+block "DELETE after a nested quoted arg with a space" \
+  'echo "$(echo "a b" | gh api repos/o/r/issues -X DELETE)"'
+block "here-string with a substitution holding a spaced field value" \
+  'cat <<< "$(gh api repos/o/r/issues -X POST -f a="b c")"'
+block "doubly nested substitution with a spaced jq arg" \
+  'echo "$(echo "$(gh api repos/o/r/issues -X POST | jq ".a b")")"'
+block "GraphQL mutation outside the allowlist in a nested substitution" \
+  "echo \"\$(echo \"a b\" | gh api graphql -f query='$BAD')\""
+block "GraphQL mutation outside the allowlist in a backtick capture" \
+  "x=\"\`echo \"a b\" | gh api graphql -f query='$BAD'\`\""
+block "unquoted braced default with a nested substitution" \
+  'echo ${x:-"$(gh api repos/o/r/issues -X POST)"}'
+block "quoted braced default holding a substitution" \
+  'echo "${x:-$(gh api repos/o/r/issues -X POST)}"'
+block "dollar-double-quote string holding a substitution" \
+  'echo $"$(gh api repos/o/r/issues -X POST)"'
+block "bash -c with escaped nested quotes" \
+  'bash -c "echo \"a b\"; gh api repos/o/r/issues -X POST"'
+block "process substitution" \
+  'cat <(gh api repos/o/r/issues -X POST)'
+block "write after a quoted braced default with nested quotes" \
+  'echo "${x:-"a b"}" ; gh api repos/o/r/issues -X POST'
+block "write after an ANSI-C string that is a lone escaped quote" \
+  $'echo $\'\\\'\' ; gh api repos/o/r/issues -X POST'
+block "write after an ANSI-C string with an escaped quote inside" \
+  $'echo $\'a\\\'b\' ; gh api repos/o/r/issues -X POST'
+block "write after an arithmetic expansion" \
+  'echo "$((1+2))" ; gh api repos/o/r/issues -X POST'
+block "PATCH in a substitution after an ANSI-C string with a space" \
+  $'echo $\'a b\' "$(gh api repos/o/r/issues -X PATCH)"'
+block "unclosed substitution naming gh" \
+  'echo "$(gh api repos/o/r/issues -X POST'
+block "unclosed backtick naming gh" \
+  'echo "`gh api repos/o/r/issues -X POST'
+block "odd backtick count naming gh" \
+  'echo `date` `gh api repos/o/r/issues -X POST'
+
+# =============================================================================
+group "I2: nested quotes inside substitutions (allow)"
+# =============================================================================
+allow "GET, spaced jq filter inside echo and a substitution" \
+  'echo "$(gh api repos/o/r/issues --jq ".[] | .a b")"'
+allow "capture with select(...) and a spaced jq -r filter" \
+  'x="$(gh api repos/o/r/issues --jq ".[] | select(.a)" | jq -r ".b c")"'
+allow "backtick GET capture" \
+  'x=`gh api repos/o/r/issues --jq '"'"'.[]'"'"'`'
+allow "gh pr create with a substitution inside the title" \
+  'gh pr create --title "a $(date +%s) b" --body "x"'
+allow "gh pr list with --jq inside a substitution" \
+  'echo "$(gh pr list --json number --jq ".[] | .number")"'
+allow "arithmetic expansion in double quotes" \
+  'echo "$((1+2))"'
 
 # =============================================================================
 echo
