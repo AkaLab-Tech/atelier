@@ -44,16 +44,22 @@ _subst_len() {
 
 LEX_OUT=""
 LEX_CONN=""   # the separator character that ended each segment, in order
+# Opt-in (LEX_MARK=1): LEX_EXP parallels LEX_OUT with one 0/1 character per token
+# (1 = the token holds an expansion outside single quotes: $X, ${X}, $(...),
+# backticks, $'..') and RS per segment. Every flag stays 0 unless a caller
+# sets LEX_MARK=1; LEX_OUT, LEX_CONN and the token splitters are unaffected.
+LEX_MARK=0
+LEX_EXP=""
 lex() {
   # bash 3.2 copies the string tail on every ${s:$i:1}, so a per-character walk
   # is quadratic. Index a small sliding window instead and jump quoted runs.
   local LC_ALL=C
-  local s="$1" n i=0 c nx sub_end cur="" have=0 q="" rest run win="" b=-1000 o
+  local s="$1" n i=0 c nx sub_end cur="" have=0 q="" rest run win="" b=-1000 o curx=0
   n=${#s}
-  LEX_OUT=""; LEX_CONN=""
+  LEX_OUT=""; LEX_CONN=""; LEX_EXP=""
   _flush() {
-    if [ -n "$cur" ] || [ "$have" -eq 1 ]; then LEX_OUT+="$cur$US"; fi
-    cur=""; have=0
+    if [ -n "$cur" ] || [ "$have" -eq 1 ]; then LEX_OUT+="$cur$US"; LEX_EXP+="$curx"; fi
+    cur=""; have=0; curx=0
   }
   while [ "$i" -lt "$n" ]; do
     if [ $((i - b)) -ge 400 ]; then b=$i; win="${s:$i:512}"; fi
@@ -72,6 +78,7 @@ lex() {
         rest="${win:$o}"; run="${rest%%[\"\\]*}"
         [ ${#run} -eq ${#rest} ] && { rest="${s:$i}"; run="${rest%%[\"\\]*}"; }
         cur+="$run"; i=$((i + ${#run} - 1))
+        if [ "$LEX_MARK" = 1 ]; then case "$run" in *'$'*|*'`'*) curx=1 ;; esac; fi
       elif [ "$c" = '\' ]; then
         nx="${win:$((o + 1)):1}"
         case "$nx" in
@@ -99,6 +106,7 @@ lex() {
           # A balanced $(...) / `...` stays inside the current word, so
           # `VAR=$(cmd)/x gh ...` is not cut at the substitution.
           nx="${win:$((o + 1)):1}"
+          if [ "$LEX_MARK" = 1 ] && { [ "$c" = '`' ] || { [ -n "$nx" ] && [ "$nx" != ' ' ] && [ "$nx" != $'\t' ] && [ "$nx" != $'\n' ]; }; }; then curx=1; fi
           if [ "$c" = '`' ] || [ "$nx" = '(' ]; then
             rest="${s:$i:2048}"; sub_end=$(_subst_len "$c" "$rest")
             [ "$sub_end" -eq 0 ] && { rest="${s:$i}"; sub_end=$(_subst_len "$c" "$rest"); }
@@ -112,14 +120,14 @@ lex() {
             cur+="$c"; have=1
           fi ;;
         ' '|$'\t') _flush ;;
-        $'\n'|';'|'&'|'|'|'('|')') _flush; LEX_OUT+="$RS"; LEX_CONN+="$c" ;;
+        $'\n'|';'|'&'|'|'|'('|')') _flush; LEX_OUT+="$RS"; LEX_EXP+="$RS"; LEX_CONN+="$c" ;;
         *) cur+="$c"; have=1 ;;
       esac
     fi
     i=$((i + 1))
   done
   _flush
-  LEX_OUT+="$RS"
+  LEX_OUT+="$RS"; LEX_EXP+="$RS"
 }
 
 TOKS=()

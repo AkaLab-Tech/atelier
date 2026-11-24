@@ -282,6 +282,14 @@ When `atelier-worktree-create` provisions a task worktree, it copies only the en
 
 **Fix:** If the message says a token is inherited (`GH_TOKEN`, `GITHUB_TOKEN` or `GH_ENTERPRISE_TOKEN` "inherited from the environment"), that variable is exported in the shell that launched the session: run `unset GH_TOKEN` (or the named variable) in that shell, remove it from your shell rc, and relaunch with `task` — it overrides the atelier identity and would post as the token's owner. Inside a session, `unset <VAR>;` or `env -u <VAR>` before the command clears it for that command only. If the message says `GH_CONFIG_DIR` is unset or personal, launch through `task` (it sets `GH_CONFIG_DIR=$ATELIER_CONFIG_DIR/gh/author`) and, for reviews, prefix `GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/reviewer"`. For GitHub work in a session use `gh`, not Chrome. There is no in-session override. As an extra control for the one path no hook can see (link clicks inside Chrome), revoke github.com in the Claude in Chrome extension's site permissions. Decisions are in `<worktree>/.task-log/hook-decisions.jsonl` (`"hook":"block-operator-gh-identity"` / `"block-operator-browser-github"`).
 
+### A `gh api` call is blocked by `block-gh-api-write`
+
+**Symptom:** A Bash call fails with `🛑 atelier:block-gh-api-write — blocked a gh api call: <reason>`.
+
+**Cause:** The hook lets a `gh api` call run only when it can show the call only reads (a GET request or a GraphQL query), or when it is a GraphQL mutation limited to board items, `updateIssue` or `addComment`. Anything it cannot read with certainty is refused: a method other than GET, fields or an input body without a method (the CLI then sends a POST), a flag it does not know, a GraphQL query read from a file or built from a shell variable, or `gh` run through a wrapper or substitution the hook cannot follow. `gh alias set` and `gh alias import` are refused too.
+
+**Fix:** For a read, write the call plainly: the endpoint and flags spelled out, the GraphQL query inline in single quotes. For a write, use the matching `gh` subcommand (`gh pr`, `gh issue`, `gh release`, ...) or the atelier helper for the job (`atelier-project-item` for board items). If a legitimate call keeps being refused, tell the maintainer which command and which reason the message gave.
+
 ### `atelier-gh-shim: BLOCKED …` (gh identity shim)
 
 **Symptom:** A `gh` call fails with `atelier-gh-shim: BLOCKED gh: …` and exit 1 (on `gh pr review`, `gh pr comment`, `gh issue comment`, `gh pr/issue close` or `reopen` with `--comment` / `-c`, `gh extension exec` / `gh ext exec`, a `gh api` write to a review/comment endpoint, a review/comment GraphQL mutation or one whose body can't be inspected, `gh auth token`, `gh auth git-credential`, `gh auth status --show-token`, or a non-built-in gh alias/extension).
