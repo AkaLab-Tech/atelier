@@ -31,6 +31,11 @@
 # boundary is the git toplevel of that effective location (--project-directory,
 # else first --file, else the directory), accepted only when it is a linked task
 # worktree or the toplevel the session started in.
+# `$(...)` / backtick bodies inside words are scanned one level deeper, like
+# `bash -c` bodies. Service `env_file` paths (read via `config
+# --no-env-resolution`, which needs a recent compose; older ones fail closed),
+# `build.additional_contexts` sources and `build.ssh` are checked as well, and
+# `docker compose cp` is blocked outright.
 # Exit 0 for every other subcommand (down/logs/ps/version/config/...), for text
 # that only mentions compose (heredoc prose and quoted strings are not
 # commands), and when `docker` is not on PATH or jq is missing.
@@ -261,7 +266,15 @@ def bindsrc($p):
       elif .type == "bind" then bindsrc(.source) else empty end),
     (($s.build // null) | select(type == "object") | .context // empty
       | select(type == "string" and startswith("/")) | bindsrc(.)),
-    (($s.build // null) | select(type == "string" and startswith("/")) | bindsrc(.))
+    (($s.build // null) | select(type == "string" and startswith("/")) | bindsrc(.)),
+    (($s.build // null) | select(type == "object") | .additional_contexts // empty
+      | (if type == "object" then to_entries | map(.value) else . end)[]
+      | tostring | select(test("^[a-z][a-z0-9+.-]*:") | not) | bindsrc(.)),
+    (($s.build // null) | select(type == "object") | .ssh // empty
+      | select(length > 0) | "build-ssh"),
+    (($s.env_file // [])
+      | (if type == "array" then . else [.] end)[]
+      | (if type == "object" then .path else . end) | bindsrc(.))
   ),
   (((.volumes // {}) | to_entries[] | .value | select(type == "object") | .driver_opts.device? // empty
       | select(type == "string" and startswith("/")) | bindsrc(.))),
@@ -275,6 +288,8 @@ check_compose() { # sub, then compose-level facts in globals, then rest tokens
   local sub="$1"; shift
   local f d e p remaining out rc line cfg base0
   local -a cargs=() penv=()
+  # `cp` moves files between a container and a host path; blocked outright.
+  [ "$sub" = "cp" ] && deny "cp-host-copy"
   case "$sub" in up|run|create|start|restart|watch|scale) ;; *) return 0 ;; esac
 
   [ "$CD_BAD" -eq 0 ] || deny "unresolvable-cd"
@@ -302,13 +317,13 @@ check_compose() { # sub, then compose-level facts in globals, then rest tokens
   [ "$remaining" -ge 2 ] || deny "unresolved-config"
   rc=0
   out="$(cd "$CUR" 2>/dev/null && atelier_timeout "$remaining" env ${penv[@]+"${penv[@]}"} \
-    docker compose ${cargs[@]+"${cargs[@]}"} --profile '*' config --format json 2>/dev/null)" || rc=$?
+    docker compose ${cargs[@]+"${cargs[@]}"} --profile '*' config --no-env-resolution --format json 2>/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
     remaining=$((BUDGET_SECS - SECONDS))
     [ "$remaining" -ge 2 ] || deny "unresolved-config"
     rc=0
     out="$(cd "$CUR" 2>/dev/null && atelier_timeout "$remaining" env ${penv[@]+"${penv[@]}"} \
-      docker compose ${cargs[@]+"${cargs[@]}"} config --format json 2>/dev/null)" || rc=$?
+      docker compose ${cargs[@]+"${cargs[@]}"} config --no-env-resolution --format json 2>/dev/null)" || rc=$?
   fi
   [ "$rc" -eq 0 ] || deny "unresolved-config"
   cfg="$out"
@@ -325,11 +340,51 @@ check_compose() { # sub, then compose-level facts in globals, then rest tokens
   return 0
 }
 
+# Past the nesting cap a body is not scanned: deny it when it names compose.
+_cap_deny() { # text...
+  local re='(^|[^[:alnum:]_-])(docker-)?compose($|[^[:alnum:]_-])'
+  if [[ "$*" =~ $re ]]; then deny "nesting-too-deep"; fi
+  return 0
+}
+
+# Scan the bodies of $(...) / `...` substitutions kept inside words, one level
+# deeper (so a `cd` inside counts as non-top-level), like bash -c / eval bodies.
+scan_substitutions() { # depth tokens...
+  local depth="$1"; shift
+  local tok rest pre1 pre2 pre kind len body ok="$CD_OK" and="$CD_AND"
+  if [ "$depth" -ge 3 ]; then
+    case "$*" in *'$('*|*'`'*) _cap_deny "$@" ;; esac
+    return 0
+  fi
+  for tok in "$@"; do
+    rest="$tok"
+    while :; do
+      case "$rest" in *'$('*|*'`'*) ;; *) break ;; esac
+      pre1="${rest%%'$('*}"; pre2="${rest%%'`'*}"
+      if [ "${#pre1}" -le "${#pre2}" ]; then pre="$pre1"; kind='$'; else pre="$pre2"; kind='`'; fi
+      rest="${rest:${#pre}}"
+      len="$(_subst_len "$kind" "$rest")"
+      if [ "$len" -eq 0 ]; then
+        if [ "$kind" = '$' ]; then body="${rest:2}"; else body="${rest:1}"; fi
+        rest=""
+      elif [ "$kind" = '$' ]; then
+        body="${rest:2:$((len - 3))}"; rest="${rest:$len}"
+      else
+        body="${rest:1:$((len - 2))}"; rest="${rest:$len}"
+      fi
+      scan_script "$body" $((depth + 1))
+    done
+  done
+  CD_OK="$ok"; CD_AND="$and"
+}
+
 scan_segment() { # depth tokens...
   local depth="$1"; shift
   local -a t=("$@")
   local n=$# i=0 tok base
   local j k
+
+  scan_substitutions "$depth" "$@"
 
   # Command word after harmless prefixes; COMPOSE_* / DOCKER_HOST assignments
   # in the prefix region reach the compose process.
@@ -354,16 +409,18 @@ scan_segment() { # depth tokens...
       done
       return 0 ;;
     bash|sh|zsh|dash|ksh)
-      if [ "$depth" -lt 3 ]; then
-        for ((j = i + 1; j < n - 1; j++)); do
-          case "${t[$j]}" in -c|-[a-z]c|-[a-z][a-z]c) scan_script "${t[$((j + 1))]}" $((depth + 1)); break ;; esac
-        done
-      fi
+      for ((j = i + 1; j < n - 1; j++)); do
+        case "${t[$j]}" in
+          -c|-[a-z]c|-[a-z][a-z]c)
+            if [ "$depth" -lt 3 ]; then scan_script "${t[$((j + 1))]}" $((depth + 1)); else _cap_deny "${t[$((j + 1))]}"; fi
+            break ;;
+        esac
+      done
       return 0 ;;
     eval)
-      [ "$depth" -lt 3 ] || return 0
       local joined=""
       for ((j = i + 1; j < n; j++)); do joined+="${t[$j]} "; done
+      [ "$depth" -lt 3 ] || { _cap_deny "$joined"; return 0; }
       scan_script "$joined" $((depth + 1))
       return 0 ;;
     cd|pushd)

@@ -269,6 +269,9 @@ cat > "$SBX/docker" <<'STUB'
 echo "$*" >> "$STUB_LOG"
 case " $* " in
   *" config "*)
+    if [ -n "${STUB_REJECT_NOENV:-}" ]; then
+      case " $* " in *" --no-env-resolution "*) exit 1 ;; esac
+    fi
     if [ -n "${STUB_FAIL_PROFILE:-}" ]; then
       case " $* " in *" --profile "*) exit 1 ;; esac
     fi
@@ -308,7 +311,7 @@ run_hook() { # command [cwd] ; env knobs STUB_* inherited via env -i list below
   printf '%s' "$payload" | env -i PATH="${HOOK_PATH:-$SBX}" HOME="$FH" TMPDIR="$TMP" \
       CLAUDE_PLUGIN_ROOT="$REPO_ROOT" CLAUDE_PROJECT_DIR="$WT" \
       STUB_LOG="$STUB_LOGF" STUB_CFG="$CFGF" STUB_SLEEP="${STUB_SLEEP:-}" STUB_RC="${STUB_RC:-}" \
-      STUB_FAIL_PROFILE="${STUB_FAIL_PROFILE:-}" \
+      STUB_FAIL_PROFILE="${STUB_FAIL_PROFILE:-}" STUB_REJECT_NOENV="${STUB_REJECT_NOENV:-}" \
       "$SBX/bash" "$HOOK" >/dev/null 2>"$errf"
   HOOK_RC=$?
   HOOK_SECS=$((SECONDS - t0))
@@ -339,7 +342,7 @@ expect_allow "H1 docker-env down --volumes --remove-orphans" \
 expect_allow "H1 docker-env logs" "docker compose -p demo --file $WT/docker-compose.yml logs --tail 50 web"
 expect_allow "H1 docker-env ps" "docker compose -p demo --file $WT/docker-compose.yml ps --format json"
 run_hook "$UP"
-if grep -qE 'compose .*config --format json' "$STUB_LOGF" && grep -qF -- "-p demo" "$STUB_LOGF" \
+if grep -qE 'compose .*config --no-env-resolution --format json' "$STUB_LOGF" && grep -qF -- "-p demo" "$STUB_LOGF" \
    && grep -qF -- "--file $WT/docker-compose.yml" "$STUB_LOGF" && grep -qF -- "--profile *" "$STUB_LOGF"; then
   pass "H1 config resolved read-only with the command's project/file and all profiles"
 else
@@ -746,6 +749,109 @@ c="$(lex_conn 'a || b')"; [ "$c" = '||' ] && pass "W9 LEX_CONN of 'a || b' is '|
 c="$(lex_conn 'a; b')"; [ "$c" = ';' ] && pass "W9 LEX_CONN of 'a; b' is ';'" || fail "W9 LEX_CONN of 'a; b' is '$c', want ';'"
 c="$(lex_conn 'a | b')"; [ "$c" = '|' ] && pass "W9 LEX_CONN of 'a | b' is '|'" || fail "W9 LEX_CONN of 'a | b' is '$c', want '|'"
 clearcfg
+
+# --- substitutions, depth cap, build/env_file sources, cp (review cycle 2) ---
+echo "-- substitutions / sources / cp"
+mkcfg '.services.web.privileged = true'
+expect_block "H11 violating up inside \$(...)" privileged "echo \$($UP)"
+expect_block "H11 violating up inside backticks" privileged "echo \`$UP\`"
+expect_block "H11 violating up in x=\$(...)" privileged "x=\$($UP)"
+expect_block "H11 violating up in a double-quoted substitution" privileged "echo \"out: \$($UP) done\""
+expect_block "H11 violating up in a nested substitution" privileged "echo \$(echo \$($UP))"
+expect_block "H11 violating up in a substitution inside bash -c" privileged "bash -c 'echo \$($UP)'"
+expect_block "H11 violating up in single quotes (scanned as implemented)" privileged "echo '\$($UP)'"
+mkcfg '.'
+expect_allow "H11 compliant up inside \$(...)" "echo \$($UP)"
+expect_allow "H11 compliant up inside backticks" "echo \`$UP\`"
+expect_allow "H11 substitution mentioning compose as a literal word, no compose command" 'echo $(echo compose) done'
+expect_allow "H11 substitution without compose" 'x=$(date +%s); echo "$x"'
+expect_allow "H11 cd inside a substitution without compose does not move a later compose" \
+  "echo \$(cd $WT && true) && $UP"
+expect_block "H11 cd and compose inside one substitution is unresolvable-cd" unresolvable-cd \
+  "x=\$(cd $WT && $UP)"
+
+# Depth cap: a violating command nested beyond three levels must not be allowed.
+mkcfg '.services.web.privileged = true'
+expect_block "H12 eval nested 3 levels (control)" privileged "eval eval eval $UP"
+expect_block "H12 eval nested 4 levels is not allowed" nesting-too-deep "eval eval eval eval $UP"
+expect_block "H12 substitution nested 3 levels (control)" privileged "echo \$(echo \$(echo \$($UP)))"
+expect_block "H12 substitution nested 4 levels is not allowed" nesting-too-deep \
+  "echo \$(echo \$(echo \$(echo \$($UP))))"
+q1="$(printf '%q' "$UP")"; b1="bash -c $q1"
+q2="$(printf '%q' "$b1")"; b2="bash -c $q2"
+q3="$(printf '%q' "$b2")"; b3="bash -c $q3"
+q4="$(printf '%q' "$b3")"; b4="bash -c $q4"
+expect_block "H12 bash -c nested 3 levels (control)" privileged "$b3"
+expect_block "H12 bash -c nested 4 levels is not allowed" nesting-too-deep "$b4"
+# Fail closed at the cap regardless of the fixture: a compliant config is blocked too.
+mkcfg '.'
+expect_block "H12 eval nested 4 levels on a compliant fixture is blocked" nesting-too-deep "eval eval eval eval $UP"
+expect_block "H12 bash -c nested 4 levels on a compliant fixture is blocked" nesting-too-deep "$b4"
+# A deep body without any compose word is not subject to the cap.
+expect_allow "H12 eval nested 4 levels without compose is allowed" "eval eval eval eval true"
+expect_allow "H12 substitution nested 4 levels without compose is allowed" \
+  'echo $(echo $(echo $(echo $(date))))'
+mkcfg '.services.web.privileged = true'
+expect_block "H12 bash -c wrapping a substitution wrapping eval" privileged \
+  "bash -c 'echo \$(eval eval $UP)'"
+
+# build.additional_contexts
+mkcfg '.services.web.build = {context:($wt + "/data"), additional_contexts:{lib:$home}}'
+expect_block "H13 additional_contexts absolute outside path (map)" bind-outside-worktree "$UP"
+mkcfg '.services.web.build = {context:($wt + "/data"), additional_contexts:["lib=" + $home]}'
+expect_block "H13 additional_contexts outside path in list form is not allowed" bind-outside-worktree "$UP"
+mkcfg '.services.web.build = {context:($wt + "/data"), additional_contexts:{lib:($wt + "/data")}}'
+expect_allow "H13 additional_contexts inside the worktree" "$UP"
+mkcfg '.services.web.build = {context:($wt + "/data"), additional_contexts:{a:"docker-image://alpine:3", b:"service:base", c:"https://example.invalid/r.git"}}'
+expect_allow "H13 additional_contexts docker-image:// service: https: are allowed" "$UP"
+mkcfg '.services.web.build = {context:($wt + "/data"), additional_contexts:{lib:($wt + "/linkdir")}}'
+expect_block "H13 additional_contexts symlinked source" symlinked-bind-source "$UP"
+
+# build.ssh
+mkcfg '.services.web.build = {context:($wt + "/data"), ssh:["default"]}'
+expect_block "H14 build.ssh list [default]" build-ssh "$UP"
+mkcfg '.services.web.build = {context:($wt + "/data"), ssh:{default:null}}'
+expect_block "H14 build.ssh object form" build-ssh "$UP"
+mkcfg '.services.web.build = {context:($wt + "/data"), ssh:{github:"/tmp/agent.sock"}}'
+expect_block "H14 build.ssh object form with a path value" build-ssh "$UP"
+mkcfg '.services.web.build = {context:($wt + "/data")}'
+expect_allow "H14 build.ssh absent" "$UP"
+mkcfg '.services.web.build = {context:($wt + "/data"), ssh:[]}'
+expect_allow "H14 build.ssh empty list" "$UP"
+mkcfg '.services.web.build = {context:($wt + "/data"), ssh:{}}'
+expect_allow "H14 build.ssh empty object" "$UP"
+
+# service variables file (env_file)
+mkcfg '.services.web.env_file = ($home + "/vars.list")'
+expect_block "H15 env_file outside path as a string" bind-outside-worktree "$UP"
+mkcfg '.services.web.env_file = [($wt + "/data"), ($home + "/vars.list")]'
+expect_block "H15 env_file outside path in a list" bind-outside-worktree "$UP"
+mkcfg '.services.web.env_file = [{path:($home + "/vars.list"), required:false}]'
+expect_block "H15 env_file {path, required:false} outside" bind-outside-worktree "$UP"
+mkcfg '.services.web.env_file = ($wt + "/data")'
+expect_allow "H15 env_file inside the worktree (string)" "$UP"
+mkcfg '.services.web.env_file = [{path:($wt + "/data"), required:false}]'
+expect_allow "H15 env_file inside the worktree (object)" "$UP"
+mkcfg '.services.web.env_file = ($wt + "/linkdir")'
+expect_block "H15 env_file symlinked source" symlinked-bind-source "$UP"
+mkcfg '.'
+STUB_REJECT_NOENV=1 expect_block "H15 compose without --no-env-resolution fails closed" unresolved-config "$UP"
+run_hook "$UP"
+if grep -qF -- '--no-env-resolution' "$STUB_LOGF"; then pass "H15 config call passes --no-env-resolution"
+else fail "H15 config call lacks --no-env-resolution: $(cat "$STUB_LOGF")"; fi
+STUB_FAIL_PROFILE=1 run_hook "$UP"
+if [ "$(grep -c -- '--no-env-resolution' "$STUB_LOGF")" -eq 2 ]; then pass "H15 fallback config call also passes --no-env-resolution"
+else fail "H15 fallback config call args: $(cat "$STUB_LOGF")"; fi
+
+# cp
+mkcfg '.'
+CPB="docker compose -p demo --file $WT/docker-compose.yml"
+expect_block "H16 cp host copy" cp-host-copy "$CPB cp web:/etc/passwd $WT/data/passwd"
+expect_block "H16 cp into a container from outside" cp-host-copy "$CPB cp $FH/.ssh web:/root"
+expect_block "H16 cp inside a substitution" cp-host-copy "echo \$($CPB cp web:/a $WT/data/a)"
+expect_allow "H16 down still allowed" "$CPB down"
+expect_allow "H16 logs still allowed" "$CPB logs web"
+expect_allow "H16 ps still allowed" "$CPB ps"
 
 # --- decision log ---
 mkcfg '.services.web.privileged = true'
