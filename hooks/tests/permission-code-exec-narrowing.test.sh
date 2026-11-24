@@ -275,6 +275,15 @@ case " $* " in
     if [ -n "${STUB_FAIL_PROFILE:-}" ]; then
       case " $* " in *" --profile "*) exit 1 ;; esac
     fi
+    if [ -n "${STUB_FAIL_STAR:-}" ]; then
+      case " $* " in *" --profile * "*) exit 1 ;; esac
+    fi
+    if [ -n "${STUB_FAIL_PNAME:-}" ]; then
+      case " $* " in *" --profile $STUB_FAIL_PNAME "*) exit 1 ;; esac
+    fi
+    if [ -n "${STUB_PCFG:-}" ] && [ -f "$STUB_PCFG" ]; then
+      case " $* ,${COMPOSE_PROFILES:-}, " in *" --profile p "*|*" --profile=p "*|*,p,*) cat "$STUB_PCFG"; exit 0 ;; esac
+    fi
     [ -n "${STUB_SLEEP:-}" ] && sleep "$STUB_SLEEP"
     if [ -f "$PWD/.stub-cfg.json" ]; then cat "$PWD/.stub-cfg.json"
     elif [ -n "${STUB_CFG:-}" ] && [ -f "$STUB_CFG" ]; then cat "$STUB_CFG"; fi
@@ -311,6 +320,7 @@ run_hook() { # command [cwd] ; env knobs STUB_* inherited via env -i list below
   printf '%s' "$payload" | env -i PATH="${HOOK_PATH:-$SBX}" HOME="$FH" TMPDIR="$TMP" \
       CLAUDE_PLUGIN_ROOT="$REPO_ROOT" CLAUDE_PROJECT_DIR="$WT" \
       STUB_LOG="$STUB_LOGF" STUB_CFG="$CFGF" STUB_SLEEP="${STUB_SLEEP:-}" STUB_RC="${STUB_RC:-}" \
+      STUB_FAIL_STAR="${STUB_FAIL_STAR:-}" STUB_FAIL_PNAME="${STUB_FAIL_PNAME:-}" STUB_PCFG="${STUB_PCFG:-}" \
       STUB_FAIL_PROFILE="${STUB_FAIL_PROFILE:-}" STUB_REJECT_NOENV="${STUB_REJECT_NOENV:-}" \
       "$SBX/bash" "$HOOK" >/dev/null 2>"$errf"
   HOOK_RC=$?
@@ -885,6 +895,94 @@ expect_block "H16 cp inside a substitution" cp-host-copy "echo \$($CPB cp web:/a
 expect_allow "H16 down still allowed" "$CPB down"
 expect_allow "H16 logs still allowed" "$CPB logs web"
 expect_allow "H16 ps still allowed" "$CPB ps"
+
+# ---------------------------------------------------------------------------
+# F. Profile fallback, reserved words, exec flags, extra config fields
+# ---------------------------------------------------------------------------
+echo "-- fallback, keywords, exec, config fields"
+PCFGF="$TMP/pcfg.json"
+CPB="docker compose -p demo --file $WT/docker-compose.yml"
+UPD="$CPB up -d"
+VIOL='.services.web.privileged = true'
+
+# Fallback: the `--profile *` call fails; the default config is compliant and
+# the config for profile p is privileged.
+mkcfg '.'
+mkcfg "$VIOL"; cp "$CFGF" "$PCFGF"
+mkcfg '.'
+STUB_FAIL_STAR=1; STUB_PCFG="$PCFGF"
+expect_allow "F1 fallback: up -d with no profile resolves the default services" "$UPD"
+expect_block "F1 fallback: --profile p up -d" privileged "$CPB --profile p up -d"
+expect_block "F1 fallback: --profile=p up -d" privileged "$CPB --profile=p up -d"
+expect_block "F1 fallback: inline COMPOSE_PROFILES=p" privileged "COMPOSE_PROFILES=p $UPD"
+expect_block "F1 fallback: exported COMPOSE_PROFILES=p" privileged "export COMPOSE_PROFILES=p; $UPD"
+expect_block "F1 fallback: an explicit service fails closed" unresolved-config "$UPD web"
+STUB_FAIL_PNAME=bad
+expect_block "F1 fallback: a failing selected profile fails closed" unresolved-config "$CPB --profile bad up -d"
+STUB_FAIL_PNAME=""
+run_hook "$CPB --profile p up -d"
+if grep -q -- "--profile p config" <<<"$(cat "$STUB_LOGF")"; then pass "F1 fallback call received the --profile p args"
+else fail "F1 fallback call did not receive --profile p (log: $(tr '\n' '|' < "$STUB_LOGF"))"; fi
+run_hook "$UPD"
+if grep -q -- "--profile" <<<"$(grep -v -F -- "--profile *" "$STUB_LOGF")"; then fail "F1 fallback for a no-profile command passed a profile (log: $(tr '\n' '|' < "$STUB_LOGF"))"
+else pass "F1 fallback for a no-profile command passes no profile"; fi
+run_hook "export COMPOSE_PROFILES=p; $UPD"
+if grep -q -- "COMPOSE_PROFILES=p" <<<"$(cat "$STUB_LOGF")" || [ "$HOOK_RC" -eq 2 ]; then pass "F1 exported COMPOSE_PROFILES reached the fallback (blocked by the profile config)"
+else fail "F1 exported COMPOSE_PROFILES did not reach the fallback"; fi
+STUB_FAIL_STAR=""; STUB_PCFG=""
+
+# Reserved words before the command word.
+mkcfg "$VIOL"
+expect_block "F2 if/then" privileged "if true; then $UPD; fi"
+expect_block "F2 negation" privileged "! $UPD"
+expect_block "F2 for/do" privileged "for i in 1; do $UPD; done"
+expect_block "F2 while ... done then up" privileged "while false; do :; done; $UPD"
+expect_block "F2 case/esac" privileged "case x in x) $UPD ;; esac"
+expect_block "F2 brace group" privileged "{ $UPD; }"
+expect_block "F2 time prefix" privileged "time $UPD"
+mkcfg '.'
+expect_allow "F2 keyword-prefixed compliant up" "if true; then $UPD; fi"
+expect_allow "F2 keyword-only command without compose" "if true; then echo hi; fi"
+
+# exec: flags only, no config resolution.
+mkcfg '.'
+EXB="$CPB exec"
+expect_block "F3 exec --privileged" elevated-flag "$EXB --privileged web sh"
+expect_block "F3 exec --index 1 --privileged" elevated-flag "$EXB --index 1 --privileged web sh"
+expect_block "F3 exec --privileged=true" elevated-flag "$EXB --privileged=true web sh"
+expect_block "F3 exec --cap-add=ALL" elevated-flag "$EXB --cap-add=ALL web sh"
+expect_allow "F3 exec plain" "$EXB web sh"
+expect_allow "F3 exec: flag-looking args after the service" "$EXB web sh --privileged"
+expect_allow "F3 exec: args after --" "$EXB -- web sh --privileged"
+run_hook "$EXB web sh"
+if grep -q -- " config " <<<" $(cat "$STUB_LOGF") "; then fail "F3 exec resolved a config (log: $(tr '\n' '|' < "$STUB_LOGF"))"
+else pass "F3 exec never calls config"; fi
+
+# Config fields on an otherwise clean fixture.
+mkcfg '.services.web.post_start = [{command:"x", privileged:true}]'
+expect_block "F4 post_start privileged" privileged "$UPD"
+mkcfg '.services.web.pre_stop = [{command:"x", privileged:true}]'
+expect_block "F4 pre_stop privileged" privileged "$UPD"
+mkcfg '.services.web.use_api_socket = true'
+expect_block "F4 use_api_socket" runtime-socket "$UPD"
+mkcfg '.services.web.provider = {type:"model"}'
+expect_block "F4 provider service" provider-service "$UPD"
+mkcfg '.services.web.build = {context:$wt, privileged:true}'
+expect_block "F4 build.privileged" elevated-build "$UPD"
+mkcfg '.services.web.build = {context:$wt, entitlements:["security.insecure"]}'
+expect_block "F4 build.entitlements" elevated-build "$UPD"
+mkcfg '.services.web.build = {context:$wt, network:"host"}'
+expect_block "F4 build.network host" host-namespace "$UPD"
+mkcfg '.services.web.post_start = [{command:"x"}] | .services.web.pre_stop = [{command:"y", privileged:false}] | .services.web.use_api_socket = false | .services.web.build = {context:$wt, network:"default", entitlements:[]}'
+expect_allow "F4 clean fixture with none of these" "$UPD"
+
+# Subcommands.
+mkcfg "$VIOL"
+expect_block "F5 build on a violating fixture" privileged "$CPB build"
+expect_block "F5 alpha watch on a violating fixture" privileged "$CPB alpha watch"
+expect_allow "F5 alpha other subcommand on a violating fixture" "$CPB alpha ls"
+mkcfg '.'
+expect_allow "F5 build on a clean fixture" "$CPB build"
 
 # --- decision log ---
 mkcfg '.services.web.privileged = true'

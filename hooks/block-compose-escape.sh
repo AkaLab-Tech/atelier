@@ -231,8 +231,9 @@ check_mount_spec() {
 # `-x=v`, and grouped short flags (`-dv v`) where the first value-taking short
 # flag takes the rest of the word (minus one leading `=`) or the next word.
 # Short flags taking a value (`docker compose run --help`): -e -l -p -u -v -w.
-# `run` stops at `--` and at its first positional (the service); other
-# subcommands keep scanning.
+# `run` and `exec` stop at `--` and at their first positional (the service);
+# other subcommands keep scanning. `-u/--user` is not denied: it only picks the
+# user inside an unprivileged container, same as for `run`.
 check_flags() { # sub base tokens...
   local sub="$1" base="$2" k=3 n=$# tok val rest i c
   local -a a=("$@")
@@ -240,7 +241,7 @@ check_flags() { # sub base tokens...
     tok="${a[$((k - 1))]}"
     k=$((k + 1))
     case "$tok" in
-      --) [ "$sub" = "run" ] && return 0; continue ;;
+      --) case "$sub" in run|exec) return 0 ;; esac; continue ;;
       --privileged|--privileged=*|--cap-add|--cap-add=*|--device|--device=*|--security-opt|--security-opt=*)
         deny "elevated-flag" ;;
       --pid|--ipc|--uts|--userns|--cgroupns|--network|--net)
@@ -263,7 +264,7 @@ check_flags() { # sub base tokens...
       --volume=*) check_mount_spec volume "$base" "${tok#*=}" ;;
       --mount=*) check_mount_spec mount "$base" "${tok#*=}" ;;
       --volumes-from=*) check_mount_spec from "$base" "${tok#*=}" ;;
-      --cap-drop|--entrypoint|--env|--env-from-file|--label|--name|--pull|--publish|--user|--workdir|--scale)
+      --cap-drop|--entrypoint|--env|--env-from-file|--label|--name|--pull|--publish|--user|--workdir|--scale|--index)
         k=$((k + 1)) ;;
       --*) ;;
       -?*)
@@ -284,7 +285,7 @@ check_flags() { # sub base tokens...
           esac
           i=$((i + 1))
         done ;;
-      *) [ "$sub" = "run" ] && return 0 ;;
+      *) case "$sub" in run|exec) return 0 ;; esac ;;
     esac
   done
 }
@@ -299,6 +300,10 @@ def bindsrc($p):
 [
   ((.services // {}) | to_entries[] | .value as $s |
     (if $s.privileged == true then "privileged" else empty end),
+    ((($s.post_start // []) + ($s.pre_stop // []))[]
+      | if type == "object" and .privileged == true then "privileged" else empty end),
+    (if $s.provider != null then "provider-service" else empty end),
+    (if $s.use_api_socket == true then "runtime-socket" else empty end),
     (if ($s.pid | hostns) or ($s.ipc | hostns) or ($s.uts | hostns) or ($s.network_mode | hostns)
         or $s.userns_mode == "host" or $s.cgroup == "host" then "host-namespace" else empty end),
     (if (($s.cap_add // []) | length) > 0 or (($s.devices // []) | length) > 0
@@ -316,6 +321,9 @@ def bindsrc($p):
       | tostring | select(test("^[a-z][a-z0-9+.-]*:") | not) | bindsrc(.)),
     (($s.build // null) | select(type == "object") | .ssh // empty
       | select(length > 0) | "build-ssh"),
+    (($s.build // null) | select(type == "object")
+      | if .privileged == true or ((.entitlements // []) | length) > 0 then "elevated-build"
+        elif (.network | hostns) then "host-namespace" else empty end),
     (($s.env_file // [])
       | (if type == "array" then . else [.] end)[]
       | (if type == "object" then .path else . end) | bindsrc(.))
@@ -330,11 +338,15 @@ def bindsrc($p):
 ENVV=()
 check_compose() { # sub, then compose-level facts in globals, then rest tokens
   local sub="$1"; shift
-  local f d e p remaining out rc line cfg base0
-  local -a cargs=() penv=()
+  local f d e p remaining out rc line cfg base0 tk
+  local -a cargs=() penv=() pargs=()
   # `cp` moves files between a container and a host path; blocked outright.
   [ "$sub" = "cp" ] && deny "cp-host-copy"
-  case "$sub" in up|run|create|start|restart|watch|scale) ;; *) return 0 ;; esac
+  # `alpha watch` starts processes like `watch`; other alpha commands do not.
+  if [ "$sub" = "alpha" ]; then sub="${1:-}"; [ "$#" -gt 0 ] && shift; [ "$sub" = "watch" ] || return 0; fi
+  # `exec` starts a process in an existing container: only its flags matter.
+  if [ "$sub" = "exec" ]; then check_flags exec "$CUR" "$@"; return 0; fi
+  case "$sub" in up|run|create|start|restart|watch|scale|build) ;; *) return 0 ;; esac
 
   [ "$CD_BAD" -eq 0 ] || deny "unresolvable-cd"
   if [ -n "$C_PDIR" ]; then set_boundary "$C_PDIR"
@@ -356,6 +368,7 @@ check_compose() { # sub, then compose-level facts in globals, then rest tokens
   [ -n "$C_PDIR" ] && cargs+=(--project-directory "$C_PDIR")
   for e in ${C_ENVF[@]+"${C_ENVF[@]}"}; do cargs+=(--env-file "$e"); done
   for d in ${ENVV[@]+"${ENVV[@]}"}; do penv+=("$d"); done
+  for d in ${C_PROFILES[@]+"${C_PROFILES[@]}"}; do pargs+=(--profile "$d"); done
 
   remaining=$((BUDGET_SECS - SECONDS))
   [ "$remaining" -ge 2 ] || deny "unresolved-config"
@@ -363,11 +376,18 @@ check_compose() { # sub, then compose-level facts in globals, then rest tokens
   out="$(cd "$CUR" 2>/dev/null && atelier_timeout "$remaining" env ${penv[@]+"${penv[@]}"} \
     docker compose ${cargs[@]+"${cargs[@]}"} --profile '*' config --no-env-resolution --format json 2>/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+    # The fallback must resolve the command's own service selection: the
+    # command's --profile values (COMPOSE_PROFILES rides in penv), and services
+    # named as positionals auto-enable their profile. Positionals cannot be told
+    # from flag values here, so any non-flag word fails closed.
+    for tk in "$@"; do
+      case "$tk" in -*) ;; *) deny "unresolved-config" ;; esac
+    done
     remaining=$((BUDGET_SECS - SECONDS))
     [ "$remaining" -ge 2 ] || deny "unresolved-config"
     rc=0
     out="$(cd "$CUR" 2>/dev/null && atelier_timeout "$remaining" env ${penv[@]+"${penv[@]}"} \
-      docker compose ${cargs[@]+"${cargs[@]}"} config --no-env-resolution --format json 2>/dev/null)" || rc=$?
+      docker compose ${cargs[@]+"${cargs[@]}"} ${pargs[@]+"${pargs[@]}"} config --no-env-resolution --format json 2>/dev/null)" || rc=$?
   fi
   [ "$rc" -eq 0 ] || deny "unresolved-config"
   cfg="$out"
@@ -436,7 +456,7 @@ scan_segment() { # depth tokens...
     tok="${t[$i]}"
     case "$tok" in
       COMPOSE_*=*|DOCKER_HOST=*|DOCKER_CONTEXT=*) ENVV+=("$tok"); i=$((i + 1)) ;;
-      '{'|*=*|env|command|builtin|exec|nohup|time|sudo|nice|stdbuf|ionice|timeout|setsid|caffeinate|xargs|-*) i=$((i + 1)) ;;
+      '{'|'}'|'!'|'[['|'if'|'then'|'elif'|'else'|'fi'|'do'|'done'|'while'|'until'|'for'|'in'|'case'|'esac'|'select'|'coproc'|'function'|*=*|env|command|builtin|exec|nohup|time|sudo|nice|stdbuf|ionice|timeout|setsid|caffeinate|xargs|-*) i=$((i + 1)) ;;
       *[!0-9.smhd]*|'') break ;;
       [0-9]*|.[0-9]*) i=$((i + 1)) ;;
       *) break ;;
@@ -503,7 +523,7 @@ scan_segment() { # depth tokens...
     j=$((j + 1))
   fi
 
-  C_PROJ=""; C_PDIR=""; C_FILES=(); C_ENVF=()
+  C_PROJ=""; C_PDIR=""; C_FILES=(); C_ENVF=(); C_PROFILES=()
   local sub="" cf
   if [ -n "${COMPOSE_FILE:-}" ]; then
     IFS=: read -r -a cf <<< "$COMPOSE_FILE"; C_FILES+=("${cf[@]}")
@@ -526,7 +546,9 @@ scan_segment() { # depth tokens...
       --project-directory=*) C_PDIR="${tok#*=}"; j=$((j + 1)) ;;
       --env-file) C_ENVF+=("${t[$((j + 1))]:--}"); j=$((j + 2)) ;;
       --env-file=*) C_ENVF+=("${tok#*=}"); j=$((j + 1)) ;;
-      --profile|--parallel|--ansi|--progress) j=$((j + 2)) ;;
+      --profile) C_PROFILES+=("${t[$((j + 1))]:-}"); j=$((j + 2)) ;;
+      --profile=*) C_PROFILES+=("${tok#*=}"); j=$((j + 1)) ;;
+      --parallel|--ansi|--progress) j=$((j + 2)) ;;
       -*) j=$((j + 1)) ;;
       *) sub="$tok"; break ;;
     esac
