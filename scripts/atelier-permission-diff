@@ -122,6 +122,8 @@ describe_permission() {
     "Bash(pnpm run *)")                          echo "run a package.json script" ;;
     "Bash(pnpm test*)")                          echo "run tests via pnpm" ;;
     "Bash(pnpm run test*)")                      echo "run the project's test scripts" ;;
+    "Bash(pnpm run lint*)")                      echo "run the project's lint scripts" ;;
+    "Bash(pnpm run typecheck*)")                 echo "run the project's typecheck scripts" ;;
     "Bash(pnpm exec playwright test*)")          echo "run playwright tests via pnpm" ;;
     # ---------- env-prefixed gate runs (#451): <env> <command> ----------
     "Bash(PW_CHROME_CHANNEL=chrome "*|"Bash(CI=1 "*|"Bash(CI=true "*)
@@ -184,6 +186,9 @@ describe_permission() {
     # ---------- docker ----------
     "Bash(docker info*)")                        echo "show docker info" ;;
     "Bash(docker compose*)")                     echo "manage compose services" ;;
+    "Bash(docker compose version*)")             echo "check the docker compose version" ;;
+    "Bash(docker compose -p * --file <worktree>/docker-compose.yml *)") echo "manage the task's compose stack (explicit project and worktree compose file)" ;;
+    "Bash(docker compose -p * --file <worktree>-worktrees/**/docker-compose.yml *)") echo "manage a task's compose stack in a sibling worktree (explicit project and compose file)" ;;
     "Bash(docker ps*)")                          echo "list containers" ;;
     "Bash(docker logs*)")                        echo "tail container logs" ;;
     # ---------- file ops ----------
@@ -279,6 +284,18 @@ describe_permission() {
     "Bash(docker push*)")                        echo "BLOCKED: push container image" ;;
     "Bash(curl * | sh*)")                        echo "BLOCKED: pipe curl to shell" ;;
     "Bash(curl * | bash*)")                      echo "BLOCKED: pipe curl to bash" ;;
+    "Bash(*pnpm*exec tsx* -e *)")                      echo "BLOCKED: inline code evaluation through pnpm exec" ;;
+    "Bash(*pnpm*exec tsx* -p *)")                      echo "BLOCKED: inline code evaluation through pnpm exec" ;;
+    "Bash(*pnpm*exec tsx* --eval *)")                  echo "BLOCKED: inline code evaluation through pnpm exec" ;;
+    "Bash(*pnpm*exec tsx* --print *)")                 echo "BLOCKED: inline code evaluation through pnpm exec" ;;
+    "Bash(*pnpm*exec tsx* --eval=*)")                  echo "BLOCKED: inline code evaluation through pnpm exec" ;;
+    "Bash(*pnpm*exec tsx* --print=*)")                 echo "BLOCKED: inline code evaluation through pnpm exec" ;;
+    "Bash(*pnpm*exec node* -e *)")                     echo "BLOCKED: inline code evaluation through pnpm exec" ;;
+    "Bash(*pnpm*exec node* -p *)")                     echo "BLOCKED: inline code evaluation through pnpm exec" ;;
+    "Bash(*pnpm*exec node* --eval *)")                 echo "BLOCKED: inline code evaluation through pnpm exec" ;;
+    "Bash(*pnpm*exec node* --print *)")                echo "BLOCKED: inline code evaluation through pnpm exec" ;;
+    "Bash(*pnpm*exec node* --eval=*)")                 echo "BLOCKED: inline code evaluation through pnpm exec" ;;
+    "Bash(*pnpm*exec node* --print=*)")                echo "BLOCKED: inline code evaluation through pnpm exec" ;;
     # ---------- reads (deny) ----------
     "Read(~/.ssh/**)")                           echo "BLOCKED: SSH keys" ;;
     "Read(~/.aws/**)")                           echo "BLOCKED: AWS credentials" ;;

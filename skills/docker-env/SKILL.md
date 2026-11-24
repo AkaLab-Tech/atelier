@@ -78,6 +78,8 @@ docker compose version >/dev/null 2>&1 || {
 docker compose -p "<project_name>" --file "<worktree>/docker-compose.yml" up -d --wait
 ```
 
+The `block-compose-escape` hook reads the resolved compose config before `up` (and `run`, `create`, `start`, `restart`) and blocks it when it reaches outside the worktree (bind mounts, privileged mode, host namespaces, devices, runtime sockets).
+
 `--wait` makes the command block until every service with a `healthcheck:` reports `healthy`. Without it, services with slow start (Postgres takes ~3-5 seconds to accept connections) would silently fail the next step's connection.
 
 On success: report each service's status (`<name>: healthy`) and the host port(s) exposed.

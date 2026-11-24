@@ -1,0 +1,390 @@
+#!/usr/bin/env bash
+#
+# atelier — PreToolUse hook on Bash. Blocks container-creating `docker compose`
+# commands whose effective configuration (or command-line flags) would reach
+# outside the task worktree (#811).
+#
+# The static permission matrix only allows the compose shapes the docker-env
+# skill issues (`-p <name> --file <worktree>/docker-compose.yml ...`). A compose
+# file lives in the worktree and is project code, so what it asks the daemon to
+# start must be checked at run time, not by a path glob.
+#
+# Rule: for `up`, `run`, `create`, `start`, `restart` (and `watch`, `scale`),
+# resolve the effective config read-only with
+#   docker compose [-p N] [-f F]... [--project-directory D] [--env-file E]...
+#                  [--profile P]... config --format json
+# (same project/file/directory/env arguments as the command) and block when:
+#   - a `--file` / `--project-directory` / COMPOSE_FILE path is outside the
+#     worktree (or is a symlink, `-`, or not a plain word);
+#   - a service asks for privileged mode, host/foreign namespaces, devices,
+#     capability or weakened security grants, or volumes from another container;
+#   - a bind source (service volume, volume driver option, secret/config file,
+#     build context) is outside the worktree, is a symlink, or is a socket;
+#   - `run`/`create` flags (`-v`, `--volume`, `--mount`, `--privileged`,
+#     `--cap-add`, `--device`, `--security-opt`, `--pid`/`--ipc`/`--uts`/
+#     `--network host`...) ask for the same.
+# Fail closed when the config cannot be resolved (error, timeout, not JSON).
+# Exit 0 for every other subcommand (down/logs/ps/version/config/...), for text
+# that only mentions compose (heredoc prose and quoted strings are not
+# commands), and when `docker` is not on PATH or jq is missing.
+#
+# Defense in depth, not a sandbox: a script written first and run later, indirect
+# runs (package scripts, Makefiles), obfuscated invocations and a daemon reached
+# through other means are not covered. Server-side controls own the final
+# boundary (PLAN.md §3).
+#
+# Contract (PreToolUse): stdin JSON { tool_name, tool_input: { command }, cwd };
+# exit 0 allow, exit 2 block (stderr goes to Claude).
+
+# shellcheck disable=SC2016,SC2088,SC1003
+set -uo pipefail
+
+# shellcheck source=lib/log-decision.sh
+source "${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT must be set by Claude Code}/hooks/lib/log-decision.sh"
+# shellcheck source=lib/shell-lex.sh
+source "$CLAUDE_PLUGIN_ROOT/hooks/lib/shell-lex.sh"
+# shellcheck source=lib/portable-timeout.sh
+source "$CLAUDE_PLUGIN_ROOT/hooks/lib/portable-timeout.sh"
+
+HOOK_NAME="block-compose-escape"
+BUDGET_SECS=12      # total wall budget for config resolution (hook timeout is 30)
+
+input="$(cat 2>/dev/null || true)"
+
+if ! command -v jq >/dev/null 2>&1; then
+  printf '⚠️  atelier:%s — jq missing; hook safety layer degraded, failing open (allow)\n' "$HOOK_NAME" >&2
+  log_decision "$HOOK_NAME" "?" "" "allow" "jq missing — hook degraded to allow"
+  exit 0
+fi
+
+tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)"
+command_str="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+[ "$tool_name" = "Bash" ] || exit 0
+[ -n "$command_str" ] || exit 0
+
+# Fast path: no compose word anywhere.
+case "$command_str" in *compose*) ;; *) exit 0 ;; esac
+command -v docker >/dev/null 2>&1 || exit 0
+
+hook_cwd="$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)"
+[ -n "$hook_cwd" ] || hook_cwd="$PWD"
+[ -d "$hook_cwd" ] || hook_cwd="$PWD"
+CWD="$(cd -P "$hook_cwd" 2>/dev/null && pwd -P)" || CWD="$hook_cwd"
+WT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$WT" ] || WT="$CWD"
+WT="$(cd -P "$WT" 2>/dev/null && pwd -P)" || WT="${WT%/}"
+
+deny() { # tag
+  log_decision "$HOOK_NAME" "Bash" "$1" "block" "compose config reaches outside the task worktree: $1"
+  cat >&2 <<MSG
+🛑 atelier:${HOOK_NAME} — blocked a docker compose command that would start containers reaching outside this task's worktree (${1}).
+   Keep the compose file self-contained: bind mounts only under the worktree, no privileged mode,
+   host namespaces, devices, capability grants or runtime-socket mounts. If the configuration
+   cannot be resolved, fix the compose file or the --file / --project-directory arguments and retry.
+MSG
+  exit 2
+}
+
+# Lexically normalise an absolute path (no symlink resolution).
+_norm() {
+  local p="$1" part out="" IFS=/
+  local -a parts=() stack=()
+  read -r -a parts <<< "$p"
+  for part in ${parts[@]+"${parts[@]}"}; do
+    case "$part" in
+      ''|.) ;;
+      ..) [ "${#stack[@]}" -gt 0 ] && unset "stack[$((${#stack[@]} - 1))]" ;;
+      *) stack+=("$part") ;;
+    esac
+  done
+  for part in ${stack[@]+"${stack[@]}"}; do out="$out/$part"; done
+  printf '%s' "${out:-/}"
+}
+
+# Absolute, normalised path of $2 resolved against base $1; symlinked parents
+# are resolved, a symlinked final component is reported as "SYMLINK".
+_phys() {
+  local base="$1" p="$2" abs dir name
+  case "$p" in
+    '~') p="${HOME:-/nonexistent}" ;;
+    '~/'*) p="${HOME:-/nonexistent}/${p#'~/'}" ;;
+  esac
+  case "$p" in /*) abs="$p" ;; *) abs="$base/$p" ;; esac
+  abs="$(_norm "$abs")"
+  if [ -L "$abs" ]; then printf 'SYMLINK'; return; fi
+  if [ -d "$abs" ]; then
+    (cd -P "$abs" 2>/dev/null && pwd -P) || printf '%s' "$abs"
+    return
+  fi
+  dir="$(dirname "$abs")"; name="$(basename "$abs")"
+  if [ -d "$dir" ]; then
+    dir="$(cd -P "$dir" 2>/dev/null && pwd -P)" || dir="$(dirname "$abs")"
+    printf '%s' "${dir%/}/$name"
+  else
+    printf '%s' "$abs"
+  fi
+}
+
+_in_wt() { case "$1" in "$WT"|"$WT"/*) return 0 ;; esac; return 1; }
+
+# A path argument that is checked, not resolved from shell state.
+_unresolvable() {
+  case "$1" in ''|-|*'$'*|*'`'*|*'*'*|*'?'*|*'{'*) return 0 ;; esac
+  return 1
+}
+
+# Require a path to be a plain, in-worktree, non-symlink location. $1 base.
+require_in_wt() {
+  local base="$1" p="$2" r
+  _unresolvable "$p" && deny "unresolvable-path"
+  r="$(_phys "$base" "$p")"
+  [ "$r" = "SYMLINK" ] && deny "symlinked-path"
+  _in_wt "$r" || deny "path-outside-worktree"
+}
+
+# Bind source named on the command line or in the resolved config.
+check_bind_source() { # base src
+  local base="$1" src="$2" r
+  _unresolvable "$src" && deny "unresolvable-path"
+  r="$(_phys "$base" "$src")"
+  [ "$r" = "SYMLINK" ] && deny "symlinked-bind-source"
+  _in_wt "$r" || deny "bind-outside-worktree"
+  [ -S "$r" ] && deny "runtime-socket"
+  case "$r" in *docker.sock|*containerd.sock|*podman.sock|*crio.sock) deny "runtime-socket" ;; esac
+  return 0
+}
+
+# Flags of `run` / `create` that grant access beyond the worktree.
+check_flags() { # base tokens...
+  local base="$1" k=2 n=$# tok val spec src
+  local -a a=("$@")
+  while [ "$k" -le "$n" ]; do
+    tok="${a[$((k - 1))]}"
+    val="${a[$k]:-}"
+    case "$tok" in
+      --privileged|--privileged=*|--cap-add|--cap-add=*|--device|--device=*|--security-opt|--security-opt=*)
+        deny "elevated-flag" ;;
+      --pid|--ipc|--uts|--userns|--cgroupns|--network|--net)
+        case "$val" in host|host:*|container:*) deny "host-namespace-flag" ;; esac ;;
+      --pid=*|--ipc=*|--uts=*|--userns=*|--cgroupns=*|--network=*|--net=*)
+        val="${tok#*=}"
+        case "$val" in host|host:*|container:*) deny "host-namespace-flag" ;; esac ;;
+      -v|--volume|--mount|--volumes-from) spec="$val" ;;
+      --volume=*|--mount=*|--volumes-from=*) spec="${tok#*=}" ;;
+      -v?*) case "$tok" in --*) spec="" ;; *) spec="${tok#-v}" ;; esac ;;
+      *) spec="" ;;
+    esac
+    if [ -n "$spec" ]; then
+      case "$tok" in
+        --volumes-from*) deny "container-volumes" ;;
+        --mount|--mount=*)
+          case ",$spec," in
+            *,type=tmpfs,*|*,type=volume,*|*,type=image,*) ;;
+            *)
+              src=""
+              case ",$spec," in
+                *,source=*) src="${spec#*source=}"; src="${src%%,*}" ;;
+                *,src=*) src="${spec#*src=}"; src="${src%%,*}" ;;
+              esac
+              [ -n "$src" ] && check_bind_source "$base" "$src" ;;
+          esac ;;
+        *)
+          src="${spec%%:*}"
+          case "$src" in
+            /*|.*|'~'*|*'$'*|*'`'*) check_bind_source "$base" "$src" ;;
+          esac ;;
+      esac
+    fi
+    k=$((k + 1))
+  done
+}
+
+CFG_JQ='
+def inside($p): ($p | type == "string") and ($p == $wt or ($p | startswith($wt + "/")));
+def hostns: . != null and (. == "host" or (type == "string" and startswith("container:")));
+def bindsrc($p):
+  if ($p | type) != "string" or $p == "" then empty
+  elif inside($p) then "BIND:" + $p
+  else "bind-outside-worktree" end;
+[
+  ((.services // {}) | to_entries[] | .value as $s |
+    (if $s.privileged == true then "privileged" else empty end),
+    (if ($s.pid | hostns) or ($s.ipc | hostns) or ($s.uts | hostns) or ($s.network_mode | hostns)
+        or $s.userns_mode == "host" or $s.cgroup == "host" then "host-namespace" else empty end),
+    (if (($s.cap_add // []) | length) > 0 or (($s.devices // []) | length) > 0
+        or (($s.device_cgroup_rules // []) | length) > 0 then "device-or-capability" else empty end),
+    (if (($s.security_opt // []) | map(tostring | test("unconfined|disable")) | any) then "weakened-security" else empty end),
+    (if (($s.volumes_from // []) | map(tostring | startswith("container:")) | any) then "container-volumes" else empty end),
+    (($s.volumes // [])[] | select(type == "object") |
+      if .type == "npipe" then "runtime-socket"
+      elif .type == "bind" then bindsrc(.source) else empty end),
+    (($s.build // null) | select(type == "object") | .context // empty
+      | select(type == "string" and startswith("/")) | bindsrc(.)),
+    (($s.build // null) | select(type == "string" and startswith("/")) | bindsrc(.))
+  ),
+  (((.volumes // {}) | to_entries[] | .value | select(type == "object") | .driver_opts.device? // empty
+      | select(type == "string" and startswith("/")) | bindsrc(.))),
+  ((((.secrets // {}), (.configs // {})) | to_entries[] | .value | select(type == "object") | .file? // empty)
+      | bindsrc(.))
+] | unique | .[]
+'
+
+ENVV=()
+check_compose() { # sub, then compose-level facts in globals, then rest tokens
+  local sub="$1"; shift
+  local f d e p remaining out rc line cfg base0
+  local -a cargs=() penv=()
+  case "$sub" in up|run|create|start|restart|watch|scale) ;; *) return 0 ;; esac
+
+  base0="$CWD"
+  if [ -n "$C_PDIR" ]; then require_in_wt "$CWD" "$C_PDIR"; base0="$(_phys "$CWD" "$C_PDIR")"; fi
+  for f in ${C_FILES[@]+"${C_FILES[@]}"}; do require_in_wt "$CWD" "$f"; done
+  for e in ${C_ENVF[@]+"${C_ENVF[@]}"}; do require_in_wt "$CWD" "$e"; done
+  if [ -z "$C_PDIR" ] && [ "${#C_FILES[@]}" -gt 0 ]; then
+    base0="$(dirname "$(_phys "$CWD" "${C_FILES[0]}")")"
+  fi
+
+  case "$sub" in run|create) check_flags "$base0" "$@" ;; esac
+
+  [ -n "$C_PROJ" ] && cargs+=(-p "$C_PROJ")
+  for f in ${C_FILES[@]+"${C_FILES[@]}"}; do cargs+=(--file "$f"); done
+  [ -n "$C_PDIR" ] && cargs+=(--project-directory "$C_PDIR")
+  for e in ${C_ENVF[@]+"${C_ENVF[@]}"}; do cargs+=(--env-file "$e"); done
+  for d in ${ENVV[@]+"${ENVV[@]}"}; do penv+=("$d"); done
+
+  remaining=$((BUDGET_SECS - SECONDS))
+  [ "$remaining" -ge 2 ] || deny "unresolved-config"
+  rc=0
+  out="$(cd "$CWD" 2>/dev/null && atelier_timeout "$remaining" env ${penv[@]+"${penv[@]}"} \
+    docker compose ${cargs[@]+"${cargs[@]}"} --profile '*' config --format json 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+    remaining=$((BUDGET_SECS - SECONDS))
+    [ "$remaining" -ge 2 ] || deny "unresolved-config"
+    rc=0
+    out="$(cd "$CWD" 2>/dev/null && atelier_timeout "$remaining" env ${penv[@]+"${penv[@]}"} \
+      docker compose ${cargs[@]+"${cargs[@]}"} config --format json 2>/dev/null)" || rc=$?
+  fi
+  [ "$rc" -eq 0 ] || deny "unresolved-config"
+  cfg="$out"
+  printf '%s' "$cfg" | jq -e 'type == "object"' >/dev/null 2>&1 || deny "unresolved-config"
+
+  out="$(printf '%s' "$cfg" | jq -r --arg wt "$WT" "$CFG_JQ" 2>/dev/null)" || deny "unresolved-config"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      BIND:*) check_bind_source "$base0" "${line#BIND:}" ;;
+      *) deny "$line" ;;
+    esac
+  done <<< "$out"
+  return 0
+}
+
+scan_segment() { # depth tokens...
+  local depth="$1"; shift
+  local -a t=("$@")
+  local n=$# i=0 tok base
+  local j k
+
+  # Command word after harmless prefixes; COMPOSE_* / DOCKER_HOST assignments
+  # in the prefix region reach the compose process.
+  while [ "$i" -lt "$n" ]; do
+    tok="${t[$i]}"
+    case "$tok" in
+      COMPOSE_*=*|DOCKER_HOST=*|DOCKER_CONTEXT=*) ENVV+=("$tok"); i=$((i + 1)) ;;
+      *=*|env|command|builtin|exec|nohup|time|sudo|nice|stdbuf|ionice|timeout|setsid|caffeinate|xargs|-*) i=$((i + 1)) ;;
+      *[!0-9.smhd]*|'') break ;;
+      [0-9]*|.[0-9]*) i=$((i + 1)) ;;
+      *) break ;;
+    esac
+  done
+  [ "$i" -lt "$n" ] || return 0
+  tok="${t[$i]#\\}"
+  base="${tok##*/}"
+
+  case "$base" in
+    export|declare|typeset|readonly|local)
+      for ((j = i + 1; j < n; j++)); do
+        case "${t[$j]}" in COMPOSE_*=*|DOCKER_HOST=*|DOCKER_CONTEXT=*) ENVV+=("${t[$j]}") ;; esac
+      done
+      return 0 ;;
+    bash|sh|zsh|dash|ksh)
+      if [ "$depth" -lt 3 ]; then
+        for ((j = i + 1; j < n - 1; j++)); do
+          case "${t[$j]}" in -c|-[a-z]c|-[a-z][a-z]c) scan_script "${t[$((j + 1))]}" $((depth + 1)); break ;; esac
+        done
+      fi
+      return 0 ;;
+    eval)
+      [ "$depth" -lt 3 ] || return 0
+      local joined=""
+      for ((j = i + 1; j < n; j++)); do joined+="${t[$j]} "; done
+      scan_script "$joined" $((depth + 1))
+      return 0 ;;
+    docker|docker-compose) ;;
+    *) return 0 ;;
+  esac
+
+  j=$((i + 1))
+  if [ "$base" = "docker" ]; then
+    while [ "$j" -lt "$n" ]; do
+      case "${t[$j]}" in
+        compose) break ;;
+        -H|--host|--context|-c|--config|-l|--log-level|--tlscacert|--tlscert|--tlskey) j=$((j + 2)) ;;
+        -*) j=$((j + 1)) ;;
+        *) return 0 ;;
+      esac
+    done
+    [ "$j" -lt "$n" ] || return 0
+    j=$((j + 1))
+  fi
+
+  C_PROJ=""; C_PDIR=""; C_FILES=(); C_ENVF=()
+  local sub="" cf
+  if [ -n "${COMPOSE_FILE:-}" ]; then
+    IFS=: read -r -a cf <<< "$COMPOSE_FILE"; C_FILES+=("${cf[@]}")
+  fi
+  for tok in ${ENVV[@]+"${ENVV[@]}"}; do
+    case "$tok" in
+      COMPOSE_FILE=*) IFS=: read -r -a cf <<< "${tok#COMPOSE_FILE=}"; C_FILES+=("${cf[@]}") ;;
+      COMPOSE_PROJECT_NAME=*) C_PROJ="${tok#*=}" ;;
+    esac
+  done
+  while [ "$j" -lt "$n" ]; do
+    tok="${t[$j]}"
+    case "$tok" in
+      -p|--project-name) C_PROJ="${t[$((j + 1))]:-}"; j=$((j + 2)) ;;
+      --project-name=*) C_PROJ="${tok#*=}"; j=$((j + 1)) ;;
+      -f|--file) C_FILES+=("${t[$((j + 1))]:--}"); j=$((j + 2)) ;;
+      --file=*) C_FILES+=("${tok#*=}"); j=$((j + 1)) ;;
+      -f?*) C_FILES+=("${tok#-f}"); j=$((j + 1)) ;;
+      --project-directory) C_PDIR="${t[$((j + 1))]:--}"; j=$((j + 2)) ;;
+      --project-directory=*) C_PDIR="${tok#*=}"; j=$((j + 1)) ;;
+      --env-file) C_ENVF+=("${t[$((j + 1))]:--}"); j=$((j + 2)) ;;
+      --env-file=*) C_ENVF+=("${tok#*=}"); j=$((j + 1)) ;;
+      --profile|--parallel|--ansi|--progress) j=$((j + 2)) ;;
+      -*) j=$((j + 1)) ;;
+      *) sub="$tok"; break ;;
+    esac
+  done
+  [ -n "$sub" ] || return 0
+  k=$((j + 1))
+  check_compose "$sub" ${t[@]+"${t[@]:$k}"}
+}
+
+scan_script() { # script depth
+  local script="$1" depth="$2" stripped seg
+  local -a segs
+  case "$script" in *compose*) ;; *) return 0 ;; esac
+  stripped="$(strip_heredocs "$script")" || stripped="$script"
+  lex "$stripped"
+  IFS="$RS" read -r -d '' -a segs <<< "$LEX_OUT" || true
+  for seg in ${segs[@]+"${segs[@]}"}; do
+    [ -n "$seg" ] || continue
+    split_tokens "$seg"
+    scan_segment "$depth" ${TOKS[@]+"${TOKS[@]}"}
+  done
+}
+
+SECONDS=0
+scan_script "$command_str" 0
+exit 0
