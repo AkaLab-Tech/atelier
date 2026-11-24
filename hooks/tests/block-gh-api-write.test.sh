@@ -636,7 +636,7 @@ allow "assignment + GET"                 'GH_CONFIG_DIR=/x gh api repos/o/r'
 allow "-R before api"                    'gh -R o/r api repos/o/r/issues'
 allow "pipe into jq"                     'gh api repos/o/r/issues | jq length'
 allow "result into a variable"           'n=$(gh api repos/o/r/issues --jq length)'
-allow "result in a conditional"          'if gh api user >/dev/null; then echo ok; fi'
+block "result in a conditional (compound construct, refused as unreadable)" 'if gh api user >/dev/null; then echo ok; fi'
 allow "bash -c with a GET"               "bash -c 'gh api repos/o/r/issues'"
 allow "stderr redirect"                  'gh api repos/o/r/issues 2>/dev/null'
 allow "--help"                           'gh api --help'
@@ -648,7 +648,51 @@ allow "alias word in prose"              'echo gh alias set is blocked'
 allow "-X GET before endpoint"           'gh api -X GET repos/o/r/issues'
 
 # =============================================================================
-group "E4: payload edge cases and jq-missing fail-open"
+group "J1: closed structure around a gh api call (block)"
+# =============================================================================
+block "help flag with a value, implicit POST"  'gh api --help=false repos/o/r/issues -f title=x'
+block "help flag with a value, GraphQL mutation off the allowlist" 'gh api --help=false graphql -f query='\''mutation{mergePullRequest(input:{pullRequestId:"x"}){clientMutationId}}'\'
+block "bare help then help with a value"       'gh api --help --help=false repos/o/r/issues -f title=x'
+block "|& into an interpreter"                 'echo "gh api -X POST x" |& bash'
+block "line-end pipe into an interpreter"      $'echo "gh api -X POST x" |\n bash'
+block "pipe into an interpreter"               'echo "gh api -X POST x" | bash'
+block "|& after gh"                            'gh api repos/o/r/issues |& jq .'
+block "line-end pipe after gh"                 $'gh api repos/o/r/issues |\n jq .'
+block "pipe at end of command"                 'gh api repos/o/r/issues | jq . |'
+block "pipe into cat"                          'gh api repos/o/r/issues | cat'
+block "pipe into tee"                          'gh api repos/o/r/issues | tee x'
+block "filter chain ending in a shell"         'gh api repos/o/r/issues | jq . | bash'
+block "& background"                           'gh api repos/o/r/issues &'
+block "subshell"                               '(gh api repos/o/r/issues)'
+block "brace group"                            '{ gh api repos/o/r/issues; }'
+block "! negation"                             '! gh api user'
+block "if with a bare condition"               'if gh api user; then echo ok; fi'
+block "while loop"                             'while gh api user; do echo ok; done'
+block "for loop"                               'for i in 1 2; do gh api user; done'
+block "input redirect into gh"                 'gh api repos/o/r/issues < in.txt'
+block "output redirect to a file"              'gh api repos/o/r/issues > out.json'
+block "2>&1"                                   'gh api repos/o/r/issues 2>&1'
+block "process substitution"                   'cat <(gh api repos/o/r/issues)'
+block "pipe into gh"                           'echo hi | gh api repos/o/r/issues'
+block "sort -o"                                'gh api repos/o/r/issues | sort -o out'
+block "filter arg with an expansion"           'gh api repos/o/r/issues | jq "$(echo .)"'
+block "base64 without a decode flag"           'gh api repos/o/r/contents/x --jq .content | base64'
+
+# =============================================================================
+group "J2: closed structure around a gh api call (allow)"
+# =============================================================================
+allow "bare --help"                            'gh api --help'
+allow "bare -h"                                'gh api -h'
+allow "pipe into jq ."                         'gh api repos/o/r/issues | jq .'
+allow "jq | head | wc chain"                   'gh api repos/o/r/issues | jq -r '\''.[].title'\'' | head -5 | wc -l'
+allow "base64 -d"                              'gh api repos/o/r/contents/x --jq .content | base64 -d'
+allow "stderr to /dev/null with || true"       'gh api repos/o/r/issues --jq length 2>/dev/null || true'
+allow "GH_CONFIG_DIR prefix with || true"      'GH_CONFIG_DIR=/x gh api user --jq .login 2>/dev/null || true'
+allow "cd && gh api ; echo, newline sibling"   $'cd x && gh api user; echo done\ngh api user'
+allow "capture with --jq"                      'n=$(gh api repos/o/r/issues --jq length)'
+
+# =============================================================================
+group "E4:payload edge cases and jq-missing fail-open"
 # =============================================================================
 count_case
 payload="$(jq -cn '{tool_name:"Read", tool_input:{file_path:"x"}}')"

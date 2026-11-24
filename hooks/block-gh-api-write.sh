@@ -33,6 +33,21 @@
 #     updateProjectV2DraftIssue) plus updateIssue and addComment.
 # Any other flag, a repeated or missing endpoint, an unreadable body, a live
 # expansion in a load-bearing word, or input over the size cap is blocked.
+#
+# The structure around the call is closed too. The operator string between
+# segments is read, and a segment holding a `gh api` call passes only when it
+# is standalone, joined to its neighbours by `&&`, `||`, `;` or a newline, or
+# piped through a plain `|` into read-only filters (jq, head, tail, wc, sort,
+# uniq, cut, tr, base64) given plain arguments with no expansion. Anything else
+# around the call is blocked: a background `&`, a `|&` pipe or a pipe at the end
+# of a line, input redirection, a group, subshell, process substitution, a
+# keyword or compound construct such as an `if` condition or a negation, a
+# pipe from another command into the call, and a pipe into any other program.
+# Output redirects are allowed only to /dev/null. A help flag (`-h`/`--help`)
+# given a value is not a help request and is checked as an ordinary call.
+# Sibling segments joined by `&&`, `||` or `;` that mention neither `gh` nor
+# `api` are ignored (a `cd` before the call passes); siblings that mention `gh`
+# are checked as well.
 # `gh alias set` / `gh alias import` are blocked too (an alias can stand for an
 # api call); aliases that already exist are not resolved.
 #
@@ -130,6 +145,37 @@ is_redir() { # sets REDIR: 0 not a redirection, 1 this token, 2 this token and i
     if [ -z "${BASH_REMATCH[2]}" ]; then REDIR=2; else REDIR=1; fi
   fi
   [ "$REDIR" -ne 0 ]
+}
+
+# The redirection at T[$1] (is_redir just matched it) is output sent to
+# /dev/null; input redirections and any other target are refused.
+redir_skip() {
+  local t="${T[$1]}" tgt tf="${F:$1:1}"
+  [[ "$t" =~ $RE_REDIR ]] || return 0
+  case "${BASH_REMATCH[1]}" in '>'|'>>'|'>|') ;; *) deny_unread "input is redirected into the command" ;; esac
+  tgt="${BASH_REMATCH[2]}"
+  if [ "$REDIR" -eq 2 ]; then tgt="${T[$1 + 1]:-}"; tf="${F:$(($1 + 1)):1}"; fi
+  [ "$tf" = 0 ] && [ "$tgt" = /dev/null ] || deny_unread "output is redirected somewhere other than /dev/null"
+}
+
+# An operator string between two commands that only sequences them: `&&`, `||`,
+# `;` or a newline, then any further newlines.
+joiner() {
+  local o="$1"
+  case "$o" in
+    '&&'*) o="${o#&&}" ;;
+    '||'*) o="${o#||}" ;;
+    ';'*) o="${o#;}" ;;
+    $'\n'*) o="${o#$'\n'}" ;;
+    *) return 1 ;;
+  esac
+  while [ "${o#$'\n'}" != "$o" ]; do o="${o#$'\n'}"; done
+  [ -z "$o" ]
+}
+
+load_seg() { # segment, flags
+  split_tokens "$1"
+  T=(${TOKS[@]+"${TOKS[@]}"}); F="${2//[^01]/}"; N=${#T[@]}
 }
 
 # Brace expansion that could rewrite a flag or endpoint word.
@@ -325,7 +371,7 @@ resolve_cmd() {
     if [ "${F:i:1}" = 1 ]; then CSTAT=exp; CI=$i; return; fi
     lcase "${t##*/}"; b="$LC"
     case "$b" in
-      if|then|elif|else|do|while|until|'!'|'{'|nohup|builtin) i=$((i + 1)); continue ;;
+      nohup|builtin) i=$((i + 1)); continue ;;
       command|exec|time)
         i=$((i + 1))
         while [ "$i" -lt "$N" ]; do
@@ -423,7 +469,7 @@ api_check() { # $1: index of the first word after `api`
   local npos=0 endpoint="" endf=0 nmeth=0 methbad=0 have_field=0 have_input=0 help=0
   local hdrbad=0 q k fbad=0 qtyped=0
   local -a qv=() qfl=()
-  API_SEEN=1
+  API_SEEN=$((API_SEEN + 1))
   while [ "$j" -lt "$N" ]; do
     t="${T[j]}"; f="${F:j:1}"
     if [ "$posonly" -eq 0 ] && [ "$t" = -- ]; then posonly=1; j=$((j + 1)); continue; fi
@@ -437,7 +483,7 @@ api_check() { # $1: index of the first word after `api`
         if [[ "$t" == *=* ]]; then hasval=1; val="${t#*=}"; vf="$f"; fi
         case "$name" in
           --paginate|--slurp|--include|--silent|--verbose) [ "$hasval" -eq 0 ] || deny_unread "unexpected value on a switch" ;;
-          --help) help=1 ;;
+          --help) [ "$hasval" -eq 0 ] || deny_unread "unexpected value on a switch"; help=1 ;;
           --method|--field|--raw-field|--input|--header|--jq|--template|--cache|--preview|--hostname)
             if [ "$hasval" -eq 0 ]; then
               [ "$j" -lt "$N" ] || deny_unread "a flag is missing its value"
@@ -474,7 +520,7 @@ api_check() { # $1: index of the first word after `api`
       fi
       continue
     fi
-    if is_redir "$t"; then j=$((j + REDIR)); continue; fi
+    if is_redir "$t"; then redir_skip "$j"; j=$((j + REDIR)); continue; fi
     npos=$((npos + 1)); endpoint="$t"; endf="$f"; j=$((j + 1))
   done
   [ "$help" -eq 1 ] && return 0
@@ -549,7 +595,7 @@ handle_gh() { # command word is gh at T[CI]
   local j=$((CI + 1)) t sub
   while [ "$j" -lt "$N" ]; do
     t="${T[j]}"
-    if is_redir "$t"; then j=$((j + REDIR)); continue; fi
+    if is_redir "$t"; then redir_skip "$j"; j=$((j + REDIR)); continue; fi
     [ "${F:j:1}" = 0 ] || deny_unread "a word before the subcommand holds an expansion"
     ! meta "$t" || deny_unread "a word before or at the subcommand holds a brace or glob pattern"
     case "$t" in
@@ -579,10 +625,9 @@ handle_gh() { # command word is gh at T[CI]
 }
 
 # --- segment / script analysis ----------------------------------------------
-analyze_segment() { # segment, flags, previous connector, depth
-  local seg="$1" flags="$2" prev="$3" depth="$4" x tok inner b k rest ltxt ghx=0 tm
-  split_tokens "$seg"
-  T=(${TOKS[@]+"${TOKS[@]}"}); F="${flags//[^01]/}"; N=${#T[@]}
+analyze_segment() { # segment, flags, operator before it, depth
+  local prev="$3" depth="$4" x tok inner b k rest ltxt ghx=0 tm
+  load_seg "$1" "$2"
   [ "$N" -gt 0 ] || return 0
   local -a LT=(${T[@]+"${T[@]}"})
   local LF="$F" LN="$N" txt=" ${T[*]} " cw
@@ -670,15 +715,43 @@ analyze_segment() { # segment, flags, previous connector, depth
   deny_unread "gh is not in a command position the hook can read"
 }
 
-# A segment fed by a pipe that runs its input as code, after text that names
-# `gh api`: the text is the program.
-sink_check() { # previous connector
+# A segment fed by a pipe (`|`, `|&`, or a pipe that ends its line) that runs its
+# input as code, after text that names `gh api`: the text is the program.
+sink_check() { # operator before this segment
   local b
-  [ "$MENTION" -eq 1 ] && [ "$1" = "|" ] || return 0
+  [ "$MENTION" -eq 1 ] || return 0
+  case "$1" in '||'*) return 0 ;; '|'*) ;; *) return 0 ;; esac
   resolve_cmd
   [ "$CI" -ge 0 ] || return 0
   lcase "${T[CI]##*/}"; b="$LC"
   if is_shell_word "$b" || [ "$b" = xargs ]; then deny_unread "text naming gh api is piped into an interpreter"; fi
+  return 0
+}
+
+# One stage after a pipe from gh api: a closed set of read-only filters, each
+# taking plain words only.
+filter_check() { # segment, flags
+  local b k t sawdec=0
+  load_seg "$1" "$2"
+  resolve_cmd
+  { [ "$CSTAT" = ok ] && [ "$CI" -eq 0 ]; } || deny_unread "a stage after gh api starts with an assignment, a wrapper or an expansion"
+  b="${T[0]}"
+  case "$b" in
+    jq|head|tail|wc|sort|uniq|cut|tr|base64) ;;
+    *) deny_unread "gh api output is piped into a program outside the read-only filter set" ;;
+  esac
+  for ((k = 1; k < N; k++)); do
+    t="${T[k]}"
+    [ "${F:k:1}" = 0 ] || deny_unread "a filter argument holds an expansion"
+    braced "$t" && deny_unread "a filter argument holds a brace expansion"
+    if is_redir "$t"; then redir_skip "$k"; k=$((k + REDIR - 1)); continue; fi
+    case "$b" in
+      sort) case "$t" in --*|-*o*) deny_unread "sort is given a long option or an output option" ;; esac ;;
+      uniq) case "$t" in -*|[0-9]*) ;; *) deny_unread "uniq is given an output file" ;; esac ;;
+      base64) case "$t" in -d|-D|--decode) sawdec=1 ;; *) deny_unread "base64 is given more than a decode flag" ;; esac ;;
+    esac
+  done
+  [ "$b" != base64 ] || [ "$sawdec" -eq 1 ] || deny_unread "base64 after gh api only decodes"
   return 0
 }
 
@@ -689,8 +762,7 @@ ps_check() { # previous segment, its flags, this segment
   local p="${1//$'\n'/}" b
   [[ "$p" == *"<$US" ]] || return 0
   mentions "$3" || return 0
-  split_tokens "$p"
-  T=(${TOKS[@]+"${TOKS[@]}"}); F="${2//[^01]/}"; N=${#T[@]}
+  load_seg "$p" "$2"
   resolve_cmd
   if [ "$CSTAT" != ok ]; then deny_unread "a process substitution body feeds a command the hook cannot read"; fi
   [ "$CI" -ge 0 ] || return 0
@@ -700,10 +772,15 @@ ps_check() { # previous segment, its flags, this segment
 }
 
 MENTION=0
+# A segment holding a gh api call (directly or in a substitution or interpreter
+# body) is allowed in three shapes only: alone in its pipeline; piped with a
+# plain `|` into read-only filters; or sequenced with its neighbours by `&&`,
+# `||`, `;` or a newline. A grouping, background, stderr-pipe or line-end pipe
+# operator, or any other consumer of its output, makes the call unreadable.
 analyze_script() { # text, depth
-  local text="$1" depth="$2" stripped lo lx lc k prev
+  local text="$1" depth="$2" stripped lo lx lc k pc acc="" n0 i m
   local SRC
-  local -a segs=() xs=()
+  local -a segs=() xs=() ne=() op=() api=()
   [ "$depth" -le "$MAX_DEPTH" ] || deny_unread "substitutions are nested too deeply"
   SCRIPTS=$((SCRIPTS + 1))
   [ "$SCRIPTS" -le "$MAX_SCRIPTS" ] || deny_unread "too many nested substitutions"
@@ -716,10 +793,25 @@ analyze_script() { # text, depth
   IFS="$RS" read -r -d '' -a segs <<< "$lo" || true
   IFS="$RS" read -r -d '' -a xs <<< "$lx" || true
   for ((k = 0; k < ${#segs[@]}; k++)); do
-    [ -n "${segs[k]//$'\n'/}" ] || continue
-    prev=""; [ "$k" -gt 0 ] && prev="${lc:$((k - 1)):1}"
-    if [ "$prev" = "(" ]; then ps_check "${segs[k - 1]}" "${xs[k - 1]:-}" "${segs[k]}"; fi
-    analyze_segment "${segs[k]}" "${xs[k]:-}" "$prev" "$depth"
+    if [ -z "${segs[k]//$'\n'/}" ]; then acc+="${lc:k:1}"; continue; fi
+    pc=""; [ "$k" -gt 0 ] && pc="${lc:$((k - 1)):1}"
+    if [ "$pc" = "(" ]; then ps_check "${segs[k - 1]}" "${xs[k - 1]:-}" "${segs[k]}"; fi
+    ne+=("$k"); op+=("$acc"); acc="${lc:k:1}"
+    n0="$API_SEEN"
+    analyze_segment "${segs[k]}" "${xs[k]:-}" "${op[${#op[@]} - 1]}" "$depth"
+    if [ "$API_SEEN" -gt "$n0" ]; then api+=(1); else api+=(0); fi
+  done
+  op+=("$acc")
+  for ((i = 0; i < ${#ne[@]}; i++)); do
+    [ "${api[i]}" = 1 ] || continue
+    [ -z "${op[i]}" ] || joiner "${op[i]}" || deny_unread "a gh api call follows a pipe, a grouping or a background operator"
+    m=$i
+    while [ "${op[m + 1]}" = "|" ]; do
+      m=$((m + 1))
+      [ "$m" -lt "${#ne[@]}" ] || deny_unread "a pipe after gh api has no command"
+      filter_check "${segs[ne[m]]}" "${xs[ne[m]]:-}"
+    done
+    [ -z "${op[m + 1]}" ] || joiner "${op[m + 1]}" || deny_unread "gh api output goes through an operator the hook cannot read"
   done
   return 0
 }
@@ -735,7 +827,7 @@ LEX_MARK=1
 # shellcheck disable=SC2034  # read by lex() in lib/shell-lex.sh
 LEX_NEST=1
 analyze_script "$command_str" 0
-if [ "$API_SEEN" -eq 1 ]; then
+if [ "$API_SEEN" -gt 0 ]; then
   log_decision "$HOOK_NAME" "Bash" "" "allow" "gh api call proven read-only or a board-item mutation"
 fi
 exit 0
