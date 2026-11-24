@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#
+# atelier-pr-origin — read-only check that a PR comes from the atelier author identity on a
+# branch inside the PR's own repository (#810). The auto-merge skill and /atelier:babysit-prs
+# call it before they treat a PR as one of atelier's own.
+#
+# Usage: atelier-pr-origin <owner/repo> <NN>
+#
+# Output: exactly one line on stdout.
+#   origin=trusted author=<login> head=<ref>
+#   origin=untrusted (<reason>)
+# Exit: 0 trusted · 1 untrusted · 2 error/usage (fail closed, never a pass).
+#
+# Trusted only when ALL hold:
+#   - the PR head lives in the same repository (isCrossRepository is literally false);
+#   - the head repository owner equals the repo owner (case-insensitive);
+#   - the PR author login is non-empty and equals the atelier author agent login
+#     (case-insensitive), resolved live from $ATELIER_CONFIG_DIR/gh/author.
+# A gh read failure, unparsable output, or an unresolvable author login exits 2.
+# Branch-name prefixes are not checked here; callers filter branches themselves.
+# gh reads only; no state is modified.
+
+set -u
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+usage="usage: atelier-pr-origin <owner/repo> <NN>"
+[ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }
+repo="$1"; pr="$2"
+case "$pr" in ''|*[!0-9]*) echo "atelier-pr-origin: <NN> must be a PR number" >&2; exit 2 ;; esac
+case "$repo" in */*) ;; *) echo "atelier-pr-origin: <owner/repo> expected" >&2; exit 2 ;; esac
+
+ATELIER_CONFIG_DIR="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}"
+
+fail() { echo "atelier-pr-origin: $1" >&2; exit 2; }
+
+agent_login() {
+  GH_CONFIG_DIR="$ATELIER_CONFIG_DIR/gh/$1" gh api user --jq .login
+}
+
+author_agent="$(agent_login author 2>/dev/null)" || fail "cannot resolve author agent login"
+[ -n "$author_agent" ] || fail "cannot resolve author agent login"
+
+json="$(gh pr view "$pr" --repo "$repo" \
+  --json author,isCrossRepository,headRepositoryOwner,headRefName,baseRefName 2>/dev/null)" \
+  || fail "cannot read PR $repo#$pr"
+
+same_repo="$(printf '%s' "$json" | jq -r '.isCrossRepository == false' 2>/dev/null)" || fail "unparsable PR data"
+head_owner="$(printf '%s' "$json" | jq -r '.headRepositoryOwner.login // ""' 2>/dev/null)" || fail "unparsable PR data"
+author="$(printf '%s' "$json" | jq -r '.author.login // ""' 2>/dev/null)" || fail "unparsable PR data"
+head_ref="$(printf '%s' "$json" | jq -r '.headRefName // ""' 2>/dev/null)" || fail "unparsable PR data"
+
+lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+untrusted() { echo "origin=untrusted ($1)"; exit 1; }
+
+[ "$same_repo" = "true" ] || untrusted "head is not in the same repository"
+[ "$(lc "$head_owner")" = "$(lc "${repo%%/*}")" ] || untrusted "head repository owner differs from the repository owner"
+[ -n "$author" ] || untrusted "PR author unknown"
+[ "$(lc "$author")" = "$(lc "$author_agent")" ] || untrusted "PR author is not the atelier author identity"
+
+echo "origin=trusted author=$author head=$head_ref"
+exit 0

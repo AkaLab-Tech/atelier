@@ -29,6 +29,14 @@ The executable form of [PLAN.md §6](PLAN.md)'s auto-merge gate. The `reviewer` 
 
 If any precondition is missing, **stop and report** — do not partially-merge.
 
+### PR origin (runs before guardrail 1)
+
+Run `atelier-pr-origin <owner/repo> <NN>`. It reports `origin=trusted` only for a PR whose head is in the same repository and whose author is the atelier author identity.
+
+- Exit 0 (`origin=trusted ...`) → continue to guardrail 1.
+- Exit 1 (`origin=untrusted (<reason>)`) → `held: PR origin not trusted — <reason>; human review required`. Stop; evaluate nothing else.
+- Exit 2 → `held: PR origin unreadable`. Never a pass.
+
 ## The six guardrails
 
 Evaluate in this order. **Each is short-circuiting**: the first failure stops the evaluation, the skill reports `held: <reason>` and does **not** merge.
@@ -285,6 +293,8 @@ Branch:       <head> → <base>
 Size:         <the helper's `Counted:` line, verbatim>
 Exempt:       <the helper's `Exempt:` line, verbatim>
 
+Origin:       trusted (<author>) | ✗ <reason or unreadable>
+
 Guardrails:
   draft:          ✓ | ✗ — <reason>
   review:         ✓ APPROVED | ✗ <state>
@@ -313,6 +323,7 @@ Next step:     human review required. Operator can:
 ## Hard refusals
 
 - **Never** ask the operator to confirm the merge after the six guardrails resolve to `merged`. The gate is the authorization — see § Authorization model. Per-PR opt-outs live in `/atelier:abort-auto`, `<project>/.atelier.json`, and the `task --policy` / `--ask-for` flags. An ad-hoc *"should I merge?"* prompt is a contract violation regardless of phrasing (*"confirm before touching main?"*, *"shall I land this?"*, *"OK to merge?"* are all the same violation).
+- **Never** merge a PR that `atelier-pr-origin` does not report as `origin=trusted`; exit 1 and exit 2 both hold.
 - **Never** merge when ANY guardrail fails. The whole point of the six is short-circuiting safety.
 - **Never** use `--merge` or `--rebase` strategies. Squash only.
 - **Never** loop or retry within this skill on a transient guardrail state (CI still running, comment pending). The skill evaluates once and returns `held` — the orchestrator is responsible for waiting on pending CI and re-invoking this skill when CI completes (see pre-merge CI wait in `task-orchestrator`). A direct operator invocation ("merge the PR") that encounters pending CI yields `held` here and returns; re-invoke after CI resolves, or let `/atelier:babysit-prs` handle the unattended case. This refusal applies to the skill itself — the orchestrator's upstream wait is intentional and does not contradict it.
