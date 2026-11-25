@@ -22,6 +22,11 @@
 #      next to an allowlisted one, and multiple operations, block
 #   E  inert text, helper invocations, plain reads, jq-missing fail-open
 #   F  lexer default-output invariance (origin/main lex vs the working copy)
+#   K  inert-command prefixes and shell-running options (#827): K1 blocks
+#      (assignment / env wrapper before an inert command naming gh, git grep
+#      pager option, literal-value assignment, printf -v, unknown git flag,
+#      rg / sort / less / sed outside the read-only set); K2 allows (commit
+#      text, git -C grep, rg read flags, less -R, printf, assignment + gh api)
 #
 # The roadmap-tracking-flow skill (claude-roadmap-tools plugin) ships outside
 # this repo and describes its board writes as role-level steps
@@ -1108,6 +1113,167 @@ allow "gh pr list with --jq inside a substitution" \
   'echo "$(gh pr list --json number --jq ".[] | .number")"'
 allow "arithmetic expansion in double quotes" \
   'echo "$((1+2))"'
+
+# =============================================================================
+group "K1: prefixed / shell-running inert commands naming gh (block)"
+# =============================================================================
+W='gh api repos/o/r/issues -X POST'
+block "external diff assignment before git diff" \
+  "GIT_EXTERNAL_DIFF='$W' git diff"
+block "external diff assignment before git diff HEAD" \
+  "GIT_EXTERNAL_DIFF='$W' git diff HEAD~1"
+block "editor assignment before git commit" \
+  "GIT_EDITOR='$W' git commit"
+block "sequence editor assignment before git status" \
+  "GIT_SEQUENCE_EDITOR='$W' git status"
+block "pager assignment before git log" \
+  "GIT_PAGER='$W' git log"
+block "PAGER assignment before git show" \
+  "PAGER='$W' git show"
+block "environment-supplied config count/key/value before git status" \
+  "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0='$W' git status"
+block "environment-supplied config value only before git diff" \
+  "GIT_CONFIG_VALUE_0='$W' git diff"
+block "env wrapper with external diff before git diff" \
+  "env GIT_EXTERNAL_DIFF='$W' git diff"
+block "env wrapper with editor before git commit" \
+  "env GIT_EDITOR='$W' git commit"
+block "env wrapper with environment config before git status" \
+  "env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0='$W' git status"
+block "env wrapper with pager before git log" \
+  "env GIT_PAGER='$W' git log"
+block "env -i wrapper before git diff" \
+  "env -i GIT_EXTERNAL_DIFF='$W' git diff"
+block "assignment before git -C diff" \
+  "GIT_EXTERNAL_DIFF='$W' git -C x diff"
+block "assignment before echo" \
+  "FOO='$W' echo hi"
+block "assignment before cat" \
+  "FOO='$W' cat file"
+block "env wrapper before echo" \
+  "env FOO='$W' echo hi"
+block "pager-preprocessor variable before less" \
+  "LESSOPEN='|$W' less file"
+block "pager-preprocessor variable before less -R" \
+  "LESSOPEN='|$W %s' less -R file"
+block "env wrapper with pager-preprocessor before less" \
+  "env LESSOPEN='|$W' less file"
+block "pager-preprocessor variable before git grep" \
+  "LESSOPEN='|$W' git grep -n foo"
+block "git grep pager, short option with separate value" \
+  "git grep -O '$W' foo"
+block "git grep pager, clustered short option" \
+  "git grep -nO'$W' foo"
+block "git grep pager, short option clustered with value" \
+  "git grep -O'$W' foo"
+block "git grep pager, long option with equals" \
+  "git grep --open-files-in-pager='$W' foo"
+block "git grep pager, long option with separate value" \
+  "git grep --open-files-in-pager '$W' foo"
+block "git grep pager, long option without value" \
+  "git grep --open-files-in-pager -e 'gh api x'"
+block "git -C then grep pager" \
+  "git -C x grep -O '$W' foo"
+block "literal-value assignment-only segment naming gh" \
+  "x='$W'"
+block "literal-value assignment, double quoted" \
+  "x=\"$W\""
+block "literal-value assignment-only, two assignments" \
+  "a=1 b='$W'"
+block "mixed assignment: one substitution, one literal naming gh" \
+  "a=\$(date) b='gh api x'"
+block "substitution plus trailing text in the assignment value" \
+  "x=\$(date)'gh api x'"
+block "printf -v naming gh" \
+  "printf -v x '%s' '$W'"
+block "printf -v with a format naming gh" \
+  "printf -v x '$W'"
+block "git unknown global flag before diff" \
+  "git --exec-path='$W' diff"
+block "git unknown global flag --super-prefix" \
+  "git --super-prefix x diff 'gh api x'"
+block "git -c still refused naming gh" \
+  "git -c core.pager='$W' log"
+block "git --config-env still refused naming gh" \
+  "git --config-env=core.pager=X log 'gh api x'"
+block "rg option outside the set (--pre) still refused" \
+  "rg --pre '$W' foo"
+block "rg --pre= form" \
+  "rg --pre='$W' foo"
+block "rg --hostname-bin" \
+  "rg --hostname-bin '$W' foo"
+block "rg --unknown-option" \
+  "rg --frobnicate 'gh api x' file"
+block "sort -o outside the closed set" \
+  "sort -o out 'gh api x'"
+block "sed is not inert in a gh-naming segment" \
+  "sed -n 'p' 'gh api x'"
+block "sed with a command naming gh" \
+  "sed -e '1e $W' file"
+block "sed -i naming gh" \
+  "sed -i s/a/b/ 'gh api x'"
+block "less +command form" \
+  "less '+!$W' file"
+block "less plus-prefixed option with gh in a later argument" \
+  "less +G file 'gh api x'"
+block "prefix before an inert command in a pipeline segment" \
+  "x=1 echo '$W' | cat"
+block "prefix before an inert command after a separator" \
+  "cd x && FOO=1 git diff 'gh api x'"
+
+# =============================================================================
+group "K2: legitimate read forms naming gh (allow)"
+# =============================================================================
+allow "git commit message naming gh api after cd" \
+  'cd x && git commit -m "document the gh api repos/o/r/issues -X POST rule"'
+allow "git commit message naming gh api, single quoted" \
+  "git commit -m 'explain gh api -f title=x refusal'"
+allow "git -C then grep with -n -e" \
+  'git -C x grep -n -e "gh api"'
+allow "git grep -n with a pattern naming gh api" \
+  'git grep -n "gh api" -- hooks'
+allow "git grep -i -l" \
+  'git grep -il "gh api"'
+allow "git --no-pager log naming gh api" \
+  'git --no-pager log --oneline --grep="gh api"'
+allow "git diff naming gh api in a pathspec" \
+  'git diff -- docs/gh-api-notes.md'
+allow "rg with common read flags" \
+  'rg -n -i -C 2 --glob "*.sh" "gh api" hooks'
+allow "rg with -l and -t" \
+  'rg -l -t sh "gh api"'
+allow "rg fixed string with -F -w" \
+  'rg -F -w "gh api" docs'
+allow "less -R on a file naming gh" \
+  'less -R docs/gh-api-notes.md'
+allow "less -N on a file" \
+  'less -N hooks/block-gh-api-write.sh'
+allow "printf without options naming gh api" \
+  'printf "%s\n" "gh api repos/o/r/issues -X POST"'
+allow "printf plain text naming gh api" \
+  'printf "run gh api to read\n"'
+allow "echo naming gh api" \
+  'echo "gh api repos/o/r/issues -X POST"'
+allow "grep naming gh api" \
+  'grep -n "gh api" hooks/block-gh-api-write.sh'
+allow "assignment capturing a gh api read via substitution" \
+  'x=$(gh api repos/o/r/issues)'
+allow "assignment capturing a gh api read via backticks" \
+  'x=`gh api repos/o/r/issues`'
+allow "assignment capturing a jq-filtered read" \
+  'n=$(gh api repos/o/r/issues --jq ".[0].number")'
+allow "assignments with a substitution then a gh api read" \
+  'a=1 b=$(date) gh api repos/o/r/issues'
+allow "env assignment before gh api user" \
+  'GH_CONFIG_DIR=/x gh api user'
+allow "env assignment with a quoted value before gh api user" \
+  'GH_CONFIG_DIR="$HOME/.config/gh" gh api user'
+allow "env wrapper before a gh api read" \
+  'env X=1 gh api repos/o/r/issues'
+allow "env wrapper with two assignments before a gh api read" \
+  'env X=1 Y=2 gh api user'
+allow "gh api read piped into jq" \
+  'gh api repos/o/r/issues | jq ".[0]"'
 
 # =============================================================================
 echo
