@@ -16,9 +16,9 @@
 # hooks/tests/deny-gh-identity-tokens.test.sh and the Layer 1 matrix in
 # hooks/tests/block-protected-push.test.sh: a path-parameterized jq predicate,
 # exact-string equality (not substring/regex), run over the real shipped
-# template. No hook is involved (a categorical PreToolUse guard for gh api
-# mutations is explicitly out of scope for #197 — see PLAN.md §3), so there is
-# no Layer 2 to test here, only the Layer 1 glob surface itself.
+# template. This file covers only the Layer 1 glob surface. The categorical
+# PreToolUse guard that #197 left out of scope is hooks/block-gh-api-write.sh
+# (#812, PLAN.md §3); it has its own suite, hooks/tests/block-gh-api-write.test.sh.
 #
 # Contract invariants asserted:
 #   Group 1 — all 4 verbs (POST/PATCH/PUT/DELETE) are denied in all 4 syntax
@@ -35,6 +35,10 @@
 #     updateProjectV2ItemFieldValue, addProjectV2ItemById — see PLAN.md §3).
 #     This guards against a *future* over-tightening regression, not #197's
 #     own diff (#197 deliberately leaves this gap open and documents it).
+#
+#   Group 5 — #812 extends the glob surface with the `-X=<VERB>` spelling
+#     (4 verbs x leading / endpoint-first position = 8 entries) and denies
+#     `gh alias set` / `gh alias import` (an alias can stand for an api call).
 #
 # Hermetic: no network, no `gh` calls, no writes outside a mktemp dir (in
 # fact this test does no writes at all — it only reads the committed
@@ -170,6 +174,40 @@ done < <(jq -r '(.permissions.deny // [])[] | select(test("gh api"))' "$TEMPLATE
 
 if [ "$overreach_found" -eq 0 ]; then
   pass "no gh api deny[] entry over-tightens into implicit-POST fields or graphql"
+fi
+
+# =============================================================================
+# Group 5 — #812: `-X=<VERB>` spellings and gh alias set / import.
+# =============================================================================
+echo
+echo "  -- Group 5: -X=VERB spellings and gh alias set/import (#812) --"
+
+for verb in "${VERBS[@]}"; do
+  for entry in \
+    "Bash(gh api -X=${verb}*)" \
+    "Bash(gh api * -X=${verb}*)"; do
+    if deny_has_entry "$TEMPLATE" "$entry"; then
+      pass "deny[] carries $entry"
+    else
+      fail "deny[] is MISSING $entry — #812 -X=VERB closure regressed"
+    fi
+  done
+done
+
+for entry in \
+  'Bash(gh alias set*)' \
+  'Bash(gh alias import*)'; do
+  if deny_has_entry "$TEMPLATE" "$entry"; then
+    pass "deny[] carries $entry"
+  else
+    fail "deny[] is MISSING $entry — #812 alias closure regressed"
+  fi
+done
+
+if deny_has_entry "$TEMPLATE" 'Bash(gh alias list*)' || deny_has_entry "$TEMPLATE" 'Bash(gh alias*)'; then
+  fail "deny[] over-reaches into read-only gh alias subcommands (list/delete)"
+else
+  pass "deny[] does not blanket-deny gh alias (only set / import)"
 fi
 
 echo

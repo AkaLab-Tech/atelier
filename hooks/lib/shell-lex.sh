@@ -15,7 +15,7 @@ RS=$'\x1e'
 # Length of the balanced substitution at the start of $2 ($1 is `$` for
 # `$(...)`, a backtick for `...`), or 0 when it is not closed in $2.
 _subst_len() {
-  local LC_ALL=C kind="$1" r="$2" k m=${#2} ch d=1 sq=0 dq=0
+  local LC_ALL=C kind="$1" r="$2" k m=${#2} ch d=1 sq=0 dq=0 nl
   if [ "$kind" = '`' ]; then
     for ((k = 1; k < m; k++)); do
       ch="${r:k:1}"
@@ -24,11 +24,34 @@ _subst_len() {
     done
     echo 0; return
   fi
+  # LEX_NEST (with LEX_MARK=1) models the nested constructs the default scan
+  # skips: substitutions inside double quotes and `$'...'` strings.
+  local nest=0
+  [ "${LEX_NEST:-0}" = 1 ] && [ "${LEX_MARK:-0}" = 1 ] && nest=1
+  if [ "$kind" = '{' ]; then
+    for ((k = 2; k < m; k++)); do
+      ch="${r:k:1}"
+      if [ "$sq" = 1 ]; then [ "$ch" = "'" ] && sq=0
+      elif [ "$ch" = '\' ]; then k=$((k + 1))
+      elif [ "$ch" = '$' ] && [ "${r:k+1:1}" = '(' ]; then
+        nl=$(_subst_len '$' "${r:k}"); [ "$nl" -gt 0 ] || { echo 0; return; }; k=$((k + nl - 1))
+      elif [ "$ch" = '`' ]; then
+        nl=$(_subst_len '`' "${r:k}"); [ "$nl" -gt 0 ] || { echo 0; return; }; k=$((k + nl - 1))
+      elif [ "$ch" = '"' ]; then dq=$((1 - dq))
+      elif [ "$ch" = "'" ] && [ "$dq" = 0 ]; then sq=1
+      elif [ "$ch" = '}' ] && [ "$dq" = 0 ]; then echo $((k + 1)); return; fi
+    done
+    echo 0; return
+  fi
   for ((k = 2; k < m; k++)); do
     ch="${r:k:1}"
     if [ "$sq" = 1 ]; then [ "$ch" = "'" ] && sq=0
     elif [ "$dq" = 1 ]; then
-      if [ "$ch" = '\' ]; then k=$((k + 1)); elif [ "$ch" = '"' ]; then dq=0; fi
+      if [ "$ch" = '\' ]; then k=$((k + 1))
+      elif [ "$ch" = '"' ]; then dq=0
+      elif [ "$nest" = 1 ] && { [ "$ch" = '`' ] || { [ "$ch" = '$' ] && [ "${r:k+1:1}" = '(' ]; }; }; then
+        nl=$(_subst_len "$ch" "${r:k}"); [ "$nl" -gt 0 ] || { echo 0; return; }; k=$((k + nl - 1))
+      fi
     else
       case "$ch" in
         '\') k=$((k + 1)) ;;
@@ -36,6 +59,15 @@ _subst_len() {
         '"') dq=1 ;;
         '(') d=$((d + 1)) ;;
         ')') d=$((d - 1)); if [ "$d" -eq 0 ]; then echo $((k + 1)); return; fi ;;
+        '$')
+          if [ "$nest" = 1 ] && [ "${r:k+1:1}" = "'" ]; then
+            k=$((k + 2))
+            while [ "$k" -lt "$m" ]; do
+              ch="${r:k:1}"
+              if [ "$ch" = '\' ]; then k=$((k + 1)); elif [ "$ch" = "'" ]; then break; fi
+              k=$((k + 1))
+            done
+          fi ;;
       esac
     fi
   done
@@ -44,16 +76,28 @@ _subst_len() {
 
 LEX_OUT=""
 LEX_CONN=""   # the separator character that ended each segment, in order
+# Opt-in (LEX_MARK=1): LEX_EXP parallels LEX_OUT with one 0/1 character per token
+# (1 = the token holds an expansion outside single quotes: $X, ${X}, $(...),
+# backticks, $'..') and RS per segment. Every flag stays 0 unless a caller
+# sets LEX_MARK=1; LEX_OUT, LEX_CONN and the token splitters are unaffected.
+LEX_MARK=0
+# Opt-in on top of LEX_MARK=1 (LEX_NEST=1): models the nested constructs the
+# default lexer does not, so one substitution stays one token: $(...), backticks
+# and ${...} inside double quotes, ${...} and $'...' outside. LEX_OUT/LEX_CONN
+# change only when both flags are set.
+LEX_NEST=0
+LEX_EXP=""
 lex() {
   # bash 3.2 copies the string tail on every ${s:$i:1}, so a per-character walk
   # is quadratic. Index a small sliding window instead and jump quoted runs.
   local LC_ALL=C
-  local s="$1" n i=0 c nx sub_end cur="" have=0 q="" rest run win="" b=-1000 o
+  local s="$1" n i=0 c nx sub_end cur="" have=0 q="" rest run win="" b=-1000 o curx=0 nest=0 skind
+  [ "$LEX_NEST" = 1 ] && [ "$LEX_MARK" = 1 ] && nest=1
   n=${#s}
-  LEX_OUT=""; LEX_CONN=""
+  LEX_OUT=""; LEX_CONN=""; LEX_EXP=""
   _flush() {
-    if [ -n "$cur" ] || [ "$have" -eq 1 ]; then LEX_OUT+="$cur$US"; fi
-    cur=""; have=0
+    if [ -n "$cur" ] || [ "$have" -eq 1 ]; then LEX_OUT+="$cur$US"; LEX_EXP+="$curx"; fi
+    cur=""; have=0; curx=0
   }
   while [ "$i" -lt "$n" ]; do
     if [ $((i - b)) -ge 400 ]; then b=$i; win="${s:$i:512}"; fi
@@ -68,10 +112,28 @@ lex() {
         cur+="$run"; i=$((i + ${#run} - 1))
       fi
     elif [ "$q" = '"' ]; then
-      if [ "$c" != '\' ] && [ "$c" != '"' ]; then
-        rest="${win:$o}"; run="${rest%%[\"\\]*}"
-        [ ${#run} -eq ${#rest} ] && { rest="${s:$i}"; run="${rest%%[\"\\]*}"; }
+      if [ "$nest" = 1 ] && { [ "$c" = '`' ] || [ "$c" = '$' ]; }; then
+        curx=1; nx="${win:$((o + 1)):1}"; skind=""
+        if [ "$c" = '`' ]; then skind='`'
+        elif [ "$nx" = '(' ]; then skind='$'
+        elif [ "$nx" = '{' ]; then skind='{'; fi
+        if [ -n "$skind" ]; then
+          rest="${s:$i:2048}"; sub_end=$(_subst_len "$skind" "$rest")
+          [ "$sub_end" -eq 0 ] && { rest="${s:$i}"; sub_end=$(_subst_len "$skind" "$rest"); }
+          if [ "$sub_end" -gt 0 ]; then
+            cur+="${rest:0:$sub_end}"; i=$((i + sub_end - 1))
+          else
+            rest="${s:$i}"; cur+="$rest"; i=$((n - 1))
+          fi
+        else
+          cur+="$c"
+        fi
+      elif [ "$c" != '\' ] && [ "$c" != '"' ]; then
+        rest="${win:$o}"
+        if [ "$nest" = 1 ]; then run="${rest%%[\"\\\$\`]*}"; else run="${rest%%[\"\\]*}"; fi
+        [ ${#run} -eq ${#rest} ] && { rest="${s:$i}"; if [ "$nest" = 1 ]; then run="${rest%%[\"\\\$\`]*}"; else run="${rest%%[\"\\]*}"; fi; }
         cur+="$run"; i=$((i + ${#run} - 1))
+        if [ "$LEX_MARK" = 1 ]; then case "$run" in *'$'*|*'`'*) curx=1 ;; esac; fi
       elif [ "$c" = '\' ]; then
         nx="${win:$((o + 1)):1}"
         case "$nx" in
@@ -99,9 +161,25 @@ lex() {
           # A balanced $(...) / `...` stays inside the current word, so
           # `VAR=$(cmd)/x gh ...` is not cut at the substitution.
           nx="${win:$((o + 1)):1}"
-          if [ "$c" = '`' ] || [ "$nx" = '(' ]; then
-            rest="${s:$i:2048}"; sub_end=$(_subst_len "$c" "$rest")
-            [ "$sub_end" -eq 0 ] && { rest="${s:$i}"; sub_end=$(_subst_len "$c" "$rest"); }
+          if [ "$LEX_MARK" = 1 ] && { [ "$c" = '`' ] || { [ -n "$nx" ] && [ "$nx" != ' ' ] && [ "$nx" != $'\t' ] && [ "$nx" != $'\n' ]; }; }; then curx=1; fi
+          skind="$c"
+          if [ "$nest" = 1 ] && [ "$c" = '$' ]; then
+            if [ "$nx" = '{' ]; then skind='{'
+            elif [ "$nx" = "'" ]; then
+              # $'...' ends at the first unescaped quote; a backslash-quote stays inside.
+              k=$((i + 2))
+              while [ "$k" -lt "$n" ]; do
+                ch="${s:k:1}"
+                if [ "$ch" = '\' ]; then k=$((k + 2)); continue; fi
+                [ "$ch" = "'" ] && break
+                k=$((k + 1))
+              done
+              cur+="${s:$i:$((k - i + 1))}"; have=1; i=$((k + 1)); continue
+            fi
+          fi
+          if [ "$c" = '`' ] || [ "$nx" = '(' ] || [ "$skind" = '{' ]; then
+            rest="${s:$i:2048}"; sub_end=$(_subst_len "$skind" "$rest")
+            [ "$sub_end" -eq 0 ] && { rest="${s:$i}"; sub_end=$(_subst_len "$skind" "$rest"); }
             if [ "$sub_end" -gt 0 ]; then
               cur+="${rest:0:$sub_end}"; have=1; i=$((i + sub_end - 1))
             else
@@ -112,14 +190,14 @@ lex() {
             cur+="$c"; have=1
           fi ;;
         ' '|$'\t') _flush ;;
-        $'\n'|';'|'&'|'|'|'('|')') _flush; LEX_OUT+="$RS"; LEX_CONN+="$c" ;;
+        $'\n'|';'|'&'|'|'|'('|')') _flush; LEX_OUT+="$RS"; LEX_EXP+="$RS"; LEX_CONN+="$c" ;;
         *) cur+="$c"; have=1 ;;
       esac
     fi
     i=$((i + 1))
   done
   _flush
-  LEX_OUT+="$RS"
+  LEX_OUT+="$RS"; LEX_EXP+="$RS"
 }
 
 TOKS=()
