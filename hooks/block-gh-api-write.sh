@@ -20,6 +20,13 @@
 # and similar keyword is skipped when no `api` word is present); `-c`/eval bodies and `$(...)` substitutions are re-lexed (bounded
 # depth). Echo/printf, commit messages, searches, heredoc prose and the like
 # are inert, unless that text is piped into an interpreter.
+# Inert is a closed rule: the command word counts only when nothing stands
+# before it (no assignment, no wrapper: the environment of a command can make it
+# run text), and only from a closed set of words. Some of those words are inert
+# with any arguments; the rest only when every option is in that word's
+# read-only set, so an option outside it makes the word non-inert. A segment of
+# assignments only that names `gh` passes only when each such value is exactly
+# one command substitution (its body is checked).
 #
 # When `gh` is the command word its arguments are read with a closed grammar
 # (the documented `gh api` flags and their arity, short clusters and `=` forms
@@ -439,18 +446,89 @@ resolve_cmd() {
 
 is_shell_word() { case "$1" in bash|sh|zsh|dash|ksh|eval|source|.) return 0 ;; esac; return 1; }
 
+# Closed option scan for the words that are inert only with read-only options.
+# $1 = first index to scan. O_S0 / O_S1 = short flags without / with a value,
+# O_L0 / O_L1 = long flags without / with a value (space-padded lists). A long
+# flag in O_L0 given an `=` value, and any option outside the four sets, fail.
+# Scanning stops at `--`; non-option words are skipped.
+O_S0=""; O_S1=""; O_L0=""; O_L1=""
+opts_ok() {
+  local k="$1" t c rest name
+  while [ "$k" -lt "$N" ]; do
+    t="${T[k]}"
+    case "$t" in
+      --) return 0 ;;
+      --*)
+        name="${t%%=*}"
+        if [[ "$O_L1" == *" $name "* ]]; then
+          if [[ "$t" == *=* ]]; then k=$((k + 1)); else k=$((k + 2)); fi
+        elif [[ "$O_L0" == *" $name "* ]] && [[ "$t" != *=* ]]; then k=$((k + 1))
+        else return 1; fi ;;
+      -?*)
+        rest="${t#-}"; k=$((k + 1))
+        while [ -n "$rest" ]; do
+          c="${rest:0:1}"; rest="${rest:1}"
+          if [[ "$O_S0" == *" $c "* ]]; then continue
+          elif [[ "$O_S1" == *" $c "* ]]; then
+            [ -n "$rest" ] || k=$((k + 1))
+            break
+          else return 1; fi
+        done ;;
+      *) k=$((k + 1)) ;;
+    esac
+  done
+  return 0
+}
+
+# A value that is exactly one $(...) or `...` substitution.
+one_subst() {
+  local v="$1" n
+  case "$v" in
+    '$('*) n=$(_subst_len '$' "$v") ;;
+    '`'*) n=$(_subst_len '`' "$v") ;;
+    *) return 1 ;;
+  esac
+  [ "$n" -gt 0 ] && [ "$n" -eq "${#v}" ]
+}
+
 # Commands whose arguments are data, not code. $1 = lowercase basename of the
-# command word; arguments are T[CI+1..].
+# command word; arguments are T[CI+1..]. Closed tiers: a word is inert only if
+# it appears here, and tier 2 words only with options from their allowlist
+# (INERT_OPT=1 marks a refusal caused by an option).
+INERT_OPT=0
 is_inert() {
   local b="$1" k t sub
+  INERT_OPT=0
   case "$b" in
-    echo|printf|cat|head|tail|wc|ls|sed|jq|sort|uniq|cut|tr|less|tee|diff|true|false|:|test|'[') return 0 ;;
-    # `command -v|-V` (resolve_cmd leaves CI on `command` only for those), type, which: lookups, never run the name.
-    command|type|which) return 0 ;;
-    rg|grep)
+    # Tier 1: no option on macOS (BSD) or Linux (GNU) runs a program or shell
+    # text; any arguments are fine. Checked against both man pages. `command`
+    # reaches here only as `command -v|-V` (resolve_cmd), and type / which only
+    # look names up.
+    echo|cat|head|tail|wc|ls|cut|tr|uniq|tee|diff|jq|grep|true|false|:|test|'['|command|type|which) return 0 ;;
+    # Tier 2 (below): inert only when every option is in the word's closed set.
+    # printf takes no options: a leading -v assigns a shell variable.
+    printf)
+      case "${T[CI+1]:-}" in -|--|'') return 0 ;; -*) INERT_OPT=1; return 1 ;; esac
+      return 0 ;;
+    rg)
+      O_S0=" n i l w F s S v c H h I N q u U o x r "; O_S1=" e g t T A B C m f M j "
+      O_L0=" --no-heading --heading --line-number --no-line-number --ignore-case --smart-case --case-sensitive --files-with-matches --files-without-match --word-regexp --fixed-strings --invert-match --count --with-filename --no-filename --hidden --no-ignore --follow --only-matching --line-regexp --quiet --files --json --column --vimgrep --stats "
+      O_L1=" --regexp --glob --iglob --type --type-not --after-context --before-context --context --max-count --max-depth --file --color --threads --max-columns --replace "
+      opts_ok $((CI + 1)) || { INERT_OPT=1; return 1; }
+      return 0 ;;
+    less)
+      O_S0=" N i I S R r F X E q Q s w m M n "; O_S1=""
+      O_L0=" --line-numbers --ignore-case --IGNORE-CASE --chop-long-lines --RAW-CONTROL-CHARS --quit-if-one-screen --no-init --quit-at-eof "; O_L1=""
+      opts_ok $((CI + 1)) || { INERT_OPT=1; return 1; }
       for ((k = CI + 1; k < N; k++)); do
-        case "${T[k]}" in --pre|--pre=*|--hostname-bin|--hostname-bin=*) return 1 ;; esac
+        case "${T[k]}" in +*) INERT_OPT=1; return 1 ;; esac   # `+cmd` runs a less command
       done
+      return 0 ;;
+    sort)
+      O_S0=" b d f g h i M n R r V u s c C m z "; O_S1=" k t "
+      O_L0=" --reverse --numeric-sort --unique --ignore-case --stable --version-sort --human-numeric-sort --month-sort --general-numeric-sort --dictionary-order --ignore-leading-blanks --check --merge --zero-terminated "
+      O_L1=" --key --field-separator "
+      opts_ok $((CI + 1)) || { INERT_OPT=1; return 1; }
       return 0 ;;
     git)
       k=$((CI + 1))
@@ -458,13 +536,26 @@ is_inert() {
         t="${T[k]}"
         case "$t" in
           -C|--git-dir|--work-tree|--namespace) k=$((k + 2)) ;;
-          -c*|--config-env*|--exec-path*) return 1 ;;
-          -*) k=$((k + 1)) ;;
+          --git-dir=*|--work-tree=*|--namespace=*|-p|--paginate|-P|--no-pager|--bare|--literal-pathspecs|--no-optional-locks) k=$((k + 1)) ;;
+          -*) INERT_OPT=1; return 1 ;;
           *) break ;;
         esac
       done
       sub="${T[k]:-}"
-      case "$sub" in commit|log|show|diff|status|add|tag|branch|stash|grep|blame|notes) return 0 ;; esac
+      case "$sub" in
+        grep)
+          # The only listed subcommand with an option that runs a program
+          # (`-O` / `--open-files-in-pager`), so it gets a closed option set.
+          O_S0=" 0 1 2 3 4 5 6 7 8 9 a i I w v h H E G P F n c l L o q p W z "; O_S1=" e f A B C m "
+          O_L0=" --cached --untracked --no-index --exclude-standard --no-exclude-standard --recurse-submodules --text --ignore-case --word-regexp --invert-match --no-recursive --recursive --full-name --extended-regexp --basic-regexp --perl-regexp --fixed-strings --line-number --column --null --count --files-with-matches --name-only --files-without-match --only-matching --show-function --function-context --heading --break --no-heading --no-break --and --or --not --all-match --quiet --no-color --color --textconv --no-textconv "
+          O_L1=" --max-depth --max-count --after-context --before-context --context --file --threads "
+          opts_ok $((k + 1)) || { INERT_OPT=1; return 1; }
+          return 0 ;;
+        # The other listed subcommands take no option whose value is a program
+        # or shell text; programs they can start come from config or the
+        # environment, which a prefix or `-c` would set and both are refused.
+        commit|log|show|diff|status|add|tag|branch|stash|blame|notes) return 0 ;;
+      esac
       return 1 ;;
   esac
   return 1
@@ -692,6 +783,13 @@ analyze_segment() { # segment, flags, operator before it, depth
     return 0
   fi
   if [ "$hasgh" -eq 0 ]; then
+    # An attached option value can hold the gh text inside one word, so the
+    # word-boundary match above misses it; an option outside a closed set is
+    # still refused when an api word is present.
+    if [[ "$ltxt" =~ $RE_API ]] && [ "$CSTAT" = ok ] && [ "$CI" -ge 0 ] && [[ "$ltxt" == *gh* ]]; then
+      lcase "${T[CI]##*/}"
+      is_inert "$LC" || [ "$INERT_OPT" -eq 0 ] || deny_unread "an option outside the read-only set of a command whose arguments name gh"
+    fi
     sink_check "$prev"; return 0
   fi
   # Without an api word, a leading compound-command keyword is not the command.
@@ -703,12 +801,23 @@ analyze_segment() { # segment, flags, operator before it, depth
     done
   fi
   [ "$CSTAT" = ok ] || deny_unread "an unrecognised wrapper stands before the command"
-  [ "$CI" -ge 0 ] || return 0
+  if [ "$CI" -lt 0 ]; then
+    # Assignments only: a value that names gh passes only as one command
+    # substitution (its body is analysed above).
+    for ((k = 0; k < N; k++)); do
+      [[ "${T[k]}" =~ $RE_ASSIGN ]] || continue
+      lcase "${T[k]#*=}"
+      [[ "$LC" =~ $RE_GH ]] || continue
+      one_subst "${T[k]#*=}" || deny_unread "an assignment value names gh other than as one command substitution"
+    done
+    return 0
+  fi
   lcase "${T[CI]##*/}"; b="$LC"
   case "$b" in
     gh|gh.exe) handle_gh; return 0 ;;
   esac
   if is_inert "$b"; then
+    [ "$CI" -eq 0 ] || deny_unread "a prefix stands before a command whose arguments name gh"
     if mentions "$txt"; then MENTION=1; else sink_check "$prev"; fi
     return 0
   fi
@@ -729,6 +838,7 @@ analyze_segment() { # segment, flags, operator before it, depth
     fi
     return 0
   fi
+  [ "$INERT_OPT" -eq 0 ] || deny_unread "an option outside the read-only set of a command whose arguments name gh"
   [[ "$ltxt" =~ $RE_GHW ]] || { sink_check "$prev"; return 0; }
   deny_unread "gh is not in a command position the hook can read"
 }
